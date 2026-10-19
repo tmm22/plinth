@@ -1,0 +1,4327 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Slant 3D V2 API",
+    "description": "3D Printing and manufacturing API that exists on top of the Slant 3D print farm. Allowing order creation for 3D Print on Demand applications, Prototyping, Bulk Ordering Parts, Price Estimations, and Internal Fulfillment operations. This spec is for automated tools and AI Agents.",
+    "version": "2.0.0",
+    "contact": {
+      "email": "dev4@slant3d.com",
+      "url": "https://slant3dapi.com"
+    },
+    "x-agent-hints": {
+      "authentication": "Authorization: Bearer sl-******",
+      "rate-limit": "100 requests per minute; response headers X-RateLimit-Limit/Remaining/Reset/Role",
+      "max-api-keys": "3",
+      "maximum-platforms": "5 enabled platforms per account. Disabled platforms do not count: DELETE /platforms/{platformId} disables one and frees a slot, and PATCH /platforms/{platformId}/enable turns it back on if a slot is free.",
+      "pagination": "page and limit parameters on requests.",
+      "usage": "api/usage to review key usage for all user keys",
+      "file-upload": "Use presigned URLs for direct browser upload. Confirm upload required for a file to be valid.",
+      "order-workflow": "Upload files → Draft order → Process Order → Fulfillment Label Created Internally → Webhook Order Updates",
+      "webhooks": "Configure webhook URLs on platforms for order status updates",
+      "platform-workflow": "A Platform ID is required on most requests, as it is the organizational foundation of the API. Create or utilize one of the already created platforms and attach the ID to requests where it is required according to individual endpoint specifications.",
+      "openscad-rate-limit": "5 OpenSCAD generations per hour, one in flight",
+      "webhook-signature": "HMAC-SHA256 over `${timestamp}.${rawBody}` with platform webhookSecret; header X-Webhook-Signature-256 is sha256=<hex>; reject if timestamp older than 5 minutes",
+      "x-slant-studio-source": "docs"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://slant3dapi.com/v2/api",
+      "description": "Production API server location for all requests"
+    }
+  ],
+  "security": [
+    {
+      "ApiKeyAuth": []
+    },
+    {
+      "SessionAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API Key authentication using Bearer token (sl_****)"
+      },
+      "SessionAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "session",
+        "description": "Session-based authentication for web interface"
+      }
+    },
+    "schemas": {
+      "ApiResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Whether the request was successful"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable response message"
+          },
+          "data": {
+            "description": "Response data payload"
+          }
+        },
+        "required": [
+          "success",
+          "message"
+        ]
+      },
+      "Pagination": {
+        "type": "object",
+        "description": "Returned alongside data on every paginated endpoint",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "Total records matching the request, across all pages"
+          },
+          "totalPages": {
+            "type": "integer",
+            "description": "How many pages the count works out to at the requested limit"
+          },
+          "page": {
+            "type": "integer",
+            "description": "The page that was returned"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The page size that was applied"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "message": {
+            "type": "string",
+            "example": "Error message"
+          },
+          "error": {
+            "type": "string",
+            "description": "Technical error details"
+          }
+        }
+      },
+      "Address": {
+        "type": "object",
+        "required": [
+          "name",
+          "line1",
+          "city",
+          "state",
+          "zip",
+          "country"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Full name for delivery"
+          },
+          "line1": {
+            "type": "string",
+            "description": "Address line 1"
+          },
+          "line2": {
+            "type": "string",
+            "description": "Address line 2 (optional)"
+          },
+          "city": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string",
+            "default": "US"
+          }
+        }
+      },
+      "Customer": {
+        "type": "object",
+        "properties": {
+          "publicPaymentServiceId": {
+            "type": "string",
+            "description": "Customer ID for payment processing"
+          },
+          "platformId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "details": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email"
+              },
+              "address": {
+                "$ref": "#/components/schemas/Address"
+              }
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "File": {
+        "type": "object",
+        "properties": {
+          "publicFileServiceId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique identifier for the file - use this for all file references"
+          },
+          "name": {
+            "type": "string",
+            "description": "Original file name"
+          },
+          "ownerId": {
+            "type": "string",
+            "description": "Your application's user ID. This can be set for your internal file sorting"
+          },
+          "platformId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Platform this file belongs to"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "stl",
+              "obj",
+              "3mf"
+            ],
+            "description": "File type. Docs: stl, obj, and 3mf are currently supported; defaults to stl.",
+            "x-slant-studio-source": "docs"
+          },
+          "notes": {
+            "type": "string",
+            "nullable": true,
+            "description": "Production notes from Slant3D team"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fileURL": {
+            "type": "string",
+            "format": "uri",
+            "description": "Presigned download URL (1 hour expiry)"
+          },
+          "metrics": {
+            "type": "object",
+            "description": "New metrics field that is replacing STLMetrics. Includes more metric information and unit types",
+            "properties": {
+              "bodyCount": {
+                "type": "number",
+                "description": "Automatically counted amount of bodies on the build plate. May not be 100% accurate"
+              },
+              "imageURL": {
+                "type": "string",
+                "description": "OpenSCAD image generated from the file or manually updated"
+              },
+              "printTimeEstimate": {
+                "type": "number",
+                "description": "Estimated time to print in minutes"
+              },
+              "weight": {
+                "type": "number",
+                "description": "estimated weight in grams"
+              },
+              "surfaceArea": {
+                "type": "number",
+                "description": "Surface area in square millimeters"
+              },
+              "supportRequired": {
+                "type": "boolean",
+                "description": "Internally decided at upload or at time of print"
+              },
+              "supportVolumeEstimate": {
+                "type": "number",
+                "description": "Estimated volume of the part in cubic centimeters"
+              },
+              "volume": {
+                "type": "number",
+                "description": "Estimated volume in cubic centimeters"
+              },
+              "x": {
+                "type": "number",
+                "description": "x axis in millimeters"
+              },
+              "y": {
+                "type": "number",
+                "description": "y axis in millimeters"
+              },
+              "z": {
+                "type": "number",
+                "descriptions": "z axis in millimeters. This is the internal vertical direction while printing"
+              },
+              "units": {
+                "type": "object",
+                "description": "Units for metrics. Key is the field name with value as the unit type"
+              }
+            }
+          },
+          "STLMetrics": {
+            "type": "object",
+            "description": "Automatically generated file analysis. Deprecated and being replaced by metrics. Kept for legacy support on applications.",
+            "properties": {
+              "x": {
+                "type": "number",
+                "description": "Width in millimeters"
+              },
+              "y": {
+                "type": "number",
+                "description": "Depth in millimeters"
+              },
+              "z": {
+                "type": "number",
+                "description": "Height in millimeters"
+              },
+              "weight": {
+                "type": "number",
+                "description": "Estimated weight in grams"
+              },
+              "volume": {
+                "type": "number",
+                "description": "Volume in cubic centimeters"
+              },
+              "surfaceArea": {
+                "type": "number",
+                "description": "Surface area in square millimeters"
+              },
+              "imageURL": {
+                "type": "string",
+                "format": "uri",
+                "description": "Preview image generated by OpenSCAD"
+              }
+            }
+          }
+        }
+      },
+      "OrderItem": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "PRINT",
+              "COMPONENT",
+              "STATIONERY"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROCESSING",
+              "READY",
+              "SHIPPED",
+              "DELIVERED"
+            ]
+          },
+          "price": {
+            "type": "string",
+            "format": "decimal",
+            "pattern": "^-?\\d+\\.\\d{2}$",
+            "example": "4.06",
+            "description": "Item price, as a fixed-point decimal string with two places. Sent as a string rather than a JSON number so the value stays exact; parse it with a decimal type, not a float."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "ISO 4217 currency code for price. Currently always USD."
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "SKU": {
+            "type": "string",
+            "nullable": true
+          },
+          "publicFileServiceId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "For PRINT items"
+          },
+          "filamentId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "For PRINT items"
+          },
+          "componentId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "For COMPONENT items"
+          },
+          "stationeryId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "For STATIONERY items"
+          },
+          "imageUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "For STATIONERY items with custom image"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "publicId": {
+            "type": "string",
+            "description": "Public order identifier (SLANT_XXXXXXXXXX format)"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "PAID",
+              "QUEUED",
+              "PROCESSING",
+              "PRINTING",
+              "ITEMS_ON_SHELF",
+              "POST_PROCESSING",
+              "COMPLETED",
+              "IN_REVIEW",
+              "AWAITING_SHIPMENT",
+              "SHIPPED",
+              "DELIVERED",
+              "CANCELED",
+              "PAYMENT_ERROR"
+            ]
+          },
+          "platformId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "ownerId": {
+            "type": "string",
+            "description": "Your application's user ID"
+          },
+          "creatorId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "paymentId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "processedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "arriveByDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "deliveryCost": {
+            "type": "string",
+            "description": "Shipping cost in USD"
+          },
+          "printingCost": {
+            "type": "string",
+            "description": "Print cost in USD"
+          },
+          "customer": {
+            "$ref": "#/components/schemas/Customer"
+          },
+          "fulfillment": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Fulfillment"
+              }
+            ],
+            "nullable": true,
+            "description": "Shipping and tracking information",
+            "x-slant-studio-source": "docs"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderItem"
+            }
+          },
+          "options": {
+            "type": "object",
+            "nullable": true,
+            "x-slant-studio-source": "docs",
+            "properties": {
+              "shippingProvider": {
+                "type": "string",
+                "enum": [
+                  "SHIPPO",
+                  "SHIPSTATION"
+                ],
+                "description": "Shipping cost / label provider preference documented on Orders page.",
+                "x-slant-studio-source": "docs"
+              }
+            },
+            "additionalProperties": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Platform": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Platform unique identifier"
+          },
+          "name": {
+            "type": "string",
+            "description": "Platform display name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Platform description"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Your application URL"
+          },
+          "webhookURL": {
+            "type": "string",
+            "format": "uri",
+            "description": "Webhook endpoint for order status updates"
+          },
+          "webhookSecret": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "pattern": "^[\\u0021-\\u007E]+$",
+            "description": "Signing secret used as the HMAC-SHA256 key for this platform's webhooks. 32-256 characters, printable ASCII only (0x21-0x7E): spaces, tabs, line breaks and non-ASCII characters are rejected. The value is used exactly as submitted, so trim any whitespace picked up from an environment variable or config file before sending -- a stray leading space or trailing newline becomes part of the signing key and every signature check you run against our webhooks will fail. Returned in full on every platform read so it can be displayed in your dashboard."
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether the platform is active. Set false by DELETE /platforms/{platformId} and back to true by PATCH /platforms/{platformId}/enable. Only enabled platforms count against the 5-platform cap, and GET /platforms returns enabled platforms only -- a disabled platform is still readable by its ID."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WebhookPayload": {
+        "type": "object",
+        "description": "The body Slant3D POSTs to your webhookURL, and the body you send to POST /slant/webhook",
+        "required": [
+          "event_type",
+          "service",
+          "platform_id",
+          "data"
+        ],
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "order.created",
+              "order.updated",
+              "order.cancelled",
+              "order.shipped",
+              "order.delivered",
+              "order.error",
+              "payment.completed",
+              "payment.failed",
+              "customer.updated",
+              "file.updated",
+              "component.created",
+              "component.updated",
+              "component.deleted",
+              "filament.updated"
+            ],
+            "example": "order.shipped"
+          },
+          "service": {
+            "type": "string",
+            "enum": [
+              "order-service",
+              "payment-service",
+              "file-service",
+              "print-service"
+            ],
+            "example": "order-service"
+          },
+          "platform_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Your platform id. Must be a platform on your account",
+            "example": "555555-5555-5555-5555-5555555555"
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "Unix milliseconds as a string. Set for you when omitted",
+            "example": "1761933541285"
+          },
+          "data": {
+            "type": "object",
+            "description": "Event payload. Shape is validated against event_type: order events carry data.order, component events data.component, and filament.updated carries data.filaments with added, updated and removed arrays of public ids.",
+            "example": {
+              "order": {
+                "public_id": "SLANT_0123456789",
+                "status": "SHIPPED",
+                "tracking_number": "900000000000000000000",
+                "shipment_status": "SHIPPED"
+              }
+            }
+          }
+        }
+      },
+      "WebhookDeliveryResult": {
+        "type": "object",
+        "description": "What your endpoint did with a delivery attempt",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Whether your endpoint returned a 2xx"
+          },
+          "response": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "integer",
+                "example": 200,
+                "description": "HTTP status your endpoint returned. Absent when no response arrived"
+              },
+              "statusText": {
+                "type": "string",
+                "example": "OK"
+              },
+              "body": {
+                "type": "string",
+                "nullable": true,
+                "description": "Body your endpoint replied with, as sent"
+              },
+              "error": {
+                "type": "string",
+                "example": "Request timed out after 10s",
+                "description": "Present instead of status when the request failed outright, such as a DNS failure or a timeout"
+              },
+              "code": {
+                "type": "string",
+                "nullable": true,
+                "example": "ECONNREFUSED",
+                "description": "Underlying failure code where there is one"
+              }
+            }
+          }
+        }
+      },
+      "DeadWebhook": {
+        "type": "object",
+        "description": "A webhook that failed to deliver. Retried automatically once a minute for up to 10 attempts, then held for a manual resend. Kept for 30 days. Catalog events (component.* and filament.updated) are broadcast to every platform and are never stored here, so they are neither retried nor resendable.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Pass to the single resend endpoint"
+          },
+          "creatorId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "platformId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "webhookURL": {
+            "type": "string",
+            "description": "URL of the last delivery attempt. Changing the platform's webhookURL sends later attempts to the new one"
+          },
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "order.created",
+              "order.updated",
+              "order.cancelled",
+              "order.shipped",
+              "order.delivered",
+              "order.error",
+              "payment.completed",
+              "payment.failed",
+              "customer.updated",
+              "file.updated",
+              "component.created",
+              "component.updated",
+              "component.deleted",
+              "filament.updated"
+            ],
+            "example": "order.shipped"
+          },
+          "service": {
+            "type": "string",
+            "enum": [
+              "order-service",
+              "payment-service",
+              "file-service",
+              "print-service"
+            ],
+            "example": "order-service"
+          },
+          "payload": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WebhookPayload"
+              }
+            ],
+            "description": "The webhook body as it was sent. A resend delivers this unchanged, signed with a fresh timestamp"
+          },
+          "attempts": {
+            "type": "integer",
+            "example": 10,
+            "description": "Delivery attempts so far, including the original"
+          },
+          "retryable": {
+            "type": "boolean",
+            "description": "False when your endpoint rejected the webhook outright, which stops the automatic retries"
+          },
+          "lastStatus": {
+            "type": "integer",
+            "nullable": true,
+            "example": 502,
+            "description": "HTTP status of the last attempt. Null when no response arrived"
+          },
+          "lastError": {
+            "type": "string",
+            "nullable": true,
+            "example": "502 Bad Gateway"
+          },
+          "lastAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the first delivery failed. The 30 day window runs from here"
+          },
+          "succeededAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the webhook was eventually delivered"
+          },
+          "expiredAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "True once past the 30 day window, after which it can no longer be resent"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "retrying",
+              "failed",
+              "delivered",
+              "expired"
+            ],
+            "example": "failed",
+            "description": "retrying is still in the automatic loop, failed is out of attempts and awaiting a manual resend, delivered landed, expired is past the 30 day window"
+          }
+        }
+      },
+      "DeadWebhookResendResult": {
+        "type": "object",
+        "description": "Outcome of replaying one stored webhook",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "eventType": {
+            "type": "string",
+            "example": "order.shipped"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Whether your endpoint accepted it this time"
+          },
+          "status": {
+            "type": "integer",
+            "nullable": true,
+            "description": "HTTP status your endpoint returned. Null when no response arrived"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "True when it was past the 30 day window and no attempt was made"
+          },
+          "alreadyDelivered": {
+            "type": "boolean",
+            "description": "True when the webhook had already landed, so no attempt was made"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why the attempt failed"
+          }
+        }
+      },
+      "DeadWebhookResendSummary": {
+        "type": "object",
+        "description": "Totals for one resend batch",
+        "properties": {
+          "attempted": {
+            "type": "integer",
+            "description": "Webhooks tried on this call, capped at 25"
+          },
+          "delivered": {
+            "type": "integer",
+            "description": "How many your endpoint accepted"
+          },
+          "failed": {
+            "type": "integer",
+            "description": "How many failed again"
+          },
+          "expired": {
+            "type": "integer",
+            "description": "How many were past the 30 day window and marked expired instead of sent"
+          },
+          "remaining": {
+            "type": "integer",
+            "description": "Still awaiting resend after this call. Call again while above zero"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeadWebhookResendResult"
+            }
+          }
+        }
+      },
+      "Component": {
+        "type": "object",
+        "description": "A publicly available component. Optional fields are omitted when empty.",
+        "required": [
+          "id",
+          "name",
+          "price",
+          "priceUnit",
+          "weight",
+          "weightUnit",
+          "dimensionUnit",
+          "tags"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Pass this in the items array of an order to include the component"
+          },
+          "name": {
+            "type": "string",
+            "example": "Adhesive Feet (4 pack)"
+          },
+          "description": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number",
+            "description": "Price per unit, rounded to 2 decimal places",
+            "example": 0.5
+          },
+          "priceUnit": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          },
+          "weight": {
+            "type": "number",
+            "example": 3.5
+          },
+          "weightUnit": {
+            "type": "string",
+            "enum": [
+              "g"
+            ]
+          },
+          "imageUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "dimensions": {
+            "type": "string",
+            "description": "Formatted X x Y x Z string",
+            "example": "58.2 x 58.2 x 8"
+          },
+          "dimensionUnit": {
+            "type": "string",
+            "enum": [
+              "mm"
+            ]
+          },
+          "categoryId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "ID of the component's category. Omitted if uncategorized"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tag slugs attached to the component",
+            "example": [
+              "m3",
+              "bracket"
+            ]
+          }
+        }
+      },
+      "Category": {
+        "type": "object",
+        "description": "A component category. Categories form a tree up to 3 levels deep, and components are only assigned to leaf categories (ones with no subcategories).",
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "parentId"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Matches a component's categoryId"
+          },
+          "name": {
+            "type": "string",
+            "example": "Fasteners"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Unique URL-friendly version of the name",
+            "example": "fasteners"
+          },
+          "parentId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "ID of the parent category, or null for a top-level category"
+          }
+        }
+      },
+      "Filament": {
+        "type": "object",
+        "description": "Available filament materials and colors",
+        "properties": {
+          "publicId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "description": "Filament name"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Filament manufacturer"
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "OPM",
+              "PLA",
+              "PETG"
+            ],
+            "description": "Material type. Always returned upper case. Filaments with any other material type are not exposed on the public API"
+          },
+          "color": {
+            "type": "string",
+            "description": "Space separated color name. Always returned lower case",
+            "example": "matte black"
+          },
+          "hexValue": {
+            "type": "string",
+            "pattern": "^#[0-9a-f]{6}$",
+            "description": "Hex color code. Always a 6 digit lower case hex. Falls back to #a1a1a1 when the source value is missing or malformed"
+          },
+          "imageURL": {
+            "type": "string",
+            "format": "uri",
+            "description": "Product image of the filament. Omitted from the response when no image exists for that filament"
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Filament availability. Filaments can go out of stock temporarily or indefinitely. Omitted from the response when availability is unknown"
+          }
+        },
+        "required": [
+          "publicId",
+          "name",
+          "provider",
+          "profile",
+          "color",
+          "hexValue"
+        ]
+      },
+      "Stationery": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "price": {
+            "type": "number",
+            "nullable": true
+          },
+          "weight": {
+            "type": "number",
+            "nullable": true
+          },
+          "image_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "dimensions": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "public": {
+            "type": "boolean"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ServiceHealth": {
+        "type": "object",
+        "description": "Result of the most recent health check for a single micro-service",
+        "properties": {
+          "healthy": {
+            "type": "boolean",
+            "description": "False when the last check failed, timed out, or returned an unexpected status"
+          },
+          "lastCheckedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Timestamp of the last completed check. Null before the first check has run after a restart",
+            "example": "2025-08-25T14:32:07.918Z"
+          }
+        }
+      },
+      "Fulfillment": {
+        "type": "object",
+        "description": "Shipping and tracking information returned on orders.",
+        "x-slant-studio-source": "docs",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Fulfillment / label provider"
+          },
+          "deliveryMethod": {
+            "type": "string"
+          },
+          "address": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Address the label was generated against"
+          },
+          "trackingNumbers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tracking numbers for the shipment"
+          },
+          "deliveryInstructions": {
+            "type": "string"
+          },
+          "providerStatus": {
+            "type": "string"
+          }
+        }
+      },
+      "OrderTotals": {
+        "type": "object",
+        "x-slant-studio-source": "docs",
+        "properties": {
+          "printingCost": {
+            "type": "string",
+            "description": "Print cost in USD"
+          },
+          "deliveryCost": {
+            "type": "string",
+            "description": "Shipping cost in USD"
+          },
+          "totalCost": {
+            "type": "string",
+            "description": "Total cost in USD"
+          }
+        }
+      },
+      "DraftOrderData": {
+        "type": "object",
+        "x-slant-studio-source": "docs",
+        "description": "Draft order response data shape documented on Orders page.",
+        "properties": {
+          "order": {
+            "$ref": "#/components/schemas/Order"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderItem"
+            }
+          },
+          "totals": {
+            "$ref": "#/components/schemas/OrderTotals"
+          },
+          "customer": {
+            "$ref": "#/components/schemas/Customer"
+          }
+        }
+      }
+    },
+    "headers": {
+      "X-RateLimit-Limit": {
+        "description": "Total requests allowed per time window",
+        "schema": {
+          "type": "integer"
+        },
+        "x-slant-studio-source": "docs"
+      },
+      "X-RateLimit-Remaining": {
+        "description": "Requests remaining in current window",
+        "schema": {
+          "type": "integer"
+        },
+        "x-slant-studio-source": "docs"
+      },
+      "X-RateLimit-Reset": {
+        "description": "Unix timestamp when the limit resets",
+        "schema": {
+          "type": "integer"
+        },
+        "x-slant-studio-source": "docs"
+      },
+      "X-RateLimit-Role": {
+        "description": "Account tier (free only for now)",
+        "schema": {
+          "type": "string"
+        },
+        "x-slant-studio-source": "docs"
+      },
+      "X-Webhook-Timestamp": {
+        "description": "Unix timestamp (ms) when the webhook was sent",
+        "schema": {
+          "type": "string"
+        },
+        "x-slant-studio-source": "docs"
+      },
+      "X-Webhook-Signature-256": {
+        "description": "HMAC-SHA256 signature of timestamp + raw body, prefixed with sha256=",
+        "schema": {
+          "type": "string"
+        },
+        "x-slant-studio-source": "docs"
+      }
+    }
+  },
+  "paths": {
+    "/files": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get files with filtering and pagination",
+        "description": "Retrieve files associated with your account. Supports filtering by platform, owner, date range, and pagination.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Filter files by platform ID"
+          },
+          {
+            "name": "ownerId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter files by your application's user ID"
+          },
+          {
+            "name": "publicId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Get specific file by public ID"
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Filter files created after this date (YYYY-MM-DD)"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Filter files created before this date (YYYY-MM-DD)"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Page number for pagination"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "description": "Number of files per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "createdAt",
+                "updatedAt",
+                "name",
+                "type"
+              ],
+              "default": "createdAt"
+            },
+            "description": "Field to sort the results by"
+          },
+          {
+            "name": "sortOrder",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ASC",
+                "DESC"
+              ],
+              "default": "DESC"
+            },
+            "description": "Sort direction, case insensitive"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Files retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/File"
+                          }
+                        },
+                        "pagination": {
+                          "$ref": "#/components/schemas/Pagination"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Import file from URL",
+        "description": "Import an STL from an accessible download URL. Documented on the Files page; this operation supplements the published OpenAPI document.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "URL",
+                  "name",
+                  "platformId",
+                  "type"
+                ],
+                "properties": {
+                  "URL": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "platformId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "ownerId": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "stl",
+                      "obj",
+                      "3mf"
+                    ],
+                    "default": "stl",
+                    "description": "File type. Docs: stl, obj, 3mf. Defaults to stl.",
+                    "x-slant-studio-source": "docs"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File imported; see File schema"
+          }
+        }
+      }
+    },
+    "/files/owner/{ownerId}": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get files by owner ID",
+        "description": "Retrieve the files you uploaded against one of your application's user IDs, across every platform you own.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "ownerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Your application's user ID"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Page number for pagination"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "description": "Number of files per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "createdAt",
+                "updatedAt",
+                "name",
+                "type"
+              ],
+              "default": "createdAt"
+            },
+            "description": "Field to sort the results by"
+          },
+          {
+            "name": "sortOrder",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ASC",
+                "DESC"
+              ],
+              "default": "DESC"
+            },
+            "description": "Sort direction, case insensitive"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Files retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/File"
+                          }
+                        },
+                        "count": {
+                          "type": "integer",
+                          "description": "Total matching files - the same value as pagination.count"
+                        },
+                        "pagination": {
+                          "$ref": "#/components/schemas/Pagination"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files/platform/{platformId}": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get files by platform ID",
+        "description": "Retrieve the files uploaded to one of your platforms.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The platform to pull files from. Must be a platform you own"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "Page number for pagination"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "description": "Number of files per page"
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "createdAt",
+                "updatedAt",
+                "name",
+                "type"
+              ],
+              "default": "createdAt"
+            },
+            "description": "Field to sort the results by"
+          },
+          {
+            "name": "sortOrder",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ASC",
+                "DESC"
+              ],
+              "default": "DESC"
+            },
+            "description": "Sort direction, case insensitive"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Files retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/File"
+                          }
+                        },
+                        "pagination": {
+                          "$ref": "#/components/schemas/Pagination"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files/{publicFileId}": {
+      "get": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get file by public ID",
+        "description": "Retrieve a specific file by its public ID with fresh download URL",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "publicFileId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Public file service ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/File"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "File belongs to another creator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Update file owner ID",
+        "description": "Reassign a file to a different owner in your application. Only the file creator (or an admin) can reassign a file, and ownerId is the only field this endpoint changes - any other property sent on the body is ignored. Reassigning a file to the owner it already has is a no-op and returns the file unchanged.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "publicFileId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Public file service ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ownerId"
+                ],
+                "properties": {
+                  "ownerId": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "description": "The internal application user ID to reassign the file to",
+                    "example": "1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File owner ID updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/File"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid ownerId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "File belongs to another creator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Delete file",
+        "description": "Delete a file from storage. Only file creator can delete files.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "publicFileId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin access required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files/direct-upload": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Generate presigned upload URL",
+        "description": "Generate a presigned URL for direct browser upload to S3. This is the recommended method for file uploads.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "platformId"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "File name (will be sanitized)"
+                  },
+                  "platformId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Platform ID to associate file with"
+                  },
+                  "ownerId": {
+                    "type": "string",
+                    "description": "Your application's user ID"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "stl",
+                      "obj",
+                      "3mf"
+                    ],
+                    "default": "stl",
+                    "description": "Include your type here. stl, 3mf, obj are the current supported file types. Defaults to stl.",
+                    "x-slant-studio-source": "docs"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Presigned URL generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "presignedUrl": {
+                              "type": "string",
+                              "format": "uri",
+                              "description": "URL to upload file to (1 hour expiry)"
+                            },
+                            "key": {
+                              "type": "string",
+                              "description": "S3 object key"
+                            },
+                            "filePlaceholder": {
+                              "$ref": "#/components/schemas/File",
+                              "description": "File metadata to use in confirmation request"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files/confirm-upload": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Confirm presigned upload completion",
+        "description": "REQUIRED: Call this endpoint after successfully uploading to the presigned URL to trigger file processing and analysis.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "filePlaceholder"
+                ],
+                "properties": {
+                  "filePlaceholder": {
+                    "description": "The exact filePlaceholder object returned from /files/direct-upload",
+                    "$ref": "#/components/schemas/File"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Upload confirmed and file processed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/File",
+                          "description": "Processed file with STL metrics and preview image"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files/batch": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Get multiple files by IDs",
+        "description": "Retrieve multiple files by their public IDs in a single request",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "publicIds"
+                ],
+                "properties": {
+                  "publicIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "description": "Array of public file service IDs"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Files retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/File"
+                          }
+                        },
+                        "count": {
+                          "type": "integer",
+                          "description": "Number of files returned"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/platforms": {
+      "get": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Get user platforms",
+        "description": "Retrieve all enabled platforms associated with your account. Platforms disabled by DELETE /platforms/{platformId} are not included; fetch one by ID to read it. Returns only enabled platforms. Disabled platforms remain readable by ID via GET /platforms/{platformId}.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Platforms retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Platform"
+                          }
+                        },
+                        "count": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-slant-studio-source": "docs"
+      },
+      "post": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Create platform",
+        "description": "Create a new platform for organizing your 3D printing projects webhookSecret is auto-generated on create and is not settable in the create body (docs).",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "url"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Platform name"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Platform description"
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Your application URL"
+                  },
+                  "webhookURL": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Webhook endpoint for order status updates"
+                  }
+                },
+                "description": ""
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Platform created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Platform"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed -- the account already has 5 enabled platforms, the name is missing or over 100 characters, the description is over 500 characters, the url is missing, the webhookURL is not a reachable HTTPS endpoint, or the name, url or webhookURL duplicates another platform on the account (including a disabled one).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-slant-studio-source": "docs"
+      }
+    },
+    "/platforms/{platformId}": {
+      "get": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Get platform by ID",
+        "description": "Retrieve details for a specific platform",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Platform retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Platform"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Update platform",
+        "description": "Update platform details",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "webhookURL": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "webhookSecret": {
+                    "type": "string",
+                    "minLength": 32,
+                    "maxLength": 256,
+                    "pattern": "^[\\u0021-\\u007E]+$",
+                    "description": "Set your own signing secret for this platform, used as the HMAC-SHA256 key for its webhooks. 32-256 characters, printable ASCII only (0x21-0x7E): spaces, tabs, line breaks and non-ASCII characters are rejected. The value is used exactly as submitted, so trim any whitespace picked up from an environment variable or config file before sending -- a stray leading space or trailing newline becomes part of the signing key and every signature check you run against our webhooks will fail. Replaces the existing secret immediately, with no overlap window where both are accepted, so deploy it to your verification code at the same time. Omit this field to keep the current secret, or use PATCH /platforms/{platformId}/webhook-secret to have one generated for you."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Platform updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Platform"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed -- for example a webhookSecret that is too short, too long, or contains whitespace or non-ASCII characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Disable platform",
+        "description": "Disable a platform. This is a soft delete: the platform is marked enabled: false but is not removed, and its orders, files and webhook history are retained. A disabled platform stops appearing in GET /platforms and no longer counts against the 5 enabled-platform cap, so disabling one frees a slot for a new platform. It is still readable by ID and can be turned back on with PATCH /platforms/{platformId}/enable. Its name, url and webhookURL stay reserved against the duplicate checks so it can be re-enabled without colliding with a newer platform.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Platform disabled successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/platforms/{platformId}/webhook-secret": {
+      "patch": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Refresh webhook secret",
+        "description": "Generate a new signing secret for this platform. Takes no request body. Rotation is immediate: the previous secret stops being used the moment this call returns and every webhook after that is signed with the new one, with no overlap window where both are accepted. Deploy the returned secret to your webhook verification code as soon as you rotate. To supply your own secret instead, send webhookSecret to PATCH /platforms/{platformId}.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Platform webhook secret updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Platform"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/platforms/{platformId}/enable": {
+      "patch": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Enable platform",
+        "description": "Re-enable a platform that was disabled by DELETE /platforms/{platformId}. Takes no request body. Re-enabling consumes an enabled-platform slot, so it fails with 400 if the account already has 5 enabled platforms -- disable another one first. Enabling a platform that is already enabled is also a 400.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Platform enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Platform"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The account already has 5 enabled platforms, or the platform is already enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/platforms/{platformId}/webhook/dummy": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Send test webhook",
+        "description": "Delivers a fixed dummy order.shipped payload to the platform's registered webhookURL, signed with that platform's secret. The payload carries dummy: true so your handler can ignore it. Nothing is stored and no order is affected. success on the envelope means the request was attempted - read data.success and data.response.status to see what your endpoint returned. Inspect data.success and data.response.status; data.response.error when the request failed outright (timeout/DNS).",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Delivery attempted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/WebhookDeliveryResult"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Platform has no webhookURL configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-slant-studio-source": "docs"
+      }
+    },
+    "/platforms/{platformId}/webhook": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Get dead webhooks",
+        "description": "Every stored webhook for the platform inside the 30 day retention window, newest first. Includes ones that were eventually delivered, so use status to tell them apart.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dead webhooks retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/DeadWebhook"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/platforms/{platformId}/webhook/resend": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Resend dead webhooks",
+        "description": "Replays the platform's undelivered webhooks, oldest first, so your handler receives them in the order the events happened. Batched at 25 per call - keep calling while remaining is above zero. Webhooks past the 30 day window are marked expired instead of being sent. A manual resend is a single attempt and does not put a webhook back into the automatic retry loop. Batched at 25 per call; keep calling while remaining is above zero. Response data: attempted, delivered, failed, expired, remaining, results[]. Batched at 25.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resend attempted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/DeadWebhookResendSummary"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found, or not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-slant-studio-source": "docs"
+      }
+    },
+    "/platforms/{platformId}/webhook/{webhookId}/resend": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Resend a single dead webhook",
+        "description": "Replays one stored webhook by id. A single attempt: failing here does not return the webhook to the automatic retry loop. A webhook that already succeeded returns alreadyDelivered without being sent again. Result: id, eventType, success, status, expired, alreadyDelivered, error.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "webhookId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "id from GET /platforms/{platformId}/webhook"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resend attempted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/DeadWebhookResendResult"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Webhook not found on this platform, or platform not owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-slant-studio-source": "docs"
+      }
+    },
+    "/slant/webhook": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Send custom webhook",
+        "description": "Raise an event of your choosing against one of your own platforms. The payload is validated, then forwarded to that platform's webhookURL exactly as a real event would be, signed the same way. Delivery is asynchronous: a 200 means the payload passed validation and delivery was started, not that your endpoint accepted it. A failed delivery becomes a dead webhook. This endpoint sits outside the /api prefix.",
+        "servers": [
+          {
+            "url": "https://slant3dapi.com/v2",
+            "description": "Webhook ingress, outside the /api prefix"
+          }
+        ],
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payload accepted and delivery started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid field on the webhook payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "platform_id is not a platform owned by this API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/platforms/stripe/public-key": {
+      "get": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Get Stripe public key",
+        "description": "Retrieve Stripe public key for payment processing",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stripe public key retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "publicKey": {
+                              "type": "string",
+                              "description": "Stripe public key"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Get orders",
+        "description": "Retrieve orders associated with your account with filtering and pagination",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "platformId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "ownerId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "DRAFT",
+                "PAID",
+                "QUEUED",
+                "PROCESSING",
+                "PRINTING",
+                "ITEMS_ON_SHELF",
+                "POST_PROCESSING",
+                "COMPLETED",
+                "IN_REVIEW",
+                "AWAITING_SHIPMENT",
+                "SHIPPED",
+                "DELIVERED",
+                "CANCELED",
+                "PAYMENT_ERROR"
+              ],
+              "x-slant-studio-source": "docs"
+            }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "x-slant-studio-source": "docs"
+            },
+            "description": " Format: date (YYYY-MM-DD)."
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "x-slant-studio-source": "docs"
+            },
+            "description": "Only return orders up to this point (ISO 8601). Docs/file filters: exclusive “before this date”; guided UI sends day-after for inclusive To date.",
+            "x-slant-studio-source": "docs"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50,
+              "x-slant-studio-source": "docs"
+            },
+            "description": " Docs allow up to 200; OpenAPI previously listed 100."
+          },
+          {
+            "name": "publicId",
+            "in": "query",
+            "required": false,
+            "description": "Filter by public order ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "orderId",
+            "in": "query",
+            "required": false,
+            "description": "Alias for publicId; takes precedence if both supplied",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "required": false,
+            "description": "createdAt, updatedAt or status; documented on Orders page",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sortOrder",
+            "in": "query",
+            "required": false,
+            "description": "ASC or DESC; documented on Orders page",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Orders retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Order"
+                          }
+                        },
+                        "count": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Draft order",
+        "description": "Create a draft order to estimate costs before processing",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "platformId",
+                  "customer",
+                  "items"
+                ],
+                "properties": {
+                  "platformId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "ownerId": {
+                    "type": "string",
+                    "description": "Your application's user ID"
+                  },
+                  "customer": {
+                    "type": "object",
+                    "required": [
+                      "details"
+                    ],
+                    "properties": {
+                      "details": {
+                        "type": "object",
+                        "required": [
+                          "email",
+                          "address"
+                        ],
+                        "properties": {
+                          "email": {
+                            "type": "string",
+                            "format": "email"
+                          },
+                          "address": {
+                            "$ref": "#/components/schemas/Address"
+                          }
+                        }
+                      },
+                      "publicPaymentServiceId": {
+                        "type": "string",
+                        "description": "Customer payment ID for direct billing"
+                      }
+                    }
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "type"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "PRINT",
+                            "COMPONENT",
+                            "STATIONERY"
+                          ]
+                        },
+                        "quantity": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "default": 1
+                        },
+                        "publicFileServiceId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "description": "Required for PRINT items"
+                        },
+                        "filamentId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "description": "For PRINT items"
+                        },
+                        "componentId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "description": "Required for COMPONENT items"
+                        },
+                        "stationeryId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "description": "Required for STATIONERY items"
+                        },
+                        "imageUrl": {
+                          "type": "string",
+                          "format": "uri",
+                          "description": "For STATIONERY items with custom image"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Optional item title"
+                        },
+                        "SKU": {
+                          "type": "string",
+                          "description": "Optional item SKU"
+                        },
+                        "options": {
+                          "type": "object",
+                          "properties": {
+                            "slicerOptions": {
+                              "type": "object",
+                              "description": "Slicer override container. No active individual overrides are currently documented; support_enable was removed. Support is determined internally at upload."
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "maxProperties": 10,
+                    "description": "Optional order metadata. Docs: at most 10 fields and maximum depth 3. Do not store credentials. Prefer camelCase.",
+                    "x-slant-studio-source": "docs"
+                  },
+                  "options": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "x-slant-studio-source": "docs",
+                    "properties": {
+                      "shippingProvider": {
+                        "type": "string",
+                        "enum": [
+                          "SHIPPO",
+                          "SHIPSTATION"
+                        ],
+                        "x-slant-studio-source": "docs"
+                      }
+                    },
+                    "description": "Optional order options. shippingProvider: SHIPPO or SHIPSTATION."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Draft order created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/DraftOrderData"
+                        }
+                      },
+                      "x-slant-studio-source": "docs"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{publicOrderId}": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Get order by public ID",
+        "description": "Retrieve details for a specific order using its public ID",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "publicOrderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Public order ID (SLANT_XXXXXXXXXX format)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "order": {
+                              "$ref": "#/components/schemas/Order"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Order belongs to another creator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Process order",
+        "description": "Process a draft order to begin production and charge payment",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "publicOrderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Public order ID (SLANT_XXXXXXXXXX format)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order processed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "order": {
+                              "$ref": "#/components/schemas/Order"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Order belongs to another creator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Cancel order",
+        "description": "Cancel an order if it hasn't started production Docs: cancelling an order will also refund it as well as cancel associated fulfillment. If already shipped then the order will only refund. A separate refund endpoint exists in docs but is not integrated in this OpenAPI.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "publicOrderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Public order ID (SLANT_XXXXXXXXXX format)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order cancelled successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Order belongs to another creator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-slant-studio-source": "docs"
+      }
+    },
+    "/orders/batch": {
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Get multiple orders by IDs",
+        "description": "Retrieve multiple orders by their public IDs in a single request",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "public_ids"
+                ],
+                "properties": {
+                  "public_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Array of public order IDs"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Orders retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "order": {
+                                "$ref": "#/components/schemas/Order"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/search": {
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Search orders",
+        "description": "Search orders with advanced filtering",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Search query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Order"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/components": {
+      "get": {
+        "tags": [
+          "Components"
+        ],
+        "summary": "Get available components",
+        "description": "Retrieve all publicly available components and add-ons",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Components retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Component"
+                          }
+                        },
+                        "count": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/components/search": {
+      "get": {
+        "tags": [
+          "Components"
+        ],
+        "summary": "Search components",
+        "description": "Search public components by name, description, tag, or category name. Matching is case-insensitive and results are ranked by relevance, with name matches first. An exact component ID also matches.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "searchString",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": "Text to search for",
+            "example": "magnet"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching components, most relevant first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Component"
+                          }
+                        },
+                        "count": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "searchString is missing, empty, or longer than 100 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/components/categories": {
+      "get": {
+        "tags": [
+          "Components"
+        ],
+        "summary": "Get all categories",
+        "description": "Retrieve every component category as a flat list in alphabetical order. Rebuild the tree (up to 3 levels deep) with each category's parentId. Components are only assigned to leaf categories; match a category's id against a component's categoryId to group components.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Categories retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Category"
+                          }
+                        },
+                        "count": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/components/{id}": {
+      "get": {
+        "tags": [
+          "Components"
+        ],
+        "summary": "Get component by ID",
+        "description": "Retrieve a single public component",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Component ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Component retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Component"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No public component with that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/filaments": {
+      "get": {
+        "tags": [
+          "Filaments"
+        ],
+        "summary": "Get available filaments",
+        "description": "Retrieve all available filament materials and colors. Optionally filter by material type and colour. Several values inside one parameter match as OR, separate parameters match as AND, so ?profile=PLA,PETG&color=red returns red filaments that are either PLA or PETG",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": false,
+            "description": "Material type to filter by. Not case sensitive. Repeat the parameter (?profile=PLA&profile=PETG) or comma separate the values (?profile=PLA,PETG) to pass several. Any value outside the enum rejects the whole request with a 400",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "OPM",
+                  "PLA",
+                  "PETG"
+                ]
+              }
+            }
+          },
+          {
+            "name": "color",
+            "in": "query",
+            "required": false,
+            "description": "Color to filter by. Matched as a partial, case insensitive search against the color field, so color=black also returns matte black. Repeat the parameter or comma separate the values to pass several",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "example": [
+              "red",
+              "blue"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Filaments retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Filament"
+                          }
+                        },
+                        "count": {
+                          "type": "integer"
+                        },
+                        "lastUpdated": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A requested profile is not publicly supported. The whole request is rejected, valid values passed in the same request are not applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "message": {
+                          "type": "string",
+                          "example": "Unapproved Profile Passed in Filter Options. Current Public Supported List OPM,PLA,PETG"
+                        },
+                        "statusCode": {
+                          "type": "integer",
+                          "example": 400
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stationery": {
+      "get": {
+        "tags": [
+          "Stationery"
+        ],
+        "summary": "Get available stationery",
+        "description": "Retrieve all available stationery options",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stationery retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Stationery"
+                          }
+                        },
+                        "count": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/usage": {
+      "get": {
+        "tags": [
+          "Usage"
+        ],
+        "summary": "Get comprehensive usage statistics",
+        "description": "Get detailed usage statistics across all your API keys and platforms",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage statistics retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apiKey": {
+      "get": {
+        "tags": [
+          "API Keys"
+        ],
+        "summary": "Get user API keys",
+        "description": "Retrieve all API keys for your account",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "API keys retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "API Keys"
+        ],
+        "summary": "Create API key",
+        "description": "Generate a new API key for programmatic access",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Human-readable name for the API key"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "API key created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files/openScad": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Convert OpenSCAD code to STL",
+        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 5 generations per hour with one generation in flight at a time. Rate limit: 5 generations per hour, one in flight.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "scadCode"
+                ],
+                "properties": {
+                  "scadCode": {
+                    "type": "string",
+                    "description": "OpenSCAD code to convert to STL. The complete OpenSCAD source as a single string. Newlines and indentation are preserved, so a template literal or a file read off disk can be passed straight through."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "STL file generated successfully. Read it with response.arrayBuffer() or response.blob(). Browser: new Uint8Array(await response.arrayBuffer()). Node.js: Buffer.from(await response.arrayBuffer())",
+            "content": {
+              "application/sla": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "STL file binary data"
+                }
+              }
+            }
+          }
+        },
+        "x-slant-studio-source": "docs"
+      }
+    },
+    "/files/{publicFileId}/estimate": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Estimate print cost for a file",
+        "description": "Get a price estimate for printing a file. Optionally specify a filament ID, otherwise defaults to PLA Black. Support is determined at the time of upload, not on this request: a file processed with supportRequired true is priced with supports enabled unless supports are turned off for that file internally.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "publicFileId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Public file service ID"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "options": {
+                    "type": "object",
+                    "description": "Optional. Omit to price a single unit in PLA Black.",
+                    "properties": {
+                      "filamentId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Filament ID for the estimate. Defaults to PLA Black if not provided."
+                      },
+                      "quantity": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 1,
+                        "description": "Number of prints to estimate. Defaults to 1."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Print cost estimated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "subtotal": {
+                              "type": "number",
+                              "description": "Print cost for the quantity requested in USD, before surcharges"
+                            },
+                            "total": {
+                              "type": "number",
+                              "description": "Total estimated print cost in USD"
+                            },
+                            "pricePerUnit": {
+                              "type": "number",
+                              "description": "Estimated cost of a single print in USD"
+                            },
+                            "quantity": {
+                              "type": "integer",
+                              "description": "Quantity the estimate was priced for"
+                            },
+                            "totalMaterial": {
+                              "type": "number",
+                              "description": "Estimated material used for the quantity requested"
+                            },
+                            "estimatedPrintTime": {
+                              "type": "number",
+                              "description": "Estimated print time for a single print"
+                            },
+                            "bodyChargeCost": {
+                              "type": "number",
+                              "description": "Additional charge applied to multi body models in USD"
+                            },
+                            "oversizeSurcharge": {
+                              "type": "number",
+                              "description": "Additional charge applied to oversized models in USD"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "File belongs to another creator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/status": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Get system health status",
+        "description": "Retrieve the most recent health check result for every micro-service behind the API. Checks run on a two minute interval, so polling faster than that returns the same payload. No authentication required and requests do not count against your rate limit.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Health status retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "description": "Map of service name to its most recent health check result",
+                          "additionalProperties": {
+                            "$ref": "#/components/schemas/ServiceHealth"
+                          },
+                          "example": {
+                            "PAYMENT-SERVICE": {
+                              "healthy": true,
+                              "lastCheckedAt": "2025-08-25T14:32:07.918Z"
+                            },
+                            "ORDER-SERVICE": {
+                              "healthy": true,
+                              "lastCheckedAt": "2025-08-25T14:32:07.921Z"
+                            },
+                            "FILES-SERVICE": {
+                              "healthy": true,
+                              "lastCheckedAt": "2025-08-25T14:32:07.904Z"
+                            },
+                            "KRAKEN": {
+                              "healthy": false,
+                              "lastCheckedAt": "2025-08-25T14:32:08.112Z"
+                            },
+                            "TELEPORT": {
+                              "healthy": true,
+                              "lastCheckedAt": "2025-08-25T14:32:07.887Z"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Files",
+      "description": "STL file upload, management, processing, and analysis. Core functionality for 3D printing workflow."
+    },
+    {
+      "name": "Platforms",
+      "description": "Platform management for organizing projects and configuring webhooks"
+    },
+    {
+      "name": "Webhooks",
+      "description": "Event delivery to your platform's webhookURL, plus the stored webhooks left behind by a failed delivery"
+    },
+    {
+      "name": "Orders",
+      "description": "3D printing order creation, management, and status tracking. Draft → Process workflow."
+    },
+    {
+      "name": "Components",
+      "description": "Available 3D printing components, add-ons, and finishing services"
+    },
+    {
+      "name": "Filaments",
+      "description": "Available filament materials, colors, and properties"
+    },
+    {
+      "name": "Stationery",
+      "description": "Packaging inclusions and custom cards"
+    },
+    {
+      "name": "API Keys",
+      "description": "API key management and usage tracking"
+    },
+    {
+      "name": "Usage",
+      "description": "Usage statistics and analytics"
+    },
+    {
+      "name": "Health",
+      "description": "Public micro-service health status. No authentication required."
+    }
+  ]
+}
