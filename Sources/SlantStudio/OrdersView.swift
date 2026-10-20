@@ -131,6 +131,16 @@ let orderCountryChoices: [(code: String, name: String)] = [
     ("NZ", "New Zealand"), ("IE", "Ireland"), ("DE", "Germany"), ("FR", "France"),
     ("NL", "Netherlands"), ("JP", "Japan")
 ]
+/// Region is a convenient editable default, not a claim about the user's physical location.
+func defaultDeliveryCountry(regionCode: String? = Locale.current.region?.identifier) -> (selection: String, customCode: String) {
+    let code = (regionCode ?? "").uppercased()
+    guard isCountryCode(code), Locale.Region.isoRegions.contains(where: { $0.identifier == code }) else {
+        return ("", "")
+    }
+    if orderCountryChoices.contains(where: { $0.code == code }) { return (code, "") }
+    return (orderCountryOtherTag, code)
+}
+
 let orderShippingProviderChoices: [(code: String, name: String)] = [
     ("", "Default"), ("SHIPPO", "Shippo"), ("SHIPSTATION", "ShipStation")
 ]
@@ -164,6 +174,8 @@ struct OrderComposerView: View {
     @State private var showEmailError = false
     @State private var catalogsLoading = false
     @State private var draftPlatformID = ""
+    @StateObject private var locationLookup = DeliveryLocationLookup()
+    @State private var locationAddressApplied = false
 
     var emailFieldError: String? {
         let trimmed = delivery.email.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -257,12 +269,53 @@ struct OrderComposerView: View {
             .background(.bar)
         }
         .onAppear(perform: seedIfNeeded)
+        .onDisappear { locationLookup.cancel() }
         .task(id: catalogTaskID) { await loadNeededCatalogs() }
         .task { await store.refreshFilamentsIfStale() }
     }
 
     @ViewBuilder
     var deliveryFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button {
+                    locationAddressApplied = false
+                    locationLookup.start()
+                } label: {
+                    Label("Use current location", systemImage: "location")
+                }
+                .disabled(locationLookup.isBusy || store.busy)
+                if locationLookup.isBusy {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel("Finding your address")
+                    Button("Stop lookup") { locationLookup.cancel() }
+                }
+            }
+            Text("With your permission, Apple uses your location to suggest an address. Check the building and add any apartment or unit number.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let message = locationLookup.message {
+                Text(message).font(.callout).foregroundStyle(.secondary)
+            }
+            if let suggestion = locationLookup.suggestion {
+                Text("Suggested address").font(.headline)
+                Text(suggestion.summary).textSelection(.enabled)
+                Text("Confirm this is your delivery address. Using it replaces the address fields below; your name and email are kept.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Use this address") {
+                        delivery = suggestion.applying(to: delivery)
+                        locationLookup.clearSuggestion()
+                        locationAddressApplied = true
+                    }
+                    .disabled(store.busy)
+                    Button("Dismiss suggestion") { locationLookup.clearSuggestion() }
+                }
+            }
+            if locationAddressApplied {
+                Label("Address filled in. Check it below and add any apartment or unit number before creating your draft.", systemImage: "checkmark.circle")
+                    .font(.callout)
+            }
+        }
         TextField("Full name", text: $delivery.name)
         VStack(alignment: .leading, spacing: 4) {
             TextField("Email", text: $delivery.email)
@@ -279,6 +332,7 @@ struct OrderComposerView: View {
         )
         TextField("Postal code", text: $delivery.zip)
         Picker("Country", selection: $delivery.countrySelection) {
+            Text("Choose a country").tag("")
             ForEach(orderCountryChoices, id: \.code) { Text($0.name).tag($0.code) }
             Text("Other…").tag(orderCountryOtherTag)
         }

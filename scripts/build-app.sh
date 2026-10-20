@@ -28,6 +28,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSLocationUsageDescription</key><string>Use your current location to suggest a delivery address when you choose Use current location. You review the address before using it.</string>
+<key>NSLocationWhenInUseUsageDescription</key><string>Use your current location to suggest a delivery address when you choose Use current location. You review the address before using it.</string>
 <key>NSHumanReadableCopyright</key><string>Independent client. Not affiliated with Slant 3D.</string>
 </dict></plist>
 PLIST

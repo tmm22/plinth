@@ -2,6 +2,36 @@ import XCTest
 @testable import SlantStudio
 
 final class OrdersUXTests: XCTestCase {
+    func testDeliveryCountryDefaultsToMacRegion() {
+        for code in ["AU", "US", "GB", "NZ", "CA"] {
+            let country = defaultDeliveryCountry(regionCode: code)
+            XCTAssertEqual(country.selection, code)
+            XCTAssertEqual(country.customCode, "")
+        }
+        XCTAssertEqual(defaultDeliveryCountry(regionCode: "au").selection, "AU")
+    }
+
+    func testRegionOutsideShortlistUsesOtherWithPrefilledCode() {
+        let country = defaultDeliveryCountry(regionCode: "SE")
+        XCTAssertEqual(country.selection, orderCountryOtherTag)
+        XCTAssertEqual(country.customCode, "SE")
+    }
+
+    func testUnknownOrNonCountryRegionRequiresExplicitChoice() {
+        for code in [nil, "", "001", "ZZ", "Australia"] as [String?] {
+            let country = defaultDeliveryCountry(regionCode: code)
+            XCTAssertEqual(country.selection, "")
+            XCTAssertEqual(country.customCode, "")
+        }
+    }
+
+    func testExplicitDeliveryCountryOverridesRegionalDefault() {
+        let delivery = DeliveryDetails(countrySelection: "JP", customCountry: "")
+        XCTAssertEqual(delivery.countrySelection, "JP")
+        let custom = DeliveryDetails(countrySelection: orderCountryOtherTag, customCountry: "SE")
+        XCTAssertEqual(custom.customCountry, "SE")
+    }
+
     func testStatusTitlesCoverKnownAndFallback() {
         XCTAssertEqual(orderStatusTitle("DRAFT"), "Draft")
         XCTAssertEqual(orderStatusTitle("PAID"), "Paid")

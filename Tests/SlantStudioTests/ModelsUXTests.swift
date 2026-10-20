@@ -2,6 +2,15 @@ import XCTest
 @testable import SlantStudio
 
 final class ModelsUXTests: XCTestCase {
+    func testQuantityEditingNeverSilentlyChangesInvalidInputIntoAnOrderQuantity() {
+        XCTAssertEqual(printQuantity("1"), 1)
+        XCTAssertEqual(printQuantity("10000"), 10000)
+        XCTAssertEqual(printQuantity("25"), 25)
+        for input in ["", "0", "10001", "-2", "1.5", "1e2", "2 parts", "999999999999999999999999"] {
+            XCTAssertNil(printQuantity(input), input)
+        }
+    }
+
     func testEstimateRowsExtractLabeledFieldsWithoutJSONDump() {
         let estimate: [String: Any] = [
             "pricePerUnit": "4.06",

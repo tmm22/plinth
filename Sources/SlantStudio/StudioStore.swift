@@ -139,8 +139,8 @@ struct DeliveryDetails: Equatable {
     var city = ""
     var state = ""
     var zip = ""
-    var countrySelection = "US"
-    var customCountry = ""
+    var countrySelection = defaultDeliveryCountry().selection
+    var customCountry = defaultDeliveryCountry().customCode
 }
 
 enum OutcomeAction: Equatable {

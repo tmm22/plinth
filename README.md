@@ -4,7 +4,7 @@ A native SwiftUI macOS client for the [Slant 3D V2 API](https://slant3dapi.com/d
 
 ## Run
 
-Requires macOS 14+ and Xcode 16+ / Swift 6. No third-party packages.
+Requires macOS 14+ and Xcode 16+ / Swift 6. Euclid 0.10.0 is pinned for solid geometry operations; its licence ships with the app.
 
 ```sh
 swift test
@@ -18,7 +18,8 @@ Or open `Package.swift` in Xcode / `swift run SlantStudio`. Packaging is ad-hoc 
 
 1. **Connection** — save your API key to Keychain and test; load or create a platform (billing is configured in Slant’s dashboard).
 2. **Models** — import/drop an STL for local preview. Use **Optimise for purpose**, choose the part’s use and stress direction where needed, then **Optimise & save copy**. The app remembers the purpose and prepares a rotated STL with its geometry and dimensions preserved. **Upload model** runs presigned upload + confirm. Estimate the prepared copy with material and quantity.
-3. **Orders** — draft with delivery details and line items; **Review & place order** charges and starts fulfillment. Cancel requests follow Slant’s cancel/refund rules.
+   The next action stays in a fixed bar while you scroll: **Upload model → Get estimate → New Order Draft**. Material and quantity appear directly below the preview, before optional geometry tools. Missing materials and invalid quantities link back to the configuration; previous estimates are labelled when settings change. Re-upload is available in **More actions**.
+3. **Orders** — draft with delivery details and line items. The initial shipping country follows your Mac’s Region setting and stays editable; delivery details reused in the current session take priority. If the region cannot identify a country, choose one explicitly; **Review & place order** charges and starts fulfillment. Cancel requests follow Slant’s cancel/refund rules.
 4. **API Workbench** — every catalog operation against production, with parameter validation, JSON bodies, mutation review, typed confirms for high-risk deletes/secret rotation, and secret redaction in responses.
 
 Live traffic uses the **production** API. Mutations are never auto-retried. If a network error leaves a charge or cancel outcome uncertain, Studio locks that order across Orders and the Workbench until you reload it and the result is clear.
@@ -33,12 +34,15 @@ Live traffic uses the **production** API. Mutations are never auto-retried. If a
 - Session-only API-key management links to the dashboard; customer create/checkout not offered by the public API.
 - Rate-limit-aware errors; no bearer credentials on storage URLs.
 
+Contributor guidance is in [AGENTS.md](AGENTS.md).
+
 See [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for the endpoint table (Guided / Workbench / Unavailable), doc-vs-spec conflicts, rate limits, and webhook HMAC verification.
 
 ## Data and security
 
 - API key: Keychain service `SlantStudio` / account `api-key`.
 - Local models: `~/Library/Application Support/SlantStudio/`.
+- Optional delivery location: **Use current location** in an order draft requests macOS permission only when pressed. Apple Location Services and reverse geocoding suggest an address for review; **Use this address** fills the editable shipping fields, preserving name/email and clearing the old unit number. No background tracking or coordinate storage is used. Lookup stops when cancelled or the form closes. Coarse/stale fixes, permission denial and missing street addresses fall back to manual entry. The packaged app includes the required permission descriptions; command-line runs explain that the packaged app is required. Address mapping and location-quality checks have automated coverage. Live permission and address lookup still need a walkthrough on a Mac with Location Services available.
 - Preferences: UserDefaults (including uploaded models you chose to hide from the library; hiding never deletes anything from Slant). Addresses and response bodies stay in-session memory.
 - API: `https://slant3dapi.com/v2/api` (+ documented `/v2/slant/webhook` exception).
 

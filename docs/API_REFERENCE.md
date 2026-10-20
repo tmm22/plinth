@@ -18,6 +18,14 @@ Verified 18 October 2026 from [official documentation](https://slant3dapi.com/do
 5. Draft response `data` shape (docs): `{ order, items, totals: { printingCost, deliveryCost, totalCost }, customer }`.
 6. Process with `POST /orders/{publicOrderId}`; cancel with `DELETE` (see refund note below). OpenSCAD returns raw STL bytes (`application/sla`).
 
+## Delivery address defaults and lookup
+
+The guided order composer defaults the shipping country from the Mac’s Region setting, with delivery details reused from the current session taking priority. Region is an editable default, not physical-location detection.
+
+**Use current location** is an optional client-side Apple Core Location and reverse-geocoding flow, not a Slant endpoint. It requests permission only after the button is pressed and offers a suggested street address for review. **Use this address** replaces shipping fields, clears the old apartment/unit number, and retains name and email. Coordinates are not added to the Slant order payload or activity log. The reviewed address is sent through the normal order-draft request when the user creates the draft.
+
+The app rejects fixes older than 60 seconds or with horizontal uncertainty over 100 metres, and stops lookup after 45 seconds. These are app heuristics, not delivery-address verification. Missing street/country information, lookup errors and denied permission leave manual entry available. See `DeliveryLocation.swift` and the permission descriptions in `scripts/build-app.sh`.
+
 ## Orders, fulfillment, cancel / refund
 
 - **Full status enum** (bundled schema): `DRAFT`, `PAID`, `QUEUED`, `PROCESSING`, `PRINTING`, `ITEMS_ON_SHELF`, `POST_PROCESSING`, `COMPLETED`, `IN_REVIEW`, `AWAITING_SHIPMENT`, `SHIPPED`, `DELIVERED`, `CANCELED`, `PAYMENT_ERROR`. Docs lifecycle highlight: DRAFT → QUEUED → PRINTING → AWAITING_SHIPMENT; **CANCELED** covers cancelled and refunded orders; fulfillment examples also show SHIPPED / DELIVERED.

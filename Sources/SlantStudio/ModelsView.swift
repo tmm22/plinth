@@ -54,6 +54,7 @@ struct ModelsView: View {
     @State private var pendingRemoval: LibrarySelection?
     @State private var showHiddenFiles = false
     @State private var materialType: String?
+    @State private var configurationRequest = 0
 
     var body: some View {
         HSplitView {
@@ -229,63 +230,81 @@ struct ModelsView: View {
     // MARK: Inspector
 
     private var inspector: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                if let focusID = uploadFocusID, store.busy, store.selectedLocalID != focusID,
-                   let uploading = store.localModels.first(where: { $0.id == focusID }) {
-                    Label("Uploading \(uploading.name)…", systemImage: "arrow.up.circle")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-
-                HStack(alignment: .center, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(inspectorTitle).font(.title2.weight(.semibold)).lineLimit(2).textSelection(.enabled)
-                        Text(inspectorSubtitle).font(.caption2.weight(.semibold)).tracking(1.3).foregroundStyle(.secondary)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if let focusID = uploadFocusID, store.busy, store.selectedLocalID != focusID,
+                       let uploading = store.localModels.first(where: { $0.id == focusID }) {
+                        Label("Uploading \(uploading.name)…", systemImage: "arrow.up.circle")
+                            .font(.callout).foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    if case .cloud(let id) = selection {
-                        Menu {
-                            if store.hiddenFileIDs.contains(id) {
-                                Button("Show in List") { store.unhideCloudModel(id: id) }
-                            } else {
-                                Button("Hide from List") { store.hideCloudModel(id: id) }
+
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(inspectorTitle).font(.title2.weight(.semibold)).lineLimit(2).textSelection(.enabled)
+                            Text(inspectorSubtitle).font(.caption2.weight(.semibold)).tracking(1.3).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if store.selectedLocal?.remoteID != nil {
+                            Menu {
+                                Button("Upload again") { startUpload() }
+                                    .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
+                            } label: {
+                                Label("More actions", systemImage: "ellipsis.circle")
                             }
-                            Divider()
-                            Button("Delete from Slant…", role: .destructive) { pendingRemoval = .cloud(id) }
-                                .disabled(removalDisabled(.cloud(id)))
-                        } label: {
-                            Label("Remove", systemImage: "trash")
+                            .fixedSize()
                         }
-                        .menuStyle(.button)
-                        .buttonStyle(.bordered)
-                        .fixedSize()
-                        .help("Hide this model or delete it from Slant")
-                    } else if let selection {
-                        Button(role: .destructive) { pendingRemoval = selection } label: {
-                            Label(removalButtonTitle(selection), systemImage: "trash")
+                        if case .cloud(let id) = selection {
+                            Menu {
+                                if store.hiddenFileIDs.contains(id) {
+                                    Button("Show in List") { store.unhideCloudModel(id: id) }
+                                } else {
+                                    Button("Hide from List") { store.hideCloudModel(id: id) }
+                                }
+                                Divider()
+                                Button("Delete from Slant…", role: .destructive) { pendingRemoval = .cloud(id) }
+                                    .disabled(removalDisabled(.cloud(id)))
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                            .menuStyle(.button)
+                            .buttonStyle(.bordered)
+                            .fixedSize()
+                            .help("Hide this model or delete it from Slant")
+                        } else if let selection {
+                            Button(role: .destructive) { pendingRemoval = selection } label: {
+                                Label(removalButtonTitle(selection), systemImage: "trash")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(removalDisabled(selection))
+                            .help(removalButtonTitle(selection))
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(removalDisabled(selection))
-                        .help(removalButtonTitle(selection))
+                    }
+
+                    previewBlock
+                    printConfigurationCard.id("print-configuration")
+                    if let local = store.selectedLocal {
+                        AutoImproveCard(model: local).id(local.id)
+                        PrintOrientationCard(model: local).id(local.id)
+                        DesignImprovementsCard(model: local).id(local.id)
+                        ReinforcementCard(model: local).id(local.id)
+                    }
+                    if let file = selectedCloud {
+                        modelAnalysisCard(file)
                     }
                 }
-
-                previewBlock
-                nextStepBlock
-                if let local = store.selectedLocal {
-                    AutoImproveCard(model: local).id(local.id)
-                    PrintOrientationCard(model: local).id(local.id)
-                }
-                printConfigurationCard
-                if let local = store.selectedLocal {
-                    DesignImprovementsCard(model: local).id(local.id)
-                    ReinforcementCard(model: local).id(local.id)
-                }
-                if let file = selectedCloud {
-                    modelAnalysisCard(file)
-                }
+                .padding(StudioMetrics.pagePadding)
             }
-            .padding(StudioMetrics.pagePadding)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                nextStepBlock
+                    .padding(.horizontal, StudioMetrics.pagePadding)
+                    .padding(.vertical, 12)
+                    .background(.regularMaterial)
+                    .overlay(alignment: .top) { Divider() }
+            }
+            .onChange(of: configurationRequest) { _, _ in
+                withAnimation { proxy.scrollTo("print-configuration", anchor: .top) }
+            }
         }
         .dropDestination(for: URL.self) { urls, _ in
             urls.forEach { store.importModel($0) }
@@ -331,37 +350,45 @@ struct ModelsView: View {
         )
     }
 
-    @ViewBuilder
     private var nextStepBlock: some View {
         let step = currentNextStep
-        let uploadFailed = store.selectedLocal.map { uploadFailedIDs.contains($0.id) && $0.remoteID == nil } ?? false
-        Card {
-            VStack(alignment: .leading, spacing: 14) {
-                if uploadFailed {
-                    Text("Upload didn’t finish.").font(.callout).foregroundStyle(.secondary)
-                    Button("Try again") { startUpload() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
-                        .accessibilityLabel("Try again")
-                } else if step == .uploading {
-                    HStack(spacing: 10) {
-                        ProgressView().controlSize(.small)
-                        Text(store.progress.isEmpty ? "Uploading…" : store.progress)
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text(chosenMaterialOutOfStock ? "This material is out of stock." : nextStepStatusText(step))
-                        .font(.callout).foregroundStyle(.secondary)
-                    nextStepAction(step)
-                    if store.selectedLocal?.remoteID != nil, step != .uploading {
-                        Button("Upload Again") { startUpload() }
-                            .buttonStyle(.bordered)
-                            .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
-                            .accessibilityLabel("Upload Again")
-                    }
-                }
+        let uploadFailed = step == .needsUpload && (store.selectedLocal.map { uploadFailedIDs.contains($0.id) && $0.remoteID == nil } ?? false)
+        return HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(selectedModelName).font(.headline).lineLimit(1)
+                Text(actionStatus(step, uploadFailed: uploadFailed))
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if store.busy {
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel(store.progress.isEmpty ? "Working" : store.progress)
+            } else if uploadFailed {
+                Button("Try upload again") { startUpload() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!store.hasKey || store.platformID.isEmpty)
+            } else {
+                nextStepAction(step)
             }
         }
+    }
+
+    private func actionStatus(_ step: ModelsNextStep, uploadFailed: Bool) -> String {
+        if store.busy { return store.progress.isEmpty ? "Working…" : store.progress }
+        if uploadFailed { return "Upload didn’t finish. Your local model is still available." }
+        if step == .needsEstimate || step == .estimateStale || step == .readyForDraft {
+            if printQuantity(quantityText) == nil { return "Enter a whole-number quantity from 1 to 10,000." }
+            if chosenMaterialOutOfStock { return "This material is out of stock. Choose another material." }
+            if store.filamentID.isEmpty { return "Choose a material to get your print estimate." }
+            if step == .readyForDraft, let estimate = store.estimate {
+                return "\(money(estimate["total"])) USD · Shipping calculated in draft"
+            }
+            if store.selectedLocal.map({ uploadConfirmedIDs.contains($0.id) }) == true {
+                return "Upload complete. Your model is ready to estimate."
+            }
+        }
+        return nextStepStatusText(step)
     }
 
     @ViewBuilder
@@ -387,15 +414,30 @@ struct ModelsView: View {
                 .disabled(store.selectedLocal == nil || store.busy || !store.hasKey || store.platformID.isEmpty)
                 .accessibilityLabel("Upload model")
         case .needsEstimate, .estimateStale:
-            Button(step == .estimateStale ? "Get a new estimate" : "Get estimate") { requestEstimate() }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.fileID.isEmpty || store.filamentID.isEmpty || !store.hasKey || store.busy || chosenMaterialOutOfStock)
-                .accessibilityLabel("Get estimate")
+            if store.filamentID.isEmpty || chosenMaterialOutOfStock {
+                Button("Choose material") { configurationRequest += 1 }
+                    .buttonStyle(.borderedProminent)
+            } else if printQuantity(quantityText) == nil {
+                Button("Edit quantity") { configurationRequest += 1 }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button(step == .estimateStale ? "Get a new estimate" : "Get estimate") { requestEstimate() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.fileID.isEmpty || !store.hasKey || store.busy)
+            }
         case .readyForDraft:
-            Button("New Order Draft…") { store.openOrderComposer() }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.busy || store.filamentID.isEmpty || chosenMaterialOutOfStock)
-                .accessibilityLabel("New Order Draft")
+            if printQuantity(quantityText) == nil {
+                Button("Edit quantity") { configurationRequest += 1 }
+                    .buttonStyle(.borderedProminent)
+            } else if chosenMaterialOutOfStock {
+                Button("Choose material") { configurationRequest += 1 }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button("New Order Draft…") { store.openOrderComposer() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.busy || store.filamentID.isEmpty)
+                    .help("Add delivery details and review shipping before placing an order")
+            }
         }
     }
 
@@ -430,6 +472,14 @@ struct ModelsView: View {
                     .frame(maxWidth: 280)
                     .accessibilityLabel("Material")
                 }
+                if store.filaments.isEmpty {
+                    HStack {
+                        Text("Load materials to choose a print material.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Load materials") { Task { await store.loadCatalog(.materials) } }
+                            .disabled(!store.hasKey || store.busy)
+                    }
+                }
                 LabeledContent("Quantity") {
                     HStack(spacing: 10) {
                         TextField("Qty", text: $quantityText)
@@ -442,16 +492,23 @@ struct ModelsView: View {
                             .accessibilityLabel("Quantity stepper")
                     }
                 }
+                if printQuantity(quantityText) == nil {
+                    Label("Enter a whole number from 1 to 10,000.", systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 if let estimate = store.estimate {
                     Divider()
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("\(money(estimate["total"])) USD")
                                 .font(.system(size: 30, weight: .semibold, design: .rounded))
-                            if store.estimateIsCurrent {
+                            if store.estimateIsCurrent && printQuantity(quantityText) != nil {
                                 Text("Print estimate · shipping calculated in draft")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                            } else {
+                                Label("Previous estimate · update your configuration and request a new estimate", systemImage: "exclamationmark.circle")
+                                    .font(.caption).foregroundStyle(.orange)
                             }
                         }
                         Spacer()
@@ -612,13 +669,8 @@ struct ModelsView: View {
     }
 
     private func commitQuantityText() {
-        let digits = quantityText.filter(\.isNumber)
-        guard let value = Int(digits), (1...10000).contains(value) else {
-            quantityText = "\(store.quantity)"
-            return
-        }
+        guard let value = printQuantity(quantityText) else { return }
         store.quantity = value
-        quantityText = "\(value)"
     }
 
     // MARK: Actions
@@ -700,6 +752,12 @@ struct ModelsView: View {
             }
         }
     }
+}
+
+func printQuantity(_ text: String) -> Int? {
+    guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }),
+          let value = Int(text), (1...10000).contains(value) else { return nil }
+    return value
 }
 
 private func nextStepStatusText(_ step: ModelsNextStep) -> String {
