@@ -26,6 +26,30 @@ struct SlantStudioApp: App {
                     .disabled(!store.connected || store.busy)
             }
             SidebarCommands()
+            CommandMenu("Go") {
+                ForEach(goMenuDestinations) { item in
+                    if item == sidebarDeveloperDestinations.first { Divider() }
+                    let button = Button(item.rawValue) { if !keyWindowShowsSheet() { store.destination = item } }
+                        .disabled(store.isPresentingSheet)
+                    if let key = goMenuShortcut(for: item) {
+                        button.keyboardShortcut(KeyEquivalent(key), modifiers: .command)
+                    } else {
+                        button
+                    }
+                }
+            }
+            // Library file actions only; nothing here uploads, places, pays for or cancels anything.
+            CommandMenu("Model") {
+                let enabled = modelMenuEnabled(destination: store.destination, hasSelectedLocal: store.selectedLocal != nil,
+                                               sheetPresented: store.isPresentingSheet)
+                Button("Rename…") { if let id = store.selectedLocalID, !keyWindowShowsSheet() { store.renamingModelID = id } }
+                    .disabled(!enabled)
+                Button("Export…") { if let id = store.selectedLocalID, !keyWindowShowsSheet() { store.exportLocalModel(id: id) } }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(!enabled)
+                Button("Show in Finder") { if let id = store.selectedLocalID, !keyWindowShowsSheet() { store.revealLocalModel(id: id) } }
+                    .disabled(!enabled)
+            }
         }
         Settings {
             ConnectionView(presentsPlatformComposer: true)

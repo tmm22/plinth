@@ -74,9 +74,8 @@ struct StudioSidebar: View {
                 .padding(.top, 12)
                 .padding(.bottom, 20)
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(sidebarPrimaryDestinations.enumerated()), id: \.element) { index, item in
-                    navRow(item, shortcut: KeyEquivalent(Character("\(index + 1)")))
-                }
+                // ⌘-number shortcuts live in the Go menu so they are discoverable and defined once.
+                ForEach(sidebarPrimaryDestinations) { navRow($0) }
             }
             .padding(.horizontal, 10)
             Spacer(minLength: 16)
@@ -114,7 +113,7 @@ struct StudioSidebar: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func navRow(_ item: Destination, shortcut: KeyEquivalent? = nil) -> some View {
+    private func navRow(_ item: Destination) -> some View {
         let selected = store.destination == item
         return Button { store.destination = item } label: {
             HStack(spacing: 10) {
@@ -141,7 +140,7 @@ struct StudioSidebar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .modifier(OptionalShortcut(key: shortcut))
+        .help(goMenuShortcut(for: item).map { "\(item.rawValue) (⌘\($0))" } ?? item.rawValue)
         .accessibilityLabel(item.rawValue)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -175,13 +174,6 @@ struct StudioSidebar: View {
 
 let sidebarPrimaryDestinations: [Destination] = [.models, .orders, .catalog, .connection]
 let sidebarDeveloperDestinations: [Destination] = [.api, .activity]
-
-private struct OptionalShortcut: ViewModifier {
-    let key: KeyEquivalent?
-    func body(content: Content) -> some View {
-        if let key { content.keyboardShortcut(key, modifiers: .command) } else { content }
-    }
-}
 
 struct EmptyState<Actions: View>: View {
     let icon: String

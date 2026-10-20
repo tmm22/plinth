@@ -5,6 +5,8 @@ import SceneKit
 struct ModelPreview: View {
     let url: URL?
     var showsPrintBed = false
+    /// Reports the parsed mesh (or nil) for the URL just loaded, so callers can check it without parsing again.
+    var onMeshChange: ((URL, STLMesh?) -> Void)? = nil
     @State private var mesh: STLMesh?
     @State private var failure: String?
     @State private var isLoading = false
@@ -66,6 +68,7 @@ struct ModelPreview: View {
             case .failure(let error): failure = error.localizedDescription
             }
             isLoading = false
+            onMeshChange?(url, mesh)
         }
     }
 }

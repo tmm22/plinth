@@ -55,6 +55,9 @@ struct ModelsView: View {
     @State private var showHiddenFiles = false
     @State private var materialType: String?
     @State private var configurationRequest = 0
+    @State private var pendingReuploadID: UUID?
+    @State private var previewMesh: LoadedPreviewMesh?
+    @State private var savingScaledCopy = false
 
     var body: some View {
         HSplitView {
@@ -112,6 +115,9 @@ struct ModelsView: View {
         } message: { refusal in
             Text(cloudDeleteRefusalMessage(refusal))
         }
+        .sheet(item: renamingModel) { model in
+            RenameModelSheet(model: model).environmentObject(store)
+        }
         .onChange(of: materialType) { _, type in
             store.filamentID = filamentIDAfterTypeChange(currentID: store.filamentID, type: type, filaments: store.filaments)
         }
@@ -128,6 +134,13 @@ struct ModelsView: View {
         .onChange(of: store.fileID) { _, _ in syncSelectionFromStore() }
         .onChange(of: selection) { _, new in applySelection(new) }
         .onChange(of: store.quantity) { _, new in quantityText = "\(new)" }
+    }
+
+    private var renamingModel: Binding<LocalModel?> {
+        Binding(
+            get: { store.renamingModelID.flatMap { id in store.localModels.first { $0.id == id } } },
+            set: { if $0 == nil { store.renamingModelID = nil } }
+        )
     }
 
     // MARK: Sidebar
@@ -155,6 +168,8 @@ struct ModelsView: View {
                     .tag(LibrarySelection.local(model.id))
                     .accessibilityLabel("\(model.name), \(model.remoteID == nil ? "Ready to upload" : "Uploaded")")
                     .contextMenu {
+                        localFileActions(model.id)
+                        Divider()
                         Button("Remove from Library…", role: .destructive) { pendingRemoval = .local(model.id) }
                             .disabled(isUploading(model.id))
                     }
@@ -173,18 +188,28 @@ struct ModelsView: View {
                 }
                 ForEach(indexedRecords(filteredCloudFiles), id: \.id) { row in
                     let hidden = store.hiddenFileIDs.contains(row.record.id)
+                    let linked = localModel(linkedTo: row.record.id, in: store.localModels)
                     HStack(spacing: 10) {
                         StudioTile(symbol: "icloud", imageURL: httpsPreviewImageURL(row.record), size: 30)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(cloudModelDisplayName(row.record)).lineLimit(1)
-                            StudioBadge(text: hidden ? "Hidden" : "In Slant", tone: hidden ? .neutral : .accent)
+                            HStack(spacing: 4) {
+                                StudioBadge(text: hidden ? "Hidden" : "In Slant", tone: hidden ? .neutral : .accent)
+                                if linked != nil {
+                                    StudioBadge(text: "On this Mac", tone: .success)
+                                }
+                            }
                         }
                     }
                     .opacity(hidden ? 0.6 : 1)
                     .padding(.vertical, 3)
                     .tag(LibrarySelection.cloud(row.record.id))
-                    .accessibilityLabel(cloudModelDisplayName(row.record))
+                    .accessibilityLabel(linked == nil ? cloudModelDisplayName(row.record) : "\(cloudModelDisplayName(row.record)), also on this Mac")
                     .contextMenu {
+                        if let linked {
+                            Button("Show Local Copy") { store.select(linked) }
+                            Divider()
+                        }
                         Button("Copy ID") {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(row.record.id, forType: .string)
@@ -245,14 +270,19 @@ struct ModelsView: View {
                             Text(inspectorSubtitle).font(.caption2.weight(.semibold)).tracking(1.3).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if store.selectedLocal?.remoteID != nil {
+                        if case .local(let id) = selection {
                             Menu {
-                                Button("Upload again") { startUpload() }
-                                    .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
+                                localFileActions(id)
+                                if store.selectedLocal?.remoteID != nil {
+                                    Divider()
+                                    Button("Upload again…") { pendingReuploadID = id }
+                                        .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
+                                }
                             } label: {
                                 Label("More actions", systemImage: "ellipsis.circle")
                             }
                             .fixedSize()
+                            .help("Rename, export, show in Finder or upload again")
                         }
                         if case .cloud(let id) = selection {
                             Menu {
@@ -282,6 +312,7 @@ struct ModelsView: View {
                     }
 
                     previewBlock
+                    scaleNoticeBlock
                     printConfigurationCard.id("print-configuration")
                     if let local = store.selectedLocal {
                         AutoImproveCard(model: local).id(local.id)
@@ -316,14 +347,30 @@ struct ModelsView: View {
         ZStack(alignment: .bottom) {
             Group {
                 if let local = store.selectedLocal {
-                    ModelPreview(url: local.url, showsPrintBed: local.printRecipe != nil).frame(height: 260)
+                    ModelPreview(url: local.url, showsPrintBed: local.printRecipe != nil) { url, mesh in
+                        previewMesh = mesh.map { LoadedPreviewMesh(url: url, mesh: $0) }
+                    }
+                    .frame(height: 260)
                 } else {
                     Color(nsColor: .controlBackgroundColor).frame(height: 260)
                 }
             }
             if store.selectedLocal == nil {
                 VStack(spacing: 12) {
-                    if selectedCloud != nil {
+                    if let cloud = selectedCloud, let linked = localModel(linkedTo: cloud.id, in: store.localModels) {
+                        Text("Cloud model selected").font(.headline)
+                        Text("“\(linked.name)” in your library on this Mac is linked to this file.")
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("Show local copy") { store.select(linked) }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityLabel("Show local copy")
+                        Button("Download a separate copy") { downloadSelected() }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                            .disabled(store.busy)
+                            .help("Adds another copy of this model to your library")
+                    } else if selectedCloud != nil {
                         Text("Cloud model selected").font(.headline)
                         Text("Download its model to inspect the shape in 3D.").foregroundStyle(.secondary)
                         Button("Download into library") { downloadSelected() }
@@ -370,6 +417,62 @@ struct ModelsView: View {
                     .disabled(!store.hasKey || store.platformID.isEmpty)
             } else {
                 nextStepAction(step)
+            }
+        }
+        .confirmationDialog(
+            "Upload another copy to Slant?",
+            isPresented: Binding(get: { pendingReuploadID != nil }, set: { if !$0 { pendingReuploadID = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingReuploadID
+        ) { id in
+            Button("Upload Another Copy") {
+                guard store.selectedLocalID == id else { return }
+                startUpload()
+            }
+            .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: { id in
+            Text(reuploadConfirmationMessage(name: store.localModels.first { $0.id == id }?.name ?? "This model"))
+        }
+    }
+
+    @ViewBuilder
+    private func localFileActions(_ id: UUID) -> some View {
+        Button("Rename…") { store.renamingModelID = id }
+        Button("Export…") { store.exportLocalModel(id: id) }
+        Button("Show in Finder") { store.revealLocalModel(id: id) }
+    }
+
+    @ViewBuilder
+    private var scaleNoticeBlock: some View {
+        if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url,
+           let warning = scaleWarning(extentMM: loaded.mesh.maximum - loaded.mesh.minimum) {
+            Card {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(warning.kind == .tooSmall ? "Check this model’s scale" : "Check this model’s units",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                    Text(warning.message).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !canSaveScaledCopy(local) {
+                        Text("Re-export it from your CAD tool in millimetres, or save a scaled copy from the original import.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else if warning.suggestions.isEmpty {
+                        Text("Re-export it from your CAD tool in millimetres, or scale it in a slicer, then import it again.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        Text("If it was, save a scaled copy. This model is kept as it is; the copy needs its own upload and estimate.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        HStack {
+                            ForEach(warning.suggestions) { suggestion in
+                                Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor) }
+                                    .buttonStyle(.bordered)
+                                    .disabled(savingScaledCopy || store.busy)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -478,6 +581,19 @@ struct ModelsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                         Button("Load materials") { Task { await store.loadCatalog(.materials) } }
                             .disabled(!store.hasKey || store.busy)
+                    }
+                }
+                if let mismatch = preparedMaterialMismatch(recipeFilamentID: store.selectedLocal?.printRecipe?.materialID,
+                                                           selectedFilamentID: store.filamentID, filaments: store.filaments) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(preparedMaterialMismatchMessage(mismatch))
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if mismatch.canApply, let name = mismatch.name {
+                            Button("Use prepared material (\(name))") { store.filamentID = mismatch.filamentID }
+                                .buttonStyle(.bordered)
+                                .accessibilityLabel("Use prepared material, \(name)")
+                        }
                     }
                 }
                 LabeledContent("Quantity") {
@@ -722,6 +838,34 @@ struct ModelsView: View {
         }
     }
 
+    private func saveScaledCopy(_ model: LocalModel, mesh: STLMesh, factor: Double) {
+        guard canSaveScaledCopy(model), !savingScaledCopy else { return }
+        savingScaledCopy = true
+        let name = scaledCopyName(URL(fileURLWithPath: model.name).lastPathComponent, factor: factor)
+        let intent = model.partIntent
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { () -> URL in
+                    let data = try mesh.scaledSTLData(by: factor)
+                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    let url = folder.appendingPathComponent("\(name).stl")
+                    do { try data.write(to: url, options: .atomic) }
+                    catch { try? FileManager.default.removeItem(at: folder); throw error }
+                    return url
+                }
+            }.value
+            switch result {
+            case .success(let url):
+                store.importModel(url, intent: intent)
+                try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+            case .failure(let error):
+                store.showError(error.localizedDescription)
+            }
+            savingScaledCopy = false
+        }
+    }
+
     private func downloadSelected() {
         let id = store.fileID
         let typeHint = selectedCloud?.string("type")
@@ -758,6 +902,11 @@ func printQuantity(_ text: String) -> Int? {
     guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }),
           let value = Int(text), (1...10000).contains(value) else { return nil }
     return value
+}
+
+struct LoadedPreviewMesh {
+    let url: URL
+    let mesh: STLMesh
 }
 
 private func nextStepStatusText(_ step: ModelsNextStep) -> String {
