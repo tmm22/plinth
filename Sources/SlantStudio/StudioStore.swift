@@ -824,6 +824,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         filePage = 0; orderPage = 0; filesHasMore = false; ordersHasMore = false
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
         disabledPlatformsThisSession = []; deadWebhooks = [:]; componentCategories = []
+    }
+    /// Safeguards about writes that may have reached the current account: the pay/cancel lock, the draft-create
+    /// notice and the import ledger. Cleared only once the account really changes (a new key is confirmed, or the
+    /// key is removed) — never by a failed key change, which leaves the app on the same account.
+    private func clearAccountWriteSafeguards() {
         unknownOutcomeOrderIDs = []
         unknownOutcomeContexts = [:]
         draftCreateOutcomeUnknown = false
@@ -831,6 +836,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     private func resetAccountDataPreservingKey() {
         clearLoadedAccountDataKeepingCredentials()
+        clearAccountWriteSafeguards()
         platformID = ""
         cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""
     }
@@ -871,6 +877,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             noteRateLimit(from: response)
             try KeychainStore.save(trimmed)
             if keyChanged {
+                clearAccountWriteSafeguards()
                 platformID = ""
                 fileID = ""; filamentID = ""
                 cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""
