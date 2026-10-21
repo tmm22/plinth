@@ -40,6 +40,9 @@ Every task follows this process. Scale the number of agents to the size of the t
 - `ModelFormats.swift`: OBJ and 3MF readers into `STLMesh` (units, build items, component transforms, production-extension parts) and the format-aware scale check. Keep their size, triangle, depth and placement limits.
 - `ZipArchive.swift`: minimal bounded ZIP reader (stored/DEFLATE, ZIP64, CRC, ratio cap) for 3MF packages.
 - `ModelFileOpening.swift`: Finder/Dock opens (queued until no modal UI or request is active), modal-guarded File menu actions, and STL copies of OBJ/3MF models.
+- `MeshHealth.swift`: advisory mesh check (open, non-manifold and flipped edges, zero-area triangles, shells) and its inspector panel.
+- `ModelThumbnails.swift`: software-rendered library thumbnails, their on-disk cache and bounded rendering queue.
+- `LibraryTrash.swift`: moving removed library files to the Trash and restoring them for Edit › Undo.
 - `DeliveryLocation.swift`: optional one-shot location lookup and reviewed address mapping.
 - `scripts/build-app.sh`: app bundle metadata, including location permission purpose strings and the STL/OBJ/3MF document types.
 - `Tests/SlantStudioTests/`: workflow, API, UI-logic and geometry tests.
