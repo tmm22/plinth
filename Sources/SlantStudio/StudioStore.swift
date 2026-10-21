@@ -448,6 +448,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var pendingOrderPrefill: OrderComposerPrefill?
     @Published var showPlatformComposer = false
     @Published var showImportFromURL = false
+    /// Import Orders sheet (OrderImport.swift).
+    @Published var showOrderImport = false
+    /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
+    @Published var orderImportLedger = OrderImportLedger()
     @Published var accountLoaded = false
     @Published var filesLoaded = false
     @Published var ordersLoaded = false
@@ -823,6 +827,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         unknownOutcomeOrderIDs = []
         unknownOutcomeContexts = [:]
         draftCreateOutcomeUnknown = false
+        orderImportLedger = OrderImportLedger()
     }
     private func resetAccountDataPreservingKey() {
         clearLoadedAccountDataKeepingCredentials()

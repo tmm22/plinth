@@ -894,6 +894,14 @@ struct OrdersView: View {
                     Label("Saved Products…", systemImage: "shippingbox")
                 }
                 .help("Products you sell often, to add to order drafts in one step")
+                // Opens the import sheet only; drafts are created there after an explicit confirmation.
+                Button {
+                    store.showOrderImport = true
+                } label: {
+                    Label("Import Orders…", systemImage: "square.and.arrow.down")
+                }
+                .disabled(store.orderImportBlockedReason != nil)
+                .help(store.orderImportBlockedReason ?? "Create order drafts from an Etsy, Shopify or template CSV file")
             }
             ToolbarItem(placement: .automatic) {
                 Button {

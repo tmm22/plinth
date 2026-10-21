@@ -20,7 +20,7 @@ Every task follows this process. Scale the number of agents to the size of the t
 
 ## Build and verify
 
-- Run `swift test` for the full suite. For model/order/location UI logic, use `swift test --filter 'ModelsUXTests|OrdersUXTests|ShellUXTests|DeliveryLocationTests|ModelLibraryActionsTests|UnknownOutcomeLockTests|OrderToolsTests|EstimateComparisonTests|MeshHealthTests|ModelFormatsTests|ModelThumbnailAndTrashTests|CloudFileDetailsTests|MarginTests'`.
+- Run `swift test` for the full suite. For model/order/location UI logic, use `swift test --filter 'ModelsUXTests|OrdersUXTests|ShellUXTests|DeliveryLocationTests|ModelLibraryActionsTests|UnknownOutcomeLockTests|OrderToolsTests|EstimateComparisonTests|MeshHealthTests|ModelFormatsTests|ModelThumbnailAndTrashTests|CloudFileDetailsTests|MarginTests|SavedProductsTests|OrderImportTests'`.
 - Run `./scripts/build-app.sh` to build and ad-hoc sign `dist/Slant Studio.app`. The script verifies the bundle signature and packages resources and the Euclid licence.
 - Run SwiftPM builds and tests sequentially; do not edit source files during compilation.
 - Report failing tests and unverified live flows explicitly. A successful targeted suite does not establish that the full suite passes.
@@ -36,6 +36,7 @@ Every task follows this process. Scale the number of agents to the size of the t
 - `OrderTools.swift`: orders-list typed sort keys, CSV export (addresses opt-in, formula guard), detail facts and the marketplace reference from metadata, the duplicate-draft guard state, copied item options summary and advisory postcode checks.
 - `Margin.swift`: the order-detail Profit check — strict money/percent input parsing, the order's Slant total, fee presets (assumed rates, all editable) and Decimal profit/margin maths. Only the preset and rates are saved.
 - `ModelLibraryActions.swift`: model rename/export, cloud–local links, prepared-material mismatch, scale check and scaled copies, and menu helpers (Go shortcuts, modal-presentation guard).
+- `OrderImport.swift`: Import Orders — bounded CSV reader (encodings, delimiters, RFC 4180), Etsy/Shopify/template detection, grouping rows into orders, per-order checks against saved products, the session duplicate ledger and the paced, stop-on-unknown draft runner and its sheet.
 - `EstimateComparison.swift`: Compare estimates — a sequential, rate-limit-aware batch of ≤ 20 estimate reads (never retried) and its explicit **Use** hook.
 - `SavedProducts.swift`: saved products (references only — no prices, addresses or customer data), SKU matching and uniqueness, the `savedProductOrderLines` resolver (per-unit vs per-order quantities, 10,000 cap, latest upload of linked models, blockers that callers must honour; unloaded catalogs never block) and `products.json` storage (lenient decoding, unreadable files kept as `products.unreadable.json`).
 - `SavedProductsView.swift`: the Saved Products sheet and editor (a store-driven sheet counted by `isPresentingSheet`), the composer's **Add Saved Product…** popover and their pure helpers.
@@ -63,6 +64,7 @@ Every task follows this process. Scale the number of agents to the size of the t
   - This relies on both paths re-fetching the order before writing: pay requires DRAFT, and cancel requires an unchanged, cancellable status. Keep those checks.
 - Draft creation (`POST /orders`) is never retried, automatically or from the alert's Try again. After a create whose outcome is unknown (timeout, transport error, 5xx, 408/409, unreadable reply), every composer shows the "may have created this draft" notice and the next Create needs an explicit **Create Anyway**; only a confirmed creation clears it.
 - Profit check uses the order's real Slant total in USD, Decimal money and editable, dated fee assumptions. Never save what the buyer paid or tie amounts to an order on disk.
+- Import Orders creates drafts only, one request at a time after an explicit confirmation. It never pays, never retries, and stops the batch at the first unknown outcome (timeout, transport error, 5xx, 408/409, or a reply without an order ID); only a definite refusal lets it continue. Stopping or closing the sheet takes effect before the next request, never mid-request. Drafts are built only through `orderDraftPayload`. Imported names, emails and addresses stay in the sheet's memory: never on disk, in preferences, logs or Activity (counts only). Never invent an email, assume a country or pad a ZIP without the user's choice.
 - No menu item or keyboard shortcut may upload, pay or cancel. Menu commands must do nothing while a sheet, alert or dialog is open. Files opened from Finder wait until nothing modal is shown and no request is running.
 - Geometry tools stay STL-only. OBJ/3MF models are previewed and uploaded in their original format; the tools work on a separate STL copy.
 - Geometry changes save separate copies and must retain existing validation; do not weaken checks to make tests pass.
