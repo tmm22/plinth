@@ -27,7 +27,7 @@ Or open `Package.swift` in Xcode / `swift run SlantStudio`. Packaging is ad-hoc 
 4. **Menus** — **Go** lists every destination (⌘1 Models, ⌘2 Orders, ⌘3 Catalog, ⌘4 Connection). **Model** holds Rename…, Export… (⇧⌘E) and Show in Finder for the selected local model. No menu item or shortcut uploads, places, pays for or cancels anything.
 5. **API Workbench** — every catalog operation against production, with parameter validation, JSON bodies, mutation review, typed confirms for high-risk deletes/secret rotation, and secret redaction in responses.
 
-Live traffic uses the **production** API. Mutations are never auto-retried. If a network error leaves a charge or cancel outcome uncertain, Studio locks that order across Orders and the Workbench until you reload it and the result is clear.
+Live traffic uses the **production** API. Mutations are never auto-retried. If a network error leaves a charge or cancel outcome uncertain, Studio locks that order across Orders and the Workbench until you reload it and the result is clear. If the status still hasn’t changed, check the order in your Slant dashboard; the lock lasts for the session. A definite refusal from Slant (an HTTP 4xx other than 408/409, such as a declined payment) means nothing is pending, so the order stays unlocked.
 
 ## Features
 

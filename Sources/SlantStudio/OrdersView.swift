@@ -628,7 +628,8 @@ struct OrderComposerView: View {
                 let order = mergeOrderDraftEnvelope(data)
                 guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return an order number. Check Orders before creating another draft.") }
                 store.draft = ["order": order]
-                store.lastDelivery = delivery
+                // A duplicated order's address belongs to that order's customer; don't make it the next draft's default.
+                if sourceOrderNumber == nil { store.lastDelivery = delivery }
                 let record = Record(values: order)
                 store.orders.removeAll { $0.id == record.id }; store.orders.insert(record, at: 0)
                 store.destination = .orders; dismiss()
@@ -1155,6 +1156,7 @@ struct OrderActionConfirmSheet: View {
             var completedOrder: [String: Any]?
             var didWrite = false
             var attemptedWrite = false
+            var rejected = false
             let ran = await store.run(isPay ? "Process order" : "Cancel order") {
                 let preview = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
                 let latest = mergeOrderDraftEnvelope(responseObject(preview))
@@ -1167,7 +1169,19 @@ struct OrderActionConfirmSheet: View {
                 attemptedWrite = true
                 writeAttempted = true
                 capturedRefundOnly = successRefundOnly
-                let mutateResponse = try await store.client.request(method, path: "/orders/\(encodedSegment(orderID))")
+                let mutateResponse: APIResponse
+                do {
+                    mutateResponse = try await store.client.request(method, path: "/orders/\(encodedSegment(orderID))")
+                } catch {
+                    if orderMutationErrorProvesNoEffect(error) {
+                        // Slant refused it, so nothing is pending: lift the lock and return to the review.
+                        store.clearOutcomeUnknown(orderID: orderID)
+                        attemptedWrite = false
+                        writeAttempted = false
+                        rejected = true
+                    }
+                    throw error
+                }
                 mutateOrder = mergeOrderDraftEnvelope(responseObject(mutateResponse))
                 didWrite = true
                 store.clearOutcomeUnknown(orderID: orderID)
@@ -1192,6 +1206,8 @@ struct OrderActionConfirmSheet: View {
                 onCompleted(orderID, best)
             } else if attemptedWrite {
                 actionMessage = orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
+            } else if rejected {
+                actionMessage = isPay ? "Slant didn’t accept the payment request. Review the order before trying again." : "Slant didn’t accept the cancel request. Review the order before trying again."
             } else {
                 switch outcome {
                 case .priceChanged: actionMessage = "The price changed. Review the new total."

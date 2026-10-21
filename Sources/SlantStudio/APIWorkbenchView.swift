@@ -64,8 +64,6 @@ struct EndpointView: View {
     @State private var mutationSucceeded = false
     @State private var mutationAttempted = false
     @State private var mutateTask: Task<Void, Never>?
-    /// Status from the last successful preview GET — used with `outcomeResolved` when reloading under an unknown-outcome lock.
-    @State private var previewReviewedStatus = ""
     var isChargeEndpoint: Bool { endpoint.method == "POST" && endpoint.path == "/orders/{publicOrderId}" }
     var isDeleteOrderEndpoint: Bool { endpoint.method == "DELETE" && endpoint.path == "/orders/{publicOrderId}" }
     var hasOpenSCADResult: Bool { endpoint.path == "/files/openScad" && responseData != nil && !responseText.isEmpty }
@@ -342,15 +340,13 @@ struct EndpointView: View {
                     guard generation == previewGeneration else { return }
                     let order = workbenchUnwrapOrder(responseObject(response))
                     let orderID = workbenchPathParameter(request.path, after: "/orders/")
-                    let reviewedStatus = (previewOrder?["status"] as? String)?.uppercased() ?? ""
-                    let reloadedStatus = (order["status"] as? String)?.uppercased() ?? ""
+                    let reloadedStatus = (order["status"] as? String) ?? ""
                     previewOrder = order
                     previewLoaded = true
-                    if store.isOutcomeUnknown(orderID: orderID) {
-                        let action: OutcomeAction = request.endpoint.method == "POST" ? .pay : .cancel
-                        if outcomeResolved(action: action, reviewedStatus: reviewedStatus, reloadedStatus: reloadedStatus) {
-                            store.clearOutcomeUnknown(orderID: orderID)
-                        }
+                    // Compare with what was recorded when the uncertain request was sent, not this sheet's last preview.
+                    if store.isOutcomeUnknown(orderID: orderID),
+                       unknownOutcomeResolvedByReload(context: store.unknownOutcomeContext(orderID: orderID), reloadedStatus: reloadedStatus) {
+                        store.clearOutcomeUnknown(orderID: orderID)
                     }
                 }
                 guard generation == previewGeneration else { return }
@@ -392,7 +388,17 @@ struct EndpointView: View {
                     reviewedStatus: fresh["status"] as? String
                 )
                 mutationAttempted = true
-                let response = try await store.client.request(request.endpoint.method, path: request.path, query: request.query, body: request.body)
+                let response: APIResponse
+                do {
+                    response = try await store.client.request(request.endpoint.method, path: request.path, query: request.query, body: request.body)
+                } catch {
+                    if orderMutationErrorProvesNoEffect(error) {
+                        // Slant refused it, so nothing is pending.
+                        store.clearOutcomeUnknown(orderID: orderID)
+                        mutationAttempted = false
+                    }
+                    throw error
+                }
                 wrote = true
                 guard !Task.isCancelled else { return }
                 responseData = response.data; responseStatus = response.statusCode
@@ -507,7 +513,7 @@ func workbenchMutationSendAllowed(attempted: Bool, succeeded: Bool) -> (Bool, St
 
 /// Cross-sheet lock copy when `StudioStore.isOutcomeUnknown` is set for this order.
 let workbenchUnknownOutcomeBlockMessage =
-    "A previous attempt for this order has an unknown result. Reload the order in Orders first."
+    "A previous attempt for this order has an unknown result. Reload the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
 
 /// Gating for DELETE /orders/{publicOrderId}. Uses the same cancellation eligibility as OrdersView.
 func workbenchCancelAllowed(status: String?, loaded: Bool) -> (Bool, String?) {

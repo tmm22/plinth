@@ -234,6 +234,15 @@ func unknownOutcomeResolvedByReload(context: UnknownOutcomeContext?, reloadedSta
     if context.action == .cancel, context.reviewedStatus.isEmpty { return false }
     return outcomeResolved(action: context.action, reviewedStatus: context.reviewedStatus, reloadedStatus: reloaded)
 }
+/// A pay/cancel error that shows Slant did not act: the request failed before it was sent, or Slant refused it with a
+/// definite client error. Timeouts, transport failures, 5xx, 408 and 409 leave the outcome unknown.
+func orderMutationErrorProvesNoEffect(_ error: Error) -> Bool {
+    switch error as? APIError {
+    case .invalidRequest?: return true
+    case .http(let status, _, _, _)?: return (400..<500).contains(status) && status != 408 && status != 409
+    default: return false
+    }
+}
 func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStatus: String) -> Bool {
     switch action {
     case .pay: return reloadedStatus != "DRAFT"
@@ -241,7 +250,7 @@ func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStat
     }
 }
 /// Shared copy when pay/cancel was sent but the order status hasn’t been reloaded yet.
-let unknownOutcomeBlockMessage = "This order’s last payment or cancel request didn’t finish confirming. Refresh the order before trying again."
+let unknownOutcomeBlockMessage = "This order’s last payment or cancel request didn’t confirm. Reload the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
 /// Only refresh after connect when this attempt succeeded (never refresh on a failed key change).
 func shouldRefreshAfterConnect(succeeded: Bool) -> Bool { succeeded }
 func extractedWebhookSecret(from object: [String: Any]) -> String? {

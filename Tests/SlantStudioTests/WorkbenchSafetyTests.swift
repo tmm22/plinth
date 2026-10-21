@@ -64,7 +64,7 @@ final class WorkbenchSafetyTests: XCTestCase {
     func testWorkbenchUnknownOutcomeBlockMessage() {
         XCTAssertEqual(
             workbenchUnknownOutcomeBlockMessage,
-            "A previous attempt for this order has an unknown result. Reload the order in Orders first."
+            "A previous attempt for this order has an unknown result. Reload the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
         )
     }
 

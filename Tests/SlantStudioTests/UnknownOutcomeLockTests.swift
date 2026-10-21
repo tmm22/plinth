@@ -24,4 +24,27 @@ final class UnknownOutcomeLockTests: XCTestCase {
         // A reload without a status resolves nothing.
         XCTAssertFalse(unknownOutcomeResolvedByReload(context: UnknownOutcomeContext(action: .pay, reviewedStatus: "DRAFT"), reloadedStatus: ""))
     }
+
+    func testOnlyDefiniteRejectionsLiftTheLock() {
+        func http(_ status: Int) -> APIError { .http(status: status, body: "", retryAfter: nil, rateLimitReset: nil) }
+        // Refused by Slant, or never sent: nothing is pending.
+        for status in [400, 401, 402, 403, 404, 422, 429] {
+            XCTAssertTrue(orderMutationErrorProvesNoEffect(http(status)), "HTTP \(status)")
+        }
+        XCTAssertTrue(orderMutationErrorProvesNoEffect(APIError.invalidRequest("Connect your account in Connection first.")))
+        // Outcome unknown: the request may have been processed.
+        for status in [408, 409, 500, 502, 503, 504] {
+            XCTAssertFalse(orderMutationErrorProvesNoEffect(http(status)), "HTTP \(status)")
+        }
+        XCTAssertFalse(orderMutationErrorProvesNoEffect(APIError.invalidResponse("The API reported a failure (HTTP 200)")))
+        XCTAssertFalse(orderMutationErrorProvesNoEffect(URLError(.timedOut)))
+        XCTAssertFalse(orderMutationErrorProvesNoEffect(URLError(.networkConnectionLost)))
+        XCTAssertFalse(orderMutationErrorProvesNoEffect(StudioError("Something else")))
+    }
+
+    func testWorkbenchStyleReloadWithUnchangedStatusKeepsCancelLock() {
+        // A cancel sent from PROCESSING that timed out; a reload still shows PROCESSING.
+        let recorded = UnknownOutcomeContext(action: .cancel, reviewedStatus: "PROCESSING")
+        XCTAssertFalse(unknownOutcomeResolvedByReload(context: recorded, reloadedStatus: "processing"))
+    }
 }
