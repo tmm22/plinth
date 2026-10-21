@@ -12,7 +12,10 @@ cp "$BIN_DIR/SlantStudio" "$APP_DIR/Contents/MacOS/SlantStudio"
 cp "$PROJECT_DIR/Sources/SlantStudio/Resources/Euclid-LICENSE.txt" "$APP_DIR/Contents/Resources/Euclid-LICENSE.txt"
 # Keep the OpenAPI document inside Contents/Resources. A SwiftPM resource
 # bundle at the .app root is unsigned content and codesign rejects it.
-cp "$BIN_DIR/SlantStudio_SlantStudio.bundle/openapi.json" "$APP_DIR/Contents/Resources/openapi.json"
+# Newer SwiftPM build systems nest bundle resources under Contents/Resources.
+OPENAPI_SRC="$BIN_DIR/SlantStudio_SlantStudio.bundle/openapi.json"
+[ -f "$OPENAPI_SRC" ] || OPENAPI_SRC="$BIN_DIR/SlantStudio_SlantStudio.bundle/Contents/Resources/openapi.json"
+cp "$OPENAPI_SRC" "$APP_DIR/Contents/Resources/openapi.json"
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -59,7 +62,9 @@ image.unlockFocus()
 let bitmap = NSBitmapImageRep(data: image.tiffRepresentation!)!
 try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: destination))
 SWIFT
-swift "$ICON_TEMP/draw.swift" "$ICON_TEMP/icon.png"
+# Compile rather than JIT-run: some toolchains' immediate mode doesn't link AppKit.
+swiftc -O -o "$ICON_TEMP/draw" "$ICON_TEMP/draw.swift"
+"$ICON_TEMP/draw" "$ICON_TEMP/icon.png"
 for SIZE in 16 32 128 256 512; do
     sips -z "$SIZE" "$SIZE" "$ICON_TEMP/icon.png" --out "$ICON_TEMP/AppIcon.iconset/icon_${SIZE}x${SIZE}.png" >/dev/null
     DOUBLE=$((SIZE * 2))
