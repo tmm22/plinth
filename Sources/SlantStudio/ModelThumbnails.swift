@@ -160,9 +160,9 @@ func thumbnailPNGData(rgba: [UInt8], size: Int) -> Data? {
     return data as Data
 }
 
-/// Reads the STL and renders its thumbnail PNG, or nil for unreadable, oversized or cancelled work.
+/// Reads the STL, OBJ or 3MF model and renders its thumbnail PNG, or nil for unreadable, oversized or cancelled work.
 func renderModelThumbnailPNG(at url: URL, size: Int = ModelThumbnails.pixelSize, isCancelled: () -> Bool = { false }) -> Data? {
-    guard supportsLocalPreview(url), !isCancelled(), let mesh = try? STLMesh.read(from: url), !isCancelled(),
+    guard supportsLocalPreview(url), !isCancelled(), let mesh = try? loadPreviewModel(from: url).mesh, !isCancelled(),
           let rgba = renderThumbnailRGBA(mesh, size: size, isCancelled: isCancelled) else { return nil }
     return thumbnailPNGData(rgba: rgba, size: size)
 }
@@ -242,7 +242,7 @@ struct LocalModelThumbnail: View {
     private func load(taskID: String) async {
         let cache = ThumbnailMemoryCache.shared
         cache.pruneOnce(keeping: Set(store.localModels.map(\.id)))
-        guard model.supportsPreview else { return }
+        guard model.supportsMeshPreview else { return }
         let id = model.id, path = model.filePath, modelURL = model.url
         let thumbnailURL = ModelThumbnails.url(for: id)
         let (modelModified, cachedData) = await Task.detached(priority: .utility) { () -> (Date?, Data?) in
