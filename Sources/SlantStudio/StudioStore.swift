@@ -423,6 +423,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var error: String?
     @Published var connected = false
     @Published var localModels: [LocalModel] = []
+    /// Saved products (SavedProducts.swift). References only; persisted to products.json.
+    @Published var savedProducts: [SavedProduct] = []
     @Published var selectedLocalID: UUID?
     @Published var files: [Record] = []
     @Published var platforms: [Record] = []
@@ -533,6 +535,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         }
         let path = Self.supportDirectory.appendingPathComponent("models.json")
         if let data = try? Data(contentsOf: path), let saved = try? JSONDecoder().decode([LocalModel].self, from: data) { localModels = saved }
+        savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
     }
     private func redirectCatalogDestinationIfNeeded() {
         guard destination.isCatalogKind else { return }
