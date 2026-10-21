@@ -58,6 +58,7 @@ struct ModelsView: View {
     @State private var pendingReuploadID: UUID?
     @State private var previewMesh: LoadedPreviewMesh?
     @State private var savingScaledCopy = false
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         HSplitView {
@@ -92,7 +93,7 @@ struct ModelsView: View {
         ) { target in
             switch target {
             case .local(let id):
-                Button("Remove from Library", role: .destructive) { store.removeLocalModel(id: id) }
+                Button("Remove from Library", role: .destructive) { store.removeLocalModel(id: id, undoManager: undoManager) }
                     .disabled(isUploading(id))
             case .cloud(let id):
                 Button("Delete from Slant", role: .destructive) {
@@ -157,7 +158,7 @@ struct ModelsView: View {
                 }
                 ForEach(filteredLocalModels) { model in
                     HStack(spacing: 10) {
-                        StudioTile(symbol: "cube", size: 30)
+                        LocalModelThumbnail(model: model, size: 30)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(model.name).lineLimit(1)
                             StudioBadge(
@@ -284,7 +285,7 @@ struct ModelsView: View {
                                 Label("More actions", systemImage: "ellipsis.circle")
                             }
                             .fixedSize()
-                            .help("Rename, export, show in Finder or upload again")
+                            .help(store.selectedLocal?.remoteID != nil ? "Rename, export or upload again" : "Rename or export")
                         }
                         if case .cloud(let id) = selection {
                             Menu {
@@ -314,6 +315,9 @@ struct ModelsView: View {
                     }
 
                     previewBlock
+                    if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
+                        MeshHealthPanel(model: local, mesh: loaded.mesh)
+                    }
                     scaleNoticeBlock
                     printConfigurationCard.id("print-configuration")
                     if let local = store.selectedLocal {
@@ -657,6 +661,18 @@ struct ModelsView: View {
         Card {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeading(title: "Model analysis", caption: cloudModelDisplayName(file))
+                if let notes = slantProductionNotes(file) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Notes from Slant’s production team", systemImage: "text.bubble")
+                            .font(.callout.weight(.semibold))
+                        Text(notes).font(.callout).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.studioAccent.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityElement(children: .combine)
+                }
                 if let imageURL = httpsPreviewImageURL(file) {
                     AsyncImage(url: imageURL) { phase in
                         switch phase {
@@ -685,6 +701,11 @@ struct ModelsView: View {
                             }
                         }
                     }
+                }
+                let dates = cloudFileDateRows(file)
+                if !dates.isEmpty {
+                    Text(dates.map { "\($0.0) \($0.1)" }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 DisclosureGroup("Technical details") {
                     VStack(alignment: .leading, spacing: 12) {
@@ -786,7 +807,8 @@ struct ModelsView: View {
         switch target {
         case .local(let id):
             let model = store.localModels.first { $0.id == id }
-            return localModelRemovalMessage(name: model?.name ?? "This model", isUploaded: model?.remoteID != nil)
+            return localModelRemovalMessage(name: model?.name ?? "This model", isUploaded: model?.remoteID != nil,
+                                            movesToTrash: model.map { isManagedModelCopy($0.url, supportDirectory: StudioStore.supportDirectory) } ?? true)
         case .cloud(let id):
             let name = store.files.first { $0.id == id }.map(cloudModelDisplayName) ?? "This model"
             return cloudModelDeletionMessage(name: name)
@@ -936,8 +958,10 @@ private func nextStepStatusText(_ step: ModelsNextStep) -> String {
     }
 }
 
-func localModelRemovalMessage(name: String, isUploaded: Bool) -> String {
-    var message = "“\(name)” will be removed from Slant Studio. The original file on your Mac isn’t touched."
+func localModelRemovalMessage(name: String, isUploaded: Bool, movesToTrash: Bool = true) -> String {
+    var message = movesToTrash
+        ? "“\(name)” will be removed from Slant Studio and its library copy moved to the Trash. To restore it, choose Edit › Undo. The original file on your Mac isn’t touched."
+        : "“\(name)” will be removed from Slant Studio. The original file on your Mac isn’t touched."
     if isUploaded { message += " The uploaded copy stays in your Slant account." }
     return message
 }
@@ -1104,7 +1128,8 @@ func money(_ value: Any?) -> String {
 }
 
 func metricName(_ key: String) -> String {
-    ["x": "Width", "y": "Depth", "z": "Height", "weight": "Weight", "volume": "Volume", "bodyCount": "Parts", "printTimeEstimate": "Print time"][key] ?? key
+    ["x": "Width", "y": "Depth", "z": "Height", "weight": "Weight", "volume": "Volume", "bodyCount": "Parts", "printTimeEstimate": "Print time",
+     "surfaceArea": "Surface area", "supportVolumeEstimate": "Support volume (est.)"][key] ?? key
 }
 
 func metricUnit(_ key: String, _ metrics: [String: Any]) -> String {
@@ -1112,7 +1137,8 @@ func metricUnit(_ key: String, _ metrics: [String: Any]) -> String {
         if let unit = metrics["weightUnit"] as? String, !unit.isEmpty { return unit }
     }
     return (metrics["units"] as? [String: String])?[key]
-        ?? ["x": "mm", "y": "mm", "z": "mm", "weight": "g", "volume": "cm³", "printTimeEstimate": "min"][key]
+        ?? ["x": "mm", "y": "mm", "z": "mm", "weight": "g", "volume": "cm³", "printTimeEstimate": "min",
+            "surfaceArea": "mm²", "supportVolumeEstimate": "cm³"][key]
         ?? ""
 }
 
@@ -1124,12 +1150,37 @@ func metricDisplayValue(_ value: Any?) -> String? {
 }
 
 func usableMetricEntries(_ metrics: [String: Any]) -> [(String, String, String)] {
-    ["x", "y", "z", "weight", "volume", "bodyCount", "printTimeEstimate"].compactMap { key in
+    ["x", "y", "z", "weight", "volume", "surfaceArea", "supportVolumeEstimate", "bodyCount", "printTimeEstimate"].compactMap { key in
         guard let display = metricDisplayValue(metrics[key]) else { return nil }
         let unit = metricUnit(key, metrics)
         let value = unit.isEmpty ? display : "\(display) \(unit)"
         return (key, metricName(key), value)
     }
+}
+
+/// The File schema's `notes`: "Production notes from Slant3D team". Nil when absent, null or blank.
+func slantProductionNotes(_ record: Record) -> String? {
+    guard let raw = record.values["notes"] as? String else { return nil }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+/// Upload and last-update dates from the File schema's `createdAt` / `updatedAt`, when they parse.
+/// The update is listed only when it differs from the upload.
+func cloudFileDateRows(_ record: Record, formatter: (Date) -> String = { $0.formatted(date: .abbreviated, time: .shortened) }) -> [(String, String)] {
+    func parse(_ key: String) -> Date? {
+        guard let text = record.values[key] as? String else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+    var rows: [(String, String)] = []
+    let created = parse("createdAt")
+    if let created { rows.append(("Uploaded", formatter(created))) }
+    if let updated = parse("updatedAt"), created.map({ abs(updated.timeIntervalSince($0)) >= 1 }) ?? true {
+        rows.append(("Updated", formatter(updated)))
+    }
+    return rows
 }
 
 func metricsAwaitingAnalysis(_ metrics: [String: Any]) -> Bool {

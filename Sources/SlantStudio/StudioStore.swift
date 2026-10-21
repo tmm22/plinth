@@ -464,6 +464,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         didSet { UserDefaults.standard.set(hiddenFileIDs.sorted(), forKey: "hiddenFileIDs") }
     }
     @Published var cloudDeleteRefusal: CloudDeleteRefusal?
+    /// Slant files deleted this session, so restoring a removed library entry never relinks to one.
+    private(set) var deletedCloudFileIDs: Set<String> = []
     @Published private(set) var unknownOutcomeOrderIDs: Set<String> = []
     private(set) var unknownOutcomeContexts: [String: UnknownOutcomeContext] = [:]
     // MARK: Model library actions (see ModelLibraryActions.swift)
@@ -576,20 +578,59 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         } catch { showError(error.localizedDescription); return false }
     }
     func select(_ model: LocalModel) { selectedLocalID = model.id; fileID = model.remoteID ?? ""; estimate = nil }
-    /// Removes the model from the library and deletes the app's private copy. The file the user imported from is never touched.
-    func removeLocalModel(id: UUID) {
+    /// Removes the model from the library and moves the app's private copy to the Trash, registering Edit › Undo
+    /// when an undo manager is given. The file the user imported from, and any uploaded Slant file, are never touched.
+    func removeLocalModel(id: UUID, undoManager: UndoManager? = nil) {
         guard let index = localModels.firstIndex(where: { $0.id == id }) else { return }
-        let model = localModels.remove(at: index)
-        if isManagedModelCopy(model.url, supportDirectory: Self.supportDirectory) {
-            try? FileManager.default.removeItem(at: model.url)
+        let model = localModels[index]
+        var trashed: TrashedLibraryFile?
+        if isManagedModelCopy(model.url, supportDirectory: Self.supportDirectory), FileManager.default.fileExists(atPath: model.url.path) {
+            do {
+                trashed = try moveLibraryFileToTrash(model.url, displayName: model.name,
+                                                     stagingRoot: Self.supportDirectory.appendingPathComponent("Removed", isDirectory: true))
+            } catch {
+                showError("“\(model.name)” couldn’t be moved to the Trash, so it stays in your library. \(error.localizedDescription)")
+                return
+            }
         }
-        if selectedLocalID == id {
+        let wasSelected = selectedLocalID == id
+        localModels.remove(at: index)
+        try? FileManager.default.removeItem(at: ModelThumbnails.url(for: id))
+        ThumbnailMemoryCache.shared.remove(id)
+        if wasSelected {
             selectedLocalID = nil
             fileID = ""
             estimate = nil
         }
         saveModels()
         activities.insert(Activity(title: "Remove from library", detail: model.name, success: true), at: 0)
+        let removed = RemovedLibraryModel(model: model, index: index, wasSelected: wasSelected, file: trashed)
+        undoManager?.registerUndo(withTarget: self) { [weak undoManager] store in
+            MainActor.assumeIsolated { store.restoreRemovedModel(removed, undoManager: undoManager) }
+        }
+        undoManager?.setActionName("Remove from Library")
+    }
+    /// Undo for `removeLocalModel`: moves the file back from the Trash and reinserts the same entry.
+    func restoreRemovedModel(_ removed: RemovedLibraryModel, undoManager: UndoManager? = nil) {
+        guard !localModels.contains(where: { $0.id == removed.model.id }) else { return }
+        if let file = removed.file {
+            do { try restoreLibraryFile(file, to: removed.model.url, name: removed.model.name) }
+            catch { showError(error.localizedDescription); return }
+        }
+        let entry = restoredLibraryEntry(removed, deletedCloudFileIDs: deletedCloudFileIDs, currentCount: localModels.count)
+        localModels.insert(entry.model, at: entry.index)
+        if removed.wasSelected, selectedLocalID == nil, fileID.isEmpty { select(entry.model) }
+        saveModels()
+        activities.insert(Activity(title: "Restore to library", detail: entry.model.name, success: true), at: 0)
+        let id = entry.model.id
+        undoManager?.registerUndo(withTarget: self) { [weak undoManager] store in
+            MainActor.assumeIsolated {
+                // An upload may be reading the file; the confirmed removal path is disabled then too.
+                guard !store.busy else { store.showError("Wait for the current task to finish, then remove “\(entry.model.name)” again."); return }
+                store.removeLocalModel(id: id, undoManager: undoManager)
+            }
+        }
+        undoManager?.setActionName("Remove from Library")
     }
     func deleteCloudModel(id: String) async -> Bool {
         guard !id.isEmpty else { return false }
@@ -601,6 +642,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             return true
         }) {
             _ = try await client.request("DELETE", path: "/files/\(encodedSegment(id))")
+            deletedCloudFileIDs.insert(id)
             files.removeAll { $0.id == id }
             hiddenFileIDs.remove(id)
             for index in localModels.indices where localModels[index].remoteID == id {
