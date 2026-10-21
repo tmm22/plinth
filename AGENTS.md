@@ -34,6 +34,7 @@ Every task follows this process. Scale the number of agents to the size of the t
 - `ModelsView.swift`: model library, print configuration and the persistent next-action bar.
 - `OrdersView.swift`: order composition, duplicate-as-new-draft prefill, the discard check, delivery country defaults and the country list, review and fulfillment actions.
 - `ModelLibraryActions.swift`: model rename/export, cloud–local links, prepared-material mismatch, scale check and scaled copies, and menu helpers (Go shortcuts, modal-presentation guard).
+- `EstimateComparison.swift`: Compare estimates sheet — sequential, rate-limit-aware estimate batch (≤ 20 reads, no auto-retry), quantity parsing, per-unit/cheapest/flat-pricing helpers and the explicit **Use** hook.
 - `DeliveryLocation.swift`: optional one-shot location lookup and reviewed address mapping.
 - `scripts/build-app.sh`: app bundle metadata, including location permission purpose strings.
 - `Tests/SlantStudioTests/`: workflow, API, UI-logic and geometry tests.
