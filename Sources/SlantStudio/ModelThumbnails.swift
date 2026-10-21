@@ -47,10 +47,17 @@ func pruneOrphanThumbnails(in directory: URL, keeping ids: Set<UUID>, writtenBef
 
 // MARK: - Rendering
 
+/// Pixel tests allowed per thumbnail, summed over each triangle's clipped bounding box at the supersampled size.
+/// Real models stay far below this (small triangles cover a few pixels each); a mesh of huge overlapping triangles
+/// keeps the cube icon instead of taking minutes. About 870 times the 192 × 192 sample grid.
+let thumbnailRasterBudget = 32_000_000
+
 /// Software z-buffer rendering of the mesh from the preview's default camera, shaded like the preview.
 /// Pure CPU work, safe on any thread, deterministic (triangles drawn in index order; ties keep the first).
-/// Returns premultiplied RGBA rows, top row first, with a transparent background.
-func renderThumbnailRGBA(_ mesh: STLMesh, size: Int, isCancelled: () -> Bool = { false }) -> [UInt8]? {
+/// Returns premultiplied RGBA rows, top row first, with a transparent background, or nil when the mesh would need
+/// more than `rasterBudget` pixel tests (checked before drawing anything).
+func renderThumbnailRGBA(_ mesh: STLMesh, size: Int, rasterBudget: Int = thumbnailRasterBudget,
+                         isCancelled: () -> Bool = { false }) -> [UInt8]? {
     guard size > 0, mesh.triangleCount > 0 else { return nil }
     let extent = mesh.maximum - mesh.minimum
     guard extent.max() > 0 else { return nil }
@@ -83,23 +90,40 @@ func renderThumbnailRGBA(_ mesh: STLMesh, size: Int, isCancelled: () -> Bool = {
         return SIMD3(Float(n) * 0.5 + q.x * scale, Float(n) * 0.5 - q.y * scale, simd_dot(s, eye))
     }
 
-    var depth = [Float](repeating: -.greatestFiniteMagnitude, count: n * n)
-    var shade = [Float](repeating: -1, count: n * n)
-    for t in 0..<mesh.triangleCount {
-        if t % 8192 == 0, isCancelled() { return nil }
+    /// The triangle's projected corners and clipped pixel bounds, or nil when it draws nothing.
+    func footprint(_ t: Int) -> (a: SIMD3<Float>, b: SIMD3<Float>, c: SIMD3<Float>, pa: SIMD3<Float>, pb: SIMD3<Float>,
+                                 pc: SIMD3<Float>, area: Float, minX: Int, maxX: Int, minY: Int, maxY: Int)? {
         let a = scene(t * 9), b = scene(t * 9 + 3), c = scene(t * 9 + 6)
-        let normalVector = simd_cross(b - a, c - a)
-        let length = simd_length(normalVector)
-        guard length > 0, length.isFinite else { continue }
-        let intensity = 0.38 + 0.62 * abs(simd_dot(normalVector / length, light))
+        let length = simd_length(simd_cross(b - a, c - a))
+        guard length > 0, length.isFinite else { return nil }
         let pa = project(a), pb = project(b), pc = project(c)
         let area = (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x)
-        guard abs(area) > 1e-12 else { continue }
+        guard abs(area) > 1e-12 else { return nil }
         let minX = max(0, Int(min(pa.x, pb.x, pc.x).rounded(.down)))
         let maxX = min(n - 1, Int(max(pa.x, pb.x, pc.x).rounded(.up)))
         let minY = max(0, Int(min(pa.y, pb.y, pc.y).rounded(.down)))
         let maxY = min(n - 1, Int(max(pa.y, pb.y, pc.y).rounded(.up)))
-        guard minX <= maxX, minY <= maxY else { continue }
+        guard minX <= maxX, minY <= maxY else { return nil }
+        return (a, b, c, pa, pb, pc, area, minX, maxX, minY, maxY)
+    }
+
+    // A cheap first pass totals the pixel tests, so an over-budget mesh is refused before any drawing.
+    var work = 0
+    for t in 0..<mesh.triangleCount {
+        if t % 8192 == 0, isCancelled() { return nil }
+        guard let box = footprint(t) else { continue }
+        work += (box.maxX - box.minX + 1) * (box.maxY - box.minY + 1)
+        if work > rasterBudget { return nil }
+    }
+
+    var depth = [Float](repeating: -.greatestFiniteMagnitude, count: n * n)
+    var shade = [Float](repeating: -1, count: n * n)
+    for t in 0..<mesh.triangleCount {
+        if t % 8192 == 0, isCancelled() { return nil }
+        guard let box = footprint(t) else { continue }
+        let (a, b, c, pa, pb, pc, area, minX, maxX, minY, maxY) = box
+        let normalVector = simd_cross(b - a, c - a)
+        let intensity = 0.38 + 0.62 * abs(simd_dot(normalVector / simd_length(normalVector), light))
         for y in minY...maxY {
             let py = Float(y) + 0.5
             for x in minX...maxX {

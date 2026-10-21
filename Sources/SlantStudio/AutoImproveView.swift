@@ -44,7 +44,10 @@ struct AutoImproveCard: View {
                 if let record = model.autoImprovement {
                     summary(record)
                 } else if !model.supportsPreview {
-                    Text("Import an STL to improve it automatically.").font(.callout).foregroundStyle(.secondary)
+                    // OBJ and 3MF get one notice above the tool cards instead.
+                    if let note = stlOnlyToolNote(model) {
+                        Text(note).font(.callout).foregroundStyle(.secondary)
+                    }
                 } else {
                     Text("Places the part for its purpose, then adds the treatments its shape needs: bridging for counterbores, chamfers under ledges, wall thickness matched to the extrusion line and fillets in inside corners. Each change is checked as a closed solid and skipped if it fails. Saves one new copy; your original is kept.")
                         .font(.callout).foregroundStyle(.secondary)

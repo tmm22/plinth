@@ -54,7 +54,9 @@ final class MeshHealthTests: XCTestCase {
         let summary = meshHealthSummary(r)
         XCTAssertEqual(summary.title, "Not closed, 1 part")
         XCTAssertTrue(summary.details[0].hasPrefix("3 open edges"))
-        XCTAssertTrue(summary.details[0].contains("Slant may reject or misprint this"))
+        XCTAssertTrue(summary.details[0].contains("Slicers may fill or skip gaps, so the print may not match the model."))
+        XCTAssertFalse(summary.isClean)
+        XCTAssertEqual(summary.line, "Mesh check: 1 note")
     }
 
     func testTwoDisjointCubesAreTwoClosedParts() throws {
@@ -63,8 +65,25 @@ final class MeshHealthTests: XCTestCase {
         XCTAssertEqual(r.shells, 2)
         let summary = meshHealthSummary(r)
         XCTAssertEqual(summary.title, "Closed, 2 parts")
-        XCTAssertEqual(summary.details.count, 1)
-        XCTAssertTrue(summary.details[0].contains("each prints as a loose piece"))
+        XCTAssertEqual(summary.details, ["2 separate parts. Fine for a set of pieces or a print-in-place design; otherwise they print loose."])
+        XCTAssertFalse(summary.isClean)
+    }
+
+    func testThreeMFWithOnePartPerObjectIsClean() throws {
+        let r = try report(cubeTriangles() + cubeTriangles(at: SIMD3(20, 0, 0)) + cubeTriangles(at: SIMD3(40, 0, 0)))
+        XCTAssertEqual(r.shells, 3)
+        let summary = meshHealthSummary(r, objectCount: 3)
+        XCTAssertEqual(summary.title, "Closed, 3 parts (one per object)")
+        XCTAssertTrue(summary.isClean)
+        XCTAssertTrue(summary.details.isEmpty)
+        XCTAssertEqual(summary.line, "Mesh check: Closed, 3 parts (one per object)")
+        // More parts than objects is still worth a note, and says so in terms of the objects.
+        let fewer = meshHealthSummary(r, objectCount: 2)
+        XCTAssertEqual(fewer.title, "Closed, 3 parts")
+        XCTAssertFalse(fewer.isClean)
+        XCTAssertTrue(fewer.details[0].hasPrefix("3 separate parts across 2 objects."))
+        // A single-object file is treated like STL.
+        XCTAssertFalse(meshHealthSummary(r, objectCount: 1).isClean)
     }
 
     func testFlippedTriangleIsReportedAsInconsistentOrientation() throws {
@@ -111,6 +130,13 @@ final class MeshHealthTests: XCTestCase {
         let summary = meshHealthSummary(repeated)
         XCTAssertEqual(summary.title, "Closed, 1 part")
         XCTAssertTrue(summary.details.contains { $0.hasPrefix("1 zero-area triangle") })
+        // Zero-area triangles alone are mentioned in the details but keep the result clean.
+        XCTAssertTrue(summary.isClean)
+        XCTAssertEqual(summary.line, "Mesh check: Closed, 1 part")
+        // With a real issue they count as one of the notes.
+        let open = meshHealthSummary(try report(Array(cube.dropLast(3)) + [cube[0], cube[0], cube[1]]))
+        XCTAssertFalse(open.isClean)
+        XCTAssertEqual(open.line, "Mesh check: 2 notes")
     }
 
     func testEmptyAndSingleTriangleMeshes() throws {

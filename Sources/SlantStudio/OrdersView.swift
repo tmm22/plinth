@@ -174,6 +174,7 @@ struct OrderComposerView: View {
     @State private var paymentID = ""
     @State private var shippingProvider = ""
     @State private var metadataFields: [OrderMetadataField] = []
+    @FocusState private var postcodeFocused: Bool
     @State private var validation: String?
     @State private var showEmailError = false
     @State private var catalogsLoading = false
@@ -205,8 +206,9 @@ struct OrderComposerView: View {
         return isEmailAddress(delivery.email) ? nil : "Enter an email like name@example.com."
     }
     /// Advisory only: never blocks Create Draft.
+    /// Waits while the field is being typed in, until the postcode is long enough to judge.
     var postcodeWarning: String? {
-        postcodeFormatWarning(delivery.zip, country: orderCountryPickerValue(delivery))
+        postcodeFormatWarning(delivery.zip, country: orderCountryPickerValue(delivery), whileEditing: postcodeFocused)
     }
     var createBlockedReason: String? {
         if !store.hasKey { return "Connect your account first." }
@@ -397,6 +399,7 @@ struct OrderComposerView: View {
         )
         VStack(alignment: .leading, spacing: 4) {
             TextField("Postal code", text: $delivery.zip)
+                .focused($postcodeFocused)
             if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.orange) }
         }
         countryPicker
@@ -477,7 +480,7 @@ struct OrderComposerView: View {
             let copiedOptions = orderLineOptionsSummary(item.wrappedValue.optionsJSON)
             if !copiedOptions.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Label("Item options copied from the original order", systemImage: "slider.horizontal.3")
+                    Label("Copied options — sent with this item", systemImage: "slider.horizontal.3")
                         .font(.callout)
                     ForEach(Array(copiedOptions.enumerated()), id: \.offset) { _, option in
                         Text("\(option.key): \(option.value)")
@@ -486,12 +489,9 @@ struct OrderComposerView: View {
                             .textSelection(.enabled)
                             .lineLimit(4)
                     }
-                    HStack {
-                        Text("These are sent with this item.").font(.caption).foregroundStyle(.secondary)
-                        Button("Remove Options") { item.wrappedValue = orderLineRemovingOptions(item.wrappedValue) }
-                            .controlSize(.small)
-                            .help("Send this item without the copied options")
-                    }
+                    Button("Remove Options") { item.wrappedValue = orderLineRemovingOptions(item.wrappedValue) }
+                        .controlSize(.small)
+                        .help("Send this item without the copied options")
                 }
             }
             DisclosureGroup("Advanced") {
@@ -840,7 +840,7 @@ struct OrdersView: View {
             }
             ToolbarItem(placement: .automatic) {
                 Button {
-                    store.exportOrdersCSV(tableRows.map(\.record))
+                    store.exportOrdersCSV(tableRows.map(\.record), moreOnServer: store.ordersHasMore && !store.orderSearchActive)
                 } label: {
                     Label("Export Orders…", systemImage: "square.and.arrow.up")
                 }
@@ -858,6 +858,11 @@ struct OrdersView: View {
                     filtersPopover
                 }
             }
+        }
+        .onChange(of: store.ordersExportRequest) { _, _ in
+            // File › Export Orders…, which the store only forwards when nothing modal is shown.
+            guard !tableRows.isEmpty else { return }
+            store.exportOrdersCSV(tableRows.map(\.record), moreOnServer: store.ordersHasMore && !store.orderSearchActive)
         }
         .onChange(of: selection) { _, new in
             pendingLoadID = nil
@@ -1935,6 +1940,7 @@ struct OrderSummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let items = order["items"] as? [[String: Any]], !items.isEmpty {
+                let showsItemStatus = orderItemStatusesDiffer(items)
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -1945,7 +1951,7 @@ struct OrderSummary: View {
                         if let material = orderItemMaterialName(item, filaments: store.filaments) {
                             Text("Material: \(material)").font(.caption).foregroundStyle(.secondary)
                         }
-                        if let itemStatus = orderItemStatusTitle(item) {
+                        if showsItemStatus, let itemStatus = orderItemStatusTitle(item) {
                             Text("Item status: \(itemStatus)").font(.caption).foregroundStyle(.secondary)
                         }
                     }

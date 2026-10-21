@@ -20,7 +20,7 @@ Every task follows this process. Scale the number of agents to the size of the t
 
 ## Build and verify
 
-- Run `swift test` for the full suite. For model/order/location UI logic, use `swift test --filter 'ModelsUXTests|OrdersUXTests|ShellUXTests|DeliveryLocationTests|ModelLibraryActionsTests|UnknownOutcomeLockTests'`.
+- Run `swift test` for the full suite. For model/order/location UI logic, use `swift test --filter 'ModelsUXTests|OrdersUXTests|ShellUXTests|DeliveryLocationTests|ModelLibraryActionsTests|UnknownOutcomeLockTests|OrderToolsTests|EstimateComparisonTests|MeshHealthTests|ModelFormatsTests|ModelThumbnailAndTrashTests|CloudFileDetailsTests'`.
 - Run `./scripts/build-app.sh` to build and ad-hoc sign `dist/Slant Studio.app`. The script verifies the bundle signature and packages resources and the Euclid licence.
 - Run SwiftPM builds and tests sequentially; do not edit source files during compilation.
 - Report failing tests and unverified live flows explicitly. A successful targeted suite does not establish that the full suite passes.
@@ -35,12 +35,12 @@ Every task follows this process. Scale the number of agents to the size of the t
 - `OrdersView.swift`: order composition, duplicate-as-new-draft prefill, the discard check, delivery country defaults and the country list, review and fulfillment actions.
 - `OrderTools.swift`: orders-list typed sort keys, CSV export (addresses opt-in, formula guard), detail facts, copied item options summary and advisory postcode checks.
 - `ModelLibraryActions.swift`: model rename/export, cloud–local links, prepared-material mismatch, scale check and scaled copies, and menu helpers (Go shortcuts, modal-presentation guard).
-- `EstimateComparison.swift`: Compare estimates sheet — sequential, rate-limit-aware estimate batch (≤ 20 reads, no auto-retry), quantity parsing, per-unit/cheapest/flat-pricing helpers and the explicit **Use** hook.
+- `EstimateComparison.swift`: Compare estimates — a sequential, rate-limit-aware batch of ≤ 20 estimate reads (never retried) and its explicit **Use** hook.
 - `ModelPreview.swift`: the 3D preview, its dimension/build-volume labels and the STL parser (`STLMesh`).
-- `ModelFormats.swift`: OBJ and 3MF readers into `STLMesh` (units, build items, component transforms, production-extension parts) and the format-aware scale check. Keep their size, triangle, depth and placement limits.
+- `ModelFormats.swift`: OBJ and 3MF readers into `STLMesh` (OBJ ear clipping, units, build items, component transforms, production-extension parts) and the format-aware scale check. Keep their size, triangle, depth, placement and triangulation-work limits; a face that can't be split exactly must block STL copies.
 - `ZipArchive.swift`: minimal bounded ZIP reader (stored/DEFLATE, ZIP64, CRC, ratio cap) for 3MF packages.
-- `ModelFileOpening.swift`: Finder/Dock opens (queued until no modal UI or request is active), modal-guarded File menu actions, and STL copies of OBJ/3MF models.
-- `MeshHealth.swift`: advisory mesh check (open, non-manifold and flipped edges, zero-area triangles, shells) and its inspector panel.
+- `ModelFileOpening.swift`: Finder/Dock opens (window raised first, import queued until no modal UI or request is active), modal-guarded File menu actions, and STL copies of OBJ/3MF models.
+- `MeshHealth.swift`: advisory mesh check (open, non-manifold and flipped edges, zero-area triangles, shells per 3MF object) and its one-line inspector panel.
 - `ModelThumbnails.swift`: software-rendered library thumbnails, their on-disk cache and bounded rendering queue.
 - `LibraryTrash.swift`: moving removed library files to the Trash and restoring them for Edit › Undo.
 - `DeliveryLocation.swift`: optional one-shot location lookup and reviewed address mapping.

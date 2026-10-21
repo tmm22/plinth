@@ -37,6 +37,10 @@ struct SlantStudioApp: App {
                 Button("Export Model…") { store.exportSelectedModelFromMenu() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                     .disabled(!modelFileEnabled)
+                // Saves a CSV of the loaded orders shown in the list; no request is made.
+                Button("Export Orders…") { store.exportOrdersFromMenu() }
+                    .disabled(!ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
+                                                       sheetPresented: modalUIShown))
                 Divider()
                 Button("Refresh") { store.refreshFromMenu() }
                     .keyboardShortcut("r")

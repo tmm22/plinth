@@ -21,7 +21,7 @@ struct ReinforcementCard: View {
                             Button("Return to original") { store.select(original) }
                         }
                     } else if !model.supportsPreview {
-                        Text("Import a closed solid STL to prepare a reinforcement.")
+                        Text(stlOnlyToolNote(model) ?? stlCopyToolNote)
                     } else if let failure {
                         Text(failure).font(.callout).foregroundStyle(.secondary)
                     } else if mesh != nil {

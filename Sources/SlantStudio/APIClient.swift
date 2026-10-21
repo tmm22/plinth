@@ -6,6 +6,8 @@ struct RateLimitInfo: Equatable {
     var remaining: Int?
     var reset: Date?
     var role: String?
+    /// False when the response carried no rate-limit headers, so it says nothing about the current allowance.
+    var hasValues: Bool { limit != nil || remaining != nil || reset != nil || role != nil }
 }
 
 struct APIResponse {

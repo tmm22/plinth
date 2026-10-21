@@ -10,16 +10,24 @@ final class CloudFileDetailsTests: XCTestCase {
         XCTAssertNil(slantProductionNotes(Record(values: ["notes": 12])))
     }
 
-    func testSurfaceAreaAndSupportVolumeUseSpecUnits() {
-        let entries = usableMetricEntries(["x": 20, "surfaceArea": 1500.5, "supportVolumeEstimate": 2.25, "volume": NSNull()])
-        XCTAssertEqual(entries.map(\.0), ["x", "surfaceArea", "supportVolumeEstimate"])
-        XCTAssertEqual(entries[1].1, "Surface area")
-        XCTAssertEqual(entries[1].2, "1500.5 mm²")
+    func testSupportsReplaceSurfaceAreaAndSupportVolumeUsesSpecUnits() {
+        let entries = usableMetricEntries(["x": 20, "surfaceArea": 1500.5, "supportRequired": true, "supportVolumeEstimate": 2.25, "volume": NSNull()])
+        XCTAssertEqual(entries.map(\.0), ["x", "supportRequired", "supportVolumeEstimate"])
+        XCTAssertEqual(entries[1].1, "Needs supports")
+        XCTAssertEqual(entries[1].2, "Yes")
         XCTAssertEqual(entries[2].1, "Support volume (est.)")
         XCTAssertEqual(entries[2].2, "2.25 cm³")
+        // A top-level `supportRequired` on the file record is passed in and wins.
+        XCTAssertEqual(usableMetricEntries([:], supportRequired: false).map(\.2), ["No"])
+        XCTAssertEqual(supportRequiredFlag(Record(values: ["supportRequired": false])), false)
+        XCTAssertNil(supportRequiredFlag(Record(values: ["supportRequired": NSNull()])))
+        XCTAssertTrue(usableMetricEntries(["surfaceArea": 15]).isEmpty)
+        // A support decision made at upload doesn't end the "Analyzing…" state.
+        XCTAssertTrue(metricsAwaitingAnalysis(["supportRequired": true]))
+        XCTAssertFalse(metricsAwaitingAnalysis(["supportRequired": true, "x": 10]))
         // Slant's own `units` map wins over the defaults.
-        let custom = usableMetricEntries(["surfaceArea": 15, "units": ["surfaceArea": "cm²"]])
-        XCTAssertEqual(custom.first?.2, "15 cm²")
+        let custom = usableMetricEntries(["supportVolumeEstimate": 15, "units": ["supportVolumeEstimate": "mm³"]])
+        XCTAssertEqual(custom.first?.2, "15 mm³")
     }
 
     func testFileDatesParseISO8601AndHideUnchangedUpdates() {

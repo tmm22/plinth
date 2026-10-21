@@ -189,7 +189,7 @@ struct DesignImprovementsCard: View {
                     Text("\(applied.kind.rawValue) already applied to this copy.")
                     Text(String(format: "Size: %.2f mm · Original preserved", applied.sizeMM)).font(.caption)
                 } else if !model.supportsPreview {
-                    Text("Import an STL to check its edge geometry.")
+                    Text(stlOnlyToolNote(model) ?? stlCopyToolNote)
                 } else if let failure {
                     Text(failure)
                 } else if let check {

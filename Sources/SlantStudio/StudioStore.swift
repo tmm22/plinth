@@ -451,6 +451,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var orderPage = 0
     @Published private(set) var filesHasMore = false
     @Published private(set) var ordersHasMore = false
+    /// Bumped by File › Export Orders…; the Orders screen exports the rows its list shows (after search and sort).
+    @Published var ordersExportRequest = 0
     @Published private(set) var orderSearchActive = false
     @Published private(set) var fileSearchActive = false
     @Published var orderFilter = OrderFilter()

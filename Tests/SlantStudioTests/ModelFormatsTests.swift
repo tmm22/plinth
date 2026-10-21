@@ -572,3 +572,273 @@ final class ModelFormatsTests: XCTestCase {
         XCTAssertFalse(externalOpenCanImport(storeSheetPresented: false, appModalUIPresented: false, errorShown: false, busy: true))
     }
 }
+
+// MARK: - OBJ face triangulation
+
+extension ModelFormatsTests {
+    private func triangulate(_ points: [SIMD3<Float>], workLimit: Int = .max) -> (indices: [Int], exact: Bool) {
+        var work = 0
+        return triangulateOBJFace(points, work: &work, workLimit: workLimit)
+    }
+
+    private func flat(_ xy: [(Float, Float)]) -> [SIMD3<Float>] { xy.map { SIMD3($0.0, $0.1, 0) } }
+
+    /// Signed area in the XY plane (positive counter-clockwise).
+    private func signedArea(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>) -> Double {
+        Double((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / 2
+    }
+
+    private func polygonArea(_ points: [SIMD3<Float>]) -> Double {
+        var twice = 0.0
+        for i in points.indices {
+            let a = points[i], b = points[(i + 1) % points.count]
+            twice += Double(a.x * b.y - b.x * a.y)
+        }
+        return twice / 2
+    }
+
+    /// Even-odd point-in-polygon test in the XY plane (points on the boundary may go either way).
+    private func contains(_ polygon: [SIMD3<Float>], _ q: SIMD2<Double>) -> Bool {
+        var inside = false
+        var j = polygon.count - 1
+        for i in polygon.indices {
+            let a = SIMD2<Double>(Double(polygon[i].x), Double(polygon[i].y))
+            let b = SIMD2<Double>(Double(polygon[j].x), Double(polygon[j].y))
+            if (a.y > q.y) != (b.y > q.y), q.x < (b.x - a.x) * (q.y - a.y) / (b.y - a.y) + a.x { inside.toggle() }
+            j = i
+        }
+        return inside
+    }
+
+    /// Checks a planar XY triangulation: every triangle keeps the polygon's winding, the areas add up to the polygon's,
+    /// and no triangle with area has its centroid outside the polygon.
+    private func assertTriangulationCovers(_ polygon: [SIMD3<Float>], _ indices: [Int], file: StaticString = #filePath, line: UInt = #line) {
+        let area = polygonArea(polygon)
+        XCTAssertEqual(indices.count % 3, 0, file: file, line: line)
+        var sum = 0.0
+        for t in stride(from: 0, to: indices.count, by: 3) {
+            let a = polygon[indices[t]], b = polygon[indices[t + 1]], c = polygon[indices[t + 2]]
+            let triangle = signedArea(a, b, c)
+            XCTAssertGreaterThanOrEqual(area < 0 ? -triangle : triangle, -1e-9, "triangle \(t / 3) is wound the wrong way", file: file, line: line)
+            sum += triangle
+            guard abs(triangle) > 1e-9 else { continue }
+            let centroid = SIMD2<Double>(Double(a.x + b.x + c.x) / 3, Double(a.y + b.y + c.y) / 3)
+            XCTAssertTrue(contains(polygon, centroid), "triangle \(t / 3) lies outside the face", file: file, line: line)
+        }
+        XCTAssertEqual(sum, area, accuracy: 1e-6, file: file, line: line)
+    }
+
+    private func rotations<T>(_ items: [T]) -> [[T]] {
+        items.indices.map { Array(items[$0...] + items[..<$0]) }
+    }
+
+    func testConvexQuadIsTheSameFanAsBefore() {
+        let square = flat([(0, 0), (2, 0), (2, 2), (0, 2)])
+        let result = triangulate(square)
+        XCTAssertTrue(result.exact)
+        XCTAssertEqual(result.indices, [0, 1, 2, 0, 2, 3])
+        // A slightly warped (non-planar) convex quad is still fanned.
+        let warped = [SIMD3<Float>(0, 0, 0), SIMD3(4, 0, 0), SIMD3(4, 3, 0), SIMD3(0, 3, 2)]
+        XCTAssertEqual(triangulate(warped).indices, [0, 1, 2, 0, 2, 3])
+        XCTAssertEqual(triangulate(flat([(0, 0), (1, 0), (0, 1)])).indices, [0, 1, 2])
+    }
+
+    func testConcaveLHexagonIsEarClippedInsideTheFace() {
+        let l = flat([(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)])
+        for (index, polygon) in rotations(l).enumerated() {
+            for winding in [polygon, Array(polygon.reversed())] {
+                let result = triangulate(winding)
+                XCTAssertTrue(result.exact, "rotation \(index)")
+                XCTAssertEqual(result.indices.count, 12, "rotation \(index)")
+                assertTriangulationCovers(winding, result.indices)
+            }
+        }
+        // Starting at (2, 1), the old fan from the first corner put a triangle outside the L.
+        let start = flat([(2, 1), (1, 1), (1, 2), (0, 2), (0, 0), (2, 0)])
+        let oldFan = (1..<5).flatMap { [0, $0, $0 + 1] }
+        let outside = stride(from: 0, to: oldFan.count, by: 3).contains { t in
+            let a = start[oldFan[t]], b = start[oldFan[t + 1]], c = start[oldFan[t + 2]]
+            return !contains(start, SIMD2(Double(a.x + b.x + c.x) / 3, Double(a.y + b.y + c.y) / 3))
+        }
+        XCTAssertTrue(outside, "the fixture must defeat a fan")
+    }
+
+    func testWindingIsPreservedForBothOrientations() {
+        let l = flat([(2, 1), (1, 1), (1, 2), (0, 2), (0, 0), (2, 0)])
+        for polygon in [l, Array(l.reversed())] {
+            let expected = polygonArea(polygon).sign
+            let result = triangulate(polygon)
+            for t in stride(from: 0, to: result.indices.count, by: 3) {
+                let area = signedArea(polygon[result.indices[t]], polygon[result.indices[t + 1]], polygon[result.indices[t + 2]])
+                XCTAssertEqual(area.sign, expected)
+            }
+        }
+    }
+
+    func testTiltedConcaveFaceUsesItsOwnPlane() {
+        // The L lifted onto the plane z = x + y: projected to XY it is the same L, so XY checks still apply.
+        let l = [(2, 1), (1, 1), (1, 2), (0, 2), (0, 0), (2, 0)].map { SIMD3<Float>(Float($0.0), Float($0.1), Float($0.0 + $0.1)) }
+        let result = triangulate(l)
+        XCTAssertTrue(result.exact)
+        assertTriangulationCovers(l.map { SIMD3($0.x, $0.y, 0) }, result.indices)
+    }
+
+    func testCollinearCornersStayExactAndClosed() {
+        // Midpoint on an edge of a convex face: still the plain fan.
+        let square = flat([(0, 0), (1, 0), (2, 0), (2, 2), (0, 2)])
+        let convex = triangulate(square)
+        XCTAssertTrue(convex.exact)
+        assertTriangulationCovers(square, convex.indices)
+        // Concave face with a corner on a straight edge.
+        let l = flat([(1, 1), (1, 2), (0, 2), (0, 1), (0, 0), (2, 0), (2, 1)])
+        for polygon in rotations(l) {
+            let result = triangulate(polygon)
+            XCTAssertTrue(result.exact)
+            assertTriangulationCovers(polygon, result.indices)
+        }
+        // Every corner on one line: no area to split, so the fan (all zero-area) is exact.
+        let line = flat([(0, 0), (1, 0), (2, 0), (3, 0)])
+        let degenerate = triangulate(line)
+        XCTAssertTrue(degenerate.exact)
+        XCTAssertEqual(degenerate.indices, [0, 1, 2, 0, 2, 3])
+        // Repeated corners are skipped.
+        let repeated = flat([(2, 1), (1, 1), (1, 1), (1, 2), (0, 2), (0, 0), (2, 0), (2, 1)])
+        let result = triangulate(repeated)
+        XCTAssertTrue(result.exact)
+        assertTriangulationCovers(repeated, result.indices)
+    }
+
+    func testLargeConcaveCombIsExactAndBounded() {
+        var comb: [SIMD3<Float>] = []
+        for i in 0..<60 { comb += [SIMD3(Float(i) * 2, 0, 0), SIMD3(Float(i) * 2 + 1, 10, 0)] }
+        comb += [SIMD3(120, 0, 0), SIMD3(120, -5, 0), SIMD3(0, -5, 0)]
+        var work = 0
+        let result = triangulateOBJFace(comb, work: &work)
+        XCTAssertTrue(result.exact)
+        XCTAssertEqual(result.indices.count, 3 * (comb.count - 2))
+        assertTriangulationCovers(comb, result.indices)
+        // The same face over a small budget is reported, not stalled on.
+        var small = 0
+        XCTAssertFalse(triangulateOBJFace(comb, work: &small, workLimit: 50).exact)
+        XCTAssertLessThanOrEqual(small, 52)
+    }
+
+    func testSelfIntersectingFacesAreFannedAndReportedInexact() {
+        let bowTie = flat([(0, 0), (2, 2), (2, 0), (0, 2)])
+        let tie = triangulate(bowTie)
+        XCTAssertFalse(tie.exact)
+        XCTAssertEqual(tie.indices, [0, 1, 2, 0, 2, 3])
+        let star = flat([(0, 3), (2, -3), (-3, 1), (3, 1), (-2, -3)])
+        XCTAssertFalse(triangulate(star).exact)
+        // A concave face that touches itself at a corner.
+        let touching = flat([(0, 0), (4, 0), (4, 4), (2, 0), (0, 4)])
+        XCTAssertFalse(triangulate(touching).exact)
+        // Running out of work is reported the same way.
+        let l = flat([(2, 1), (1, 1), (1, 2), (0, 2), (0, 0), (2, 0)])
+        XCTAssertFalse(triangulate(l, workLimit: 3).exact)
+    }
+
+    func testOBJReportsInexactFacesAndRefusesCopies() throws {
+        let concave = "v 2 1 0\nv 1 1 0\nv 1 2 0\nv 0 2 0\nv 0 0 0\nv 2 0 0\nf 1 2 3 4 5 6\n"
+        let good = try OBJParser.parseWithReport(Data(concave.utf8))
+        XCTAssertEqual(good.inexactFaces, 0)
+        XCTAssertEqual(good.mesh.triangleCount, 4)
+        let preview = try parsePreviewModel(Data(concave.utf8), format: .obj)
+        XCTAssertEqual(preview.inexactFaces, 0)
+        XCTAssertNil(stlCopyBlockedReason(format: .obj, inexactFaces: preview.inexactFaces))
+
+        let crossed = "v 0 0 0\nv 2 2 0\nv 2 0 0\nv 0 2 0\nv 0 0 1\nf 1 2 3 4\nf 1 3 5\n"
+        let broken = try parsePreviewModel(Data(crossed.utf8), format: .obj)
+        XCTAssertEqual(broken.inexactFaces, 1)
+        XCTAssertEqual(broken.mesh.triangleCount, 3, "still previewed as a fan")
+        let reason = try XCTUnwrap(stlCopyBlockedReason(format: .obj, inexactFaces: broken.inexactFaces))
+        XCTAssertTrue(reason.hasPrefix("This OBJ has a face that can’t be split into triangles exactly"))
+        XCTAssertTrue(stlCopyBlockedReason(format: .obj, inexactFaces: 3)!.contains("3 faces"))
+    }
+
+    func testFormatErrorsNameTheFormat() {
+        func message(_ body: () throws -> Any) -> String {
+            do { _ = try body(); return "" } catch { return error.localizedDescription }
+        }
+        let noFaces = message { try OBJParser.parse(Data("v 0 0 0\nv 1 0 0\nv 0 1 0".utf8)) }
+        XCTAssertEqual(noFaces, "This OBJ doesn’t contain any triangles.")
+        let onePoint = message { try OBJParser.parse(Data("v 1 1 1\nf 1 1 1".utf8)) }
+        XCTAssertEqual(onePoint, "This OBJ contains invalid coordinates, or its triangles have no size.")
+        let empty3MF = message {
+            try ThreeMFReader.read(package(model: modelXML(resources: "<object id=\"1\"><mesh><vertices/><triangles/></mesh></object>",
+                                                           build: "<item objectid=\"1\"/>")))
+        }
+        XCTAssertEqual(empty3MF, "This 3MF doesn’t contain any triangles.")
+        let unknown = message { try loadPreviewModel(from: URL(fileURLWithPath: "/tmp/part.step")) }
+        XCTAssertEqual(unknown, unsupportedPreviewMessage)
+        for text in [noFaces, onePoint, empty3MF] { XCTAssertFalse(text.contains("STL"), text) }
+        // STL keeps its own wording.
+        XCTAssertTrue(message { try STLMesh.parse(Data("solid x\nendsolid x".utf8)) }.contains("STL"))
+    }
+
+    func testMultipleObjectsNoticeWording() {
+        XCTAssertEqual(multipleObjectsNotice(objectCount: 3), "This file places 3 objects. Uploading sends the whole file — check the estimate covers them all.")
+    }
+
+    // MARK: 3MF hardening
+
+    func testZipLookupUsesIndexWithSameRules() throws {
+        var zip = TestZip()
+        zip.add("3D/Model.model", "a")
+        zip.add("3D/model.model", "b")
+        zip.add("3d/MODEL.MODEL", "c")
+        let archive = try ZipArchive(zip.build())
+        XCTAssertEqual(archive.entry(named: "/3D/model.model")?.name, "3D/model.model", "exact match wins")
+        XCTAssertEqual(archive.entry(named: "3D/MODEL.model")?.name, "3D/Model.model", "first case-insensitive match")
+        XCTAssertNil(archive.entry(named: "3D/other.model"))
+    }
+
+    func testThreeMFComponentFloodIsCappedInTheCountingPass() throws {
+        // 120,000 empty components through a separate model part, in a package with thousands of other entries.
+        // The reference differs in case from the entry, the slow path for a linear name search.
+        let components = String(repeating: "<component objectid=\"1\" p:path=\"/3d/objects/PART.model\"/>", count: 120_000)
+        let root = modelXML(resources: "<object id=\"2\"><components>\(components)</components></object>", build: "<item objectid=\"2\"/>",
+                            extraNamespaces: " xmlns:p=\"http://schemas.microsoft.com/3dmanufacturing/production/2015/06\"")
+        let part = modelXML(resources: "<object id=\"1\"><mesh><vertices/><triangles/></mesh></object>", build: "")
+        var extra = (0..<3_000).map { ("Metadata/thumb\($0).png", "x") }
+        extra.append(("3D/Objects/part.model", part))
+        let started = Date()
+        XCTAssertThrowsError(try ThreeMFReader.read(package(model: root, extra: extra))) {
+            guard case STLMesh.ParseError.oversized = $0 else { return XCTFail("Unexpected error: \($0)") }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 30, "bounded work")
+    }
+
+    func testDocumentTypesAreRefusedInAnyEncodingOrPosition() throws {
+        let mesh = "<object id=\"1\">\(cubeMeshXML())</object>"
+        let body = modelXML(resources: mesh, build: "<item objectid=\"1\"/>")
+            .replacingOccurrences(of: "<?xml version=\"1.0\" encoding=\"UTF-8\"?>", with: "")
+        // UTF-16 little-endian with a byte order mark, which a UTF-8 byte scan alone would miss.
+        let utf16 = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><!DOCTYPE model [<!ENTITY a \"aaaa\">]>" + body
+        var zip = TestZip()
+        zip.add("_rels/.rels", threeMFRels)
+        zip.items.append(TestZip.Item(name: "3D/3dmodel.model", data: Data([0xFF, 0xFE]) + utf16.data(using: .utf16LittleEndian)!))
+        XCTAssertThrowsError(try ThreeMFReader.read(zip.build()))
+        // A DTD after a long comment is past the byte scan; the parser callback still refuses it.
+        let late = "<?xml version=\"1.0\"?><!--" + String(repeating: "x", count: 70_000) + "--><!DOCTYPE model [<!ENTITY a \"aaaa\">]>" + body
+        XCTAssertThrowsError(try ThreeMFReader.read(package(model: late))) {
+            XCTAssertEqual($0 as? ModelFormatError, .invalid3MF("it contains a document type declaration"))
+        }
+        // The same model without a DTD reads normally.
+        XCTAssertEqual(try ThreeMFReader.read(package(model: body)).mesh.triangleCount, 12)
+    }
+
+    // MARK: STL-only tools and Finder queue
+
+    func testSTLOnlyToolCopyAndQueueNotes() {
+        XCTAssertNil(stlOnlyToolNote(LocalModel(name: "a", filePath: "/tmp/a.stl")))
+        XCTAssertNil(stlOnlyToolNote(LocalModel(name: "a", filePath: "/tmp/a.obj")), "OBJ and 3MF share one notice")
+        XCTAssertNil(stlOnlyToolNote(LocalModel(name: "a", filePath: "/tmp/a.3mf")))
+        XCTAssertEqual(stlOnlyToolNote(LocalModel(name: "a", filePath: "/tmp/a.step")), "Available for STL files.")
+        XCTAssertTrue(scaledCopyExplanation(format: .obj).contains("The copy is an STL file."))
+        XCTAssertFalse(scaledCopyExplanation(format: .stl).contains("STL file"))
+        XCTAssertNil(queuedImportNote(count: 0))
+        XCTAssertEqual(queuedImportNote(count: 1), "1 file waiting to import")
+        XCTAssertEqual(queuedImportNote(count: 3), "3 files waiting to import")
+    }
+}

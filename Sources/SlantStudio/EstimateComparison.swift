@@ -17,6 +17,9 @@ let comparisonMinimumSpacing: TimeInterval = 0.6
 /// Consecutive per-cell failures after which the run stops instead of spending more requests.
 let comparisonMaxConsecutiveFailures = 3
 let comparisonPrintOnlyNotice = "Print cost estimate only — delivery is priced when you create an order draft."
+/// Slant's estimate `total` is after surcharges (`subtotal` is before them; `bodyChargeCost` and `oversizeSurcharge`
+/// are listed separately), so dividing it spreads any surcharge across the units.
+let comparisonPerUnitFootnote = "Each = total ÷ quantity, including any surcharges. Lowest per unit is marked in each column."
 
 // MARK: Quantities
 
@@ -54,6 +57,8 @@ func parseComparisonQuantities(_ text: String, maxCount: Int = comparisonMaxQuan
 struct ComparisonMaterial: Equatable, Identifiable {
     let id: String
     let name: String
+    /// Material type (Slant's `profile`), used to group the picker.
+    var type: String = ""
 }
 
 struct ComparisonCellKey: Hashable {
@@ -88,8 +93,21 @@ func comparisonMaterialChoices(_ filaments: [Record]) -> [ComparisonMaterial] {
     let available = filaments.filter { filamentAvailability($0) != false && !$0.id.isEmpty }
     let types = filamentTypes(in: available)
     return types.flatMap { type in
-        available.filter { filamentType($0) == type }.map { ComparisonMaterial(id: $0.id, name: filamentPickerLabel($0)) }
+        available.filter { filamentType($0) == type }.map { ComparisonMaterial(id: $0.id, name: filamentPickerLabel($0), type: type) }
     }
+}
+
+/// Picker sections: one per material type, in the order the choices already follow.
+func comparisonMaterialSections(_ choices: [ComparisonMaterial]) -> [(type: String, materials: [ComparisonMaterial])] {
+    var sections: [(type: String, materials: [ComparisonMaterial])] = []
+    for material in choices {
+        if let last = sections.indices.last, sections[last].type == material.type {
+            sections[last].materials.append(material)
+        } else {
+            sections.append((material.type, [material]))
+        }
+    }
+    return sections
 }
 
 /// The comparison starts with the material already chosen in Print configuration, when it can be priced.
@@ -437,9 +455,12 @@ extension StudioStore {
                 let options: [String: Any] = ["quantity": key.quantity, "filamentId": key.filamentID]
                 let response = try await client.request("POST", path: "/files/\(encodedSegment(fileID))/estimate", body: ["options": options])
                 guard runGeneration == generation else { return }
-                observedRateLimit = response.rateLimit
-                observedAt = Date()
-                store.rateLimit = response.rateLimit
+                // A response without rate-limit headers says nothing new; keep the last known allowance.
+                if response.rateLimit.hasValues {
+                    observedRateLimit = response.rateLimit
+                    observedAt = Date()
+                    store.rateLimit = response.rateLimit
+                }
                 let object = responseObject(response)
                 switch comparisonPrice(from: object, requestedQuantity: key.quantity) {
                 case .priced(let price):
@@ -495,6 +516,12 @@ extension StudioStore {
 
 // MARK: - Views
 
+/// Whether Print configuration shows **Compare estimates…** at all: only once the model is uploaded and materials
+/// are loaded on a connected account. Before then the button would only ever be disabled, so it stays out of the way.
+func compareEstimatesIsOffered(hasKey: Bool, connected: Bool, fileID: String, filaments: [Record]) -> Bool {
+    hasKey && connected && !fileID.isEmpty && !filaments.isEmpty
+}
+
 /// The single hook in Print configuration.
 struct CompareEstimatesButton: View {
     @EnvironmentObject var store: StudioStore
@@ -502,19 +529,16 @@ struct CompareEstimatesButton: View {
     @State private var showing = false
 
     var body: some View {
-        let reason = compareEstimatesBlockedReason(hasKey: store.hasKey, connected: store.connected, fileID: store.fileID,
-                                                   filaments: store.filaments, busy: store.busy)
-        HStack(spacing: 10) {
+        if compareEstimatesIsOffered(hasKey: store.hasKey, connected: store.connected, fileID: store.fileID, filaments: store.filaments) {
+            let reason = compareEstimatesBlockedReason(hasKey: store.hasKey, connected: store.connected, fileID: store.fileID,
+                                                       filaments: store.filaments, busy: store.busy)
             Button("Compare estimates…") { showing = true }
                 .buttonStyle(.bordered)
                 .disabled(reason != nil)
                 .help(reason ?? "Price up to \(comparisonMaxMaterials) materials at up to \(comparisonMaxQuantities) quantities side by side")
-            if let reason, !store.busy {
-                Text(reason).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .sheet(isPresented: $showing) {
-            EstimateComparisonSheet(modelName: modelName).environmentObject(store)
+                .sheet(isPresented: $showing) {
+                    EstimateComparisonSheet(modelName: modelName).environmentObject(store)
+                }
         }
     }
 }
@@ -594,13 +618,17 @@ struct EstimateComparisonSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             List {
-                ForEach(choices) { material in
-                    Toggle(material.name, isOn: materialBinding(material.id))
-                        .toggleStyle(.checkbox)
-                        .disabled(runner.running || (!activeSelection.contains(material.id) && activeSelection.count >= comparisonMaxMaterials))
+                ForEach(comparisonMaterialSections(choices), id: \.type) { section in
+                    Section(section.type) {
+                        ForEach(section.materials) { material in
+                            Toggle(material.name, isOn: materialBinding(material.id))
+                                .toggleStyle(.checkbox)
+                                .disabled(runner.running || (!activeSelection.contains(material.id) && activeSelection.count >= comparisonMaxMaterials))
+                        }
+                    }
                 }
             }
-            .frame(height: 150)
+            .frame(height: 180)
             .listStyle(.bordered(alternatesRowBackgrounds: true))
             let hidden = store.filaments.filter { filamentAvailability($0) == false }.count
             if hidden > 0 {
@@ -663,7 +691,7 @@ struct EstimateComparisonSheet: View {
                 Label(note, systemImage: "equal.circle").font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Each = Slant’s total ÷ quantity, so any multi-part or oversize charges in the total are spread across the units. Lowest per unit is marked within each material.")
+            Text(comparisonPerUnitFootnote)
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

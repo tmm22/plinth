@@ -16,6 +16,9 @@ cp "$PROJECT_DIR/Sources/SlantStudio/Resources/Euclid-LICENSE.txt" "$APP_DIR/Con
 OPENAPI_SRC="$BIN_DIR/SlantStudio_SlantStudio.bundle/openapi.json"
 [ -f "$OPENAPI_SRC" ] || OPENAPI_SRC="$BIN_DIR/SlantStudio_SlantStudio.bundle/Contents/Resources/openapi.json"
 cp "$OPENAPI_SRC" "$APP_DIR/Contents/Resources/openapi.json"
+# Document types: Launch Services ignores CFBundleTypeExtensions in an entry that also has LSItemContentTypes, so the
+# extension claim (for files another app has typed with a different 3MF/OBJ/STL UTI) is a separate entry. All are
+# Viewer/Alternate, so Slant Studio is offered in Open With without becoming any type's default.
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -38,6 +41,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <dict><key>CFBundleTypeName</key><string>STL Model</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.standard-tesselated-geometry-format</string></array></dict>
 <dict><key>CFBundleTypeName</key><string>OBJ Model</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.geometry-definition-format</string></array></dict>
 <dict><key>CFBundleTypeName</key><string>3MF Model</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>io.3mf.3mf</string></array></dict>
+<dict><key>CFBundleTypeName</key><string>3D Model File</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>CFBundleTypeExtensions</key><array><string>stl</string><string>obj</string><string>3mf</string></array></dict>
 </array>
 <key>UTImportedTypeDeclarations</key><array>
 <dict><key>UTTypeIdentifier</key><string>io.3mf.3mf</string><key>UTTypeDescription</key><string>3D Manufacturing Format</string><key>UTTypeConformsTo</key><array><string>public.data</string><string>public.3d-content</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>3mf</string></array><key>public.mime-type</key><array><string>model/3mf</string></array></dict></dict>

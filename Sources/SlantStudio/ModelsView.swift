@@ -58,6 +58,7 @@ struct ModelsView: View {
     @State private var pendingReuploadID: UUID?
     @State private var previewMesh: LoadedPreviewMesh?
     @State private var savingScaledCopy = false
+    @State private var savingSTLCopy = false
     @Environment(\.undoManager) private var undoManager
 
     var body: some View {
@@ -316,11 +317,14 @@ struct ModelsView: View {
 
                     previewBlock
                     if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
-                        MeshHealthPanel(model: local, mesh: loaded.mesh)
+                        MeshHealthPanel(model: local, mesh: loaded.mesh, objectCount: loaded.objectCount)
                     }
                     scaleNoticeBlock
                     printConfigurationCard.id("print-configuration")
                     if let local = store.selectedLocal {
+                        if local.supportsMeshPreview && !local.supportsPreview {
+                            stlToolsNotice(local)
+                        }
                         AutoImproveCard(model: local).id(local.id)
                         PrintOrientationCard(model: local).id(local.id)
                         DesignImprovementsCard(model: local).id(local.id)
@@ -353,10 +357,8 @@ struct ModelsView: View {
         ZStack(alignment: .bottom) {
             Group {
                 if let local = store.selectedLocal {
-                    ModelPreview(url: local.url, showsPrintBed: local.printRecipe != nil) { url, mesh in
-                        previewMesh = mesh.map { LoadedPreviewMesh(url: url, mesh: $0) }
-                    } onSaveSTLCopy: { mesh in
-                        await store.saveSTLCopy(of: local.id, mesh: mesh)
+                    ModelPreview(url: local.url, showsPrintBed: local.printRecipe != nil) { url, model in
+                        previewMesh = model.map { LoadedPreviewMesh(url: url, model: $0) }
                     }
                     .frame(height: 260)
                 } else {
@@ -450,6 +452,37 @@ struct ModelsView: View {
         Button("Export…") { store.exportLocalModel(id: id) }
     }
 
+    /// Shown once, above the STL-only tool cards, for OBJ and 3MF models.
+    private func stlToolsNotice(_ local: LocalModel) -> some View {
+        let loaded = previewMesh.flatMap { $0.url == local.url ? $0 : nil }
+        let blocked = loaded.flatMap { stlCopyBlockedReason(format: $0.format, inexactFaces: $0.inexactFaces) }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Label("These tools work on STL files.", systemImage: "info.circle")
+                    .font(.callout)
+                Spacer(minLength: 8)
+                if let loaded, blocked == nil {
+                    Button(savingSTLCopy ? "Saving…" : "Save STL copy") {
+                        guard !savingSTLCopy else { return }
+                        savingSTLCopy = true
+                        Task {
+                            await store.saveSTLCopy(of: local.id, mesh: loaded.mesh, inexactFaces: loaded.inexactFaces)
+                            savingSTLCopy = false
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(savingSTLCopy || store.busy)
+                    .help("Adds a separate STL copy to your library. This \(loaded.format.displayName) file is kept as it is and is still what an upload sends.")
+                }
+            }
+            if let blocked {
+                Text(blocked).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
     @ViewBuilder
     private var scaleNoticeBlock: some View {
         if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url,
@@ -464,12 +497,17 @@ struct ModelsView: View {
                     if !canSaveScaledCopy(local) {
                         Text("Re-export it from your CAD tool in millimetres, or save a scaled copy from the original import.")
                             .font(.callout).foregroundStyle(.secondary)
+                    } else if let reason = stlCopyBlockedReason(format: loaded.format, inexactFaces: loaded.inexactFaces) {
+                        Text("Re-export it from your CAD tool in millimetres. \(reason)")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else if warning.suggestions.isEmpty {
                         Text("Re-export it from your CAD tool in millimetres, or scale it in a slicer, then import it again.")
                             .font(.callout).foregroundStyle(.secondary)
                     } else {
-                        Text("If it was, save a scaled copy. This model is kept as it is; the copy needs its own upload and estimate.")
+                        Text(scaledCopyExplanation(format: loaded.format))
                             .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         if warning.suggestions.count == 1, let suggestion = warning.suggestions.first {
                             Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor) }
                                 .buttonStyle(.bordered)
@@ -688,11 +726,12 @@ struct ModelsView: View {
                         }
                     }
                 }
-                if let support = supportRequiredCaption(file) {
-                    Text(support).font(.callout).foregroundStyle(.secondary)
-                }
-                let entries = usableMetricEntries(file.metrics)
-                if entries.isEmpty {
+                let entries = usableMetricEntries(file.metrics, supportRequired: supportRequiredFlag(file))
+                if metricsAwaitingAnalysis(file.metrics) {
+                    // `supportRequired` can be set at upload, before Slant has measured the part.
+                    if let support = supportRequiredCaption(file) {
+                        Text(support).font(.callout).foregroundStyle(.secondary)
+                    }
                     Text("Analyzing… metrics appear once Slant finishes processing.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
@@ -788,8 +827,8 @@ struct ModelsView: View {
     }
 
     private func removalButtonTitle(_ target: LibrarySelection) -> String {
-        if case .cloud = target { return "Delete from Slant" }
-        return "Remove"
+        if case .cloud = target { return "Delete from Slant…" }
+        return "Remove from Library…"
     }
 
     private func removalDisabled(_ target: LibrarySelection) -> Bool {
@@ -946,6 +985,18 @@ func printQuantityNotice(_ text: String) -> String? {
 struct LoadedPreviewMesh {
     let url: URL
     let mesh: STLMesh
+    var format: ModelFileFormat = .stl
+    var objectCount = 1
+    var inexactFaces = 0
+
+    init(url: URL, mesh: STLMesh) { self.url = url; self.mesh = mesh }
+    init(url: URL, model: PreviewModel) {
+        self.url = url
+        mesh = model.mesh
+        format = model.format
+        objectCount = model.objectCount
+        inexactFaces = model.inexactFaces
+    }
 }
 
 private func nextStepStatusText(_ step: ModelsNextStep) -> String {
@@ -1132,7 +1183,7 @@ func money(_ value: Any?) -> String {
 
 func metricName(_ key: String) -> String {
     ["x": "Width", "y": "Depth", "z": "Height", "weight": "Weight", "volume": "Volume", "bodyCount": "Parts", "printTimeEstimate": "Print time",
-     "surfaceArea": "Surface area", "supportVolumeEstimate": "Support volume (est.)"][key] ?? key
+     "supportRequired": "Needs supports", "supportVolumeEstimate": "Support volume (est.)"][key] ?? key
 }
 
 func metricUnit(_ key: String, _ metrics: [String: Any]) -> String {
@@ -1152,8 +1203,14 @@ func metricDisplayValue(_ value: Any?) -> String? {
     return text
 }
 
-func usableMetricEntries(_ metrics: [String: Any]) -> [(String, String, String)] {
-    ["x", "y", "z", "weight", "volume", "surfaceArea", "supportVolumeEstimate", "bodyCount", "printTimeEstimate"].compactMap { key in
+/// Metric tiles for Model analysis. `supportRequired` (from `metrics` or the file record) shows as Yes/No in place of
+/// surface area, which isn't useful for ordering.
+func usableMetricEntries(_ metrics: [String: Any], supportRequired: Bool? = nil) -> [(String, String, String)] {
+    ["x", "y", "z", "weight", "volume", "supportRequired", "supportVolumeEstimate", "bodyCount", "printTimeEstimate"].compactMap { key in
+        if key == "supportRequired" {
+            guard let supportRequired = supportRequired ?? supportRequiredFlag(metrics["supportRequired"]) else { return nil }
+            return (key, metricName(key), supportRequired ? "Yes" : "No")
+        }
         guard let display = metricDisplayValue(metrics[key]) else { return nil }
         let unit = metricUnit(key, metrics)
         let value = unit.isEmpty ? display : "\(display) \(unit)"
@@ -1186,18 +1243,25 @@ func cloudFileDateRows(_ record: Record, formatter: (Date) -> String = { $0.form
     return rows
 }
 
+/// True until Slant reports a measured metric; `supportRequired` alone can be decided at upload.
 func metricsAwaitingAnalysis(_ metrics: [String: Any]) -> Bool {
-    usableMetricEntries(metrics).isEmpty
+    usableMetricEntries(metrics).allSatisfy { $0.0 == "supportRequired" }
+}
+
+func supportRequiredFlag(_ value: Any?) -> Bool? {
+    guard let value, !(value is NSNull) else { return nil }
+    if let bool = value as? Bool { return bool }
+    if let number = value as? NSNumber { return number.boolValue }
+    return nil
+}
+
+/// `supportRequired` from the file's `metrics`, or the record itself.
+func supportRequiredFlag(_ record: Record) -> Bool? {
+    supportRequiredFlag(record.metrics["supportRequired"]) ?? supportRequiredFlag(record.values["supportRequired"])
 }
 
 func supportRequiredCaption(_ record: Record) -> String? {
-    let value = record.metrics["supportRequired"] ?? record.values["supportRequired"]
-    guard let value, !(value is NSNull) else { return nil }
-    let flag: Bool
-    if let bool = value as? Bool { flag = bool }
-    else if let number = value as? NSNumber { flag = number.boolValue }
-    else { return nil }
-    return flag ? "Needs supports · Yes" : "Needs supports · No"
+    supportRequiredFlag(record).map { $0 ? "Needs supports · Yes" : "Needs supports · No" }
 }
 
 func httpsPreviewImageURL(_ record: Record) -> URL? {

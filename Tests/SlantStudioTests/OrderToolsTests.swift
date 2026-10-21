@@ -236,7 +236,32 @@ final class OrderToolsTests: XCTestCase {
     func testCSVIncludesAddressesOnlyWhenOptedIn() {
         let rows = parseCSV(ordersCSV([Record(values: sampleOrder)], includeAddresses: true))
         XCTAssertEqual(rows[0], ordersCSVBaseColumns + ordersCSVAddressColumns)
-        XCTAssertEqual(Array(rows[1].suffix(8)), ["Pat Example", "pat@example.com", "1 Main St", "", "Springfield", "IL", "62701", "US"])
+        XCTAssertEqual(Array(rows[1].suffix(9)), ["Pat Example", "pat@example.com", "1 Main St", "", "Springfield", "IL", "62701", "US", ""])
+    }
+
+    func testCSVMetadataIsOptInWithAddresses() {
+        var order = sampleOrder
+        order["metadata"] = ["shopOrder": "#1001", "customer": ["ref": "C-9"]]
+        let without = ordersCSV([Record(values: order)], includeAddresses: false)
+        XCTAssertFalse(without.contains("1001"))
+        XCTAssertFalse(without.contains("Metadata"))
+        let rows = parseCSV(ordersCSV([Record(values: order)], includeAddresses: true))
+        XCTAssertEqual(rows[0].last, "Metadata")
+        XCTAssertEqual(rows[1].last, ##"{"customer":{"ref":"C-9"},"shopOrder":"#1001"}"##)
+        XCTAssertEqual(ordersCSVMetadata(NSNull()), "")
+        XCTAssertEqual(ordersCSVMetadata([String: Any]()), "")
+        XCTAssertEqual(ordersCSVMetadata(nil), "")
+        // A metadata value that looks like a formula is still neutralised by the field guard.
+        XCTAssertEqual(csvField(ordersCSVMetadata("=1+1")), "'=1+1")
+    }
+
+    func testCSVPartialExportNoticeAndMenu() {
+        XCTAssertEqual(ordersCSVPartialNotice(moreOnServer: true), "Only loaded orders are exported. Load more to include older ones.")
+        XCTAssertNil(ordersCSVPartialNotice(moreOnServer: false))
+        XCTAssertTrue(ordersExportMenuEnabled(destination: .orders, ordersLoaded: true, sheetPresented: false))
+        XCTAssertFalse(ordersExportMenuEnabled(destination: .orders, ordersLoaded: false, sheetPresented: false))
+        XCTAssertFalse(ordersExportMenuEnabled(destination: .orders, ordersLoaded: true, sheetPresented: true))
+        XCTAssertFalse(ordersExportMenuEnabled(destination: .models, ordersLoaded: true, sheetPresented: false))
     }
 
     func testCSVEmptyListIsHeaderOnly() {
@@ -293,7 +318,7 @@ final class OrderToolsTests: XCTestCase {
 
     func testCSVActivityDetailNeverIncludesOrderContents() {
         XCTAssertEqual(ordersCSVActivityDetail(count: 1, includeAddresses: false), "1 order")
-        XCTAssertEqual(ordersCSVActivityDetail(count: 3, includeAddresses: true), "3 orders, including recipients and addresses")
+        XCTAssertEqual(ordersCSVActivityDetail(count: 3, includeAddresses: true), "3 orders, including recipients, addresses and metadata")
         XCTAssertTrue(ordersCSVDefaultFileName().hasSuffix(".csv"))
     }
 
@@ -316,6 +341,29 @@ final class OrderToolsTests: XCTestCase {
             XCTAssertNotNil(warning, "\(country) \(code)")
             XCTAssertTrue(warning?.contains("you can still create the draft") == true)
         }
+    }
+
+    func testPostcodeWarningWaitsWhileTypingUntilMinimumLength() {
+        // While the field has focus, a short value isn't judged yet.
+        XCTAssertNil(postcodeFormatWarning("123", country: "US", whileEditing: true))
+        XCTAssertNil(postcodeFormatWarning("SW1", country: "GB", whileEditing: true))
+        XCTAssertNil(postcodeFormatWarning("100-00", country: "JP", whileEditing: true), "hyphens don't count towards the length")
+        // Leaving the field shows it.
+        XCTAssertNotNil(postcodeFormatWarning("123", country: "US", whileEditing: false))
+        // Long enough to judge: shown while typing too.
+        XCTAssertNotNil(postcodeFormatWarning("123456", country: "US", whileEditing: true))
+        XCTAssertNotNil(postcodeFormatWarning("D1A0B1", country: "CA", whileEditing: true))
+        XCTAssertNil(postcodeFormatWarning("12345", country: "US", whileEditing: true))
+        XCTAssertNil(postcodeFormatWarning("M1 1AE", country: "GB", whileEditing: true))
+    }
+
+    func testItemStatusShownOnlyWhenItemsDiffer() {
+        XCTAssertFalse(orderItemStatusesDiffer([]))
+        XCTAssertFalse(orderItemStatusesDiffer([["status": "SHIPPED"]]))
+        XCTAssertFalse(orderItemStatusesDiffer([["status": "SHIPPED"], ["status": "shipped"]]))
+        XCTAssertFalse(orderItemStatusesDiffer([[:], [:]]))
+        XCTAssertTrue(orderItemStatusesDiffer([["status": "SHIPPED"], ["status": "PROCESSING"]]))
+        XCTAssertTrue(orderItemStatusesDiffer([["status": "READY"], [:]]))
     }
 
     func testPostcodeWarningSkipsUnknownCountriesAndEmptyValues() {

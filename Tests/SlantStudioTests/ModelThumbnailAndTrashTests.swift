@@ -216,3 +216,19 @@ final class ModelThumbnailAndTrashTests: XCTestCase {
         XCTAssertTrue(external.contains("stays in your Slant account"))
     }
 }
+
+extension ModelThumbnailAndTrashTests {
+    func testThumbnailWorkIsBudgeted() {
+        // 400 triangles that each cover most of the image: refused before drawing when over budget.
+        var vertices: [Float] = []
+        for i in 0..<400 {
+            let z = Float(i) * 0.01
+            vertices += [0, 0, z, 100, 0, z, 0, 100, z]
+        }
+        let mesh = STLMesh(vertices: vertices, minimum: .zero, maximum: SIMD3(100, 100, 20))
+        XCTAssertNil(renderThumbnailRGBA(mesh, size: 96, rasterBudget: 1_000_000))
+        XCTAssertNotNil(renderThumbnailRGBA(mesh, size: 96, rasterBudget: 100_000_000))
+        // Ordinary models are far below the default budget.
+        XCTAssertNotNil(renderThumbnailRGBA(cube(), size: ModelThumbnails.pixelSize))
+    }
+}

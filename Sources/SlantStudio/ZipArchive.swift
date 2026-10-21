@@ -39,18 +39,32 @@ struct ZipArchive {
 
     let data: Data
     let entries: [Entry]
+    /// Entry positions by exact and by lower-cased name, built once so each lookup is constant time. Where names
+    /// repeat, the first entry in directory order wins, as a linear search would.
+    private let exactIndex: [String: Int]
+    private let foldedIndex: [String: Int]
 
     init(_ data: Data) throws {
         self.data = data
-        self.entries = try Self.readCentralDirectory(data)
+        let entries = try Self.readCentralDirectory(data)
+        self.entries = entries
+        var exact: [String: Int] = [:], folded: [String: Int] = [:]
+        exact.reserveCapacity(entries.count)
+        folded.reserveCapacity(entries.count)
+        for (position, entry) in entries.enumerated() {
+            if exact[entry.name] == nil { exact[entry.name] = position }
+            let lowered = entry.name.lowercased()
+            if folded[lowered] == nil { folded[lowered] = position }
+        }
+        exactIndex = exact
+        foldedIndex = folded
     }
 
     /// Looks up an entry by its part name. A leading "/" is ignored; an exact match wins over a case-insensitive one.
     func entry(named name: String) -> Entry? {
         let wanted = name.hasPrefix("/") ? String(name.dropFirst()) : name
-        if let exact = entries.first(where: { $0.name == wanted }) { return exact }
-        let lowered = wanted.lowercased()
-        return entries.first { $0.name.lowercased() == lowered }
+        if let position = exactIndex[wanted] ?? foldedIndex[wanted.lowercased()] { return entries[position] }
+        return nil
     }
 
     /// Extracts an entry whose declared uncompressed size is at most `limit` bytes, verifying its size and CRC-32.

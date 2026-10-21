@@ -145,24 +145,33 @@ func analyzeMeshHealth(_ mesh: STLMesh, isCancelled: () -> Bool = { false }) -> 
 
 struct MeshHealthSummary: Equatable {
     let title: String
-    /// Plain-language findings, most consequential first. Empty when nothing needs attention.
+    /// Plain-language findings, most consequential first, shown collapsed under the one-line result.
     let details: [String]
-    var isClean: Bool { details.isEmpty }
+    /// True when nothing needs attention. Zero-area triangles alone are mentioned in the details but keep it clean.
+    let isClean: Bool
+    /// The one line shown under the preview.
+    var line: String {
+        if isClean { return "Mesh check: \(title)" }
+        return "Mesh check: \(details.count == 1 ? "1 note" : "\(details.count) notes")"
+    }
 }
 
 private func counted(_ n: Int, _ singular: String, _ plural: String) -> String {
     "\(n.formatted()) \(n == 1 ? singular : plural)"
 }
 
-func meshHealthSummary(_ report: MeshHealthReport) -> MeshHealthSummary {
+/// `objectCount` is the number of objects a 3MF places (1 for STL and OBJ). When each object is exactly one part,
+/// separate parts are expected and aren't flagged.
+func meshHealthSummary(_ report: MeshHealthReport, objectCount: Int = 1) -> MeshHealthSummary {
     guard report.triangleCount > 0 else {
-        return MeshHealthSummary(title: "No triangles to check", details: [])
+        return MeshHealthSummary(title: "No triangles to check", details: [], isClean: true)
     }
-    let parts = counted(report.shells, "part", "parts")
+    let onePartPerObject = objectCount > 1 && report.shells == objectCount
+    let parts = counted(report.shells, "part", "parts") + (onePartPerObject ? " (one per object)" : "")
     let title = "\(report.isClosed ? "Closed" : "Not closed"), \(parts)"
     var details: [String] = []
     if report.openEdges > 0 {
-        details.append("\(counted(report.openEdges, "open edge", "open edges")) — gaps in the surface. Slant may reject or misprint this; close them in your CAD tool or a mesh repair tool.")
+        details.append("\(counted(report.openEdges, "open edge", "open edges")) — gaps in the surface. Slicers may fill or skip gaps, so the print may not match the model. Close them in your CAD tool or a mesh repair tool.")
     }
     if report.nonManifoldEdges > 0 {
         details.append("\(counted(report.nonManifoldEdges, "edge is", "edges are")) shared by more than two faces. Slicers can misread these areas; fix them in CAD or a repair tool.")
@@ -173,13 +182,15 @@ func meshHealthSummary(_ report: MeshHealthReport) -> MeshHealthSummary {
     if report.isInsideOut {
         details.append("The faces point inward. Slicers may read this as a hollow; a repair tool can flip them outward.")
     }
-    if report.shells > 1 {
-        details.append("\(parts) that don’t touch. Unless one sits inside another as a hollow, each prints as a loose piece.")
+    if report.shells > 1, !onePartPerObject {
+        let across = objectCount > 1 ? " across \(objectCount) objects" : ""
+        details.append("\(report.shells.formatted()) separate parts\(across). Fine for a set of pieces or a print-in-place design; otherwise they print loose.")
     }
+    let hasIssues = !details.isEmpty
     if report.degenerateTriangles > 0 {
         details.append("\(counted(report.degenerateTriangles, "zero-area triangle", "zero-area triangles")). Usually harmless, though some tools list them as errors.")
     }
-    return MeshHealthSummary(title: title, details: details)
+    return MeshHealthSummary(title: title, details: details, isClean: !hasIssues)
 }
 
 // MARK: - Cache and view
@@ -193,33 +204,48 @@ func meshHealthCacheKey(modelID: UUID, path: String, modified: Date?) -> String 
     "\(modelID.uuidString)|\(path)|\(modified?.timeIntervalSinceReferenceDate ?? -1)"
 }
 
-/// Compact mesh check shown under the local preview. Advisory: upload stays available whatever it finds.
+/// One-line mesh check shown under the local preview, with any notes in a collapsed disclosure. Advisory: upload
+/// stays available whatever it finds.
 struct MeshHealthPanel: View {
     let model: LocalModel
     let mesh: STLMesh
+    /// Objects the 3MF places; 1 for STL and OBJ.
+    var objectCount = 1
     @State private var report: MeshHealthReport?
     @State private var reportKey = ""
+    @State private var expanded = false
 
     var body: some View {
         let taskID = "\(model.id.uuidString)|\(model.filePath)|\(mesh.triangleCount)"
         Group {
             if let report, reportKey == taskID {
-                let summary = meshHealthSummary(report)
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(summary.title, systemImage: summary.isClean ? "checkmark.circle" : "info.circle")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(summary.isClean ? Color.green : Color.primary)
-                    ForEach(summary.details, id: \.self) { line in
-                        Text(line).font(.callout).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if !summary.isClean {
-                        Text("This check is advisory and doesn’t block upload.")
-                            .font(.caption).foregroundStyle(.secondary)
+                let summary = meshHealthSummary(report, objectCount: objectCount)
+                let label = Label(summary.line, systemImage: summary.isClean ? "checkmark.circle" : "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(summary.isClean ? Color.green : Color.primary)
+                if summary.details.isEmpty {
+                    label
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(summary.line)
+                } else {
+                    DisclosureGroup(isExpanded: $expanded) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            if !summary.isClean {
+                                Text(summary.title).font(.callout.weight(.semibold))
+                            }
+                            ForEach(summary.details, id: \.self) { line in
+                                Text(line).font(.callout).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Text("This check is advisory and doesn’t block upload.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        label.accessibilityLabel(summary.isClean ? summary.line : "\(summary.line). \(summary.title)")
                     }
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Mesh check: \(([summary.title] + summary.details).joined(separator: " "))")
             } else {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -228,11 +254,8 @@ struct MeshHealthPanel: View {
                 .accessibilityElement(children: .combine)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.studioCard, in: RoundedRectangle(cornerRadius: StudioMetrics.cardRadius))
-        .overlay(RoundedRectangle(cornerRadius: StudioMetrics.cardRadius).stroke(Color.studioHairline))
         .task(id: taskID) {
             let url = model.url
             let modified = await Task.detached(priority: .utility) { fileModificationDate(url) }.value

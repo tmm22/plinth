@@ -94,6 +94,13 @@ func orderItemStatusTitle(_ item: [String: Any]) -> String? {
     }
 }
 
+/// Per-item status is only worth showing when the items' statuses differ; otherwise it repeats the order status.
+func orderItemStatusesDiffer(_ items: [[String: Any]]) -> Bool {
+    let titles = items.map { orderItemStatusTitle($0) ?? "" }
+    guard let first = titles.first else { return false }
+    return titles.contains { $0 != first }
+}
+
 /// Display name for an `options.shippingProvider` value; unknown values are shown as Slant sent them.
 func orderShippingProviderTitle(_ code: String) -> String {
     let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -156,18 +163,19 @@ func orderLineRemovingOptions(_ line: OrderLine) -> OrderLine {
 
 // MARK: - Postcode format warnings
 
-/// Countries whose postcode format is unambiguous enough to check locally, with an example for the warning.
-private let postcodeFormats: [String: (name: String, pattern: String, example: String)] = [
-    "US": ("US ZIP code", #"^\d{5}(-\d{4})?$"#, "12345 or 12345-6789"),
-    "CA": ("Canadian postal code", #"^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z] ?\d[ABCEGHJ-NPRSTV-Z]\d$"#, "K1A 0B1"),
-    "GB": ("UK postcode", #"^(GIR ?0AA|[A-PR-UWYZ][A-HK-Y]?\d[A-Z\d]? ?\d[ABD-HJLNP-UW-Z]{2})$"#, "SW1A 1AA"),
-    "AU": ("Australian postcode", #"^\d{4}$"#, "2000"),
-    "NZ": ("New Zealand postcode", #"^\d{4}$"#, "6011"),
-    "DE": ("German postcode", #"^\d{5}$"#, "10115"),
-    "FR": ("French postcode", #"^\d{5}$"#, "75001"),
-    "NL": ("Dutch postcode", #"^[1-9]\d{3} ?[A-Z]{2}$"#, "1012 AB"),
-    "JP": ("Japanese postal code", #"^\d{3}-?\d{4}$"#, "100-0001"),
-    "IE": ("Eircode", #"^([AC-FHKNPRTV-Y]\d{2}|D6W) ?[\dAC-FHKNPRTV-Y]{4}$"#, "D02 X285")
+/// Countries whose postcode format is unambiguous enough to check locally, with an example for the warning and the
+/// shortest valid length in letters and digits (spaces and hyphens not counted).
+private let postcodeFormats: [String: (name: String, pattern: String, example: String, minimumLength: Int)] = [
+    "US": ("US ZIP code", #"^\d{5}(-\d{4})?$"#, "12345 or 12345-6789", 5),
+    "CA": ("Canadian postal code", #"^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z] ?\d[ABCEGHJ-NPRSTV-Z]\d$"#, "K1A 0B1", 6),
+    "GB": ("UK postcode", #"^(GIR ?0AA|[A-PR-UWYZ][A-HK-Y]?\d[A-Z\d]? ?\d[ABD-HJLNP-UW-Z]{2})$"#, "SW1A 1AA", 5),
+    "AU": ("Australian postcode", #"^\d{4}$"#, "2000", 4),
+    "NZ": ("New Zealand postcode", #"^\d{4}$"#, "6011", 4),
+    "DE": ("German postcode", #"^\d{5}$"#, "10115", 5),
+    "FR": ("French postcode", #"^\d{5}$"#, "75001", 5),
+    "NL": ("Dutch postcode", #"^[1-9]\d{3} ?[A-Z]{2}$"#, "1012 AB", 6),
+    "JP": ("Japanese postal code", #"^\d{3}-?\d{4}$"#, "100-0001", 7),
+    "IE": ("Eircode", #"^([AC-FHKNPRTV-Y]\d{2}|D6W) ?[\dAC-FHKNPRTV-Y]{4}$"#, "D02 X285", 7)
 ]
 
 /// Country codes with a local postcode format check.
@@ -175,10 +183,13 @@ var postcodeCheckedCountryCodes: Set<String> { Set(postcodeFormats.keys) }
 
 /// A gentle warning when a postcode doesn't match the usual format for a handful of countries. Never blocks a draft;
 /// empty postcodes (handled by required-field validation) and countries without a known format get no warning.
-func postcodeFormatWarning(_ postcode: String, country: String) -> String? {
+/// `whileEditing` (the field has focus) holds the warning back until the value reaches the country's minimum length,
+/// so it doesn't appear on every keystroke; once the field loses focus any mismatch shows.
+func postcodeFormatWarning(_ postcode: String, country: String, whileEditing: Bool = false) -> String? {
     let code = country.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     let value = postcode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     guard !value.isEmpty, let format = postcodeFormats[code] else { return nil }
+    if whileEditing, value.filter({ $0.isLetter || $0.isNumber }).count < format.minimumLength { return nil }
     if value.range(of: format.pattern, options: .regularExpression) != nil { return nil }
     return "This doesn’t look like a \(format.name) (for example \(format.example)). Check it; you can still create the draft."
 }
@@ -189,8 +200,9 @@ let ordersCSVBaseColumns = [
     "Order number", "Created", "Status", "Item count", "Items",
     "Printing cost", "Delivery cost", "Total", "Currency", "Carrier", "Tracking numbers"
 ]
+/// Opt-in columns: recipient, address and the order's metadata (which may hold customer references).
 let ordersCSVAddressColumns = [
-    "Recipient", "Email", "Address line 1", "Address line 2", "City", "State", "Postal code", "Country"
+    "Recipient", "Email", "Address line 1", "Address line 2", "City", "State", "Postal code", "Country", "Metadata"
 ]
 
 /// One CSV field: a leading formula character (= + - @ tab or CR) is neutralised with an apostrophe unless the
@@ -273,18 +285,34 @@ func ordersCSVRow(_ record: Record, includeAddresses: Bool) -> [String] {
         let address = details["address"] as? [String: Any] ?? [:]
         row += [
             orderRecipientName(order), csvText(details["email"]), csvText(address["line1"]), csvText(address["line2"]),
-            csvText(address["city"]), csvText(address["state"]), csvText(address["zip"]), csvText(address["country"])
+            csvText(address["city"]), csvText(address["state"]), csvText(address["zip"]), csvText(address["country"]),
+            ordersCSVMetadata(order["metadata"])
         ]
     }
     return row
 }
 
-/// CSV for the given orders (header row first, CRLF line endings). Recipient, email and address columns are only
-/// included when `includeAddresses` is true.
+/// Order metadata as compact JSON with sorted keys, or blank when there is none.
+func ordersCSVMetadata(_ value: Any?) -> String {
+    guard let value, !(value is NSNull) else { return "" }
+    if let object = value as? [String: Any], object.isEmpty { return "" }
+    guard JSONSerialization.isValidJSONObject(value),
+          let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]),
+          let text = String(data: data, encoding: .utf8) else { return csvText(value) }
+    return text
+}
+
+/// CSV for the given orders (header row first, CRLF line endings). Recipient, email, address and metadata columns
+/// are only included when `includeAddresses` is true.
 func ordersCSV(_ records: [Record], includeAddresses: Bool) -> String {
     let header = includeAddresses ? ordersCSVBaseColumns + ordersCSVAddressColumns : ordersCSVBaseColumns
     let rows = [header] + records.map { ordersCSVRow($0, includeAddresses: includeAddresses) }
     return rows.map { $0.map(csvField).joined(separator: ",") }.joined(separator: "\r\n") + "\r\n"
+}
+
+/// Save-panel note when Slant has older orders that the list hasn't loaded.
+func ordersCSVPartialNotice(moreOnServer: Bool) -> String? {
+    moreOnServer ? "Only loaded orders are exported. Load more to include older ones." : nil
 }
 
 func ordersCSVDefaultFileName(date: Date = Date()) -> String {
@@ -299,13 +327,14 @@ func ordersCSVDefaultFileName(date: Date = Date()) -> String {
 /// Activity text for an export. Never includes order contents.
 func ordersCSVActivityDetail(count: Int, includeAddresses: Bool) -> String {
     let orders = count == 1 ? "1 order" : "\(count) orders"
-    return includeAddresses ? "\(orders), including recipients and addresses" : orders
+    return includeAddresses ? "\(orders), including recipients, addresses and metadata" : orders
 }
 
 extension StudioStore {
-    /// Writes the given (already loaded) orders to a CSV the user picks. No network requests. Recipient and address
-    /// columns are off unless the user ticks the checkbox in the save panel.
-    func exportOrdersCSV(_ records: [Record]) {
+    /// Writes the given (already loaded) orders to a CSV the user picks. No network requests. Recipient, address and
+    /// metadata columns are off unless the user ticks the checkbox in the save panel. `moreOnServer` adds a note that
+    /// older orders that haven't been loaded aren't included.
+    func exportOrdersCSV(_ records: [Record], moreOnServer: Bool = false) {
         guard !records.isEmpty else { return }
         let panel = NSSavePanel()
         panel.title = "Export Orders"
@@ -313,13 +342,18 @@ extension StudioStore {
         panel.nameFieldStringValue = ordersCSVDefaultFileName()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.canCreateDirectories = true
-        let checkbox = NSButton(checkboxWithTitle: "Include recipient and address", target: nil, action: nil)
+        let checkbox = NSButton(checkboxWithTitle: "Include recipient, address and metadata", target: nil, action: nil)
         checkbox.state = .off
-        let note = NSTextField(wrappingLabelWithString: "Names, emails and addresses are left out unless you include them. The file isn’t protected once saved.")
-        note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        note.textColor = .secondaryLabelColor
-        note.preferredMaxLayoutWidth = 360
-        let stack = NSStackView(views: [checkbox, note])
+        func smallNote(_ text: String) -> NSTextField {
+            let note = NSTextField(wrappingLabelWithString: text)
+            note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            note.textColor = .secondaryLabelColor
+            note.preferredMaxLayoutWidth = 360
+            return note
+        }
+        var views: [NSView] = [checkbox, smallNote("Names, emails, addresses and metadata (which may hold customer references) are left out unless you include them. The file isn’t protected once saved.")]
+        if let notice = ordersCSVPartialNotice(moreOnServer: moreOnServer) { views.append(smallNote(notice)) }
+        let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 4

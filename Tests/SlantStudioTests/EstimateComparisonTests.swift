@@ -271,3 +271,34 @@ final class EstimateComparisonTests: XCTestCase {
         XCTAssertEqual(comparisonCompletionSummary(priced: 3, total: 5, failed: 1), "3 of 5 estimates in · 1 couldn’t be priced")
     }
 }
+
+extension EstimateComparisonTests {
+    func testCompareIsOfferedOnlyOnceUploadedWithMaterials() {
+        let stock = [Record(values: ["id": "a", "profile": "PLA"])]
+        XCTAssertTrue(compareEstimatesIsOffered(hasKey: true, connected: true, fileID: "f", filaments: stock))
+        XCTAssertFalse(compareEstimatesIsOffered(hasKey: true, connected: true, fileID: "", filaments: stock))
+        XCTAssertFalse(compareEstimatesIsOffered(hasKey: true, connected: true, fileID: "f", filaments: []))
+        XCTAssertFalse(compareEstimatesIsOffered(hasKey: false, connected: false, fileID: "f", filaments: stock))
+        XCTAssertFalse(compareEstimatesIsOffered(hasKey: true, connected: false, fileID: "f", filaments: stock))
+    }
+
+    func testMaterialPickerIsGroupedByType() {
+        let filaments = [
+            Record(values: ["id": "p1", "name": "PLA Black", "profile": "PLA"]),
+            Record(values: ["id": "g1", "name": "PETG White", "profile": "PETG"]),
+            Record(values: ["id": "p2", "name": "PLA Red", "profile": "pla"]),
+            Record(values: ["id": "x", "name": "Mystery"])
+        ]
+        let sections = comparisonMaterialSections(comparisonMaterialChoices(filaments))
+        XCTAssertEqual(sections.map(\.type), ["PETG", "PLA", otherFilamentType])
+        XCTAssertEqual(sections[1].materials.map(\.id), ["p1", "p2"])
+        XCTAssertTrue(comparisonMaterialSections([]).isEmpty)
+    }
+
+    func testFootnoteAndRateLimitHeaderPresence() {
+        XCTAssertEqual(comparisonPerUnitFootnote, "Each = total ÷ quantity, including any surcharges. Lowest per unit is marked in each column.")
+        XCTAssertFalse(rateLimitInfo(from: [:]).hasValues)
+        XCTAssertFalse(rateLimitInfo(from: ["Content-Type": "application/json"]).hasValues)
+        XCTAssertTrue(rateLimitInfo(from: ["x-ratelimit-remaining": "40"]).hasValues)
+    }
+}

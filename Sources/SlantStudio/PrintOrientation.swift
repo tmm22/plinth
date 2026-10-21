@@ -280,7 +280,7 @@ struct PrintOrientationCard: View {
                     if let recipe = model.printRecipe {
                         preparedSummary(recipe)
                     } else if !model.supportsPreview {
-                        Text("Import an STL to optimise its printing placement.")
+                        Text(stlOnlyToolNote(model) ?? stlCopyToolNote)
                     } else if let failure {
                         Text(failure)
                     } else if let mesh {

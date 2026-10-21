@@ -5,14 +5,11 @@ import SceneKit
 struct ModelPreview: View {
     let url: URL?
     var showsPrintBed = false
-    /// Reports the parsed mesh (or nil) for the URL just loaded, so callers can check it without parsing again.
-    var onMeshChange: ((URL, STLMesh?) -> Void)? = nil
-    /// Offered for OBJ and 3MF previews: saves the previewed geometry as a separate STL copy for the geometry tools.
-    var onSaveSTLCopy: ((STLMesh) async -> Void)? = nil
+    /// Reports the parsed model (or nil) for the URL just loaded, so callers can check it without parsing again.
+    var onModelChange: ((URL, PreviewModel?) -> Void)? = nil
     @State private var model: PreviewModel?
     @State private var failure: String?
     @State private var isLoading = false
-    @State private var savingCopy = false
 
     var body: some View {
         ZStack {
@@ -35,24 +32,6 @@ struct ModelPreview: View {
                         if let notice = multipleObjectsNotice(objectCount: model.objectCount) {
                             Label(notice, systemImage: "square.stack.3d.up")
                                 .fixedSize(horizontal: false, vertical: true)
-                        }
-                        if model.format != .stl, let onSaveSTLCopy {
-                            HStack {
-                                Text("Orientation, edge and reinforcement tools work on STL files.")
-                                Spacer(minLength: 8)
-                                Button("Save as STL Copy") {
-                                    guard !savingCopy else { return }
-                                    savingCopy = true
-                                    let mesh = model.mesh
-                                    Task {
-                                        await onSaveSTLCopy(mesh)
-                                        savingCopy = false
-                                    }
-                                }
-                                .controlSize(.small)
-                                .disabled(savingCopy)
-                                .help("Adds a separate STL copy to your library. This \(model.format.displayName) file is kept as it is.")
-                            }
                         }
                     }
                     .font(.caption)
@@ -91,7 +70,7 @@ struct ModelPreview: View {
             case .failure(let error): failure = error.localizedDescription
             }
             isLoading = false
-            onMeshChange?(url, model?.mesh)
+            onModelChange?(url, model)
         }
     }
 }

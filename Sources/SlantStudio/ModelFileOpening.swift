@@ -19,11 +19,20 @@ func externalOpenCanImport(storeSheetPresented: Bool, appModalUIPresented: Bool,
     !storeSheetPresented && !appModalUIPresented && !errorShown && !busy
 }
 
+/// Toolbar note while Finder opens wait for a sheet, alert or request to finish; nil when nothing is waiting.
+func queuedImportNote(count: Int) -> String? {
+    guard count > 0 else { return nil }
+    return count == 1 ? "1 file waiting to import" : "\(count) files waiting to import"
+}
+
 /// Holds files handed to the app by Launch Services until the store can import them. Opens can arrive before the
 /// window (and so the store) exists, such as when a double-click launches the app.
 @MainActor final class ExternalModelOpenQueue: ObservableObject {
     static let shared = ExternalModelOpenQueue()
     @Published private(set) var pending: [URL] = []
+    /// True once an import has had to wait for a sheet, alert or request, so the toolbar note doesn't flash for the
+    /// brief delay before every import.
+    @Published private(set) var isWaiting = false
     private weak var store: StudioStore?
     private var drainScheduled = false
 
@@ -31,7 +40,26 @@ func externalOpenCanImport(storeSheetPresented: Bool, appModalUIPresented: Bool,
     /// raising an alert that could appear over a review sheet.
     func enqueue(_ urls: [URL]) {
         pending = queuedModelOpens(pending, adding: urls)
+        guard !pending.isEmpty else { return }
+        // Show the window first: an error alert or a review left open in a closed window would otherwise hold the
+        // import back with nothing on screen. Raising it doesn't dismiss or act on anything presented in it.
+        revealMainWindow()
         scheduleDrain()
+    }
+
+    private func revealMainWindow() {
+        // A hidden app's windows report not visible, which would look like a closed window and open a second one.
+        if NSApp.isHidden { NSApp.unhide(nil) }
+        // The Settings window can become main too, but files never import into it.
+        let mainWindows = NSApp.windows.filter {
+            $0.canBecomeMain && !($0 is NSPanel) && $0.identifier?.rawValue.localizedCaseInsensitiveContains("settings") != true
+        }
+        if let window = mainWindows.first(where: { $0.isVisible || $0.isMiniaturized }) {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openMainWindow?()
+        }
     }
 
     func attach(_ store: StudioStore) {
@@ -59,11 +87,13 @@ func externalOpenCanImport(storeSheetPresented: Bool, appModalUIPresented: Bool,
         guard externalOpenCanImport(storeSheetPresented: store.isPresentingSheet, appModalUIPresented: appIsPresentingModalUI(),
                                     errorShown: store.error != nil, busy: store.busy) else {
             // Keep checking while files are waiting; this stops as soon as the queue is empty.
+            if !isWaiting { isWaiting = true }
             scheduleDrain()
             return
         }
         let urls = pending
         pending = []
+        if isWaiting { isWaiting = false }
         for url in urls { store.importModel(url) }
         if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { openMainWindow?() }
     }
@@ -79,6 +109,10 @@ final class SlantStudioAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // MARK: - File menu commands
+
+func ordersExportMenuEnabled(destination: Destination, ordersLoaded: Bool, sheetPresented: Bool) -> Bool {
+    destination == .orders && ordersLoaded && !sheetPresented
+}
 
 extension StudioStore {
     /// File menu commands act only when no sheet, alert or dialog is up; their disabled state can lag behind AppKit.
@@ -99,6 +133,13 @@ extension StudioStore {
         openOrderComposer()
     }
 
+    /// File › Export Orders…: only on Orders with orders loaded and nothing modal shown. Writes a local file only.
+    func exportOrdersFromMenu() {
+        guard !menuCommandsBlockedByModalUI, ordersExportMenuEnabled(destination: destination, ordersLoaded: !orders.isEmpty,
+                                                                     sheetPresented: false) else { return }
+        ordersExportRequest += 1
+    }
+
     func refreshFromMenu() {
         guard !menuCommandsBlockedByModalUI, connected, !busy else { return }
         Task { await refreshCurrent() }
@@ -117,6 +158,30 @@ func stlCopyName(_ name: String) -> String {
     return "\(base) (STL copy)"
 }
 
+/// Why no STL copy (or scaled STL copy) can be saved from this preview, or nil when one can. A face that couldn't be
+/// split into triangles exactly is only approximated in the preview, so a copy wouldn't match the original file.
+func stlCopyBlockedReason(format: ModelFileFormat, inexactFaces: Int) -> String? {
+    guard inexactFaces > 0 else { return nil }
+    let faces = inexactFaces == 1 ? "a face" : "\(inexactFaces.formatted()) faces"
+    return "This \(format.displayName) has \(faces) that can’t be split into triangles exactly (for example, one that crosses itself), so an STL copy wouldn’t match it. Fix the faces in your modelling tool and import the file again."
+}
+
+/// What an STL-only tool card says for other models. OBJ and 3MF models get one shared notice with **Save STL copy**
+/// above the tool cards, so their cards return nil here; anything else simply isn't supported.
+func stlOnlyToolNote(_ model: LocalModel) -> String? {
+    guard !model.supportsPreview else { return nil }
+    return model.supportsMeshPreview ? nil : "Available for STL files."
+}
+
+/// Inside a collapsed tool card for an OBJ or 3MF model, pointing back to the shared notice.
+let stlCopyToolNote = "Works on an STL copy. Use Save STL copy above."
+
+/// Scale card wording; OBJ and 3MF sources are saved as STL.
+func scaledCopyExplanation(format: ModelFileFormat) -> String {
+    let kind = format == .stl ? "" : " The copy is an STL file."
+    return "If it was, save a scaled copy.\(kind) This model is kept as it is; the copy needs its own upload and estimate."
+}
+
 extension STLMesh {
     /// The same geometry as a binary STL, parsed back and checked like a scaled copy (×1): every triangle kept, no new
     /// degenerate triangles, and the same size.
@@ -126,8 +191,13 @@ extension STLMesh {
 extension StudioStore {
     /// Adds a separate binary STL of an OBJ or 3MF model's previewed geometry, so the STL-only tools can use it.
     /// The original stays in the library unchanged and is still what an upload of that model sends.
-    func saveSTLCopy(of modelID: UUID, mesh: STLMesh) async {
-        guard let model = localModels.first(where: { $0.id == modelID }), !model.supportsPreview, model.supportsMeshPreview else { return }
+    func saveSTLCopy(of modelID: UUID, mesh: STLMesh, inexactFaces: Int) async {
+        guard let model = localModels.first(where: { $0.id == modelID }), !model.supportsPreview, model.supportsMeshPreview,
+              let format = ModelFileFormat(url: model.url) else { return }
+        if let reason = stlCopyBlockedReason(format: format, inexactFaces: inexactFaces) {
+            showError("The STL copy wasn’t saved. \(reason)")
+            return
+        }
         let fileName = exportFileName(modelName: stlCopyName(model.name), fileExtension: "stl")
         let result = await Task.detached(priority: .userInitiated) {
             Result { () -> URL in

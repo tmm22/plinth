@@ -3,6 +3,7 @@ import AppKit
 
 struct StudioView: View {
     @EnvironmentObject var store: StudioStore
+    @ObservedObject private var openQueue = ExternalModelOpenQueue.shared
     var body: some View {
         NavigationSplitView {
             StudioSidebar()
@@ -24,6 +25,13 @@ struct StudioView: View {
             .navigationTitle(detailTitle)
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    if openQueue.isWaiting, let note = queuedImportNote(count: openQueue.pending.count) {
+                        Label(note, systemImage: "tray.and.arrow.down")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help("Files opened from Finder import when the current sheet, alert or request finishes.")
+                    }
                     if store.busy {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small).accessibilityLabel("Working")
