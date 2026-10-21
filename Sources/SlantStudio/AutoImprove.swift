@@ -537,6 +537,6 @@ private struct Topology {
             return ReinforcementEngine.containsMaterial(p + (run.n1 - run.n2) * d, in: mesh)
                 && ReinforcementEngine.containsMaterial(p + (run.n2 - run.n1) * d, in: mesh)
                 && !ReinforcementEngine.containsMaterial(p + (run.n1 + run.n2) * d, in: mesh)
-        }.sorted { ($0.axis, $0.start, $0.c1, $0.c2) < ($1.axis, $1.start, $1.c1, $1.c2) }
+        }.sorted { ($0.axis, $0.start, $0.c1, $0.c2, rank($0.n1), rank($0.n2)) < ($1.axis, $1.start, $1.c1, $1.c2, rank($1.n1), rank($1.n2)) }
     }
 }
