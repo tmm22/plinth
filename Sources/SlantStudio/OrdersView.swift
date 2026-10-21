@@ -848,6 +848,16 @@ struct OrdersView: View {
                 .help(tableRows.isEmpty ? "No orders in the list to export" : "Export the orders in the list to a CSV file")
             }
             ToolbarItem(placement: .automatic) {
+                // Opens the import sheet only; drafts are created there after an explicit confirmation.
+                Button {
+                    store.showOrderImport = true
+                } label: {
+                    Label("Import Orders…", systemImage: "square.and.arrow.down")
+                }
+                .disabled(store.orderImportBlockedReason != nil)
+                .help(store.orderImportBlockedReason ?? "Create order drafts from an Etsy, Shopify or template CSV file")
+            }
+            ToolbarItem(placement: .automatic) {
                 Button {
                     syncFilterDraftFromStore()
                     filtersPresented = true

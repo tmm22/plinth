@@ -62,6 +62,7 @@ struct StudioView: View {
         .sheet(isPresented: $store.showOrderComposer) { OrderComposerView().environmentObject(store) }
         .sheet(isPresented: $store.showPlatformComposer) { PlatformComposerView().environmentObject(store) }
         .sheet(isPresented: $store.showImportFromURL) { ImportFromURLSheet().environmentObject(store) }
+        .sheet(isPresented: $store.showOrderImport) { OrderImportSheet().environmentObject(store) }
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }

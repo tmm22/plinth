@@ -41,6 +41,9 @@ struct SlantStudioApp: App {
                 Button("Export Orders…") { store.exportOrdersFromMenu() }
                     .disabled(!ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
                                                        sheetPresented: modalUIShown))
+                // Opens the Import Orders sheet only; drafts are created there after an explicit confirmation.
+                Button("Import Orders…") { store.importOrdersFromMenu() }
+                    .disabled(store.orderImportBlockedReason != nil || modalUIShown)
                 Divider()
                 Button("Refresh") { store.refreshFromMenu() }
                     .keyboardShortcut("r")
