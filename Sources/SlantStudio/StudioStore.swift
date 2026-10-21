@@ -146,6 +146,11 @@ struct DeliveryDetails: Equatable {
 enum OutcomeAction: Equatable {
     case pay, cancel
 }
+/// What was attempted when an order's outcome became unknown, so another sheet can tell when a reload resolves it.
+struct UnknownOutcomeContext: Equatable {
+    var action: OutcomeAction
+    var reviewedStatus: String
+}
 
 struct WebhookTestResult: Equatable {
     var attempted: Bool
@@ -220,6 +225,14 @@ func orderFilterQueryItems(_ filter: OrderFilter, page: Int, limit: Int, platfor
     if let start = filter.startDate { query["startDate"] = orderFilterDateString(start) }
     if let end = filter.endDate { query["endDate"] = orderFilterEndDateQueryValue(end) }
     return query
+}
+/// Whether a reload in the Orders review sheet clears a shared lock. Without a record of what was attempted, or a cancel
+/// without the status it was sent from, the reload can't show whether the request took effect, so the lock stays.
+func unknownOutcomeResolvedByReload(context: UnknownOutcomeContext?, reloadedStatus: String) -> Bool {
+    let reloaded = reloadedStatus.uppercased()
+    guard !reloaded.isEmpty, let context else { return false }
+    if context.action == .cancel, context.reviewedStatus.isEmpty { return false }
+    return outcomeResolved(action: context.action, reviewedStatus: context.reviewedStatus, reloadedStatus: reloaded)
 }
 func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStatus: String) -> Bool {
     switch action {
@@ -443,6 +456,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     @Published var cloudDeleteRefusal: CloudDeleteRefusal?
     @Published private(set) var unknownOutcomeOrderIDs: Set<String> = []
+    private(set) var unknownOutcomeContexts: [String: UnknownOutcomeContext] = [:]
     // MARK: Model library actions (see ModelLibraryActions.swift)
     /// Local model whose rename sheet is open; set from the context menu, inspector or Model menu.
     @Published var renamingModelID: UUID?
@@ -728,19 +742,29 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
         disabledPlatformsThisSession = []; deadWebhooks = [:]; componentCategories = []
         unknownOutcomeOrderIDs = []
+        unknownOutcomeContexts = [:]
     }
     private func resetAccountDataPreservingKey() {
         clearLoadedAccountDataKeepingCredentials()
         platformID = ""
         cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""
     }
-    func markOutcomeUnknown(orderID: String) {
+    func markOutcomeUnknown(orderID: String, action: OutcomeAction? = nil, reviewedStatus: String? = nil) {
         let id = orderID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return }
         unknownOutcomeOrderIDs.insert(id)
+        if let action {
+            unknownOutcomeContexts[id] = UnknownOutcomeContext(action: action, reviewedStatus: (reviewedStatus ?? "").uppercased())
+        } else {
+            unknownOutcomeContexts[id] = nil
+        }
     }
     func clearOutcomeUnknown(orderID: String) {
         unknownOutcomeOrderIDs.remove(orderID)
+        unknownOutcomeContexts[orderID] = nil
+    }
+    func unknownOutcomeContext(orderID: String) -> UnknownOutcomeContext? {
+        unknownOutcomeContexts[orderID]
     }
     func isOutcomeUnknown(orderID: String) -> Bool {
         unknownOutcomeOrderIDs.contains(orderID)

@@ -996,6 +996,8 @@ struct OrderActionConfirmSheet: View {
     var status: String? { fresh.flatMap { $0["status"] as? String } }
     var refundOnly: Bool { orderCancellationIsRefundOnly(status ?? "") }
     var mutationLock: (Bool, String?) { orderConfirmMutationSendAllowed(attempted: writeAttempted, succeeded: writeSucceeded) }
+    /// Set by an earlier Orders or Workbench attempt whose result is unknown; survives closing and reopening this sheet.
+    var sharedOutcomeLock: Bool { store.isOutcomeUnknown(orderID: orderID) }
     var finalActionEnabled: Bool {
         orderConfirmFinalActionEnabled(
             writeSucceeded: writeSucceeded,
@@ -1004,7 +1006,7 @@ struct OrderActionConfirmSheet: View {
             status: status,
             isPay: isPay,
             order: fresh
-        ) && !writing && !store.busy
+        ) && !writing && !store.busy && !sharedOutcomeLock
     }
     var sheetTitle: String {
         if isPay { return "Place this order?" }
@@ -1070,9 +1072,9 @@ struct OrderActionConfirmSheet: View {
                 Spacer()
                 if writeSucceeded {
                     EmptyView()
-                } else if writeAttempted {
+                } else if writeAttempted || sharedOutcomeLock {
                     VStack(alignment: .trailing, spacing: 6) {
-                        if let reason = mutationLock.1 {
+                        if let reason = writeAttempted ? mutationLock.1 : unknownOutcomeBlockMessage {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
                         Button("Reload order") { loadFresh(keepUnknownMessage: true) }
@@ -1123,8 +1125,16 @@ struct OrderActionConfirmSheet: View {
             var succeeded = false
             let ran = await store.run("Load order for review") {
                 let response = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
-                fresh = mergeOrderDraftEnvelope(responseObject(response))
+                let loaded = mergeOrderDraftEnvelope(responseObject(response))
+                fresh = loaded
                 succeeded = true
+                if store.isOutcomeUnknown(orderID: orderID),
+                   unknownOutcomeResolvedByReload(
+                       context: store.unknownOutcomeContext(orderID: orderID),
+                       reloadedStatus: (loaded["status"] as? String) ?? ""
+                   ) {
+                    store.clearOutcomeUnknown(orderID: orderID)
+                }
             }
             loadState = orderConfirmLoadStateAfterRun(succeeded: succeeded, skippedBusy: !ran)
             if !ran { awaitingBusy = true }
@@ -1134,7 +1144,7 @@ struct OrderActionConfirmSheet: View {
         }
     }
     func confirmAction() {
-        guard let shown = fresh, !writeSucceeded, !writeAttempted, !writing else { return }
+        guard let shown = fresh, !writeSucceeded, !writeAttempted, !writing, !sharedOutcomeLock else { return }
         actionMessage = nil
         writing = true
         let successRefundOnly = orderCancellationIsRefundOnly((shown["status"] as? String) ?? "")
@@ -1151,12 +1161,16 @@ struct OrderActionConfirmSheet: View {
                 latestOrder = latest
                 outcome = orderConfirmRecheck(method: method, shown: shown, latest: latest)
                 if let abort = orderConfirmRecheckAbortError(outcome) { throw abort }
+                if store.isOutcomeUnknown(orderID: orderID) { throw StudioError(unknownOutcomeBlockMessage) }
+                // Shared lock before the write: a timeout or 5xx leaves the charge/cancel outcome unknown.
+                store.markOutcomeUnknown(orderID: orderID, action: isPay ? .pay : .cancel, reviewedStatus: latest["status"] as? String)
                 attemptedWrite = true
                 writeAttempted = true
                 capturedRefundOnly = successRefundOnly
                 let mutateResponse = try await store.client.request(method, path: "/orders/\(encodedSegment(orderID))")
                 mutateOrder = mergeOrderDraftEnvelope(responseObject(mutateResponse))
                 didWrite = true
+                store.clearOutcomeUnknown(orderID: orderID)
                 do {
                     let refreshed = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
                     completedOrder = mergeOrderDraftEnvelope(responseObject(refreshed))

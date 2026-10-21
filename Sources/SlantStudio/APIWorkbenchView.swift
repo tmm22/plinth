@@ -386,7 +386,11 @@ struct EndpointView: View {
                     throw StudioError(message)
                 }
                 // Cross-sheet + sheet lock before the write — outcome may be unknown on timeout/5xx.
-                store.markOutcomeUnknown(orderID: orderID)
+                store.markOutcomeUnknown(
+                    orderID: orderID,
+                    action: request.endpoint.method == "POST" ? .pay : .cancel,
+                    reviewedStatus: fresh["status"] as? String
+                )
                 mutationAttempted = true
                 let response = try await store.client.request(request.endpoint.method, path: request.path, query: request.query, body: request.body)
                 wrote = true
