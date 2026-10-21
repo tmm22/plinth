@@ -34,8 +34,12 @@ Every task follows this process. Scale the number of agents to the size of the t
 - `ModelsView.swift`: model library, print configuration and the persistent next-action bar.
 - `OrdersView.swift`: order composition, duplicate-as-new-draft prefill, the discard check, delivery country defaults and the country list, review and fulfillment actions.
 - `ModelLibraryActions.swift`: model rename/export, cloud–local links, prepared-material mismatch, scale check and scaled copies, and menu helpers (Go shortcuts, modal-presentation guard).
+- `ModelPreview.swift`: the 3D preview, its dimension/build-volume labels and the STL parser (`STLMesh`).
+- `ModelFormats.swift`: OBJ and 3MF readers into `STLMesh` (units, build items, component transforms, production-extension parts) and the format-aware scale check. Keep their size, triangle, depth and placement limits.
+- `ZipArchive.swift`: minimal bounded ZIP reader (stored/DEFLATE, ZIP64, CRC, ratio cap) for 3MF packages.
+- `ModelFileOpening.swift`: Finder/Dock opens (queued until no modal UI or request is active), modal-guarded File menu actions, and STL copies of OBJ/3MF models.
 - `DeliveryLocation.swift`: optional one-shot location lookup and reviewed address mapping.
-- `scripts/build-app.sh`: app bundle metadata, including location permission purpose strings.
+- `scripts/build-app.sh`: app bundle metadata, including location permission purpose strings and the STL/OBJ/3MF document types.
 - `Tests/SlantStudioTests/`: workflow, API, UI-logic and geometry tests.
 
 ## Behaviour to preserve
@@ -49,7 +53,8 @@ Every task follows this process. Scale the number of agents to the size of the t
 - The unknown-outcome lock is shared between the Orders review sheet and the Workbench, and records the action and the status it was sent from.
   - Only these lift it: a confirmed success, a reload showing that recorded action's outcome, a definite HTTP 4xx refusal (not 408/409), or a failure before sending. Timeouts, transport errors and 5xx keep it.
   - This relies on both paths re-fetching the order before writing: pay requires DRAFT, and cancel requires an unchanged, cancellable status. Keep those checks.
-- No menu item or keyboard shortcut may upload, pay or cancel. Menu commands must do nothing while a sheet, alert or dialog is open.
+- No menu item or keyboard shortcut may upload, pay or cancel. Menu commands must do nothing while a sheet, alert or dialog is open. Files opened from Finder wait until nothing modal is shown and no request is running.
+- Geometry tools stay STL-only. OBJ/3MF models are previewed and uploaded in their original format; the tools work on a separate STL copy.
 - Geometry changes save separate copies and must retain existing validation; do not weaken checks to make tests pass.
 
 ## Documentation

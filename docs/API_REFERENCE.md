@@ -11,7 +11,7 @@ Verified 18 October 2026 from [official documentation](https://slant3dapi.com/do
 
 ## Upload and manufacture
 
-1. `POST /files/direct-upload` with `name`, `platformId` required; `ownerId` optional; `type` optional `stl` | `3mf` | `obj` (default `stl`). File records and `POST /files` use the same type set.
+1. `POST /files/direct-upload` with `name`, `platformId` required; `ownerId` optional; `type` optional `stl` | `3mf` | `obj` (default `stl`). File records and `POST /files` use the same type set. The guided Models upload sends the library file unchanged in its original format, omitting `type` for STL and sending `obj` or `3mf` otherwise. OBJ/3MF preview, unit conversion and **Save as STL Copy** are local only; Slant never receives the converted copy unless you upload it as its own model. Slant does not document how it handles 3MF units other than millimetres or files that place several objects.
 2. PUT raw bytes to `data.presignedUrl` without Authorization; retain `data.filePlaceholder` unchanged.
 3. `POST /files/confirm-upload` with `{ "filePlaceholder": <exact object> }`. Identifier is `publicFileServiceId`. Prefer `metrics` over deprecated `STLMetrics`.
 4. Estimate with `POST /files/{publicFileId}/estimate`. Draft with `platformId`, customer details/address, and items.
@@ -156,4 +156,4 @@ Guided = dedicated Models / Orders / Connection UI. Workbench = API Workbench. U
 | — | Refund order (docs only) | | | Yes | Not in OpenAPI |
 | — | Customer create / checkout | | | Yes | Docs: not available |
 
-Not yet guided (Workbench only): file metadata edits, owner/platform file lists, file and order batch lookups, OpenSCAD generation, Stripe public key, component search/detail and the custom webhook receiver. Possible later guided work: richer tracking, refunds UX if/when the API exposes it, and multi-format upload pickers in Models.
+Not yet guided (Workbench only): file metadata edits, owner/platform file lists, file and order batch lookups, OpenSCAD generation, Stripe public key, component search/detail and the custom webhook receiver. Possible later guided work: richer tracking and refunds UX if/when the API exposes it. The Models import panel, drag and drop, Finder **Open With** and URL import already accept STL, OBJ and 3MF.

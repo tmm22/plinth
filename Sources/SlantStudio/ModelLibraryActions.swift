@@ -140,9 +140,11 @@ struct ScaleSuggestion: Equatable, Identifiable {
 struct ScaleWarning: Equatable {
     let largestMM: Float
     let suggestions: [ScaleSuggestion]
+    /// The unitless format the model was read from (STL or OBJ).
+    var formatName = "STL"
     var message: String {
         let size = String(format: "%.2f", largestMM)
-        return "The largest dimension is \(size) mm. STL files don’t record units and Slant reads them as millimetres, so this would print at \(size) mm. It may have been exported in inches, centimetres or metres."
+        return "The largest dimension is \(size) mm. \(formatName) files don’t record units and Slant reads them as millimetres, so this would print at \(size) mm. It may have been exported in inches, centimetres or metres."
     }
 }
 
@@ -160,9 +162,10 @@ func scaleWarning(extentMM: SIMD3<Float>) -> ScaleWarning? {
     return ScaleWarning(largestMM: largest, suggestions: suggestions)
 }
 
-/// Scaled copies are only offered for plain imports, whose records don't carry dimension-dependent data.
+/// Scaled copies are only offered for plain imports, whose records don't carry dimension-dependent data. The copy is
+/// always a binary STL, so an OBJ or 3MF original is kept as it is.
 func canSaveScaledCopy(_ model: LocalModel) -> Bool {
-    model.supportsPreview && model.printRecipe == nil && model.designImprovement == nil
+    model.supportsMeshPreview && model.printRecipe == nil && model.designImprovement == nil
         && model.reinforcement == nil && model.autoImprovement == nil
 }
 
