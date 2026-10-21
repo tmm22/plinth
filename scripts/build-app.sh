@@ -34,6 +34,14 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <key>NSLocationUsageDescription</key><string>Use your current location to suggest a delivery address when you choose Use current location. You review the address before using it.</string>
 <key>NSLocationWhenInUseUsageDescription</key><string>Use your current location to suggest a delivery address when you choose Use current location. You review the address before using it.</string>
 <key>NSHumanReadableCopyright</key><string>Independent client. Not affiliated with Slant 3D.</string>
+<key>CFBundleDocumentTypes</key><array>
+<dict><key>CFBundleTypeName</key><string>STL Model</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.standard-tesselated-geometry-format</string></array></dict>
+<dict><key>CFBundleTypeName</key><string>OBJ Model</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.geometry-definition-format</string></array></dict>
+<dict><key>CFBundleTypeName</key><string>3MF Model</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>io.3mf.3mf</string></array></dict>
+</array>
+<key>UTImportedTypeDeclarations</key><array>
+<dict><key>UTTypeIdentifier</key><string>io.3mf.3mf</string><key>UTTypeDescription</key><string>3D Manufacturing Format</string><key>UTTypeConformsTo</key><array><string>public.data</string><string>public.3d-content</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>3mf</string></array><key>public.mime-type</key><array><string>model/3mf</string></array></dict></dict>
+</array>
 </dict></plist>
 PLIST
 

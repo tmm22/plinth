@@ -62,7 +62,10 @@ struct LocalModel: Codable, Identifiable {
     var url: URL { URL(fileURLWithPath: filePath) }
     /// Copies whose features depend on the print layers must stay Z up.
     var requiresZUp: Bool { reinforcement?.requiresZUp == true || autoImprovement?.requiresZUp == true }
+    /// STL only: read by `STLMesh.read` and accepted by the orientation, edge, reinforcement and auto-improve tools.
     var supportsPreview: Bool { url.pathExtension.lowercased() == "stl" }
+    /// STL, OBJ and 3MF: shown in the 3D preview with dimensions and the build-volume check.
+    var supportsMeshPreview: Bool { ModelFileFormat(url: url) != nil }
 }
 struct CloudDeleteRefusal: Identifiable, Equatable {
     let fileID: String

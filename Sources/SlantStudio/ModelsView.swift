@@ -351,6 +351,8 @@ struct ModelsView: View {
                 if let local = store.selectedLocal {
                     ModelPreview(url: local.url, showsPrintBed: local.printRecipe != nil) { url, mesh in
                         previewMesh = mesh.map { LoadedPreviewMesh(url: url, mesh: $0) }
+                    } onSaveSTLCopy: { mesh in
+                        await store.saveSTLCopy(of: local.id, mesh: mesh)
                     }
                     .frame(height: 260)
                 } else {
@@ -447,7 +449,7 @@ struct ModelsView: View {
     @ViewBuilder
     private var scaleNoticeBlock: some View {
         if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url,
-           let warning = scaleWarning(extentMM: loaded.mesh.maximum - loaded.mesh.minimum) {
+           let warning = scaleWarning(extentMM: loaded.mesh.maximum - loaded.mesh.minimum, fileExtension: local.url.pathExtension) {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Check this model’s scale", systemImage: "exclamationmark.triangle.fill")
@@ -728,7 +730,7 @@ struct ModelsView: View {
     }
     private var inspectorSubtitle: String {
         if let local = store.selectedLocal {
-            return local.supportsPreview ? "STL MODEL · LOCAL PREVIEW" : "MODEL · LOCAL"
+            return ModelFileFormat(url: local.url).map { "\($0.displayName) MODEL · LOCAL PREVIEW" } ?? "MODEL · LOCAL"
         }
         return "MODEL INSPECTOR"
     }

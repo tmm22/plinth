@@ -179,7 +179,9 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertTrue(canSaveScaledCopy(model))
         model.printRecipe = PreparedPrintRecipe(sourceID: UUID(), sourceName: "src", intent: PartIntent(), orientation: .zUp, materialID: nil, created: Date())
         XCTAssertFalse(canSaveScaledCopy(model))
-        XCTAssertFalse(canSaveScaledCopy(LocalModel(name: "Mesh", filePath: "/tmp/mesh.obj")))
+        // OBJ now previews, so a tiny OBJ can be saved as a scaled STL copy; files without a preview still can't.
+        XCTAssertTrue(canSaveScaledCopy(LocalModel(name: "Mesh", filePath: "/tmp/mesh.obj")))
+        XCTAssertFalse(canSaveScaledCopy(LocalModel(name: "Mesh", filePath: "/tmp/mesh.step")))
         XCTAssertEqual(scaledCopyName("Bracket", factor: 25.4), "Bracket-scaled-x25.4")
         XCTAssertEqual(scaledCopyName("Bracket", factor: 0.001), "Bracket-scaled-x0.001")
     }

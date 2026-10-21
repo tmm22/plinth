@@ -7,28 +7,51 @@ struct ModelPreview: View {
     var showsPrintBed = false
     /// Reports the parsed mesh (or nil) for the URL just loaded, so callers can check it without parsing again.
     var onMeshChange: ((URL, STLMesh?) -> Void)? = nil
-    @State private var mesh: STLMesh?
+    /// Offered for OBJ and 3MF previews: saves the previewed geometry as a separate STL copy for the geometry tools.
+    var onSaveSTLCopy: ((STLMesh) async -> Void)? = nil
+    @State private var model: PreviewModel?
     @State private var failure: String?
     @State private var isLoading = false
+    @State private var savingCopy = false
 
     var body: some View {
         ZStack {
             Color(nsColor: .controlBackgroundColor)
-            if let mesh {
-                STLSceneView(mesh: mesh, showsPrintBed: showsPrintBed)
+            if let model {
+                STLSceneView(mesh: model.mesh, showsPrintBed: showsPrintBed)
                 VStack {
                     Spacer()
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Label("Drag to orbit · Scroll to zoom", systemImage: "rotate.3d")
                             Spacer(minLength: 8)
-                            Text("\(mesh.triangleCount.formatted()) triangles")
+                            Text("\(model.mesh.triangleCount.formatted()) triangles")
                         }
-                        if let footprint = meshFootprint(mesh) {
-                            Text(footprintLabel(footprint))
-                            if exceedsSlantBuildVolume(footprint) {
-                                Label("Larger than Slant’s 220 mm build volume", systemImage: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
+                        Text(previewDimensionsLabel(model))
+                        if let warning = previewBuildVolumeWarning(model) {
+                            Label(warning, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        if let notice = multipleObjectsNotice(objectCount: model.objectCount) {
+                            Label(notice, systemImage: "square.stack.3d.up")
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if model.format != .stl, let onSaveSTLCopy {
+                            HStack {
+                                Text("Orientation, edge and reinforcement tools work on STL files.")
+                                Spacer(minLength: 8)
+                                Button("Save as STL Copy") {
+                                    guard !savingCopy else { return }
+                                    savingCopy = true
+                                    let mesh = model.mesh
+                                    Task {
+                                        await onSaveSTLCopy(mesh)
+                                        savingCopy = false
+                                    }
+                                }
+                                .controlSize(.small)
+                                .disabled(savingCopy)
+                                .help("Adds a separate STL copy to your library. This \(model.format.displayName) file is kept as it is.")
                             }
                         }
                     }
@@ -43,40 +66,55 @@ struct ModelPreview: View {
                 ContentUnavailableView {
                     Label(failure == nil ? "Model preview" : "Preview unavailable", systemImage: "cube.transparent")
                 } description: {
-                    Text(failure ?? "Choose an STL file to inspect it in 3D.")
+                    Text(failure ?? "Choose an STL, OBJ or 3MF file to inspect it in 3D.")
                 }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .task(id: url) {
-            mesh = nil
+            model = nil
             failure = nil
             guard let url else { isLoading = false; return }
             if !supportsLocalPreview(url) {
-                failure = nonSTLPreviewMessage
+                failure = unsupportedPreviewMessage
                 isLoading = false
                 return
             }
             isLoading = true
             let worker = Task.detached(priority: .userInitiated) {
-                Result { try STLMesh.read(from: url) }
+                Result { try loadPreviewModel(from: url) }
             }
             let result = await worker.value
             guard !Task.isCancelled else { return }
             switch result {
-            case .success(let loaded): mesh = loaded
+            case .success(let loaded): model = loaded
             case .failure(let error): failure = error.localizedDescription
             }
             isLoading = false
-            onMeshChange?(url, mesh)
+            onMeshChange?(url, model?.mesh)
         }
     }
 }
 
-let nonSTLPreviewMessage = "Preview is available for STL files. This model can still be uploaded, estimated and ordered."
+let unsupportedPreviewMessage = "Preview is available for STL, OBJ and 3MF files."
 
 func supportsLocalPreview(_ url: URL) -> Bool {
-    url.pathExtension.lowercased() == "stl"
+    ModelFileFormat(url: url) != nil
+}
+
+/// Overall dimensions; a file with several placed objects is labelled as the overall layout.
+func previewDimensionsLabel(_ model: PreviewModel) -> String {
+    let extent = model.mesh.maximum - model.mesh.minimum
+    let label = footprintLabel((extent.x, extent.y, extent.z))
+    return model.objectCount > 1 ? "Overall \(label)" : label
+}
+
+/// Checks each placed object, so objects spread across a plate aren't flagged as one oversized part.
+func previewBuildVolumeWarning(_ model: PreviewModel) -> String? {
+    guard previewExceedsBuildVolume(model) else { return nil }
+    return model.partExtents.count > 1
+        ? "An object is larger than Slant’s 220 mm build volume"
+        : "Larger than Slant’s 220 mm build volume"
 }
 
 /// Bounding box in model units when a mesh is available; nil when there is no preview mesh.
@@ -198,7 +236,8 @@ struct STLMesh: Sendable {
         return try validated(vertices)
     }
 
-    private static func validated(_ vertices: [Float]) throws -> STLMesh {
+    /// Requires finite, bounded coordinates and a non-flat bounding box; shared with the OBJ and 3MF readers.
+    static func validated(_ vertices: [Float]) throws -> STLMesh {
         guard !vertices.isEmpty else { throw ParseError.empty }
         var low = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var high = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
