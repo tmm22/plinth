@@ -150,6 +150,24 @@ final class ModelThumbnailAndTrashTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: original.path))
     }
 
+    func testFailedTrashThatCannotMoveBackKeepsTheFile() throws {
+        let original = try libraryFile()
+        let originalData = try Data(contentsOf: original)
+        let staging = root.appendingPathComponent("Removed", isDirectory: true)
+        struct NoTrash: Error {}
+        // Trashing fails and something now occupies the library location, so the file can't move back.
+        XCTAssertThrowsError(try moveLibraryFileToTrash(original, displayName: "Bracket", stagingRoot: staging, trash: { _ in
+            try Data([7]).write(to: original)
+            throw NoTrash()
+        })) { error in
+            guard case LibraryTrashError.keptAt(let path, _)? = error as? LibraryTrashError else {
+                return XCTFail("expected keptAt, got \(error)")
+            }
+            XCTAssertEqual(try? Data(contentsOf: URL(fileURLWithPath: path)), originalData, "the model file survives in staging")
+        }
+        XCTAssertEqual(try Data(contentsOf: original), Data([7]), "the occupying file is never overwritten")
+    }
+
     func testRestoreRefusesWhenTrashEmptiedOrDestinationTaken() throws {
         let original = try libraryFile()
         let trashed = try moveLibraryFileToTrash(original, displayName: "Bracket", stagingRoot: root.appendingPathComponent("Removed"), trash: fakeTrash)

@@ -20,8 +20,12 @@ struct RemovedLibraryModel {
 enum LibraryTrashError: LocalizedError {
     case notInTrash(String)
     case destinationOccupied(String)
+    /// Trashing failed and the file couldn't be moved back; it is kept, renamed, at this path.
+    case keptAt(path: String, underlying: String)
     var errorDescription: String? {
         switch self {
+        case .keptAt(let path, let underlying):
+            return "\(underlying) Its file couldn’t be moved back into the library and is kept at \(path)."
         case .notInTrash(let name):
             return "“\(name)” couldn’t be restored because its file is no longer in the Trash. If you still have it, import it again."
         case .destinationOccupied(let name):
@@ -46,22 +50,30 @@ func moveLibraryFileToTrash(_ url: URL, displayName: String, stagingRoot: URL,
     let folder = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try manager.createDirectory(at: folder, withIntermediateDirectories: true)
     let named = folder.appendingPathComponent(exportFileName(modelName: displayName, fileExtension: url.pathExtension))
+    // Only ever delete the staging folder when it is empty, so a failure can never take the library file with it.
+    func removeFolderIfEmpty() {
+        if (try? manager.contentsOfDirectory(atPath: folder.path))?.isEmpty == true { try? manager.removeItem(at: folder) }
+    }
     do {
         try manager.moveItem(at: url, to: named)
     } catch {
-        try? manager.removeItem(at: folder)
+        removeFolderIfEmpty()
         throw error
     }
     let trashed: URL?
     do {
         trashed = try trash(named)
     } catch {
-        try? manager.moveItem(at: named, to: url)
-        try? manager.removeItem(at: folder)
+        do {
+            try manager.moveItem(at: named, to: url)
+        } catch {
+            removeFolderIfEmpty()
+            throw LibraryTrashError.keptAt(path: named.path, underlying: error.localizedDescription)
+        }
+        removeFolderIfEmpty()
         throw error
     }
-    // Leave the (now empty) staging folder only if something is still in it.
-    if (try? manager.contentsOfDirectory(atPath: folder.path))?.isEmpty == true { try? manager.removeItem(at: folder) }
+    removeFolderIfEmpty()
     return TrashedLibraryFile(trashedURL: trashed, putBackURL: named)
 }
 

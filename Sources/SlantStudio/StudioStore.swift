@@ -608,8 +608,20 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         saveModels()
         activities.insert(Activity(title: "Remove from library", detail: model.name, success: true), at: 0)
         let removed = RemovedLibraryModel(model: model, index: index, wasSelected: wasSelected, file: trashed)
+        registerRestoreUndo(removed, undoManager: undoManager)
+    }
+    /// Edit › Undo is a menu command, so like the others it does nothing while a sheet, alert or panel is up.
+    /// A blocked undo is put back on the undo stack once the current undo finishes, so it isn't lost.
+    private func registerRestoreUndo(_ removed: RemovedLibraryModel, undoManager: UndoManager?) {
         undoManager?.registerUndo(withTarget: self) { [weak undoManager] store in
-            MainActor.assumeIsolated { store.restoreRemovedModel(removed, undoManager: undoManager) }
+            MainActor.assumeIsolated {
+                guard !store.menuCommandsBlockedByModalUI else {
+                    NSSound.beep()
+                    DispatchQueue.main.async { store.registerRestoreUndo(removed, undoManager: undoManager) }
+                    return
+                }
+                store.restoreRemovedModel(removed, undoManager: undoManager)
+            }
         }
         undoManager?.setActionName("Remove from Library")
     }
@@ -628,6 +640,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         let id = entry.model.id
         undoManager?.registerUndo(withTarget: self) { [weak undoManager] store in
             MainActor.assumeIsolated {
+                // Redo is a menu command too: refuse it over modal UI (the model simply stays in the library).
+                guard !store.menuCommandsBlockedByModalUI else { NSSound.beep(); return }
                 // An upload may be reading the file; the confirmed removal path is disabled then too.
                 guard !store.busy else { store.showError("Wait for the current task to finish, then remove “\(entry.model.name)” again."); return }
                 store.removeLocalModel(id: id, undoManager: undoManager)
