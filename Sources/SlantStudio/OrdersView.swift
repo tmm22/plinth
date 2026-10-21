@@ -126,15 +126,19 @@ func orderLinesUseUnavailableMaterial(_ lines: [OrderLine], filaments: [Record])
 }
 
 let orderCountryOtherTag = "__OTHER__"
-let orderCountryChoices: [(code: String, name: String)] = [
-    ("US", "United States"), ("CA", "Canada"), ("GB", "United Kingdom"), ("AU", "Australia"),
-    ("NZ", "New Zealand"), ("IE", "Ireland"), ("DE", "Germany"), ("FR", "France"),
-    ("NL", "Netherlands"), ("JP", "Japan")
-]
+/// Shortlisted countries, in this order, above the full list.
+let orderCountryShortlistCodes = ["US", "CA", "GB", "AU", "NZ", "IE", "DE", "FR", "NL", "JP"]
+/// The shortlist with names localized like the full list.
+func orderCountryShortlist(locale: Locale = .current) -> [(code: String, name: String)] {
+    orderCountryShortlistCodes.map { (code: $0, name: locale.localizedString(forRegionCode: $0) ?? $0) }
+}
+let orderCountryChoices = orderCountryShortlist()
 /// Region is a convenient editable default, not a claim about the user's physical location.
 func defaultDeliveryCountry(regionCode: String? = Locale.current.region?.identifier) -> (selection: String, customCode: String) {
-    let code = (regionCode ?? "").uppercased()
-    guard isCountryCode(code), Locale.Region.isoRegions.contains(where: { $0.identifier == code }) else {
+    let code = (regionCode ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    // Codes such as "EU" or "UN" are ISO regions but not delivery countries; leave the country unselected.
+    guard isCountryCode(code), !orderNonCountryRegionCodes.contains(code),
+          Locale.Region.isoRegions.contains(where: { $0.identifier == code }) else {
         return ("", "")
     }
     if orderCountryChoices.contains(where: { $0.code == code }) { return (code, "") }
@@ -182,12 +186,17 @@ struct OrderComposerView: View {
     @State private var sourceOrderNumber: String?
     @State private var skippedItems: [String] = []
     @State private var deliveryCopied = true
+    @State private var platformNotCopied = false
+    @State private var initialShippingProvider = ""
+    @State private var initialDraftPlatformID = ""
     @State private var confirmDiscard = false
 
     var hasUnsavedInput: Bool {
         orderComposerHasUnsavedInput(
             lines: lines, initialLines: initialLines, delivery: delivery, initialDelivery: initialDelivery,
-            metadataFields: metadataFields, paymentID: paymentID
+            metadataFields: metadataFields, paymentID: paymentID,
+            shippingProvider: shippingProvider, initialShippingProvider: initialShippingProvider,
+            platformID: draftPlatformID, initialPlatformID: initialDraftPlatformID
         )
     }
     var emailFieldError: String? {
@@ -226,6 +235,12 @@ struct OrderComposerView: View {
                     }
                     if !deliveryCopied {
                         Text("This order had no delivery details to copy. Enter them below.").font(.callout).foregroundStyle(.orange)
+                    }
+                    if platformNotCopied {
+                        Text(initialDraftPlatformID.isEmpty
+                             ? "This order’s platform isn’t in your platform list. Choose a platform under More options."
+                             : "This order’s platform isn’t in your platform list, so the draft uses your current platform. Check it under More options.")
+                            .font(.callout).foregroundStyle(.orange)
                     }
                     if !skippedItems.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
@@ -418,7 +433,7 @@ struct OrderComposerView: View {
                     .help(lines.count < 2 ? "An order needs at least one item." : "Remove item")
                     .disabled(lines.count < 2)
             }
-            if let warning = largeQuantityComposerWarning(item.wrappedValue.quantity) {
+            if let warning = largeQuantityNotice(item.wrappedValue.quantity) {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
@@ -547,9 +562,13 @@ struct OrderComposerView: View {
         let prefill = store.pendingOrderPrefill
         store.pendingOrderPrefill = nil
         if let prefill {
-            // Keep the source order's platform unless the loaded list shows it is no longer available.
-            if let platform = prefill.platformID, store.platforms.isEmpty || store.platforms.contains(where: { $0.id == platform }) {
-                draftPlatformID = platform
+            // Keep the source order's platform unless the loaded list shows it is no longer available; say so if it isn't.
+            if let platform = prefill.platformID {
+                if store.platforms.isEmpty || store.platforms.contains(where: { $0.id == platform }) {
+                    draftPlatformID = platform
+                } else {
+                    platformNotCopied = platform != draftPlatformID
+                }
             }
             sourceOrderNumber = prefill.sourceOrderNumber
             skippedItems = prefill.skippedItems
@@ -578,6 +597,8 @@ struct OrderComposerView: View {
         initialLines = seededLines
         delivery = seededDeliveryDetails
         initialDelivery = seededDeliveryDetails
+        initialShippingProvider = shippingProvider
+        initialDraftPlatformID = draftPlatformID
     }
 
     func requestClose() {
@@ -723,7 +744,7 @@ struct OrdersView: View {
                     if ids.count == 1, let id = ids.first, let record = store.orders.first(where: { $0.id == id }) {
                         Button("Duplicate as New Draft…") { Task { await store.duplicateOrderAsDraft(orderID: id) } }
                             .disabled(store.duplicateOrderBlockedReason(orderID: id) != nil)
-                        Button("Copy Order ID") { copyToPasteboard(orderNumber(orderObject(record.values))) }
+                        Button("Copy Order Number") { copyToPasteboard(orderNumber(orderObject(record.values))) }
                     }
                 }
                 .overlay {
@@ -1037,10 +1058,6 @@ struct OrderActionConfirmSheet: View {
                         Text("Status: \(orderStatusTitle(status ?? ""))")
                         if let items = order["items"] as? [[String: Any]], !items.isEmpty {
                             // Visual fat-finger check only; the explicit Pay confirmation below is unchanged.
-                            if isPay, let warning = largeQuantityReviewWarning(items) {
-                                Label(warning, systemImage: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange).fontWeight(.semibold)
-                            }
                             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                                 let text = "\(item["quantity"].map { String(describing: $0) } ?? "1") × \(orderItemDisplayName(item))"
                                 if isPay, orderItemHasLargeQuantity(item) {
@@ -1635,7 +1652,11 @@ func orderLinesForReorder(_ order: Record) -> (lines: [OrderLine], skipped: [Str
         var line = OrderLine()
         line.type = type
         line.reference = reference
-        if let quantity = orderItemQuantity(item), quantity > 0 { line.quantity = quantity }
+        if let quantity = orderItemQuantity(item), quantity > 0 {
+            line.quantity = quantity
+        } else {
+            skipped.append("\(title): quantity not copied, set to 1. Check it before creating the draft.")
+        }
         line.name = reorderField(item, ["name"], nested: nested)
         line.sku = reorderField(item, ["SKU", "sku"], nested: nested)
         if type == "PRINT" { line.filamentID = reorderField(item, ["filamentId"], nested: nested) }
@@ -1661,7 +1682,7 @@ func orderCountrySelection(fromAddressCountry value: Any?, locale: Locale = .cur
     guard !trimmed.isEmpty else { return ("", "") }
     if isCountryCode(trimmed) { return defaultDeliveryCountry(regionCode: trimmed) }
     let english = Locale(identifier: "en_US")
-    for region in Locale.Region.isoRegions where isCountryCode(region.identifier) {
+    for region in Locale.Region.isoRegions where isCountryCode(region.identifier) && !orderNonCountryRegionCodes.contains(region.identifier) {
         let code = region.identifier
         for candidate in [english, locale] {
             if let name = candidate.localizedString(forRegionCode: code),
@@ -1760,15 +1781,19 @@ func orderLinesHaveSameContent(_ lhs: [OrderLine], _ rhs: [OrderLine]) -> Bool {
     }
 }
 
-/// True when closing the composer would lose something the user entered: lines or delivery changed from what the
-/// form opened with, or metadata / payment ID typed.
+/// True when closing the composer would lose something the user entered: lines, delivery, shipping provider or
+/// platform changed from what the form opened with, or metadata / payment ID typed.
 func orderComposerHasUnsavedInput(
     lines: [OrderLine], initialLines: [OrderLine],
     delivery: DeliveryDetails, initialDelivery: DeliveryDetails,
-    metadataFields: [OrderMetadataField], paymentID: String
+    metadataFields: [OrderMetadataField], paymentID: String,
+    shippingProvider: String = "", initialShippingProvider: String = "",
+    platformID: String = "", initialPlatformID: String = ""
 ) -> Bool {
     if !orderLinesHaveSameContent(lines, initialLines) { return true }
     if delivery != initialDelivery { return true }
+    if shippingProvider != initialShippingProvider { return true }
+    if platformID.trimmingCharacters(in: .whitespacesAndNewlines) != initialPlatformID.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
     if metadataFields.contains(where: { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { return true }
     return !paymentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 }
@@ -1790,17 +1815,10 @@ func orderItemHasLargeQuantity(_ item: [String: Any], threshold: Int = orderLarg
     orderItemQuantity(item).map { isLargeOrderQuantity($0, threshold: threshold) } ?? false
 }
 
-/// Review-sheet banner text when any item quantity is unusually high.
-func largeQuantityReviewWarning(_ items: [[String: Any]], threshold: Int = orderLargeQuantityThreshold) -> String? {
-    let count = items.filter { orderItemHasLargeQuantity($0, threshold: threshold) }.count
-    guard count > 0 else { return nil }
-    let subject = count == 1 ? "1 item has" : "\(count) items have"
-    return "Check quantities: \(subject) a quantity of \(threshold) or more."
-}
-
-func largeQuantityComposerWarning(_ quantity: Int, threshold: Int = orderLargeQuantityThreshold) -> String? {
+/// Neutral notice shown under a quantity at or above the threshold (order composer and Models print configuration).
+func largeQuantityNotice(_ quantity: Int, threshold: Int = orderLargeQuantityThreshold) -> String? {
     guard isLargeOrderQuantity(quantity, threshold: threshold) else { return nil }
-    return "Quantity \(quantity) is unusually high. Check it before creating the draft."
+    return "Large quantity (\(quantity)) — check for an extra zero."
 }
 
 // MARK: - Complete country list

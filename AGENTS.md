@@ -4,7 +4,7 @@ Slant Studio is a native SwiftUI macOS 14+ app built with Swift Package Manager.
 
 ## Build and verify
 
-- Run `swift test` for the full suite. For model/order/location UI logic, use `swift test --filter 'ModelsUXTests|OrdersUXTests|ShellUXTests|DeliveryLocationTests'`.
+- Run `swift test` for the full suite. For model/order/location UI logic, use `swift test --filter 'ModelsUXTests|OrdersUXTests|ShellUXTests|DeliveryLocationTests|ModelLibraryActionsTests|UnknownOutcomeLockTests'`.
 - Run `./scripts/build-app.sh` to build and ad-hoc sign `dist/Slant Studio.app`. The script verifies the bundle signature and packages resources and the Euclid licence.
 - Run SwiftPM builds and tests sequentially; do not edit source files during compilation.
 - Report failing tests and unverified live flows explicitly. A successful targeted suite does not establish that the full suite passes.
@@ -14,7 +14,8 @@ Slant Studio is a native SwiftUI macOS 14+ app built with Swift Package Manager.
 
 - `StudioStore.swift`: shared state, API workflows, delivery details and persistence.
 - `ModelsView.swift`: model library, print configuration and the persistent next-action bar.
-- `OrdersView.swift`: order composition, delivery country defaults, review and fulfillment actions.
+- `OrdersView.swift`: order composition, duplicate-as-new-draft prefill, the discard check, delivery country defaults and the country list, review and fulfillment actions.
+- `ModelLibraryActions.swift`: model rename/export, cloud–local links, prepared-material mismatch, scale check and scaled copies, and menu helpers (Go shortcuts, modal-presentation guard).
 - `DeliveryLocation.swift`: optional one-shot location lookup and reviewed address mapping.
 - `scripts/build-app.sh`: app bundle metadata, including location permission purpose strings.
 - `Tests/SlantStudioTests/`: workflow, API, UI-logic and geometry tests.

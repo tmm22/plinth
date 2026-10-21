@@ -166,6 +166,39 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertEqual(orderCountryOtherTag, "__OTHER__")
     }
 
+    func testCountryShortlistIsLocalizedAndKeepsOrder() {
+        let order = ["US", "CA", "GB", "AU", "NZ", "IE", "DE", "FR", "NL", "JP"]
+        for identifier in ["en_US", "de_DE", "ja_JP"] {
+            let locale = Locale(identifier: identifier)
+            let shortlist = orderCountryShortlist(locale: locale)
+            XCTAssertEqual(shortlist.map(\.code), order, identifier)
+            for entry in shortlist {
+                XCTAssertEqual(entry.name, locale.localizedString(forRegionCode: entry.code), "\(identifier) \(entry.code)")
+            }
+        }
+        XCTAssertEqual(orderCountryShortlist(locale: Locale(identifier: "en_US")).first?.name, "United States")
+        XCTAssertEqual(orderCountryShortlist(locale: Locale(identifier: "de_DE")).first { $0.code == "DE" }?.name, "Deutschland")
+        XCTAssertEqual(orderCountryChoices.map(\.code), order)
+    }
+
+    func testNonCountryRegionCodesStayUnselectedNeverUS() {
+        for code in ["EU", "eu", "UN", "EZ", "QO", "AC", "IC"] {
+            let country = defaultDeliveryCountry(regionCode: code)
+            XCTAssertEqual(country.selection, "", code)
+            XCTAssertEqual(country.customCode, "", code)
+            let fromSlant = orderCountrySelection(fromAddressCountry: code, locale: Locale(identifier: "en_US"))
+            XCTAssertEqual(fromSlant.selection, "", code)
+            XCTAssertEqual(fromSlant.customCode, "", code)
+        }
+        let english = Locale(identifier: "en_US")
+        for name in ["European Union", "United Nations", "Eurozone"] {
+            XCTAssertEqual(orderCountrySelection(fromAddressCountry: name, locale: english).selection, "", name)
+        }
+        let address: [String: Any] = ["name": "Pat", "line1": "1 Road", "city": "Town", "zip": "123", "country": "EU"]
+        let delivery = deliveryDetails(fromOrder: ["customer": ["details": ["email": "p@example.com", "address": address]]])
+        XCTAssertEqual(delivery.map(orderCountryPickerValue), "")
+    }
+
     func testOrderObjectUnwrapsEnvelopeForSummaryAndTracking() {
         let envelope: [String: Any] = [
             "order": [
@@ -431,8 +464,10 @@ final class OrdersUXTests: XCTestCase {
             ["type": "STATIONERY", "stationeryItem": ["stationeryId": "card-2", "stationeryName": "Card", "imageUrl": "http://insecure.example/a.png"]]
         ]]])
         let result = orderLinesForReorder(order)
-        XCTAssertEqual(result.skipped, [])
+        // Every item is copied; the stationery item had no quantity, which is called out rather than silently set.
+        XCTAssertEqual(result.skipped, ["“Card”: quantity not copied, set to 1. Check it before creating the draft."])
         XCTAssertEqual(result.lines.map(\.type), ["PRINT", "COMPONENT", "STATIONERY"])
+        XCTAssertEqual(result.lines[2].quantity, 1)
         XCTAssertEqual(result.lines[0].reference, "file-2")
         XCTAssertEqual(result.lines[0].filamentID, "fil-2")
         XCTAssertEqual(result.lines[0].quantity, 4)
@@ -540,6 +575,25 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertEqual(deliveryDetails(fromOrder: ["customer": ["details": ["name": "Fallback", "address": ["line1": "x"]]]])?.name, "Fallback")
     }
 
+    func testReorderQuantityNotCopiedIsExplained() {
+        let order = Record(values: ["items": [
+            ["type": "PRINT", "publicFileServiceId": "ok", "name": "Good", "quantity": 3],
+            ["type": "PRINT", "publicFileServiceId": "missing", "name": "Missing"],
+            ["type": "PRINT", "publicFileServiceId": "fraction", "name": "Fraction", "quantity": 2.5],
+            ["type": "PRINT", "publicFileServiceId": "text", "name": "Text", "quantity": "lots"],
+            ["type": "PRINT", "publicFileServiceId": "zero", "name": "Zero", "quantity": 0]
+        ]])
+        let mapped = orderLinesForReorder(order)
+        XCTAssertEqual(mapped.lines.map(\.reference), ["ok", "missing", "fraction", "text", "zero"], "items are still copied")
+        XCTAssertEqual(mapped.lines.map(\.quantity), [3, 1, 1, 1, 1])
+        XCTAssertEqual(mapped.skipped.count, 4)
+        for (name, note) in zip(["Missing", "Fraction", "Text", "Zero"], mapped.skipped) {
+            XCTAssertTrue(note.contains("“\(name)”"), note)
+            XCTAssertTrue(note.contains("quantity not copied, set to 1"), note)
+        }
+        XCTAssertFalse(mapped.skipped.contains { $0.contains("Good") })
+    }
+
     func testComposerPrefillForReorderCarriesSourceAndProvider() {
         let order = Record(values: [
             "publicId": "SLANT_9", "platformId": "plat-1", "options": ["shippingProvider": "shippo"],
@@ -627,6 +681,25 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertTrue(orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: empty, initialDelivery: empty, metadataFields: [], paymentID: "pay_1"))
     }
 
+    func testUnsavedInputIncludesShippingProviderAndPlatform() {
+        let lines = [OrderLine(reference: "f", filamentID: "m", quantity: 2)]
+        let delivery = DeliveryDetails(email: "a@example.com", name: "A", countrySelection: "GB")
+        func unsaved(provider: String, initialProvider: String, platform: String, initialPlatform: String) -> Bool {
+            orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: delivery, initialDelivery: delivery,
+                                         metadataFields: [], paymentID: "",
+                                         shippingProvider: provider, initialShippingProvider: initialProvider,
+                                         platformID: platform, initialPlatformID: initialPlatform)
+        }
+        // A duplicate opens with both seeded; leaving them alone closes without a prompt.
+        XCTAssertFalse(unsaved(provider: "SHIPPO", initialProvider: "SHIPPO", platform: "plat-1", initialPlatform: "plat-1"))
+        // An untouched new draft.
+        XCTAssertFalse(unsaved(provider: "", initialProvider: "", platform: "", initialPlatform: ""))
+        XCTAssertTrue(unsaved(provider: "", initialProvider: "SHIPPO", platform: "plat-1", initialPlatform: "plat-1"))
+        XCTAssertTrue(unsaved(provider: "SHIPSTATION", initialProvider: "", platform: "plat-1", initialPlatform: "plat-1"))
+        XCTAssertTrue(unsaved(provider: "SHIPPO", initialProvider: "SHIPPO", platform: "plat-2", initialPlatform: "plat-1"))
+        XCTAssertTrue(unsaved(provider: "", initialProvider: "", platform: "plat-1", initialPlatform: ""))
+    }
+
     func testAppliedLocationSuggestionCountsAsUnsavedInput() {
         let start = DeliveryDetails(email: "a@example.com", name: "A", countrySelection: "")
         let suggestion = DeliveryAddressSuggestion(street: "1 Main St", city: "Sydney", state: "NSW", postalCode: "2000", countryCode: "AU")
@@ -652,17 +725,25 @@ final class OrdersUXTests: XCTestCase {
         let lines = [OrderLine(reference: "a", quantity: 10), OrderLine(reference: "b", quantity: 100), OrderLine(reference: "c", quantity: 25)]
         XCTAssertEqual(largeQuantityLines(lines).map(\.reference), ["b", "c"])
         XCTAssertEqual(largeQuantityLines(lines, threshold: 101).count, 0)
-        XCTAssertNil(largeQuantityComposerWarning(24))
-        XCTAssertEqual(largeQuantityComposerWarning(100), "Quantity 100 is unusually high. Check it before creating the draft.")
+        XCTAssertNil(largeQuantityNotice(24))
+        XCTAssertEqual(largeQuantityNotice(25), "Large quantity (25) — check for an extra zero.")
+        XCTAssertEqual(largeQuantityNotice(100), "Large quantity (100) — check for an extra zero.")
     }
 
-    func testLargeQuantityReviewWarningUsesSlantItems() {
-        XCTAssertNil(largeQuantityReviewWarning([]))
-        XCTAssertNil(largeQuantityReviewWarning([["quantity": 24], ["quantity": "3"], [:], ["quantity": 0], ["quantity": -30]]))
+    func testModelsQuantityFieldUsesSameLargeQuantityNotice() {
+        XCTAssertNil(printQuantityNotice("24"))
+        XCTAssertEqual(printQuantityNotice("25"), largeQuantityNotice(25))
+        XCTAssertEqual(printQuantityNotice("100"), "Large quantity (100) — check for an extra zero.")
+        // Invalid entries show the whole-number message instead, never both.
+        for text in ["", "0", "2.5", "abc", "10001", "-30"] { XCTAssertNil(printQuantityNotice(text), text) }
+    }
+
+    func testReviewLineHighlightUsesSlantItems() {
+        for item in [["quantity": 24], ["quantity": "3"], [:], ["quantity": 0], ["quantity": -30], ["quantity": true]] as [[String: Any]] {
+            XCTAssertFalse(orderItemHasLargeQuantity(item))
+        }
         XCTAssertTrue(orderItemHasLargeQuantity(["quantity": "25"]))
-        XCTAssertFalse(orderItemHasLargeQuantity(["quantity": true]))
-        XCTAssertEqual(largeQuantityReviewWarning([["quantity": 100], ["quantity": 2]]), "Check quantities: 1 item has a quantity of 25 or more.")
-        XCTAssertEqual(largeQuantityReviewWarning([["quantity": 100], ["quantity": NSNumber(value: 30)]]), "Check quantities: 2 items have a quantity of 25 or more.")
+        XCTAssertTrue(orderItemHasLargeQuantity(["quantity": NSNumber(value: 30)]))
     }
 
     // MARK: - Country list

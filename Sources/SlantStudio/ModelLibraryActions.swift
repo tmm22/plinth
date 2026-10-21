@@ -31,7 +31,7 @@ func renameUploadedNote(isUploaded: Bool) -> String? {
         : nil
 }
 
-// MARK: - Export and reveal
+// MARK: - Export
 
 /// Default file name for an exported copy: the library name with characters Finder rejects replaced.
 func exportFileName(modelName: String, fileExtension: String) -> String {
@@ -127,7 +127,6 @@ func preparedMaterialMismatchMessage(_ mismatch: PreparedMaterialMismatch) -> St
 // MARK: - Scale check
 
 let scaleWarningSmallestLargestMM: Float = 3
-let scaleWarningLargestMM: Float = 1000
 
 struct ScaleSuggestion: Equatable, Identifiable {
     let factor: Double
@@ -139,42 +138,26 @@ struct ScaleSuggestion: Equatable, Identifiable {
 }
 
 struct ScaleWarning: Equatable {
-    enum Kind: Equatable { case tooSmall, tooLarge }
-    let kind: Kind
     let largestMM: Float
     let suggestions: [ScaleSuggestion]
     var message: String {
         let size = String(format: "%.2f", largestMM)
-        switch kind {
-        case .tooSmall:
-            return "The largest dimension is \(size) mm. STL files don’t record units and Slant reads them as millimetres, so this would print at \(size) mm. It may have been exported in inches, centimetres or metres."
-        case .tooLarge:
-            return "The largest dimension is \(size) mm. STL files don’t record units and Slant reads them as millimetres. It may have been exported in a smaller unit, such as micrometres."
-        }
+        return "The largest dimension is \(size) mm. STL files don’t record units and Slant reads them as millimetres, so this would print at \(size) mm. It may have been exported in inches, centimetres or metres."
     }
 }
 
-/// Flags bounding boxes that suggest the wrong export unit. Never changes geometry.
+/// Flags tiny bounding boxes that suggest an export in a larger unit. Oversized models are flagged by the preview's
+/// build-volume warning instead. Suggestions only cover sizes that fit Slant's build volume. Never changes geometry.
 func scaleWarning(extentMM: SIMD3<Float>) -> ScaleWarning? {
     let largest = max(extentMM.x, extentMM.y, extentMM.z)
-    guard largest.isFinite, largest > 0 else { return nil }
-    let candidates: [(Double, String)]
-    let kind: ScaleWarning.Kind
-    if largest < scaleWarningSmallestLargestMM {
-        kind = .tooSmall
-        candidates = [(25.4, "inches"), (10, "centimetres"), (1000, "metres")]
-    } else if largest > scaleWarningLargestMM {
-        kind = .tooLarge
-        candidates = [(0.001, "micrometres")]
-    } else {
-        return nil
-    }
+    guard largest.isFinite, largest > 0, largest < scaleWarningSmallestLargestMM else { return nil }
+    let candidates: [(Double, String)] = [(25.4, "inches"), (10, "centimetres"), (1000, "metres")]
     let suggestions = candidates.compactMap { factor, unit -> ScaleSuggestion? in
         let result = largest * Float(factor)
-        guard result >= scaleWarningSmallestLargestMM, result <= scaleWarningLargestMM else { return nil }
+        guard result >= scaleWarningSmallestLargestMM, result <= slantBuildVolumeMM else { return nil }
         return ScaleSuggestion(factor: factor, unit: unit, resultLargestMM: result)
     }
-    return ScaleWarning(kind: kind, largestMM: largest, suggestions: suggestions)
+    return ScaleWarning(largestMM: largest, suggestions: suggestions)
 }
 
 /// Scaled copies are only offered for plain imports, whose records don't carry dimension-dependent data.
@@ -183,8 +166,17 @@ func canSaveScaledCopy(_ model: LocalModel) -> Bool {
         && model.reinforcement == nil && model.autoImprovement == nil
 }
 
+/// Model file extensions dropped from a library name before a suffix is added, so "bracket.stl" doesn't become
+/// "bracket.stl-scaled-x25.4".
+let modelNameFileExtensions: Set<String> = ["stl", "obj", "3mf"]
+
 func scaledCopyName(_ name: String, factor: Double) -> String {
-    "\(name)-scaled-x\(String(format: "%g", factor))"
+    var base = name
+    if let dot = base.lastIndex(of: "."), dot > base.startIndex,
+       modelNameFileExtensions.contains(base[base.index(after: dot)...].lowercased()) {
+        base = String(base[..<dot])
+    }
+    return "\(base)-scaled-x\(String(format: "%g", factor))"
 }
 
 enum ScaledCopyError: LocalizedError {
@@ -240,20 +232,95 @@ func goMenuShortcut(for destination: Destination) -> Character? {
     return Character("\(index + 1)")
 }
 
-/// Menu commands stay reachable while a window shows a sheet; ignore them then, as the in-window shortcuts were.
-@MainActor func keyWindowShowsSheet() -> Bool {
-    NSApp.keyWindow?.attachedSheet != nil
+/// A snapshot of AppKit's modal state. With a sheet up the key window is the sheet itself, so checking only the key
+/// window's `attachedSheet` misses SwiftUI sheets, alerts and confirmation dialogs.
+struct AppModalState: Equatable {
+    var hasModalWindow = false
+    var keyWindowIsSheet = false
+    var anyWindowHasSheet = false
+    var isPresenting: Bool { hasModalWindow || keyWindowIsSheet || anyWindowHasSheet }
+
+    @MainActor static var current: AppModalState {
+        let key = NSApp.keyWindow
+        return AppModalState(
+            hasModalWindow: NSApp.modalWindow != nil,
+            keyWindowIsSheet: key.map { $0.isSheet || $0.sheetParent != nil } ?? false,
+            anyWindowHasSheet: NSApp.windows.contains { $0.attachedSheet != nil || $0.sheetParent != nil }
+        )
+    }
 }
 
-func modelMenuEnabled(destination: Destination, hasSelectedLocal: Bool, sheetPresented: Bool) -> Bool {
+/// True while any sheet, alert, confirmation dialog or modal panel is up. Menu commands stay reachable then, unlike
+/// in-window controls, so the Go and model-file commands refuse to act (for example, ⌘1 during a Pay review).
+@MainActor func appIsPresentingModalUI() -> Bool {
+    AppModalState.current.isPresenting
+}
+
+/// Publishes `appIsPresentingModalUI()` so menu items can show as disabled. The action-time check is authoritative.
+@MainActor final class ModalPresentationMonitor: ObservableObject {
+    @Published private(set) var isPresenting = false
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        let names: [Notification.Name] = [
+            NSWindow.willBeginSheetNotification, NSWindow.didEndSheetNotification,
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+            NSApplication.didUpdateNotification
+        ]
+        observers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.update() }
+            }
+        }
+    }
+
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+
+    func update() {
+        let presenting = appIsPresentingModalUI()
+        if presenting != isPresenting { isPresenting = presenting }
+    }
+}
+
+/// The rename sheet only shows while its model exists; a stale ID must not count as a presented sheet.
+func renameSheetIsShown(renamingModelID: UUID?, models: [LocalModel]) -> Bool {
+    guard let renamingModelID else { return false }
+    return models.contains { $0.id == renamingModelID }
+}
+
+/// Rename… and Export… in the File menu act on the selected local model on the Models screen, never over a sheet.
+func modelFileCommandsEnabled(destination: Destination, hasSelectedLocal: Bool, sheetPresented: Bool) -> Bool {
     destination == .models && hasSelectedLocal && !sheetPresented
 }
 
 // MARK: - Store actions
 
 extension StudioStore {
+    /// Sheets the store itself drives. A rename only counts while its model still exists, so a stale ID can't block menus.
     var isPresentingSheet: Bool {
-        showOrderComposer || showPlatformComposer || showImportFromURL || renamingModelID != nil
+        showOrderComposer || showPlatformComposer || showImportFromURL
+            || renameSheetIsShown(renamingModelID: renamingModelID, models: localModels)
+    }
+
+    /// Menu-driven Rename…: only from Models with a local model selected and nothing else presented, so the ID is
+    /// never left set without a visible sheet.
+    func beginRenamingSelectedModelFromMenu() {
+        guard modelFileCommandsEnabled(destination: destination, hasSelectedLocal: selectedLocal != nil,
+                                       sheetPresented: isPresentingSheet || appIsPresentingModalUI()),
+              let id = selectedLocalID else { return }
+        renamingModelID = id
+    }
+
+    func exportSelectedModelFromMenu() {
+        guard modelFileCommandsEnabled(destination: destination, hasSelectedLocal: selectedLocal != nil,
+                                       sheetPresented: isPresentingSheet || appIsPresentingModalUI()),
+              let id = selectedLocalID else { return }
+        exportLocalModel(id: id)
+    }
+
+    func goFromMenu(to item: Destination) {
+        guard !isPresentingSheet, !appIsPresentingModalUI() else { return }
+        destination = item
     }
 
     @discardableResult
@@ -296,15 +363,6 @@ extension StudioStore {
         } catch {
             showError("Could not export “\(model.name)”: \(error.localizedDescription)")
         }
-    }
-
-    func revealLocalModel(id: UUID) {
-        guard let model = localModels.first(where: { $0.id == id }) else { return }
-        guard FileManager.default.fileExists(atPath: model.url.path) else {
-            showError(missingLibraryFileMessage(name: model.name))
-            return
-        }
-        NSWorkspace.shared.activateFileViewerSelecting([model.url])
     }
 }
 

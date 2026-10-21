@@ -4,6 +4,7 @@ import AppKit
 @main
 struct SlantStudioApp: App {
     @StateObject private var store = StudioStore()
+    @StateObject private var modalPresentation = ModalPresentationMonitor()
     var body: some Scene {
         WindowGroup {
             StudioView().environmentObject(store)
@@ -13,6 +14,9 @@ struct SlantStudioApp: App {
         .defaultSize(width: 1360, height: 900)
         .windowToolbarStyle(.unified)
         .commands {
+            let modalUIShown = store.isPresentingSheet || modalPresentation.isPresenting
+            let modelFileEnabled = modelFileCommandsEnabled(destination: store.destination, hasSelectedLocal: store.selectedLocal != nil,
+                                                            sheetPresented: modalUIShown)
             CommandGroup(replacing: .newItem) {
                 Button("New Order Draft…") { store.openOrderComposer() }
                     .keyboardShortcut("n")
@@ -21,6 +25,14 @@ struct SlantStudioApp: App {
                     .keyboardShortcut("o")
                 Button("Import Model from URL…") { store.showImportFromURL = true }
                     .disabled(store.importFromURLBlockedReason != nil)
+                Divider()
+                // Library file actions only; nothing here uploads, places, pays for or cancels anything.
+                Button("Rename Model…") { store.beginRenamingSelectedModelFromMenu() }
+                    .disabled(!modelFileEnabled)
+                Button("Export Model…") { store.exportSelectedModelFromMenu() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(!modelFileEnabled)
+                Divider()
                 Button("Refresh") { Task { await store.refreshCurrent() } }
                     .keyboardShortcut("r")
                     .disabled(!store.connected || store.busy)
@@ -29,26 +41,14 @@ struct SlantStudioApp: App {
             CommandMenu("Go") {
                 ForEach(goMenuDestinations) { item in
                     if item == sidebarDeveloperDestinations.first { Divider() }
-                    let button = Button(item.rawValue) { if !keyWindowShowsSheet() { store.destination = item } }
-                        .disabled(store.isPresentingSheet)
+                    let button = Button(item.rawValue) { store.goFromMenu(to: item) }
+                        .disabled(modalUIShown)
                     if let key = goMenuShortcut(for: item) {
                         button.keyboardShortcut(KeyEquivalent(key), modifiers: .command)
                     } else {
                         button
                     }
                 }
-            }
-            // Library file actions only; nothing here uploads, places, pays for or cancels anything.
-            CommandMenu("Model") {
-                let enabled = modelMenuEnabled(destination: store.destination, hasSelectedLocal: store.selectedLocal != nil,
-                                               sheetPresented: store.isPresentingSheet)
-                Button("Rename…") { if let id = store.selectedLocalID, !keyWindowShowsSheet() { store.renamingModelID = id } }
-                    .disabled(!enabled)
-                Button("Export…") { if let id = store.selectedLocalID, !keyWindowShowsSheet() { store.exportLocalModel(id: id) } }
-                    .keyboardShortcut("e", modifiers: [.command, .shift])
-                    .disabled(!enabled)
-                Button("Show in Finder") { if let id = store.selectedLocalID, !keyWindowShowsSheet() { store.revealLocalModel(id: id) } }
-                    .disabled(!enabled)
             }
         }
         Settings {

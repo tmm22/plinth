@@ -130,6 +130,8 @@ struct ModelsView: View {
             syncSelectionFromStore()
             quantityText = "\(store.quantity)"
         }
+        // The rename sheet belongs to this screen; never leave a rename pending once it is gone.
+        .onDisappear { store.renamingModelID = nil }
         .onChange(of: store.selectedLocalID) { _, _ in syncSelectionFromStore() }
         .onChange(of: store.fileID) { _, _ in syncSelectionFromStore() }
         .onChange(of: selection) { _, new in applySelection(new) }
@@ -440,7 +442,6 @@ struct ModelsView: View {
     private func localFileActions(_ id: UUID) -> some View {
         Button("Rename…") { store.renamingModelID = id }
         Button("Export…") { store.exportLocalModel(id: id) }
-        Button("Show in Finder") { store.revealLocalModel(id: id) }
     }
 
     @ViewBuilder
@@ -449,8 +450,7 @@ struct ModelsView: View {
            let warning = scaleWarning(extentMM: loaded.mesh.maximum - loaded.mesh.minimum) {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
-                    Label(warning.kind == .tooSmall ? "Check this model’s scale" : "Check this model’s units",
-                          systemImage: "exclamationmark.triangle.fill")
+                    Label("Check this model’s scale", systemImage: "exclamationmark.triangle.fill")
                         .font(.headline)
                         .foregroundStyle(.orange)
                     Text(warning.message).font(.callout).foregroundStyle(.secondary)
@@ -464,12 +464,18 @@ struct ModelsView: View {
                     } else {
                         Text("If it was, save a scaled copy. This model is kept as it is; the copy needs its own upload and estimate.")
                             .font(.callout).foregroundStyle(.secondary)
-                        HStack {
-                            ForEach(warning.suggestions) { suggestion in
-                                Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor) }
-                                    .buttonStyle(.bordered)
-                                    .disabled(savingScaledCopy || store.busy)
+                        if warning.suggestions.count == 1, let suggestion = warning.suggestions.first {
+                            Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor) }
+                                .buttonStyle(.bordered)
+                                .disabled(savingScaledCopy || store.busy)
+                        } else {
+                            Menu("Save scaled copy") {
+                                ForEach(warning.suggestions) { suggestion in
+                                    Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor) }
+                                }
                             }
+                            .fixedSize()
+                            .disabled(savingScaledCopy || store.busy)
                         }
                     }
                 }
@@ -610,6 +616,9 @@ struct ModelsView: View {
                 }
                 if printQuantity(quantityText) == nil {
                     Label("Enter a whole number from 1 to 10,000.", systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.orange)
+                } else if let notice = printQuantityNotice(quantityText) {
+                    Label(notice, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 if let estimate = store.estimate {
@@ -902,6 +911,11 @@ func printQuantity(_ text: String) -> Int? {
     guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }),
           let value = Int(text), (1...10000).contains(value) else { return nil }
     return value
+}
+
+/// The large-quantity notice for the Models quantity field, where an extra zero is easy to type.
+func printQuantityNotice(_ text: String) -> String? {
+    printQuantity(text).flatMap { largeQuantityNotice($0) }
 }
 
 struct LoadedPreviewMesh {

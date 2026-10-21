@@ -138,7 +138,6 @@ final class ModelLibraryActionsTests: XCTestCase {
 
     func testScaleWarningFlagsTinyModelsWithPlausibleFactors() {
         let warning = scaleWarning(extentMM: SIMD3(2, 1, 0.5))!
-        XCTAssertEqual(warning.kind, .tooSmall)
         XCTAssertEqual(warning.largestMM, 2)
         XCTAssertEqual(warning.suggestions.map(\.factor), [25.4, 10])
         XCTAssertEqual(warning.suggestions.first?.title, "Save copy ×25.4 (inches → 50.8 mm)")
@@ -146,12 +145,23 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertEqual(scaleWarning(extentMM: SIMD3(0.12, 0.05, 0.02))?.suggestions.map(\.factor), [25.4, 1000])
     }
 
-    func testScaleWarningFlagsHugeModels() {
-        let warning = scaleWarning(extentMM: SIMD3(50_000, 20_000, 10_000))!
-        XCTAssertEqual(warning.kind, .tooLarge)
-        XCTAssertEqual(warning.suggestions.map(\.factor), [0.001])
-        XCTAssertTrue(warning.message.contains("micrometres"))
-        XCTAssertEqual(scaleWarning(extentMM: SIMD3(1500, 10, 10))?.suggestions, [])
+    func testScaleWarningLeavesLargeModelsToBuildVolumeWarning() {
+        // The preview already flags models larger than the build volume; the scale check doesn't repeat it.
+        XCTAssertNil(scaleWarning(extentMM: SIMD3(50_000, 20_000, 10_000)))
+        XCTAssertNil(scaleWarning(extentMM: SIMD3(1500, 10, 10)))
+        XCTAssertNil(scaleWarning(extentMM: SIMD3(slantBuildVolumeMM + 1, 1, 1)))
+    }
+
+    func testScaleSuggestionsAreCappedAtBuildVolume() {
+        // ×1000 would give 500 mm, which Slant can't print, so it isn't offered.
+        XCTAssertEqual(scaleWarning(extentMM: SIMD3(0.5, 0.1, 0.1))?.suggestions.map(\.factor), [25.4, 10])
+        // Exactly the build volume is still offered.
+        let edge = scaleWarning(extentMM: SIMD3(0.22, 0.1, 0.1))!
+        XCTAssertEqual(edge.suggestions.map(\.factor), [25.4, 1000])
+        XCTAssertTrue(edge.suggestions.allSatisfy { $0.resultLargestMM <= slantBuildVolumeMM })
+        // Too big at every factor: the warning stays, with no copy offered.
+        XCTAssertEqual(scaleWarning(extentMM: SIMD3(2.9, 1, 1))?.suggestions.map(\.factor), [25.4, 10])
+        XCTAssertEqual(scaleWarning(extentMM: SIMD3(0.001, 0.001, 0.001))?.suggestions, [])
     }
 
     func testScaleWarningIgnoresNormalAndDegenerateBoxes() {
@@ -161,7 +171,7 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertNil(scaleWarning(extentMM: .zero))
         XCTAssertNil(scaleWarning(extentMM: SIMD3(.nan, .nan, .nan)))
         XCTAssertNil(scaleWarning(extentMM: SIMD3(.infinity, 1, 1)))
-        XCTAssertEqual(scaleWarning(extentMM: SIMD3(2, 0, 0))?.kind, .tooSmall)
+        XCTAssertNotNil(scaleWarning(extentMM: SIMD3(2, 0, 0)))
     }
 
     func testScaledCopyOnlyForPlainImports() {
@@ -172,6 +182,17 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertFalse(canSaveScaledCopy(LocalModel(name: "Mesh", filePath: "/tmp/mesh.obj")))
         XCTAssertEqual(scaledCopyName("Bracket", factor: 25.4), "Bracket-scaled-x25.4")
         XCTAssertEqual(scaledCopyName("Bracket", factor: 0.001), "Bracket-scaled-x0.001")
+    }
+
+    func testScaledCopyNameDropsModelFileExtension() {
+        XCTAssertEqual(scaledCopyName("bracket.stl", factor: 25.4), "bracket-scaled-x25.4")
+        XCTAssertEqual(scaledCopyName("Part.STL", factor: 10), "Part-scaled-x10")
+        XCTAssertEqual(scaledCopyName("mesh.Obj", factor: 10), "mesh-scaled-x10")
+        XCTAssertEqual(scaledCopyName("case.3mf", factor: 1000), "case-scaled-x1000")
+        XCTAssertEqual(scaledCopyName("bracket.stl.stl", factor: 10), "bracket.stl-scaled-x10", "only one extension is dropped")
+        XCTAssertEqual(scaledCopyName("bracket v1.2", factor: 10), "bracket v1.2-scaled-x10", "other suffixes are kept")
+        XCTAssertEqual(scaledCopyName("notes.step", factor: 10), "notes.step-scaled-x10")
+        XCTAssertEqual(scaledCopyName(".stl", factor: 10), ".stl-scaled-x10", "a bare extension is not stripped to nothing")
     }
 
     private func cube(size: Float) -> STLMesh {
@@ -222,16 +243,33 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertNil(goMenuShortcut(for: .activity))
         let keys = goMenuDestinations.compactMap(goMenuShortcut(for:))
         XCTAssertEqual(Set(keys).count, keys.count)
-        // File and Model menu shortcuts use letters; Go never takes them.
+        // File menu shortcuts use letters; Go never takes them.
         XCTAssertTrue(Set(keys).isDisjoint(with: ["n", "o", "r", "e"]))
         XCTAssertEqual(Set(goMenuDestinations), Set(sidebarPrimaryDestinations + sidebarDeveloperDestinations))
         XCTAssertEqual(goMenuDestinations.count, Set(goMenuDestinations).count)
     }
 
-    func testModelMenuEnabledOnlyForSelectedLocalModelOnModels() {
-        XCTAssertTrue(modelMenuEnabled(destination: .models, hasSelectedLocal: true, sheetPresented: false))
-        XCTAssertFalse(modelMenuEnabled(destination: .models, hasSelectedLocal: false, sheetPresented: false))
-        XCTAssertFalse(modelMenuEnabled(destination: .orders, hasSelectedLocal: true, sheetPresented: false))
-        XCTAssertFalse(modelMenuEnabled(destination: .models, hasSelectedLocal: true, sheetPresented: true))
+    func testModelFileCommandsEnabledOnlyForSelectedLocalModelOnModels() {
+        XCTAssertTrue(modelFileCommandsEnabled(destination: .models, hasSelectedLocal: true, sheetPresented: false))
+        XCTAssertFalse(modelFileCommandsEnabled(destination: .models, hasSelectedLocal: false, sheetPresented: false))
+        XCTAssertFalse(modelFileCommandsEnabled(destination: .orders, hasSelectedLocal: true, sheetPresented: false))
+        XCTAssertFalse(modelFileCommandsEnabled(destination: .models, hasSelectedLocal: true, sheetPresented: true))
+    }
+
+    func testModalStateCountsSheetsDialogsAndModalPanels() {
+        XCTAssertFalse(AppModalState().isPresenting)
+        // A Pay/Cancel review or confirmation dialog: the key window is the sheet itself.
+        XCTAssertTrue(AppModalState(keyWindowIsSheet: true).isPresenting)
+        // A sheet on any window, even when another window is key.
+        XCTAssertTrue(AppModalState(anyWindowHasSheet: true).isPresenting)
+        // An app-modal panel such as Export's save panel.
+        XCTAssertTrue(AppModalState(hasModalWindow: true).isPresenting)
+    }
+
+    func testStaleRenameIDDoesNotCountAsPresentedSheet() {
+        let model = LocalModel(name: "Bracket", filePath: "/tmp/bracket.stl")
+        XCTAssertFalse(renameSheetIsShown(renamingModelID: nil, models: [model]))
+        XCTAssertTrue(renameSheetIsShown(renamingModelID: model.id, models: [model]))
+        XCTAssertFalse(renameSheetIsShown(renamingModelID: UUID(), models: [model]), "a removed model's rename must not block menus")
     }
 }
