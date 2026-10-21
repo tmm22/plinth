@@ -621,6 +621,7 @@ struct ModelsView: View {
                     Label(notice, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange)
                 }
+                CompareEstimatesButton(modelName: selectedModelName) // EstimateComparison.swift
                 if let estimate = store.estimate {
                     Divider()
                     HStack(alignment: .firstTextBaseline) {

@@ -15,6 +15,9 @@ Verified 18 October 2026 from [official documentation](https://slant3dapi.com/do
 2. PUT raw bytes to `data.presignedUrl` without Authorization; retain `data.filePlaceholder` unchanged.
 3. `POST /files/confirm-upload` with `{ "filePlaceholder": <exact object> }`. Identifier is `publicFileServiceId`. Prefer `metrics` over deprecated `STLMetrics`.
 4. Estimate with `POST /files/{publicFileId}/estimate`. Draft with `platformId`, customer details/address, and items.
+   - Request: `{ "options": { "filamentId": <uuid>, "quantity": <int ≥ 1> } }`; both optional (PLA Black, quantity 1). Response `data`: `subtotal` (before surcharges), `total` (estimated print cost, USD), `pricePerUnit`, `quantity`, `totalMaterial`, `estimatedPrintTime`, `bodyChargeCost`, `oversizeSurcharge`. No delivery cost: shipping is priced only by the order draft (`totals.deliveryCost`).
+   - One material and one quantity per call; there is no batch estimate. Estimates are side-effect free and the only POST treated as a safe read (`isRetryableAPICall`); Studio still never retries them automatically, it only offers a manual Retry.
+   - **Compare estimates** (`EstimateComparison.swift`) issues up to 20 of these calls (≤ 4 materials × ≤ 5 quantities), strictly sequentially and at least 0.6 s apart (100 requests/minute). Before each call it stops, keeping completed results, when `X-RateLimit-Remaining` ≤ 10 and `X-RateLimit-Reset` is in the future (without a reset header, a low count is trusted for 60 s), after a 429 (blocked until `X-RateLimit-Reset`, else numeric `Retry-After`, else 60 s), on 401/403/404/408/409/5xx or a transport error, after 3 consecutive per-cell failures (400/422 or a response without `total` or with a different `quantity`), or when the selected file, connection or global busy state changes. It does not set the app-wide busy flag. Per unit is computed as `total ÷ quantity`. A cell applied with **Use** becomes the current estimate under the same `fileID|filamentID|quantity` context as **Get estimate**.
 5. Draft response `data` shape (docs): `{ order, items, totals: { printingCost, deliveryCost, totalCost }, customer }`.
 6. Process with `POST /orders/{publicOrderId}`; cancel with `DELETE` (see refund note below). OpenSCAD returns raw STL bytes (`application/sla`).
 
@@ -125,7 +128,7 @@ Guided = dedicated Models / Orders / Connection UI. Workbench = API Workbench. U
 | POST | `/files/confirm-upload` | Models upload | Yes | | |
 | POST | `/files/batch` | | Yes | | |
 | POST | `/files/openScad` | | Yes | | STL bytes |
-| POST | `/files/{publicFileId}/estimate` | Models estimate | Yes | | |
+| POST | `/files/{publicFileId}/estimate` | Models estimate, Compare estimates | Yes | | one material/quantity per call; sequential comparison ≤ 20 calls |
 | GET | `/platforms` | Connection / browsers | Yes | | |
 | POST | `/platforms` | Create platform | Yes | | |
 | GET | `/platforms/{platformId}` | Platforms (re-enable by ID) | Yes | | |
