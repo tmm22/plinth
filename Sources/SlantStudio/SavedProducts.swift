@@ -63,6 +63,8 @@ extension SavedProduct {
 /// The order lines for a saved product, plus what the user must know before using them.
 struct SavedProductResolution {
     var lines: [OrderLine] = []
+    /// Parallel to `lines`: whether each line is added once per order (packing slips, inserts) rather than per unit.
+    var perOrder: [Bool] = []
     /// Informational differences, e.g. the model was re-uploaded since the product was saved.
     var notes: [String] = []
     /// Problems that would make the draft wrong or fail; callers must not create a draft while any remain.
@@ -175,6 +177,7 @@ func savedProductOrderLines(
         }
         line.reference = reference
         result.lines.append(line)
+        result.perOrder.append(saved.perOrder)
     }
     return result
 }

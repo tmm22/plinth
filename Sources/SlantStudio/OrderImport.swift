@@ -59,11 +59,46 @@ struct OrderImportCSV: Equatable {
     var rowNumbers: [Int]
 }
 
-/// The delimiter used by the header line: the most frequent of comma, semicolon and tab outside quotes (comma on a tie).
+/// Index of the first scalar after any leading lines made only of spaces and tabs.
+private func orderImportFirstNonBlankLine(_ scalars: [Unicode.Scalar], from start: Int = 0) -> Int {
+    var lineStart = start
+    var index = start
+    while index < scalars.count {
+        switch scalars[index] {
+        case " ", "\t":
+            index += 1
+        case "\r", "\n":
+            index += 1
+            lineStart = index
+        default:
+            return lineStart
+        }
+    }
+    return lineStart
+}
+
+/// Excel's `sep=X` first line (optionally quoted), which names the delimiter and isn't part of the data: the delimiter
+/// and the index just past that line, or nil when the line at `start` isn't one.
+func orderImportSeparatorLine(_ scalars: [Unicode.Scalar], from start: Int = 0) -> (delimiter: Unicode.Scalar, next: Int)? {
+    var end = start
+    while end < scalars.count, scalars[end] != "\r", scalars[end] != "\n" { end += 1 }
+    var line = Array(scalars[start..<end])
+    if line.count >= 2, line.first == "\"", line.last == "\"" { line = Array(line.dropFirst().dropLast()) }
+    guard line.count == 5, String(String.UnicodeScalarView(line.prefix(4))).lowercased() == "sep=" else { return nil }
+    let delimiter = line[4]
+    guard delimiter != "\"", delimiter != "\r", delimiter != "\n" else { return nil }
+    var next = end
+    if next < scalars.count, scalars[next] == "\r" { next += 1 }
+    if next < scalars.count, scalars[next] == "\n" { next += 1 }
+    return (delimiter, next)
+}
+
+/// The delimiter used by the header line (the first line that isn't blank): the most frequent of comma, semicolon and
+/// tab outside quotes (comma on a tie).
 func orderImportDelimiter(_ scalars: [Unicode.Scalar]) -> Unicode.Scalar {
     var counts: [Unicode.Scalar: Int] = [",": 0, ";": 0, "\t": 0]
     var inQuotes = false
-    for scalar in scalars {
+    for scalar in scalars[orderImportFirstNonBlankLine(scalars)...] {
         if scalar == "\"" { inQuotes.toggle(); continue }
         if !inQuotes, scalar == "\n" || scalar == "\r" { break }
         if !inQuotes, counts[scalar] != nil { counts[scalar, default: 0] += 1 }
@@ -75,12 +110,20 @@ func orderImportDelimiter(_ scalars: [Unicode.Scalar]) -> Unicode.Scalar {
 }
 
 /// RFC 4180 reader: quoted cells may hold delimiters, line breaks and doubled quotes; CRLF and LF both end a row.
-/// Header names are trimmed and blank lines skipped. Refuses more than `maxRows` data rows or `maxColumns` columns,
+/// Header names are trimmed, and blank lines (and rows whose cells are all empty) skipped. An Excel `sep=X` first line
+/// sets the delimiter and is dropped, as Excel does. Refuses more than `maxRows` data rows or `maxColumns` columns,
 /// cells longer than `maxCellLength` characters and a quoted cell that is never closed.
 func parseOrderImportCSV(_ text: String, maxRows: Int = orderImportMaxRows, maxCellLength: Int = orderImportMaxCellLength,
                          maxColumns: Int = orderImportMaxColumns) throws -> OrderImportCSV {
     let scalars = Array(text.unicodeScalars)
-    let delimiter = orderImportDelimiter(scalars)
+    let delimiter: Unicode.Scalar
+    var index = 0
+    if let separator = orderImportSeparatorLine(scalars, from: orderImportFirstNonBlankLine(scalars)) {
+        delimiter = separator.delimiter
+        index = separator.next
+    } else {
+        delimiter = orderImportDelimiter(scalars)
+    }
     var records: [[String]] = []
     var numbers: [Int] = []
     var record: [String] = []
@@ -89,7 +132,6 @@ func parseOrderImportCSV(_ text: String, maxRows: Int = orderImportMaxRows, maxC
     var inQuotes = false
     var fieldWasQuoted = false
     var recordNumber = 1
-    var index = 0
 
     func append(_ scalar: Unicode.Scalar) throws {
         fieldLength += 1
@@ -108,7 +150,7 @@ func parseOrderImportCSV(_ text: String, maxRows: Int = orderImportMaxRows, maxC
         fieldWasQuoted = false
     }
     func endRecord() throws {
-        let blank = record.count == 1 && record[0].trimmingCharacters(in: .whitespaces).isEmpty
+        let blank = record.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty }
         if !blank {
             records.append(record)
             numbers.append(recordNumber)
@@ -304,7 +346,8 @@ struct OrderImportOrder: Identifiable, Equatable {
     var items: [OrderImportItem] = []
     /// Delivery fields whose value differs between rows of this order.
     var conflictingFields: [String] = []
-    /// Rows that repeat an earlier row of this order cell for cell, as when two exports are combined.
+    /// Rows with delivery details that repeat an earlier row of this order cell for cell, as when two exports are
+    /// combined. Rows without delivery details (Shopify's extra item rows) never count.
     var repeatedRows: [Int] = []
     /// Why the marketplace shows this order as already shipped, cancelled or refunded.
     var alreadyHandled: String?
@@ -357,8 +400,14 @@ func orderImportOrders(from csv: OrderImportCSV, layout: OrderImportLayout, maxO
         }
         var order = orders[position]
         order.rows.append(rowNumber)
-        let fingerprint = row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: "\u{1F}")
-        if seenRows[sourceID, default: []].insert(fingerprint).inserted == false { order.repeatedRows.append(rowNumber) }
+        // Only rows that carry the order's shipping details can show an overlapping export: Shopify's follow-on item
+        // rows leave them blank, and two of those can legitimately be identical (the same SKU twice in one order).
+        // A combined export repeats each order's first row, which always carries them. Email isn't counted, as some
+        // exports repeat it on every row.
+        if orderImportDeliveryFields.contains(where: { $0.field != .email && !value($0.field).isEmpty }) {
+            let fingerprint = row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: "\u{1F}")
+            if seenRows[sourceID, default: []].insert(fingerprint).inserted == false { order.repeatedRows.append(rowNumber) }
+        }
         for entry in orderImportDeliveryFields {
             let incoming = value(entry.field)
             guard !incoming.isEmpty else { continue }
@@ -549,7 +598,7 @@ func orderImportDuplicateReason(_ order: OrderImportOrder, ledger: OrderImportLe
     case .created(let orderID)?:
         return "Already imported this session as draft \(orderID)."
     case .unknown?:
-        return "An earlier import of this order didn’t confirm and may have been created. Reload Orders (Drafts) and check before importing it again."
+        return "An earlier import of this order didn’t confirm and may have been created. Check your drafts (Show Drafts, or Orders › Filters › Status: Draft) before importing it again."
     case nil:
         break
     }
@@ -570,6 +619,78 @@ func orderImportDuplicateCoverageNotice(ordersLoaded: Bool, ordersHasMore: Bool,
     return nil
 }
 
+// MARK: Matching items to saved products
+
+/// Identifies an imported item that no saved product matches by SKU, so the user can choose a product for it in
+/// Match products: its SKU, or its item name (Etsy “Item Name”, Shopify “Lineitem name”) when the SKU is blank.
+struct OrderImportMatchKey: Equatable, Identifiable {
+    enum Kind: Equatable { case sku, itemName }
+    let kind: Kind
+    /// SKUs compare ignoring case and surrounding spaces; names also ignore repeated spaces.
+    let normalized: String
+    /// As first written in the file.
+    let display: String
+    /// Orders with at least one item under this key.
+    var orderCount = 0
+    var id: String { "\(kind == .sku ? "sku" : "name")|\(normalized)" }
+}
+
+/// The match key for an item: its SKU when it has one, else its item name; nil when it has neither.
+func orderImportMatchKey(for item: OrderImportItem) -> OrderImportMatchKey? {
+    let sku = item.sku.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !sku.isEmpty { return OrderImportMatchKey(kind: .sku, normalized: normalizedSKU(sku), display: sku) }
+    let name = item.itemName.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    guard !name.isEmpty else { return nil }
+    return OrderImportMatchKey(kind: .itemName, normalized: name.lowercased(), display: name)
+}
+
+/// What the user chose in Match products for one key. Held only in the sheet's memory: never saved, and dropped
+/// when another file is chosen or the sheet closes. Never guessed: nothing is matched without a choice.
+enum OrderImportProductChoice: Hashable {
+    case product(UUID)
+    /// Leave items under this key out of the drafts (for example Shopify's shipping protection or tips).
+    case leaveOut
+}
+
+/// Every distinct key of an item no saved product matches by SKU, in the order they first appear.
+func orderImportUnmatchedKeys(_ orders: [OrderImportOrder], products: [SavedProduct]) -> [OrderImportMatchKey] {
+    var keys: [OrderImportMatchKey] = []
+    var positions: [String: Int] = [:]
+    for order in orders {
+        var counted = Set<String>()
+        for item in order.items where savedProduct(forSKU: item.sku, in: products) == nil {
+            guard let key = orderImportMatchKey(for: item) else { continue }
+            let position: Int
+            if let existing = positions[key.id] {
+                position = existing
+            } else {
+                keys.append(key)
+                position = keys.count - 1
+                positions[key.id] = position
+            }
+            if counted.insert(key.id).inserted { keys[position].orderCount += 1 }
+        }
+    }
+    return keys
+}
+
+/// The SKUs among `keys`, for a one-line summary the seller can copy, e.g. "2 SKUs have no saved product: A, B".
+func orderImportMissingSKUs(_ keys: [OrderImportMatchKey]) -> [String] {
+    keys.filter { $0.kind == .sku }.map(\.display)
+}
+
+func orderImportMissingSKUSummary(_ skus: [String]) -> String? {
+    guard !skus.isEmpty else { return nil }
+    return "\(skus.count == 1 ? "1 SKU has" : "\(skus.count) SKUs have") no saved product: \(skus.joined(separator: ", "))"
+}
+
+/// Orders whose checks a new choice unblocked and that would be ticked on loading: these are ticked for the user.
+func orderImportNewlyTickable(before: [String: OrderImportCheck], after: [String: OrderImportCheck]) -> Set<String> {
+    Set(after.compactMap { id, check in
+        before[id]?.canTick == false && check.tickedByDefault ? id : nil
+    })
+}
+
 // MARK: Checking an order
 
 struct OrderImportContext {
@@ -583,6 +704,8 @@ struct OrderImportContext {
     var fallbackEmail: String = ""
     var ledger = OrderImportLedger()
     var loadedKeys: Set<String> = []
+    /// Match products choices, keyed by `OrderImportMatchKey.id`. Used only for items no saved product matches by SKU.
+    var productChoices: [String: OrderImportProductChoice] = [:]
 }
 
 struct OrderImportCheck {
@@ -601,6 +724,8 @@ struct OrderImportCheck {
     var paddedZIP: String?
     /// The email this draft uses comes from "Email for orders without one".
     var usesFallbackEmail = false
+    /// At least one item was matched, or left out, by a Match products choice.
+    var usesProductChoice = false
 
     var canTick: Bool { blockers.isEmpty }
     var tickedByDefault: Bool { (blockers.isEmpty || waitingForEmail) && warnings.isEmpty }
@@ -625,34 +750,104 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
         block("Rows for this order have a different \(order.conflictingFields.joined(separator: ", ")). Fix the file so every row of an order has the same delivery details.")
     }
 
-    // Items
-    var summary: [String] = []
+    // Items. Each row is matched to a saved product by SKU, else by the user's Match products choice. Units are summed
+    // per product so each product resolves once (once-per-order lines are added once, and the 10,000 cap applies to
+    // the total), and a once-per-order line that several products share is added once.
+    enum SummaryEntry { case product(UUID), text(String) }
+    var entries: [SummaryEntry] = []
+    var groups: [UUID: (product: SavedProduct, units: Int)] = [:]
+    var groupOrder: [UUID] = []
+    var leftOut = 0
     if order.items.isEmpty { block("This order has no items.") }
     for item in order.items {
-        let label = item.sku.isEmpty ? (item.itemName.isEmpty ? "item on row \(item.row)" : "“\(item.itemName)”") : item.sku
-        guard !item.sku.isEmpty else {
-            block("The \(label) has no SKU. Add the SKU in your shop, or create this draft by hand.")
-            summary.append("\(item.quantityText.isEmpty ? "?" : item.quantityText) × \(label)")
-            continue
+        let sku = item.sku.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = sku.isEmpty ? (item.itemName.isEmpty ? "item on row \(item.row)" : "“\(item.itemName)”") : sku
+        var product = savedProduct(forSKU: sku, in: context.products)
+        if product == nil, let key = orderImportMatchKey(for: item), let choice = context.productChoices[key.id] {
+            switch choice {
+            case .leaveOut:
+                check.usesProductChoice = true
+                leftOut += 1
+                note("\(sku.isEmpty ? "The \(label)" : "SKU \(sku)") is left out of the draft, as you chose.")
+                continue
+            case .product(let id):
+                if let chosen = context.products.first(where: { $0.id == id }) {
+                    product = chosen
+                    check.usesProductChoice = true
+                    note("\(sku.isEmpty ? "The \(label)" : "SKU \(sku)") uses “\(savedProductDisplayName(chosen))”, as you chose.")
+                }
+            }
         }
         guard let units = orderImportQuantity(item.quantityText) else {
-            block("Quantity “\(item.quantityText)” for \(item.sku) isn’t a whole number from 1 to 10,000.")
-            summary.append("? × \(item.sku)")
+            block("Quantity “\(item.quantityText)” for \(label.hasPrefix("item on row") ? "the \(label)" : label) isn’t a whole number from 1 to 10,000.")
+            entries.append(.text("? × \(label)"))
             continue
         }
-        guard let product = savedProduct(forSKU: item.sku, in: context.products) else {
-            block("No saved product has SKU \(item.sku). Add it in Saved Products.")
-            summary.append("\(units) × \(item.sku)")
+        guard let product else {
+            if !sku.isEmpty {
+                block("No saved product has SKU \(sku). Choose one under Match products, or add it in Saved Products.")
+            } else if item.itemName.isEmpty {
+                block("The \(label) has no SKU or name. Add the SKU in your shop, or create this draft by hand.")
+            } else {
+                block("The \(label) has no SKU. Choose a saved product for it under Match products, or add the SKU in your shop.")
+            }
+            entries.append(.text("\(units) × \(label)"))
             continue
         }
-        summary.append("\(units) × \(product.name.isEmpty ? item.sku : product.name)")
-        let resolution = savedProductOrderLines(product, units: units, localModels: context.localModels, filaments: context.filaments,
-                                                components: context.components, stationery: context.stationery)
+        if groups[product.id] == nil {
+            groups[product.id] = (product, 0)
+            groupOrder.append(product.id)
+            entries.append(.product(product.id))
+        }
+        groups[product.id]?.units += units
+    }
+    if !order.items.isEmpty, leftOut == order.items.count {
+        block("Every item of this order is left out, so there’s nothing to draft.")
+    }
+    var lines: [OrderLine] = []
+    var perOrderLineIndex: [String: Int] = [:]
+    var groupLineIndices: [UUID: [Int]] = [:]
+    var groupResolved: Set<UUID> = []
+    for id in groupOrder {
+        guard let group = groups[id] else { continue }
+        let name = savedProductDisplayName(group.product)
+        guard group.units <= 10_000 else {
+            block("This order has more than 10,000 units of “\(name)” in total.")
+            continue
+        }
+        let resolution = savedProductOrderLines(group.product, units: group.units, localModels: context.localModels,
+                                                filaments: context.filaments, components: context.components,
+                                                stationery: context.stationery)
         resolution.blockers.forEach(block)
         resolution.notes.forEach(note)
-        check.lines += resolution.lines
+        guard resolution.blockers.isEmpty else { continue }
+        groupResolved.insert(id)
+        for (index, line) in resolution.lines.enumerated() {
+            if index < resolution.perOrder.count, resolution.perOrder[index] {
+                let key = orderImportPerOrderLineKey(line)
+                if let existing = perOrderLineIndex[key] {
+                    lines[existing].quantity = max(lines[existing].quantity, line.quantity)
+                    continue
+                }
+                perOrderLineIndex[key] = lines.count
+            }
+            groupLineIndices[id, default: []].append(lines.count)
+            lines.append(line)
+        }
     }
-    check.itemsSummary = summary.joined(separator: ", ")
+    check.lines = lines
+    check.itemsSummary = entries.flatMap { entry -> [String] in
+        switch entry {
+        case .text(let text):
+            return [text]
+        case .product(let id):
+            guard let group = groups[id] else { return [] }
+            guard groupResolved.contains(id) else { return ["\(group.units) × \(savedProductDisplayName(group.product))"] }
+            return (groupLineIndices[id] ?? []).map {
+                "\(lines[$0].quantity) × \(savedProductOrderLineTitle(lines[$0], localModels: context.localModels, components: context.components, stationery: context.stationery))"
+            }
+        }
+    }.joined(separator: ", ")
 
     // Delivery
     let missing = [("recipient name", order.name), ("address line 1", order.line1), ("city", order.city), ("postcode", order.zip)]
@@ -715,6 +910,14 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
     return check
 }
 
+/// Once-per-order lines of different products are the same item (and added once) when their type, reference,
+/// material, image link and options all match.
+func orderImportPerOrderLineKey(_ line: OrderLine) -> String {
+    [line.type, line.reference, line.filamentID, line.imageURL, line.optionsJSON]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .joined(separator: "\u{1F}")
+}
+
 let orderImportMissingEmailBlocker = "No email. Fill in “Email for orders without one” to import it."
 
 // MARK: Template
@@ -735,7 +938,14 @@ enum OrderImportOutcome: Equatable {
     case unknown(String)
 }
 
-let orderImportUnknownAdvice = "It may have been created. Reload Orders (Drafts) before importing it again."
+let orderImportUnknownAdvice = "It may have been created. Check your drafts (Show Drafts) before importing it again."
+
+/// The orders list filter that shows drafts, newest first: applied by the reload after an import and by Show Drafts.
+func orderImportDraftsFilter() -> OrderFilter {
+    var filter = OrderFilter()
+    filter.status = "DRAFT"
+    return filter
+}
 
 /// A 2xx reply is a created draft only when it names the order; otherwise the outcome is unknown.
 func orderImportOutcome(response object: [String: Any]) -> OrderImportOutcome {
@@ -776,7 +986,7 @@ func orderImportNextStep(after outcome: OrderImportOutcome, error: Error?, conse
     case .created:
         return .next
     case .unknown:
-        return .stop("Stopped: Slant didn’t confirm one draft, so nothing more was sent. Reload Orders (Drafts) and check it before importing it again.")
+        return .stop("Stopped: Slant didn’t confirm one draft, so nothing more was sent. Check your drafts (Show Drafts) before importing it again.")
     case .refused:
         if case APIError.http(let status, _, _, _)? = error as? APIError, status == 401 || status == 403 {
             return .stop("Stopped: Slant refused the key or platform, so the rest weren’t sent.")
@@ -854,6 +1064,8 @@ enum OrderImportRowState: Equatable {
     @Published private(set) var waitingUntil: Date?
     @Published private(set) var sentCount = 0
     @Published private(set) var totalCount = 0
+    /// Counts from the last finished batch.
+    @Published private(set) var lastTally: OrderImportTally?
     private(set) var stopRequested = false
 
     func start(_ jobs: [OrderImportJob], store: StudioStore) {
@@ -885,6 +1097,7 @@ enum OrderImportRowState: Equatable {
         message = nil
         sentCount = 0
         totalCount = 0
+        lastTally = nil
     }
 
     private func execute(_ jobs: [OrderImportJob], store: StudioStore) async {
@@ -970,9 +1183,10 @@ enum OrderImportRowState: Equatable {
                                              success: tally.refused == 0 && tally.unknown == 0 && tally.notSent == 0), at: 0)
             store.activities = Array(store.activities.prefix(100))
         }
-        // One read-only reload so new drafts appear in Orders. Never repeats a draft request.
+        lastTally = tally
+        // One read-only reload of the drafts list so new drafts appear in Orders. Never repeats a draft request.
         if tally.created + tally.unknown > 0, store.hasKey, store.apiKey == apiKey {
-            await store.applyOrderFilter(store.orderFilter)
+            await store.applyOrderFilter(orderImportDraftsFilter())
         }
     }
 
@@ -1018,13 +1232,15 @@ struct OrderImportSheet: View {
     @State private var ticked: Set<String> = []
     @State private var paddedZIP: Set<String> = []
     @State private var confirmCreate = false
+    /// Match products choices for this file only: never saved, and cleared with the file.
+    @State private var productChoices: [String: OrderImportProductChoice] = [:]
 
     private var context: OrderImportContext {
         OrderImportContext(
             products: store.savedProducts, localModels: store.localModels, filaments: store.filaments,
             components: store.components, stationery: store.stationery, platformID: store.platformID,
             ownerID: store.ownerID, fallbackEmail: fallbackEmail, ledger: store.orderImportLedger,
-            loadedKeys: orderImportLoadedSourceKeys(store.orders))
+            loadedKeys: orderImportLoadedSourceKeys(store.orders), productChoices: productChoices)
     }
 
     private func checks(for parse: OrderImportParse) -> [String: OrderImportCheck] {
@@ -1051,7 +1267,7 @@ struct OrderImportSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Import Orders").font(.title2.bold())
-                Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Studio’s template. Each SKU must match a saved product. Drafts aren’t charged: you review and place each order in Orders.")
+                Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Studio’s template. Each item must match a saved product by SKU, or one you choose under Match products. Drafts aren’t charged: afterwards you review and pay each draft one at a time in Orders.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
@@ -1076,7 +1292,9 @@ struct OrderImportSheet: View {
         .frame(minWidth: 780, idealWidth: 860, minHeight: 560, idealHeight: 680)
         .confirmationDialog(confirmTitle(currentChecks), isPresented: $confirmCreate, titleVisibility: .visible) {
             Button(createButtonTitle(readyCount(currentChecks))) { startImport() }
+            // Return cancels, so pressing it twice can't start a batch.
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text(confirmMessage(currentChecks))
         }
@@ -1087,12 +1305,13 @@ struct OrderImportSheet: View {
             for (id, state) in runner.states where state == .notSent { ticked.insert(id) }
         }
         .onDisappear {
-            // Closing stops the batch before its next request and drops every imported address.
+            // Closing stops the batch before its next request and drops every imported address and product choice.
             runner.requestStop()
             parsed = nil
             fallbackEmail = ""
             ticked = []
             paddedZIP = []
+            productChoices = [:]
         }
     }
 
@@ -1123,11 +1342,76 @@ struct OrderImportSheet: View {
                 }
             }
         }
+        let unmatched = orderImportUnmatchedKeys(parse.orders, products: store.savedProducts)
+        if !unmatched.isEmpty {
+            matchProducts(unmatched, parse: parse)
+        }
         List(parse.orders) { order in
             row(order, check: checks[order.id] ?? OrderImportCheck())
         }
         .listStyle(.inset(alternatesRowBackgrounds: true))
         .frame(minHeight: 240)
+    }
+
+    /// Each item key no saved product matches by SKU, once, with a product picker. A choice applies to every row with
+    /// that key, lives only in this sheet, and is never guessed.
+    private func matchProducts(_ keys: [OrderImportMatchKey], parse: OrderImportParse) -> some View {
+        let products = savedProductsSorted(store.savedProducts)
+        let missingSKUs = orderImportMissingSKUs(keys)
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Match products").font(.headline)
+            if let summary = orderImportMissingSKUSummary(missingSKUs) {
+                HStack(spacing: 8) {
+                    Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        .help(summary)
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(missingSKUs.joined(separator: "\n"), forType: .string)
+                    }
+                    .controlSize(.small)
+                    .help("Copy these SKUs, one per line, to set them up in Saved Products.")
+                }
+            }
+            Text("Choose the saved product to use for each, just for this file. Nothing is matched unless you choose it, and choices aren’t saved. To match automatically next time, give the saved product the same SKU.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(keys) { key in
+                        HStack {
+                            Text(key.kind == .sku ? "SKU \(key.display)" : "No SKU: “\(key.display)”")
+                                .lineLimit(1).truncationMode(.middle)
+                            Text(key.orderCount == 1 ? "1 order" : "\(key.orderCount) orders").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Picker("Product for \(key.display)", selection: Binding<OrderImportProductChoice?>(
+                                get: { productChoices[key.id] },
+                                set: { choose($0, for: key, parse: parse) })) {
+                                Text("Choose a product…").tag(OrderImportProductChoice?.none)
+                                ForEach(products) { product in
+                                    let sku = product.sku.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    Text(sku.isEmpty ? savedProductDisplayName(product) : "\(savedProductDisplayName(product)) (\(sku))")
+                                        .tag(OrderImportProductChoice?.some(.product(product.id)))
+                                }
+                                Divider()
+                                Text("Leave out of drafts").tag(OrderImportProductChoice?.some(.leaveOut))
+                            }
+                            .labelsHidden()
+                            .frame(width: 260)
+                            .disabled(runner.running)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: keys.count > 4 ? 130 : nil)
+            .fixedSize(horizontal: false, vertical: keys.count <= 4)
+        }
+    }
+
+    private func choose(_ choice: OrderImportProductChoice?, for key: OrderImportMatchKey, parse: OrderImportParse) {
+        guard !runner.running else { return }
+        let before = checks(for: parse)
+        productChoices[key.id] = choice
+        // Orders the choice makes importable are ticked, as they would have been on loading; it never unticks.
+        ticked.formUnion(orderImportNewlyTickable(before: before, after: checks(for: parse)))
     }
 
     private func row(_ order: OrderImportOrder, check: OrderImportCheck) -> some View {
@@ -1214,13 +1498,37 @@ struct OrderImportSheet: View {
                     Button("Stop") { runner.requestStop() }
                         .help("Stop before the next draft. A draft already being created finishes first.")
                 }
+                if showDraftsAvailable {
+                    let drafts = orderImportDraftsFilter()
+                    Button("Show Drafts") { showDrafts() }
+                        .disabled(store.busy && store.orderFilter != drafts)
+                        .help("Close and show draft orders in Orders, where you review and pay each one.")
+                }
                 Button(runner.running ? "Close and Stop" : "Close") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                // No default-action shortcut: creating drafts always takes a click and the confirmation.
                 Button(createButtonTitle(count) + "…") { confirmCreate = true }
-                    .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .disabled(count == 0 || runner.running || store.busy || store.orderDraftBlockedReason != nil)
             }
+        }
+    }
+
+    /// After a batch that made (or may have made) drafts, or when this session's imports are on record.
+    private var showDraftsAvailable: Bool {
+        guard !runner.running else { return false }
+        if let tally = runner.lastTally, tally.created + tally.unknown > 0 { return true }
+        return !store.orderImportLedger.entries.isEmpty
+    }
+
+    /// Applies the orders list's Draft status filter (unless the list already shows it) and closes the sheet.
+    private func showDrafts() {
+        let drafts = orderImportDraftsFilter()
+        let alreadyShown = store.orderFilter == drafts && (store.busy || (store.ordersLoaded && !store.orderSearchActive))
+        store.destination = .orders
+        dismiss()
+        if !alreadyShown {
+            Task { await store.applyOrderFilter(drafts) }
         }
     }
 
@@ -1245,11 +1553,15 @@ struct OrderImportSheet: View {
     private func confirmMessage(_ checks: [String: OrderImportCheck]) -> String {
         guard let parsed else { return "" }
         let ids = readyIDs(parsed, checks: checks)
-        var text = "These are drafts: nothing is charged. Studio creates them one at a time on platform \(platformName) and stops if Slant doesn’t confirm one. Review and place each order from Orders."
+        var text = "These are drafts: nothing is charged. Studio creates them one at a time on platform \(platformName) and stops if Slant doesn’t confirm one. Afterwards, review and pay each draft one at a time in Orders."
         let fallbackCount = ids.filter { checks[$0]?.usesFallbackEmail == true }.count
         if fallbackCount > 0 {
             let email = fallbackEmail.trimmingCharacters(in: .whitespacesAndNewlines)
             text += fallbackCount == 1 ? " 1 draft uses \(email) as its email." : " \(fallbackCount) drafts use \(email) as their email."
+        }
+        let chosenCount = ids.filter { checks[$0]?.usesProductChoice == true }.count
+        if chosenCount > 0 {
+            text += chosenCount == 1 ? " 1 draft uses your Match products choices." : " \(chosenCount) drafts use your Match products choices."
         }
         return text
     }
@@ -1274,6 +1586,7 @@ struct OrderImportSheet: View {
             let parse = try orderImportParse(data: try Data(contentsOf: url))
             runner.reset()
             paddedZIP = []
+            productChoices = [:]
             parsed = parse
             loadError = nil
             fileName = url.lastPathComponent
@@ -1283,6 +1596,7 @@ struct OrderImportSheet: View {
             parsed = nil
             ticked = []
             paddedZIP = []
+            productChoices = [:]
             fileName = url.lastPathComponent
             loadError = error.localizedDescription
         }
