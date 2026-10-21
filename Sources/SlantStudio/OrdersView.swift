@@ -191,6 +191,7 @@ struct OrderComposerView: View {
     @State private var initialShippingProvider = ""
     @State private var initialDraftPlatformID = ""
     @State private var confirmDiscard = false
+    @State private var showAddSavedProduct = false
 
     var hasUnsavedInput: Bool {
         orderComposerHasUnsavedInput(
@@ -267,6 +268,15 @@ struct OrderComposerView: View {
                     orderItemEditor($item)
                 }
                 Button { lines.append(OrderLine()) } label: { Label("Add another item", systemImage: "plus") }
+                Button { showAddSavedProduct = true } label: { Label("Add Saved Product…", systemImage: "shippingbox") }
+                    .help("Add the items of a product you’ve saved, for a number of units sold")
+                    .popover(isPresented: $showAddSavedProduct, arrowEdge: .bottom) {
+                        AddSavedProductPopover { added in
+                            lines = orderLinesAddingSavedProduct(lines, adding: added)
+                            showAddSavedProduct = false
+                        }
+                        .environmentObject(store)
+                    }
             }
             Section("Deliver to") {
                 if seededDelivery, !editingDelivery {
@@ -846,6 +856,12 @@ struct OrdersView: View {
                 }
                 .disabled(tableRows.isEmpty)
                 .help(tableRows.isEmpty ? "No orders in the list to export" : "Export the orders in the list to a CSV file")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button { store.openSavedProducts() } label: {
+                    Label("Saved Products…", systemImage: "shippingbox")
+                }
+                .help("Products you sell often, to add to order drafts in one step")
             }
             ToolbarItem(placement: .automatic) {
                 Button {

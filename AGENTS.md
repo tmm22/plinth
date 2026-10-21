@@ -36,6 +36,8 @@ Every task follows this process. Scale the number of agents to the size of the t
 - `OrderTools.swift`: orders-list typed sort keys, CSV export (addresses opt-in, formula guard), detail facts, copied item options summary and advisory postcode checks.
 - `ModelLibraryActions.swift`: model rename/export, cloud–local links, prepared-material mismatch, scale check and scaled copies, and menu helpers (Go shortcuts, modal-presentation guard).
 - `EstimateComparison.swift`: Compare estimates — a sequential, rate-limit-aware batch of ≤ 20 estimate reads (never retried) and its explicit **Use** hook.
+- `SavedProducts.swift`: saved products (references only — no prices, addresses or customer data), SKU matching and uniqueness, the `savedProductOrderLines` resolver (per-unit vs per-order quantities, 10,000 cap, latest upload of linked models, blockers that callers must honour; unloaded catalogs never block) and `products.json` storage (lenient decoding, unreadable files kept as `products.unreadable.json`).
+- `SavedProductsView.swift`: the Saved Products sheet and editor (a store-driven sheet counted by `isPresentingSheet`), the composer's **Add Saved Product…** popover and their pure helpers.
 - `ModelPreview.swift`: the 3D preview, its dimension/build-volume labels and the STL parser (`STLMesh`).
 - `ModelFormats.swift`: OBJ and 3MF readers into `STLMesh` (OBJ ear clipping, units, build items, component transforms, production-extension parts) and the format-aware scale check. Keep their size, triangle, depth, placement and triangulation-work limits; a face that can't be split exactly must block STL copies.
 - `ZipArchive.swift`: minimal bounded ZIP reader (stored/DEFLATE, ZIP64, CRC, ratio cap) for 3MF packages.
