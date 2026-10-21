@@ -33,6 +33,7 @@ Every task follows this process. Scale the number of agents to the size of the t
 - `StudioStore.swift`: shared state, API workflows, delivery details and persistence.
 - `ModelsView.swift`: model library, print configuration and the persistent next-action bar.
 - `OrdersView.swift`: order composition, duplicate-as-new-draft prefill, the discard check, delivery country defaults and the country list, review and fulfillment actions.
+- `OrderTools.swift`: orders-list typed sort keys, CSV export (addresses opt-in, formula guard), detail facts, copied item options summary and advisory postcode checks.
 - `ModelLibraryActions.swift`: model rename/export, cloud–local links, prepared-material mismatch, scale check and scaled copies, and menu helpers (Go shortcuts, modal-presentation guard).
 - `DeliveryLocation.swift`: optional one-shot location lookup and reviewed address mapping.
 - `scripts/build-app.sh`: app bundle metadata, including location permission purpose strings.

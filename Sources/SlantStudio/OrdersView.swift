@@ -204,6 +204,10 @@ struct OrderComposerView: View {
         if trimmed.isEmpty { return showEmailError ? "Enter an email like name@example.com." : nil }
         return isEmailAddress(delivery.email) ? nil : "Enter an email like name@example.com."
     }
+    /// Advisory only: never blocks Create Draft.
+    var postcodeWarning: String? {
+        postcodeFormatWarning(delivery.zip, country: orderCountryPickerValue(delivery))
+    }
     var createBlockedReason: String? {
         if !store.hasKey { return "Connect your account first." }
         if draftPlatformID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -232,6 +236,10 @@ struct OrderComposerView: View {
                         .font(.callout).foregroundStyle(.secondary)
                     if lines.allSatisfy({ $0.reference.isEmpty }) {
                         Text("No items could be copied. Choose them below.").font(.callout).foregroundStyle(.orange)
+                    }
+                    if lines.contains(where: { !orderLineOptionsSummary($0.optionsJSON).isEmpty }) {
+                        Text("Some items include options copied from the original order. Check them under each item.")
+                            .font(.callout).foregroundStyle(.secondary)
                     }
                     if !deliveryCopied {
                         Text("This order had no delivery details to copy. Enter them below.").font(.callout).foregroundStyle(.orange)
@@ -262,6 +270,7 @@ struct OrderComposerView: View {
                 if seededDelivery, !editingDelivery {
                     Text(deliverySummary.isEmpty ? delivery.email : deliverySummary)
                         .foregroundStyle(.secondary)
+                    if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.orange) }
                     Button("Edit") { editingDelivery = true }
                 } else {
                     deliveryFields
@@ -386,7 +395,10 @@ struct OrderComposerView: View {
                 : "State / province (optional)",
             text: $delivery.state
         )
-        TextField("Postal code", text: $delivery.zip)
+        VStack(alignment: .leading, spacing: 4) {
+            TextField("Postal code", text: $delivery.zip)
+            if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.orange) }
+        }
         countryPicker
     }
 
@@ -461,6 +473,26 @@ struct OrderComposerView: View {
                     orderCatalogPicker("Stationery", selection: item.reference, records: store.stationery, placeholder: "Choose stationery")
                 }
                 TextField("Custom image link (optional, starts with https://)", text: item.imageURL)
+            }
+            let copiedOptions = orderLineOptionsSummary(item.wrappedValue.optionsJSON)
+            if !copiedOptions.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Item options copied from the original order", systemImage: "slider.horizontal.3")
+                        .font(.callout)
+                    ForEach(Array(copiedOptions.enumerated()), id: \.offset) { _, option in
+                        Text("\(option.key): \(option.value)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(4)
+                    }
+                    HStack {
+                        Text("These are sent with this item.").font(.caption).foregroundStyle(.secondary)
+                        Button("Remove Options") { item.wrappedValue = orderLineRemovingOptions(item.wrappedValue) }
+                            .controlSize(.small)
+                            .help("Send this item without the copied options")
+                    }
+                }
             }
             DisclosureGroup("Advanced") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -663,12 +695,27 @@ struct OrderComposerView: View {
 
 struct OrderTableRow: Identifiable {
     let record: Record
+    let recipient: String
+    let status: String
+    let created: String
+    let total: String
+    let number: String
+    /// Typed sort keys: display strings ("Oct 3", "$100.00") don't sort chronologically or numerically.
+    let createdSortKey: Date
+    let totalSortKey: Decimal
     var id: String { record.id }
-    var recipient: String { orderListTitle(orderObject(record.values)) }
-    var status: String { orderStatusTitle((orderObject(record.values)["status"] as? String) ?? "") }
-    var created: String { orderCreatedDisplay(orderObject(record.values)) ?? "" }
-    var total: String { orderTotalMoney(orderObject(record.values)) }
-    var number: String { orderNumber(orderObject(record.values)) }
+
+    init(record: Record) {
+        self.record = record
+        let order = orderObject(record.values)
+        recipient = orderListTitle(order)
+        status = orderStatusTitle((order["status"] as? String) ?? "")
+        created = orderCreatedDisplay(order) ?? ""
+        total = orderTotalMoney(order)
+        number = orderNumber(order)
+        createdSortKey = orderCreatedDate(order) ?? orderMissingDateSortKey
+        totalSortKey = orderTotalAmount(order) ?? orderMissingTotalSortKey
+    }
 }
 
 struct OrdersView: View {
@@ -685,7 +732,9 @@ struct OrdersView: View {
     @State private var useToDate = false
     @State private var draftFromDate = Date()
     @State private var draftToDate = Date()
-    @State private var sortOrder = [KeyPathComparator(\OrderTableRow.created, order: .reverse)]
+    /// Starts on (and resets to) the server's createdAt sort from Filters; column clicks re-sort the loaded rows.
+    @State private var sortOrder = orderTableDefaultSort(serverSortOrder: "desc")
+    @State private var tableSortSynced = false
 
     var selected: Record? { store.orders.first { $0.id == selection } }
     var displayedOrder: [String: Any]? {
@@ -701,7 +750,7 @@ struct OrdersView: View {
         return store.orders.filter { orderMatchesSearch($0, query: search) }
     }
     var tableRows: [OrderTableRow] {
-        listRecords.map(OrderTableRow.init).sorted(using: sortOrder)
+        orderTableRowsSorted(listRecords.map { OrderTableRow(record: $0) }, using: sortOrder)
     }
     var draftFilterPreview: OrderFilter {
         var filter = OrderFilter()
@@ -728,11 +777,11 @@ struct OrdersView: View {
                         Text(row.status)
                     }
                     .width(110)
-                    TableColumn("Created", value: \.created) { (row: OrderTableRow) in
+                    TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
                         Text(row.created.isEmpty ? "—" : row.created)
                     }
                     .width(110)
-                    TableColumn("Total", value: \.total) { (row: OrderTableRow) in
+                    TableColumn("Total", value: \.totalSortKey) { (row: OrderTableRow) in
                         Text(row.total)
                     }
                     .width(80)
@@ -791,6 +840,15 @@ struct OrdersView: View {
             }
             ToolbarItem(placement: .automatic) {
                 Button {
+                    store.exportOrdersCSV(tableRows.map(\.record))
+                } label: {
+                    Label("Export Orders…", systemImage: "square.and.arrow.up")
+                }
+                .disabled(tableRows.isEmpty)
+                .help(tableRows.isEmpty ? "No orders in the list to export" : "Export the orders in the list to a CSV file")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button {
                     syncFilterDraftFromStore()
                     filtersPresented = true
                 } label: {
@@ -819,6 +877,10 @@ struct OrdersView: View {
         .onAppear {
             applyIncomingDraft()
             syncFilterDraftFromStore()
+            if !tableSortSynced {
+                tableSortSynced = true
+                sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
+            }
         }
         .sheet(item: $pendingConfirm) { request in
             OrderActionConfirmSheet(method: request.method, orderID: request.orderID) { orderID, order in
@@ -861,12 +923,20 @@ struct OrdersView: View {
                     useFromDate = false
                     useToDate = false
                     filtersPresented = false
-                    Task { await store.applyOrderFilter(OrderFilter()) }
+                    Task {
+                        await store.applyOrderFilter(OrderFilter())
+                        sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
+                    }
                 }
                 Spacer()
                 Button("Apply") {
                     filtersPresented = false
-                    Task { await store.applyOrderFilter(draftFilterPreview) }
+                    let filter = draftFilterPreview
+                    Task {
+                        await store.applyOrderFilter(filter)
+                        // Newest/Oldest from Filters wins over an earlier column sort.
+                        sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(draftFilterValidation != nil)
@@ -1314,10 +1384,7 @@ func orderCity(_ order: [String: Any]) -> String {
     (((order["customer"] as? [String: Any])?["details"] as? [String: Any])?["address"] as? [String: Any])?["city"] as? String ?? ""
 }
 func orderCreatedDisplay(_ order: [String: Any]) -> String? {
-    for key in ["createdAt", "created_at", "created", "dateCreated"] {
-        if let value = order[key] as? String, !value.isEmpty { return orderDateLabel(value) }
-    }
-    return nil
+    orderCreatedRaw(order).map(orderDateLabel)
 }
 func orderDateLabel(_ raw: String) -> String {
     let iso = ISO8601DateFormatter()
@@ -1878,6 +1945,9 @@ struct OrderSummary: View {
                         if let material = orderItemMaterialName(item, filaments: store.filaments) {
                             Text("Material: \(material)").font(.caption).foregroundStyle(.secondary)
                         }
+                        if let itemStatus = orderItemStatusTitle(item) {
+                            Text("Item status: \(itemStatus)").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
             } else {
@@ -1890,6 +1960,9 @@ struct OrderSummary: View {
             LabeledContent("Print cost") { Text(money(order["printingCost"])) }
             LabeledContent("Delivery cost") { Text(money(order["deliveryCost"])) }
             LabeledContent("Total") { Text(orderTotalMoney(order)).fontWeight(.semibold) }
+            ForEach(Array(orderDetailFacts(order).enumerated()), id: \.offset) { _, fact in
+                LabeledContent(fact.0) { Text(fact.1).textSelection(.enabled).multilineTextAlignment(.trailing) }
+            }
             let number = orderNumber(order)
             if !number.isEmpty {
                 HStack {

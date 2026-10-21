@@ -33,7 +33,10 @@ The app rejects fixes older than 60 seconds or with horizontal uncertainty over 
 - Fulfillment object (docs): `status`, `provider`, `deliveryMethod`, `address`, `trackingNumbers[]`, `deliveryInstructions`, `providerStatus`.
 - `options.shippingProvider`: **SHIPPO** | **SHIPSTATION**.
 - Metadata: at most **10** fields and depth **≤ 3**; no credentials; prefer camelCase.
-- **Duplicate as New Draft** (guided Orders) is client-side only: it reads the order with `GET /orders/{publicOrderId}` and prefills the composer with each item's `type`, `publicFileServiceId` / `componentId` / `stationeryId`, `filamentId`, `quantity`, `name`, `SKU`, `imageUrl` (https only) and `options`, from the flat spec shape or the nested `printItem` / `componentItem` / `stationeryItem` shape. Items without a reference are listed as not copied. The shipping address and email are copied; an address country that isn't a recognised ISO code or country name stays unselected (never assumed to be US). `options.shippingProvider` and the platform are copied when valid; metadata and all prices are not. The new draft is created with the normal `POST /orders`, priced by Slant, and placed only through the existing charge review.
+- **Duplicate as New Draft** (guided Orders) is client-side only: it reads the order with `GET /orders/{publicOrderId}` and prefills the composer with each item's `type`, `publicFileServiceId` / `componentId` / `stationeryId`, `filamentId`, `quantity`, `name`, `SKU`, `imageUrl` (https only) and `options`, from the flat spec shape or the nested `printItem` / `componentItem` / `stationeryItem` shape. Items without a reference are listed as not copied. The shipping address and email are copied; an address country that isn't a recognised ISO code or country name stays unselected (never assumed to be US). `options.shippingProvider` and the platform are copied when valid; metadata and all prices are not. The new draft is created with the normal `POST /orders`, priced by Slant, and placed only through the existing charge review. Copied item `options` are shown per item in the composer and can be removed before the draft is created.
+- Guided order details show, only when present: `items[].status` (`PROCESSING` | `READY` | `SHIPPED` | `DELIVERED`), `processedAt`, `options.shippingProvider` and `fulfillment.deliveryInstructions`. The bundled spec has no seller-settable order reference (no `orderNumber` field on `Order` or the `POST /orders` body), so Studio doesn't offer one; use `metadata` for your own references.
+- Order costs (`printingCost`, `deliveryCost`, `totals.totalCost`) are documented in USD; `items[].currency` is documented as always USD. The guided list sorts **Created** by the parsed `createdAt` timestamp and **Total** by its decimal value, and defaults to the server `sortOrder` chosen in Filters.
+- **Export Orders…** is client-side only: it writes the orders already loaded in the list to CSV without any request. Recipient/address columns are opt-in.
 - Cancel (docs Cancel Order page): *“Currently cancelling an order will also refund it as well as cancel associated fulfillment. If already shipped then the order will only refund.”* A separate **Refund Order** docs section exists; **no refund endpoint is integrated** in OpenAPI or this app.
 
 ## Webhooks
@@ -86,7 +89,7 @@ Secret is the platform `webhookSecret` (trim before use; used exactly as submitt
 
 - `startDate` / `endDate`: ISO 8601. Docs describe endDate as returning orders **up to that point**; file filters phrase endDate as “created **before this date**” (exclusive upper bound). Studio’s guided Orders filter sends the day after the chosen “To” date so the selected day is included.
 - `sortOrder`: `ASC` | `DESC` (invalid sort/limit → 400 naming the parameter).
-- Status filter includes the full enum listed above.
+- Status filter includes the full enum listed above; a test checks the guided filter offers exactly the bundled `GET /orders` `status` enum.
 
 ## Catalog notes
 
