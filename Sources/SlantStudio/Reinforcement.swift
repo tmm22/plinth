@@ -235,10 +235,13 @@ extension STLMesh {
             }
         }
 
+        // Set and Dictionary iteration order changes with each process's hash seed. Everything below that
+        // sums, solves or merges walks vertices, faces and triangles in index order, so a mesh always gives
+        // the same snapped geometry.
         var planes: [Int: (normal: SIMD3<Double>, offset: Double)] = [:]
         for (id, list) in members {
             let normal = simd_normalize(list.reduce(SIMD3<Double>()) { $0 + normals[$1] })
-            let points = Set(list.flatMap { triangles[$0] })
+            let points = Set(list.flatMap { triangles[$0] }).sorted()
             let offset = points.reduce(0) { $0 + simd_dot(normal, positions[$1]) } / Double(points.count)
             guard points.allSatisfy({ abs(simd_dot(normal, positions[$0]) - offset) < 1e-5 }) else { return nil }
             planes[id] = (normal, offset)
@@ -249,7 +252,7 @@ extension STLMesh {
         // Closest point to the original vertex on all incident planes: x = x0 + Nᵀ(NNᵀ)⁻¹(w - N·x0).
         var snapped = positions
         for (v, faces) in incident.enumerated() {
-            let constraints = faces.map { planes[$0]! }
+            let constraints = faces.sorted().map { planes[$0]! }
             let x0 = positions[v]
             var x = x0
             switch constraints.count {
@@ -290,7 +293,8 @@ extension STLMesh {
             }
             return simd_dot(area, n) / 2 <= 1e-4 * longest * longest
         }
-        var pending = loops.keys.filter { isNeedle(loops[$0]!, planes[face[$0]]!.normal) }
+        // Popped from the end, so needles merge in ascending triangle order.
+        var pending = loops.keys.sorted(by: >).filter { isNeedle(loops[$0]!, planes[face[$0]]!.normal) }
         while let id = pending.popLast() {
             guard let loop = loops[id] else { continue }
             let n = planes[face[id]]!.normal
