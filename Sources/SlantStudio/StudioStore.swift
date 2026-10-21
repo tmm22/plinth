@@ -443,6 +443,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     @Published var cloudDeleteRefusal: CloudDeleteRefusal?
     @Published private(set) var unknownOutcomeOrderIDs: Set<String> = []
+    // MARK: Model library actions (see ModelLibraryActions.swift)
+    /// Local model whose rename sheet is open; set from the context menu, inspector or Model menu.
+    @Published var renamingModelID: UUID?
+    // MARK: -
     let endpoints = EndpointCatalog.load()
     private var cachedClientKey = ""
     private var cachedClient: APIClient?

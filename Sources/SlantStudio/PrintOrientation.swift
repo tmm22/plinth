@@ -418,6 +418,10 @@ struct PrintOrientationCard: View {
             if let material = recipe.materialID, material != store.filamentID {
                 Text("The material selection has changed since preparation. Placement is preserved; strength depends on the material used.")
                     .font(.callout).foregroundStyle(.secondary)
+                if let mismatch = preparedMaterialMismatch(recipeFilamentID: material, selectedFilamentID: store.filamentID, filaments: store.filaments),
+                   mismatch.canApply, let name = mismatch.name {
+                    Button("Use prepared material (\(name))") { store.filamentID = mismatch.filamentID }
+                }
             }
             if let original = store.localModels.first(where: { $0.id == recipe.sourceID }) {
                 Button("Prepare another version") { store.select(original) }
