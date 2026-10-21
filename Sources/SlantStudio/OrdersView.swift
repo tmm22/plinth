@@ -236,10 +236,9 @@ struct OrderComposerView: View {
         Form {
             if store.draftCreateOutcomeUnknown {
                 Section {
-                    Label(draftCreateUnknownNotice, systemImage: "exclamationmark.triangle.fill")
+                    Label(draftCreateUnknownNotice(store.unconfirmedDraftCreates), systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                    Text("The last Create Draft didn’t confirm, so it may have reached Slant. Creating again asks you to confirm, so you don’t make a second draft by accident.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             if let sourceOrderNumber {
@@ -358,7 +357,7 @@ struct OrderComposerView: View {
             Button("Don’t Create", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text("\(draftCreateUnknownNotice) Creating it again may make a second draft.")
+            Text(draftCreateAnywayMessage(store.unconfirmedDraftCreates))
         }
         .onAppear(perform: seedIfNeeded)
         // Pending location work stops whenever the form actually closes (create, cancel or discard).
@@ -706,6 +705,9 @@ struct OrderComposerView: View {
                 confirmCreateAnyway = true
                 return
             }
+            // Shown in the notice if this attempt's outcome isn't confirmed; kept in memory only.
+            let recipient = delivery.name
+            let attemptDate = Date()
             Task {
                 var attempt = DraftCreateAttempt.notSent
                 let ran = await store.run("Create order draft", handlesError: { error in
@@ -726,7 +728,8 @@ struct OrderComposerView: View {
                     store.destination = .orders; dismiss()
                 }
                 if ran {
-                    store.draftCreateOutcomeUnknown = draftCreateOutcomeUnknown(previous: store.draftCreateOutcomeUnknown, attempt: attempt)
+                    store.unconfirmedDraftCreates = unconfirmedDraftAttempts(previous: store.unconfirmedDraftCreates, attempt: attempt,
+                                                                             recipient: recipient, date: attemptDate)
                 }
             }
         } catch { validation = error.localizedDescription }
@@ -742,6 +745,8 @@ struct OrderTableRow: Identifiable {
     let created: String
     let total: String
     let number: String
+    /// "Etsy order 3141592653" when the order's metadata has a marketplace reference (if Slant returns metadata).
+    let marketplaceReference: String?
     /// Typed sort keys: display strings ("Oct 3", "$100.00") don't sort chronologically or numerically.
     let createdSortKey: Date
     let totalSortKey: Decimal
@@ -755,6 +760,7 @@ struct OrderTableRow: Identifiable {
         created = orderCreatedDisplay(order) ?? ""
         total = orderTotalMoney(order)
         number = orderNumber(order)
+        marketplaceReference = orderMarketplaceReferenceLine(order)
         createdSortKey = orderCreatedDate(order) ?? orderMissingDateSortKey
         totalSortKey = orderTotalAmount(order) ?? orderMissingTotalSortKey
     }
@@ -813,7 +819,13 @@ struct OrdersView: View {
             VStack(spacing: 0) {
                 Table(tableRows, selection: $selection, sortOrder: $sortOrder) {
                     TableColumn("Recipient", value: \.recipient) { (row: OrderTableRow) in
-                        Text(row.recipient).lineLimit(1)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(row.recipient).lineLimit(1)
+                            // Lets sellers match a draft to its marketplace order without opening it.
+                            if let reference = row.marketplaceReference {
+                                Text(reference).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
                     }
                     TableColumn("Status", value: \.status) { (row: OrderTableRow) in
                         Text(row.status)
@@ -872,7 +884,7 @@ struct OrdersView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
                 if let reason = store.orderDraftBlockedReason {
                     Text(reason).font(.caption).foregroundStyle(.secondary)
                 }
@@ -880,20 +892,14 @@ struct OrdersView: View {
                     .disabled(store.orderDraftBlockedReason != nil || store.busy)
                     .help(store.orderDraftBlockedReason ?? "Create an order draft")
             }
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    store.exportOrdersCSV(tableRows.map(\.record), moreOnServer: store.ordersHasMore && !store.orderSearchActive)
-                } label: {
-                    Label("Export Orders…", systemImage: "square.and.arrow.up")
-                }
-                .disabled(tableRows.isEmpty)
-                .help(tableRows.isEmpty ? "No orders in the list to export" : "Export the orders in the list to a CSV file")
-            }
+            // Export Orders… lives in the File menu only, to keep this toolbar short.
             ToolbarItem(placement: .automatic) {
                 Button { store.openSavedProducts() } label: {
                     Label("Saved Products…", systemImage: "shippingbox")
                 }
                 .help("Products you sell often, to add to order drafts in one step")
+            }
+            ToolbarItem(placement: .automatic) {
                 // Opens the import sheet only; drafts are created there after an explicit confirmation.
                 Button {
                     store.showOrderImport = true
@@ -917,7 +923,8 @@ struct OrdersView: View {
         }
         .onChange(of: store.ordersExportRequest) { _, _ in
             // File › Export Orders…, which the store only forwards when nothing modal is shown.
-            guard !tableRows.isEmpty else { return }
+            // Search can hide every loaded order; say so rather than doing nothing silently.
+            guard !tableRows.isEmpty else { NSSound.beep(); return }
             store.exportOrdersCSV(tableRows.map(\.record), moreOnServer: store.ordersHasMore && !store.orderSearchActive)
         }
         .onChange(of: selection) { _, new in
@@ -1481,6 +1488,7 @@ func orderMatchesSearch(_ order: Record, query: String) -> Bool {
     if let items = values["items"] as? [[String: Any]] {
         fields.append(contentsOf: items.map(orderItemDisplayName))
     }
+    if let reference = orderMarketplaceReference(values) { fields.append(reference.id) }
     return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
 }
 

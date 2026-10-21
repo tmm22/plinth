@@ -140,6 +140,12 @@ extension StudioStore {
         ordersExportRequest += 1
     }
 
+    /// File › Saved Products…: opens the local product list only (no request), and only when nothing modal is shown.
+    func openSavedProductsFromMenu() {
+        guard !menuCommandsBlockedByModalUI else { return }
+        openSavedProducts()
+    }
+
     func refreshFromMenu() {
         guard !menuCommandsBlockedByModalUI, connected, !busy else { return }
         Task { await refreshCurrent() }

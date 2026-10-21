@@ -8,7 +8,7 @@ final class MarginTests: XCTestCase {
 
     func testEtsyPresetLineByLine() {
         let result = profitCheck(itemTotal: 20, shippingCharged: 5, preset: .etsyUS, rates: ProfitFeePreset.etsyUS.defaultRates,
-                                 offsiteAds: false, itemsSold: 2, slantTotal: dec("12.34"))
+                                 offsiteAds: false, unitsSold: 2, slantTotal: dec("12.34"))
         XCTAssertEqual(result.revenue, 25)
         // 6.5% of 25 = 1.625 → 1.63; 3% of 25 + 0.25 = 1.00; 2 × 0.20 = 0.40.
         XCTAssertEqual(result.lines.map(\.amount), [20, 5, dec("-1.63"), dec("-1.00"), dec("-0.40"), dec("-12.34")])
@@ -20,22 +20,22 @@ final class MarginTests: XCTestCase {
 
     func testEtsyOffsiteAdsAddsFifteenPercentAndIsCapped() {
         let rates = ProfitFeePreset.etsyUS.defaultRates
-        let withAds = profitCheck(itemTotal: 20, shippingCharged: 5, preset: .etsyUS, rates: rates, offsiteAds: true, itemsSold: 2, slantTotal: dec("12.34"))
+        let withAds = profitCheck(itemTotal: 20, shippingCharged: 5, preset: .etsyUS, rates: rates, offsiteAds: true, unitsSold: 2, slantTotal: dec("12.34"))
         XCTAssertEqual(withAds.fees, dec("6.78"))
         XCTAssertEqual(withAds.profit, dec("5.88"))
         XCTAssertEqual(withAds.marginPercent, dec("23.5"))
 
-        let large = profitCheck(itemTotal: 1000, shippingCharged: 0, preset: .etsyUS, rates: rates, offsiteAds: true, itemsSold: 1, slantTotal: 0)
+        let large = profitCheck(itemTotal: 1000, shippingCharged: 0, preset: .etsyUS, rates: rates, offsiteAds: true, unitsSold: 1, slantTotal: 0)
         XCTAssertTrue(large.lines.contains { $0.label.hasPrefix("Offsite Ads") && $0.amount == -100 })
 
         // Offsite Ads only applies to the Etsy preset.
-        let shopify = profitCheck(itemTotal: 20, shippingCharged: 5, preset: .shopifyBasicUS, rates: rates, offsiteAds: true, itemsSold: 1, slantTotal: 0)
+        let shopify = profitCheck(itemTotal: 20, shippingCharged: 5, preset: .shopifyBasicUS, rates: rates, offsiteAds: true, unitsSold: 1, slantTotal: 0)
         XCTAssertFalse(shopify.lines.contains { $0.label.hasPrefix("Offsite Ads") })
     }
 
     func testShopifyBasicPreset() {
         let result = profitCheck(itemTotal: 30, shippingCharged: 0, preset: .shopifyBasicUS, rates: ProfitFeePreset.shopifyBasicUS.defaultRates,
-                                 offsiteAds: false, itemsSold: 3, slantTotal: 10)
+                                 offsiteAds: false, unitsSold: 3, slantTotal: 10)
         // 2.9% of 30 = 0.87 + 0.30; no transaction or listing fee lines.
         XCTAssertEqual(result.fees, dec("1.17"))
         XCTAssertEqual(result.profit, dec("18.83"))
@@ -45,14 +45,14 @@ final class MarginTests: XCTestCase {
 
     func testNonePresetChargesNoFees() {
         let result = profitCheck(itemTotal: 15, shippingCharged: dec("4.99"), preset: .none, rates: ProfitFeePreset.etsyUS.defaultRates,
-                                 offsiteAds: true, itemsSold: 1, slantTotal: dec("9.99"))
+                                 offsiteAds: true, unitsSold: 1, slantTotal: dec("9.99"))
         XCTAssertEqual(result.fees, 0)
         XCTAssertEqual(result.profit, dec("10.00"))
     }
 
     func testCustomPercentAndFixedFees() {
         let rates = ProfitFeeRates(transactionPercent: 10, processingPercent: 0, processingFixed: dec("0.50"), listingFeePerItem: 1, offsiteAdsPercent: 0)
-        let result = profitCheck(itemTotal: dec("9.99"), shippingCharged: 0, preset: .custom, rates: rates, offsiteAds: false, itemsSold: 0, slantTotal: 5)
+        let result = profitCheck(itemTotal: dec("9.99"), shippingCharged: 0, preset: .custom, rates: rates, offsiteAds: false, unitsSold: 0, slantTotal: 5)
         // 10% of 9.99 = 0.999 → 1.00; fixed 0.50; listing uses at least one item.
         XCTAssertEqual(result.fees, dec("2.50"))
         XCTAssertEqual(result.profit, dec("2.49"))
@@ -60,16 +60,16 @@ final class MarginTests: XCTestCase {
 
     func testZeroRevenueHasNoFeesAndNoMargin() {
         let result = profitCheck(itemTotal: 0, shippingCharged: 0, preset: .etsyUS, rates: ProfitFeePreset.etsyUS.defaultRates,
-                                 offsiteAds: true, itemsSold: 1, slantTotal: 8)
+                                 offsiteAds: true, unitsSold: 1, slantTotal: 8)
         XCTAssertEqual(result.fees, 0)
         XCTAssertEqual(result.profit, -8)
         XCTAssertNil(result.marginPercent)
     }
 
     func testNegativeInputsAreClampedAndLossesAreNegative() {
-        let result = profitCheck(itemTotal: -5, shippingCharged: -1, preset: .none, rates: ProfitFeeRates(), offsiteAds: false, itemsSold: 1, slantTotal: 3)
+        let result = profitCheck(itemTotal: -5, shippingCharged: -1, preset: .none, rates: ProfitFeeRates(), offsiteAds: false, unitsSold: 1, slantTotal: 3)
         XCTAssertEqual(result.revenue, 0)
-        let loss = profitCheck(itemTotal: 5, shippingCharged: 0, preset: .none, rates: ProfitFeeRates(), offsiteAds: false, itemsSold: 1, slantTotal: 10)
+        let loss = profitCheck(itemTotal: 5, shippingCharged: 0, preset: .none, rates: ProfitFeeRates(), offsiteAds: false, unitsSold: 1, slantTotal: 10)
         XCTAssertEqual(loss.profit, -5)
         XCTAssertEqual(loss.marginPercent, -100)
         XCTAssertEqual(profitMoney(-5), "−$5.00")
@@ -78,12 +78,12 @@ final class MarginTests: XCTestCase {
 
     func testAmountsRoundToCentsWithoutDoubleDrift() {
         let result = profitCheck(itemTotal: dec("0.1"), shippingCharged: dec("0.2"), preset: .none, rates: ProfitFeeRates(),
-                                 offsiteAds: false, itemsSold: 1, slantTotal: dec("0.104"))
+                                 offsiteAds: false, unitsSold: 1, slantTotal: dec("0.104"))
         XCTAssertEqual(result.revenue, dec("0.3"))
         XCTAssertEqual(result.slantTotal, dec("0.10"))
         XCTAssertEqual(result.profit, dec("0.2"))
         let huge = profitCheck(itemTotal: profitMoneyInputLimit, shippingCharged: profitMoneyInputLimit, preset: .etsyUS,
-                               rates: ProfitFeePreset.etsyUS.defaultRates, offsiteAds: true, itemsSold: 10_000, slantTotal: 1)
+                               rates: ProfitFeePreset.etsyUS.defaultRates, offsiteAds: true, unitsSold: 10_000, slantTotal: 1)
         XCTAssertEqual(huge.revenue, 2_000_000)
         XCTAssertNotNil(huge.marginPercent)
     }
@@ -154,12 +154,24 @@ final class MarginTests: XCTestCase {
         XCTAssertEqual(profitCheckSlantTotal(["total": "10", "currency": "usd"]), .amount(10))
     }
 
-    func testItemsSoldSumsQuantities() {
-        XCTAssertEqual(profitCheckItemsSold(["items": [["quantity": 2], ["quantity": "3"]]]), 5)
-        XCTAssertNil(profitCheckItemsSold([:]))
-        XCTAssertNil(profitCheckItemsSold(["items": [["quantity": 2], ["name": "x"]]]))
-        XCTAssertNil(profitCheckItemsSold(["items": [["quantity": Int.max], ["quantity": Int.max]]]))
-        XCTAssertNil(profitCheckItemsSold(["items": [["quantity": -2]]]))
+    func testUnitsSoldParsing() {
+        XCTAssertEqual(parseProfitUnitsSold("1"), 1)
+        XCTAssertEqual(parseProfitUnitsSold(" 3 "), 3)
+        XCTAssertEqual(parseProfitUnitsSold("10000"), 10_000)
+        for bad in ["", "0", "-1", "1.5", "2,0", "abc", "10001", "99999999999999999999", "٣", "1 2"] {
+            XCTAssertNil(parseProfitUnitsSold(bad), bad)
+        }
+    }
+
+    func testListingFeeUsesUnitsSoldNotSlantItemQuantities() {
+        // One unit sold whose Slant order holds three prints and a packing slip: one listing renewal, not four.
+        let rates = ProfitFeePreset.etsyUS.defaultRates
+        let one = profitCheck(itemTotal: 20, shippingCharged: 5, preset: .etsyUS, rates: rates, offsiteAds: false, unitsSold: 1, slantTotal: 10)
+        XCTAssertEqual(one.lines.first { $0.label.hasPrefix("Listing fees") }?.amount, dec("-0.20"))
+        XCTAssertEqual(one.lines.first { $0.label.hasPrefix("Listing fees") }?.label, "Listing fees (1 × $0.20)")
+        let three = profitCheck(itemTotal: 20, shippingCharged: 5, preset: .etsyUS, rates: rates, offsiteAds: false, unitsSold: 3, slantTotal: 10)
+        XCTAssertEqual(three.lines.first { $0.label.hasPrefix("Listing fees") }?.amount, dec("-0.60"))
+        XCTAssertEqual(one.profit - three.profit, dec("0.40"))
     }
 
     // MARK: Saved settings
@@ -207,18 +219,52 @@ final class MarginTests: XCTestCase {
         let notSent = APIError.invalidRequest("Connect your account in Connection first.")
         let noOrderNumber = StudioError("Slant didn’t return an order number.")
 
-        for error in [timeout, serverError, conflict, noOrderNumber] as [Error] {
-            XCTAssertTrue(draftCreateOutcomeUnknown(previous: false, attempt: .failed(error)), "\(error)")
+        let date = Date(timeIntervalSince1970: 1_000)
+        func after(_ previous: [UnconfirmedDraftAttempt], _ attempt: DraftCreateAttempt) -> [UnconfirmedDraftAttempt] {
+            unconfirmedDraftAttempts(previous: previous, attempt: attempt, recipient: "  Ada Lovelace ", date: date)
         }
-        XCTAssertTrue(draftCreateOutcomeUnknown(previous: false, attempt: .failed(APIError.invalidResponse("garbled"))))
+        let ada = UnconfirmedDraftAttempt(recipient: "Ada Lovelace", date: date)
+        let earlier = UnconfirmedDraftAttempt(recipient: "Grace Hopper", date: Date(timeIntervalSince1970: 0))
+
+        for error in [timeout, serverError, conflict, noOrderNumber] as [Error] {
+            XCTAssertEqual(after([], .failed(error)), [ada], "\(error)")
+        }
+        XCTAssertEqual(after([], .failed(APIError.invalidResponse("garbled"))), [ada])
+        // A second unconfirmed attempt is added, so the notice names both customers.
+        XCTAssertEqual(after([earlier], .failed(timeout)), [earlier, ada])
         // A definite refusal or a request never sent proves nothing about an earlier unknown attempt.
-        XCTAssertFalse(draftCreateOutcomeUnknown(previous: false, attempt: .failed(refused)))
-        XCTAssertTrue(draftCreateOutcomeUnknown(previous: true, attempt: .failed(refused)))
-        XCTAssertFalse(draftCreateOutcomeUnknown(previous: false, attempt: .failed(notSent)))
-        XCTAssertTrue(draftCreateOutcomeUnknown(previous: true, attempt: .notSent))
-        XCTAssertFalse(draftCreateOutcomeUnknown(previous: false, attempt: .notSent))
+        XCTAssertEqual(after([], .failed(refused)), [])
+        XCTAssertEqual(after([earlier], .failed(refused)), [earlier])
+        XCTAssertEqual(after([], .failed(notSent)), [])
+        XCTAssertEqual(after([earlier], .notSent), [earlier])
+        XCTAssertEqual(after([], .notSent), [])
         // Only a confirmed creation clears it.
-        XCTAssertFalse(draftCreateOutcomeUnknown(previous: true, attempt: .succeeded))
+        XCTAssertEqual(after([earlier, ada], .succeeded), [])
+        // Only the most recent attempts are kept.
+        let many = (0..<unconfirmedDraftAttemptLimit).map { UnconfirmedDraftAttempt(recipient: "R\($0)", date: date) }
+        let capped = after(many, .failed(timeout))
+        XCTAssertEqual(capped.count, unconfirmedDraftAttemptLimit)
+        XCTAssertEqual(capped.first?.recipient, "R1")
+        XCTAssertEqual(capped.last, ada)
+    }
+
+    func testDraftCreateUnknownNoticeNamesRecipientAndTime() {
+        let time: (Date) -> String = { _ in "2:32 PM" }
+        let ada = UnconfirmedDraftAttempt(recipient: "Ada Lovelace", date: Date())
+        XCTAssertEqual(draftCreateUnknownNotice([], time: time), "")
+        let one = draftCreateUnknownNotice([ada], time: time)
+        XCTAssertEqual(one, "Your Create Draft for Ada Lovelace at 2:32 PM didn’t get a reply from Slant, so that draft may exist. "
+                       + "Check your drafts (Orders › Filters › Status: Draft) before creating it again.")
+        XCTAssertFalse(one.contains("Orders › Drafts"))
+        let unnamed = draftCreateUnknownNotice([UnconfirmedDraftAttempt(recipient: "", date: Date())], time: time)
+        XCTAssertTrue(unnamed.hasPrefix("Your Create Draft at 2:32 PM didn’t"))
+        let two = draftCreateUnknownNotice([ada, UnconfirmedDraftAttempt(recipient: "Grace Hopper", date: Date())], time: time)
+        XCTAssertTrue(two.hasPrefix("2 Create Draft attempts didn’t get a reply from Slant (for Ada Lovelace at 2:32 PM; for Grace Hopper at 2:32 PM)"))
+        XCTAssertTrue(draftCreateAnywayMessage([ada], time: time).hasSuffix("If this is the same order, creating it again makes a second draft."))
+        XCTAssertTrue(draftCreateAnywayMessage([ada, ada], time: time).hasSuffix("If this is one of those orders, creating it again makes a second draft."))
+        // The path names the real orders-list controls: Filters, then the Status picker's Draft option.
+        XCTAssertTrue(orderStatusFilterOptions.contains("DRAFT"))
+        XCTAssertEqual(orderStatusTitle("DRAFT"), "Draft")
     }
 
     func testDraftCreateConfirmationAndDiscardCopy() {
@@ -229,21 +275,39 @@ final class MarginTests: XCTestCase {
         XCTAssertFalse(isRetryableAPICall(method: "POST", path: "/orders"))
         XCTAssertTrue(orderComposerDiscardMessage(outcomeUnknown: false).contains("Nothing has been sent"))
         XCTAssertFalse(orderComposerDiscardMessage(outcomeUnknown: true).contains("Nothing has been sent"))
-        XCTAssertTrue(orderComposerDiscardMessage(outcomeUnknown: true).contains("Orders › Drafts"))
+        XCTAssertTrue(orderComposerDiscardMessage(outcomeUnknown: true).contains("Orders › Filters › Status: Draft"))
     }
 
     // MARK: Marketplace reference
 
     func testMarketplaceReferenceFromMetadata() {
-        let etsy = orderMarketplaceReference(["metadata": ["sourceOrderId": " 3141592653 ", "source": "Etsy"]])
+        // Import writes the source in lower case: "etsy", "shopify" or "csv".
+        let etsy = orderMarketplaceReference(["metadata": ["sourceOrderId": " 3141592653 ", "source": "etsy"]])
         XCTAssertEqual(etsy?.id, "3141592653")
-        XCTAssertEqual(etsy?.source, "Etsy")
+        XCTAssertEqual(etsy?.source, "etsy")
         XCTAssertEqual(orderMarketplaceReferenceLabel(source: etsy?.source), "Etsy order")
+        XCTAssertEqual(orderMarketplaceReferenceLabel(source: "shopify"), "Shopify order")
+        XCTAssertEqual(orderMarketplaceReferenceLabel(source: "csv"), "Imported order")
+        XCTAssertEqual(orderMarketplaceReferenceLabel(source: "Etsy"), "Etsy order")
+        XCTAssertEqual(orderMarketplaceReferenceLabel(source: "Amazon"), "Amazon order")
+        XCTAssertEqual(orderMarketplaceReferenceLabel(source: "  "), "Marketplace order")
+        for format in OrderImportFormat.allCases {
+            XCTAssertFalse(orderMarketplaceReferenceLabel(source: format.rawValue).first?.isLowercase ?? true, format.rawValue)
+        }
 
         let numeric = orderMarketplaceReference(["metadata": ["sourceOrderId": 1042]])
         XCTAssertEqual(numeric?.id, "1042")
         XCTAssertNil(numeric?.source)
         XCTAssertEqual(orderMarketplaceReferenceLabel(source: nil), "Marketplace order")
+
+        // The orders table's secondary line, and local search by the marketplace order number.
+        XCTAssertEqual(orderMarketplaceReferenceLine(["metadata": ["sourceOrderId": "3141592653", "source": "etsy"]]), "Etsy order 3141592653")
+        XCTAssertEqual(orderMarketplaceReferenceLine(["metadata": ["sourceOrderId": "1001", "source": "csv"]]), "Imported order 1001")
+        XCTAssertNil(orderMarketplaceReferenceLine(["metadata": ["source": "etsy"]]))
+        XCTAssertNil(orderMarketplaceReferenceLine([:]))
+        let record = Record(values: ["id": "ord_1", "status": "DRAFT", "metadata": ["sourceOrderId": "3141592653", "source": "etsy"]])
+        XCTAssertTrue(orderMatchesSearch(record, query: "3141592653"))
+        XCTAssertFalse(orderMatchesSearch(record, query: "2718281828"))
 
         XCTAssertNil(orderMarketplaceReference([:]))
         XCTAssertNil(orderMarketplaceReference(["metadata": NSNull()]))

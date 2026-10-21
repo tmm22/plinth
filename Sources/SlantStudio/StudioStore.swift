@@ -481,9 +481,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Slant files deleted this session, so restoring a removed library entry never relinks to one.
     private(set) var deletedCloudFileIDs: Set<String> = []
     @Published private(set) var unknownOutcomeOrderIDs: Set<String> = []
-    /// An earlier Create Draft didn’t confirm, so Slant may hold that draft. In memory only; every composer shows a
-    /// notice and asks for "Create Anyway" until a draft creation is confirmed. See `draftCreateOutcomeUnknown`.
-    @Published var draftCreateOutcomeUnknown = false
+    /// Earlier Create Draft attempts that didn’t confirm, so Slant may hold those drafts (recipient name and time, in
+    /// memory only). Every composer shows a notice and asks for "Create Anyway" until a draft creation is confirmed.
+    /// See `unconfirmedDraftAttempts(previous:attempt:recipient:date:)`.
+    @Published var unconfirmedDraftCreates: [UnconfirmedDraftAttempt] = []
+    var draftCreateOutcomeUnknown: Bool { !unconfirmedDraftCreates.isEmpty }
     private(set) var unknownOutcomeContexts: [String: UnknownOutcomeContext] = [:]
     // MARK: Model library actions (see ModelLibraryActions.swift)
     /// Local model whose rename sheet is open; set from the context menu, inspector or Model menu.
@@ -831,7 +833,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     private func clearAccountWriteSafeguards() {
         unknownOutcomeOrderIDs = []
         unknownOutcomeContexts = [:]
-        draftCreateOutcomeUnknown = false
+        unconfirmedDraftCreates = []
         orderImportLedger = OrderImportLedger()
     }
     private func resetAccountDataPreservingKey() {

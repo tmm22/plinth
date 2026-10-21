@@ -4,8 +4,9 @@ import SwiftUI
 // MARK: - Profit check on a real order
 //
 // Uses the order's own Slant total (print + delivery, in USD) rather than an estimate, because estimates exclude
-// shipping. What the buyer paid (and whether the sale came from an ad) is typed in for this order only and never
-// stored; only the fee preset and its rates are remembered (UserDefaults), since they are settings, not personal data.
+// shipping. What the buyer paid, how many units they bought and whether the sale came from an ad are typed in for this
+// order only and never stored; only the fee preset and its rates are remembered (UserDefaults), since they are
+// settings, not personal data.
 
 /// When the preset fee rates were last checked against the marketplaces' published fees.
 let profitFeeRatesCheckedDate = "October 2026"
@@ -191,16 +192,17 @@ func profitCheckSlantTotal(_ order: [String: Any]) -> ProfitSlantTotal {
     return .amount(roundedToCents(total))
 }
 
-/// Total items sold on the order (sum of item quantities), for per-item listing fees. Nil when any quantity is missing.
-func profitCheckItemsSold(_ order: [String: Any]) -> Int? {
-    guard let items = order["items"] as? [[String: Any]], !items.isEmpty else { return nil }
-    var total = 0
-    for item in items {
-        // Bounded so a malformed quantity can't overflow the sum.
-        guard let quantity = orderItemQuantity(item), (0...1_000_000).contains(quantity) else { return nil }
-        total += quantity
-    }
-    return total > 0 ? total : nil
+/// Most units one sale can be entered as; anything above is almost certainly a typo.
+let profitUnitsSoldLimit = 10_000
+
+/// Parses the typed number of units sold (a whole number from 1 to `profitUnitsSoldLimit`), for per-unit listing fees.
+/// It's typed rather than read from the Slant order, whose item quantities count every print and packing slip per
+/// unit, not marketplace units.
+func parseProfitUnitsSold(_ text: String) -> Int? {
+    let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty, value.count <= 6, value.allSatisfy({ $0.isASCII && $0.isNumber }),
+          let units = Int(value), (1...profitUnitsSoldLimit).contains(units) else { return nil }
+    return units
 }
 
 // MARK: Maths
@@ -217,7 +219,7 @@ struct ProfitCheckResult: Equatable {
     let fees: Decimal
     let slantTotal: Decimal
     let profit: Decimal
-    /// Profit as a percentage of revenue, to one decimal place. Nil when revenue is zero.
+    /// Estimated profit as a percentage of revenue, to one decimal place. Nil when revenue is zero.
     let marginPercent: Decimal?
 }
 
@@ -227,9 +229,10 @@ private func percent(_ rate: Decimal, of base: Decimal) -> Decimal {
 
 /// revenue − marketplace fees − Slant total = profit. Each fee is rounded to the cent as marketplaces charge it.
 /// Percentage fees apply to item + shipping (Etsy also charges processing on sales tax it collects; taxes are out of
-/// scope here). The fixed processing fee is charged once per order with a sale. Offsite Ads is capped at $100.
+/// scope here). The fixed processing fee is charged once per order with a sale; the listing fee once per unit sold
+/// (at least one). Offsite Ads is capped at $100.
 func profitCheck(itemTotal: Decimal, shippingCharged: Decimal, preset: ProfitFeePreset, rates: ProfitFeeRates,
-                 offsiteAds: Bool, itemsSold: Int, slantTotal: Decimal) -> ProfitCheckResult {
+                 offsiteAds: Bool, unitsSold: Int, slantTotal: Decimal) -> ProfitCheckResult {
     let item = roundedToCents(max(0, itemTotal))
     let shipping = roundedToCents(max(0, shippingCharged))
     let revenue = item + shipping
@@ -244,7 +247,7 @@ func profitCheck(itemTotal: Decimal, shippingCharged: Decimal, preset: ProfitFee
         fee("Transaction fee (\(profitRateText(rates.transactionPercent))%)", percent(rates.transactionPercent, of: revenue))
         let processing = percent(rates.processingPercent, of: revenue) + roundedToCents(rates.processingFixed)
         fee("Payment processing (\(profitRateText(rates.processingPercent))% + \(money(NSDecimalNumber(decimal: rates.processingFixed))))", processing)
-        let units = max(1, itemsSold)
+        let units = max(1, unitsSold)
         fee("Listing fees (\(units) × \(money(NSDecimalNumber(decimal: rates.listingFeePerItem))))", roundedToCents(rates.listingFeePerItem * Decimal(units)))
         if offsiteAds, preset.offersOffsiteAds {
             fee("Offsite Ads (\(profitRateText(rates.offsiteAdsPercent))%, max $100)", min(percent(rates.offsiteAdsPercent, of: revenue), etsyOffsiteAdsCap))
@@ -315,6 +318,8 @@ struct ProfitCheckPanel: View {
     @State private var rateTexts: [ProfitRateField: String] = [:]
     /// Whether this sale came from an ad is a fact about this order, so it starts off and isn't saved.
     @State private var offsiteAds = false
+    /// Marketplace units sold, for the per-unit listing fee. Like the amounts paid, a fact about this sale: not saved.
+    @State private var unitsText = "1"
     @State private var loadedRates = false
 
     var body: some View {
@@ -366,7 +371,18 @@ struct ProfitCheckPanel: View {
             if preset != .shopifyBasicUS { rateField(.transactionPercent, "Transaction fee (% of item + shipping)") }
             rateField(.processingPercent, "Payment processing (%)")
             rateField(.processingFixed, "Payment processing ($ per order)")
-            if preset != .shopifyBasicUS { rateField(.listingFeePerItem, "Listing fee ($ per item sold)") }
+            if showsListingFee {
+                rateField(.listingFeePerItem, "Listing fee ($ per unit sold)")
+                LabeledContent("Units sold") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        TextField("Units sold", text: $unitsText).labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
+                        if parseProfitUnitsSold(unitsText) == nil {
+                            Text("Enter a whole number from 1").font(.caption2).foregroundStyle(.orange)
+                        }
+                    }
+                }
+                .help("How many units the buyer bought on the marketplace, not the number of prints in the Slant order")
+            }
             if preset.offersOffsiteAds {
                 Toggle("This sale came from Offsite Ads", isOn: $offsiteAds)
                 if offsiteAds { rateField(.offsiteAdsPercent, "Offsite Ads fee (%, max $100)") }
@@ -393,25 +409,27 @@ struct ProfitCheckPanel: View {
     @ViewBuilder
     func resultView(slantTotal: Decimal) -> some View {
         if itemText.trimmingCharacters(in: .whitespaces).isEmpty {
-            Text("Enter the item total to see the profit.").font(.callout).foregroundStyle(.secondary)
-        } else if let item = parseProfitAmount(itemText), let shipping = shippingAmount, let rates = validRates {
+            Text("Enter the item total to see the estimated profit.").font(.callout).foregroundStyle(.secondary)
+        } else if let item = parseProfitAmount(itemText), let shipping = shippingAmount, let rates = validRates, let units = unitsSold {
             let result = profitCheck(itemTotal: item, shippingCharged: shipping, preset: preset, rates: rates, offsiteAds: offsiteAds,
-                                     itemsSold: profitCheckItemsSold(order) ?? 1, slantTotal: slantTotal)
+                                     unitsSold: units, slantTotal: slantTotal)
             ForEach(Array(result.lines.enumerated()), id: \.offset) { _, line in
                 LabeledContent(line.label) { Text(profitMoney(line.amount)).monospacedDigit() }.font(.callout)
             }
-            LabeledContent("Profit") {
+            LabeledContent("Estimated profit") {
                 Text(profitMoney(result.profit)).monospacedDigit().fontWeight(.semibold)
                     .foregroundStyle(result.profit < 0 ? .red : .primary)
             }
             if let margin = result.marginPercent {
-                LabeledContent("Margin") { Text("\(profitRateText(margin))%").monospacedDigit() }
+                LabeledContent("Estimated margin") { Text("\(profitRateText(margin))%").monospacedDigit() }
             }
             if (order["status"] as? String)?.uppercased() == "DRAFT" {
                 Text("This draft’s total is Slant’s current price; it’s charged when you place the order.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text(profitCheckExclusionsNote).font(.caption).foregroundStyle(.secondary)
+        } else if unitsSold == nil, parseProfitAmount(itemText) != nil, shippingAmount != nil, validRates != nil {
+            Text("Enter the units sold as a whole number, such as 1.").font(.callout).foregroundStyle(.orange)
         } else {
             Text("Check the highlighted amounts: use numbers like 24.99.").font(.callout).foregroundStyle(.orange)
         }
@@ -420,6 +438,10 @@ struct ProfitCheckPanel: View {
     var shippingAmount: Decimal? {
         shippingText.trimmingCharacters(in: .whitespaces).isEmpty ? 0 : parseProfitAmount(shippingText)
     }
+    /// Etsy and Custom have a per-unit listing fee; Shopify Payments doesn't.
+    var showsListingFee: Bool { preset.hasRates && preset != .shopifyBasicUS }
+    /// Units typed for the listing fee; 1 when the fee isn't shown, so a hidden field can't block the result.
+    var unitsSold: Int? { showsListingFee ? parseProfitUnitsSold(unitsText) : 1 }
     func rateValue(_ field: ProfitRateField) -> Decimal? {
         let text = rateTexts[field] ?? ""
         return field.isPercent ? parseProfitPercent(text) : parseProfitAmount(text)
