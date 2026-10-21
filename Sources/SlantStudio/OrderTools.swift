@@ -140,10 +140,24 @@ func orderMarketplaceReference(_ order: [String: Any]) -> (id: String, source: S
     return (id: id, source: text(metadata["source"]))
 }
 
-/// Label for the marketplace reference row: "Etsy order" when the source is known, otherwise "Marketplace order".
+/// Label for the marketplace reference. Import writes `source` in lower case ("etsy", "shopify", or "csv" for Studio's
+/// template, which could come from anywhere), so known values get their proper names; another tool's value is shown
+/// as written; no source at all reads "Marketplace order".
 func orderMarketplaceReferenceLabel(source: String?) -> String {
-    guard let source, !source.isEmpty else { return "Marketplace order" }
-    return "\(source) order"
+    let trimmed = (source ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    switch trimmed.lowercased() {
+    case "": return "Marketplace order"
+    case "etsy": return "Etsy order"
+    case "shopify": return "Shopify order"
+    case "csv": return "Imported order"
+    default: return "\(trimmed) order"
+    }
+}
+
+/// One line for the orders table, such as "Etsy order 3141592653". Nil when the order has no marketplace reference.
+func orderMarketplaceReferenceLine(_ order: [String: Any]) -> String? {
+    guard let reference = orderMarketplaceReference(order) else { return nil }
+    return "\(orderMarketplaceReferenceLabel(source: reference.source)) \(reference.id)"
 }
 
 // MARK: - Duplicate-draft guard
@@ -156,19 +170,66 @@ enum DraftCreateAttempt {
     case failed(Error)
 }
 
-/// Whether Slant may already hold a draft from an earlier Create Draft whose outcome wasn't confirmed. Set by a
-/// timeout, transport failure, 5xx, 408/409 or an unreadable reply; cleared only by a confirmed success. A failure
-/// that proves nothing happened (refused with a definite 4xx, or never sent) leaves the earlier state as it was,
-/// because it says nothing about the earlier request.
-func draftCreateOutcomeUnknown(previous: Bool, attempt: DraftCreateAttempt) -> Bool {
+/// A Create Draft whose outcome wasn't confirmed, so Slant may hold that draft. In memory only, like the rest of the
+/// guard: the recipient's name and the time are shown so the notice can be matched to the right customer.
+struct UnconfirmedDraftAttempt: Equatable {
+    let recipient: String
+    let date: Date
+}
+
+/// How many unconfirmed attempts the notice remembers (the most recent ones).
+let unconfirmedDraftAttemptLimit = 5
+
+/// Unconfirmed Create Draft attempts after one more press. A timeout, transport failure, 5xx, 408/409 or an
+/// unreadable reply adds this attempt; only a confirmed success clears the list. A failure that proves nothing
+/// happened (refused with a definite 4xx, or never sent) leaves the list as it was, because it says nothing about the
+/// earlier requests.
+func unconfirmedDraftAttempts(previous: [UnconfirmedDraftAttempt], attempt: DraftCreateAttempt,
+                              recipient: String, date: Date) -> [UnconfirmedDraftAttempt] {
     switch attempt {
     case .notSent: return previous
-    case .succeeded: return false
-    case .failed(let error): return orderMutationErrorProvesNoEffect(error) ? previous : true
+    case .succeeded: return []
+    case .failed(let error):
+        if orderMutationErrorProvesNoEffect(error) { return previous }
+        let name = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Array((previous + [UnconfirmedDraftAttempt(recipient: name, date: date)]).suffix(unconfirmedDraftAttemptLimit))
     }
 }
 
-let draftCreateUnknownNotice = "Slant may have created this draft. Check Orders › Drafts before creating it again."
+/// Where to look for drafts: the orders list's Filters popover, Status set to Draft.
+let draftCreateCheckDraftsPath = "Orders › Filters › Status: Draft"
+
+/// The composer notice while earlier Create Draft attempts are unconfirmed. Names each attempt's recipient and time, so
+/// a composer for a different customer can tell the warning is about someone else's draft.
+func draftCreateUnknownNotice(_ attempts: [UnconfirmedDraftAttempt],
+                              time: (Date) -> String = draftAttemptTimeText) -> String {
+    func describe(_ attempt: UnconfirmedDraftAttempt) -> String {
+        attempt.recipient.isEmpty ? "at \(time(attempt.date))" : "for \(attempt.recipient) at \(time(attempt.date))"
+    }
+    guard let last = attempts.last else { return "" }
+    if attempts.count == 1 {
+        return "Your Create Draft \(describe(last)) didn’t get a reply from Slant, so that draft may exist. "
+            + "Check your drafts (\(draftCreateCheckDraftsPath)) before creating it again."
+    }
+    let list = attempts.map(describe).joined(separator: "; ")
+    return "\(attempts.count) Create Draft attempts didn’t get a reply from Slant (\(list)), so those drafts may exist. "
+        + "Check your drafts (\(draftCreateCheckDraftsPath)) before creating them again."
+}
+
+/// The Create Anyway confirmation's message.
+func draftCreateAnywayMessage(_ attempts: [UnconfirmedDraftAttempt],
+                              time: (Date) -> String = draftAttemptTimeText) -> String {
+    draftCreateUnknownNotice(attempts, time: time) + (attempts.count > 1
+        ? " If this is one of those orders, creating it again makes a second draft."
+        : " If this is the same order, creating it again makes a second draft.")
+}
+
+/// "2:32 PM" today; with the date for an attempt on an earlier day.
+func draftAttemptTimeText(_ date: Date) -> String {
+    Calendar.current.isDateInToday(date)
+        ? date.formatted(date: .omitted, time: .shortened)
+        : date.formatted(date: .abbreviated, time: .shortened)
+}
 
 /// The composer's Create Draft needs an explicit "Create Anyway" while an earlier draft's outcome is unknown.
 func draftCreateNeedsConfirmation(outcomeUnknown: Bool, confirmed: Bool) -> Bool {
@@ -178,7 +239,7 @@ func draftCreateNeedsConfirmation(outcomeUnknown: Bool, confirmed: Bool) -> Bool
 /// The discard prompt mustn't claim nothing was sent once a create request may have reached Slant.
 func orderComposerDiscardMessage(outcomeUnknown: Bool) -> String {
     outcomeUnknown
-        ? "Your items and delivery details haven’t been saved. Slant may already have created a draft from an earlier attempt; check Orders › Drafts."
+        ? "Your items and delivery details haven’t been saved. Slant may already have created a draft from an earlier attempt; check your drafts (\(draftCreateCheckDraftsPath))."
         : "Your items and delivery details haven’t been saved. Nothing has been sent to Slant."
 }
 
