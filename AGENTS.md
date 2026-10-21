@@ -20,7 +20,7 @@ Every task follows this process. Scale the number of agents to the size of the t
 
 ## Build and verify
 
-- Run `swift test` for the full suite. For model/order/location UI logic, use `swift test --filter 'ModelsUXTests|OrdersUXTests|ShellUXTests|DeliveryLocationTests|ModelLibraryActionsTests|UnknownOutcomeLockTests|OrderToolsTests|EstimateComparisonTests|MeshHealthTests|ModelFormatsTests|ModelThumbnailAndTrashTests|CloudFileDetailsTests'`.
+- Run `swift test` for the full suite. For model/order/location UI logic, use `swift test --filter 'ModelsUXTests|OrdersUXTests|ShellUXTests|DeliveryLocationTests|ModelLibraryActionsTests|UnknownOutcomeLockTests|OrderToolsTests|EstimateComparisonTests|MeshHealthTests|ModelFormatsTests|ModelThumbnailAndTrashTests|CloudFileDetailsTests|MarginTests'`.
 - Run `./scripts/build-app.sh` to build and ad-hoc sign `dist/Slant Studio.app`. The script verifies the bundle signature and packages resources and the Euclid licence.
 - Run SwiftPM builds and tests sequentially; do not edit source files during compilation.
 - Report failing tests and unverified live flows explicitly. A successful targeted suite does not establish that the full suite passes.
@@ -33,7 +33,8 @@ Every task follows this process. Scale the number of agents to the size of the t
 - `StudioStore.swift`: shared state, API workflows, delivery details and persistence.
 - `ModelsView.swift`: model library, print configuration and the persistent next-action bar.
 - `OrdersView.swift`: order composition, duplicate-as-new-draft prefill, the discard check, delivery country defaults and the country list, review and fulfillment actions.
-- `OrderTools.swift`: orders-list typed sort keys, CSV export (addresses opt-in, formula guard), detail facts, copied item options summary and advisory postcode checks.
+- `OrderTools.swift`: orders-list typed sort keys, CSV export (addresses opt-in, formula guard), detail facts and the marketplace reference from metadata, the duplicate-draft guard state, copied item options summary and advisory postcode checks.
+- `Margin.swift`: the order-detail Profit check — strict money/percent input parsing, the order's Slant total, fee presets (assumed rates, all editable) and Decimal profit/margin maths. Only the preset and rates are saved.
 - `ModelLibraryActions.swift`: model rename/export, cloud–local links, prepared-material mismatch, scale check and scaled copies, and menu helpers (Go shortcuts, modal-presentation guard).
 - `EstimateComparison.swift`: Compare estimates — a sequential, rate-limit-aware batch of ≤ 20 estimate reads (never retried) and its explicit **Use** hook.
 - `ModelPreview.swift`: the 3D preview, its dimension/build-volume labels and the STL parser (`STLMesh`).
@@ -58,6 +59,8 @@ Every task follows this process. Scale the number of agents to the size of the t
 - The unknown-outcome lock is shared between the Orders review sheet and the Workbench, and records the action and the status it was sent from.
   - Only these lift it: a confirmed success, a reload showing that recorded action's outcome, a definite HTTP 4xx refusal (not 408/409), or a failure before sending. Timeouts, transport errors and 5xx keep it.
   - This relies on both paths re-fetching the order before writing: pay requires DRAFT, and cancel requires an unchanged, cancellable status. Keep those checks.
+- Draft creation (`POST /orders`) is never retried, automatically or from the alert's Try again. After a create whose outcome is unknown (timeout, transport error, 5xx, 408/409, unreadable reply), every composer shows the "may have created this draft" notice and the next Create needs an explicit **Create Anyway**; only a confirmed creation clears it.
+- Profit check uses the order's real Slant total in USD, Decimal money and editable, dated fee assumptions. Never save what the buyer paid or tie amounts to an order on disk.
 - No menu item or keyboard shortcut may upload, pay or cancel. Menu commands must do nothing while a sheet, alert or dialog is open. Files opened from Finder wait until nothing modal is shown and no request is running.
 - Geometry tools stay STL-only. OBJ/3MF models are previewed and uploaded in their original format; the tools work on a separate STL copy.
 - Geometry changes save separate copies and must retain existing validation; do not weaken checks to make tests pass.

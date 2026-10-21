@@ -474,6 +474,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Slant files deleted this session, so restoring a removed library entry never relinks to one.
     private(set) var deletedCloudFileIDs: Set<String> = []
     @Published private(set) var unknownOutcomeOrderIDs: Set<String> = []
+    /// An earlier Create Draft didn’t confirm, so Slant may hold that draft. In memory only; every composer shows a
+    /// notice and asks for "Create Anyway" until a draft creation is confirmed. See `draftCreateOutcomeUnknown`.
+    @Published var draftCreateOutcomeUnknown = false
     private(set) var unknownOutcomeContexts: [String: UnknownOutcomeContext] = [:]
     // MARK: Model library actions (see ModelLibraryActions.swift)
     /// Local model whose rename sheet is open; set from the context menu, inspector or Model menu.
@@ -816,6 +819,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         disabledPlatformsThisSession = []; deadWebhooks = [:]; componentCategories = []
         unknownOutcomeOrderIDs = []
         unknownOutcomeContexts = [:]
+        draftCreateOutcomeUnknown = false
     }
     private func resetAccountDataPreservingKey() {
         clearLoadedAccountDataKeepingCredentials()

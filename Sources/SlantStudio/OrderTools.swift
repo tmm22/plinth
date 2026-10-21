@@ -126,6 +126,62 @@ func orderDetailFacts(_ order: [String: Any]) -> [(String, String)] {
     return rows
 }
 
+/// The marketplace order reference stored in the order's `metadata` (`sourceOrderId`, plus `source` such as "Etsy"
+/// when present), as CSV order import writes it. Nil when Slant didn't return metadata or the reference is absent.
+func orderMarketplaceReference(_ order: [String: Any]) -> (id: String, source: String?)? {
+    guard let metadata = order["metadata"] as? [String: Any] else { return nil }
+    func text(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull), !(value is [Any]), !(value is [String: Any]) else { return nil }
+        if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
+        let trimmed = ((value as? String) ?? String(describing: value)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+    guard let id = text(metadata["sourceOrderId"]) else { return nil }
+    return (id: id, source: text(metadata["source"]))
+}
+
+/// Label for the marketplace reference row: "Etsy order" when the source is known, otherwise "Marketplace order".
+func orderMarketplaceReferenceLabel(source: String?) -> String {
+    guard let source, !source.isEmpty else { return "Marketplace order" }
+    return "\(source) order"
+}
+
+// MARK: - Duplicate-draft guard
+
+/// What happened to one Create Draft press.
+enum DraftCreateAttempt {
+    /// Nothing was sent (another request was running).
+    case notSent
+    case succeeded
+    case failed(Error)
+}
+
+/// Whether Slant may already hold a draft from an earlier Create Draft whose outcome wasn't confirmed. Set by a
+/// timeout, transport failure, 5xx, 408/409 or an unreadable reply; cleared only by a confirmed success. A failure
+/// that proves nothing happened (refused with a definite 4xx, or never sent) leaves the earlier state as it was,
+/// because it says nothing about the earlier request.
+func draftCreateOutcomeUnknown(previous: Bool, attempt: DraftCreateAttempt) -> Bool {
+    switch attempt {
+    case .notSent: return previous
+    case .succeeded: return false
+    case .failed(let error): return orderMutationErrorProvesNoEffect(error) ? previous : true
+    }
+}
+
+let draftCreateUnknownNotice = "Slant may have created this draft. Check Orders › Drafts before creating it again."
+
+/// The composer's Create Draft needs an explicit "Create Anyway" while an earlier draft's outcome is unknown.
+func draftCreateNeedsConfirmation(outcomeUnknown: Bool, confirmed: Bool) -> Bool {
+    outcomeUnknown && !confirmed
+}
+
+/// The discard prompt mustn't claim nothing was sent once a create request may have reached Slant.
+func orderComposerDiscardMessage(outcomeUnknown: Bool) -> String {
+    outcomeUnknown
+        ? "Your items and delivery details haven’t been saved. Slant may already have created a draft from an earlier attempt; check Orders › Drafts."
+        : "Your items and delivery details haven’t been saved. Nothing has been sent to Slant."
+}
+
 // MARK: - Copied item options
 
 /// Read-only summary of a composer line's item options, one entry per top-level key in key order. Empty when the line

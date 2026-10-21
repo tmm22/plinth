@@ -191,6 +191,7 @@ struct OrderComposerView: View {
     @State private var initialShippingProvider = ""
     @State private var initialDraftPlatformID = ""
     @State private var confirmDiscard = false
+    @State private var confirmCreateAnyway = false
 
     var hasUnsavedInput: Bool {
         orderComposerHasUnsavedInput(
@@ -232,6 +233,14 @@ struct OrderComposerView: View {
 
     var body: some View {
         Form {
+            if store.draftCreateOutcomeUnknown {
+                Section {
+                    Label(draftCreateUnknownNotice, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("The last Create Draft didn’t confirm, so it may have reached Slant. Creating again asks you to confirm, so you don’t make a second draft by accident.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
             if let sourceOrderNumber {
                 Section("Duplicated from order \(sourceOrderNumber)") {
                     Text("Items and delivery details were copied for you to check. Slant calculates new prices when you create the draft, and you review the total before anything is charged.")
@@ -332,7 +341,14 @@ struct OrderComposerView: View {
             Button("Discard Draft", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) {}
         } message: {
-            Text("Your items and delivery details haven’t been saved. Nothing has been sent to Slant.")
+            Text(orderComposerDiscardMessage(outcomeUnknown: store.draftCreateOutcomeUnknown))
+        }
+        .confirmationDialog("Create another draft?", isPresented: $confirmCreateAnyway, titleVisibility: .visible) {
+            Button("Create Anyway") { createDraft(confirmedDespiteUnknownOutcome: true) }
+            Button("Don’t Create", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text("\(draftCreateUnknownNotice) Creating it again may make a second draft.")
         }
         .onAppear(perform: seedIfNeeded)
         // Pending location work stops whenever the form actually closes (create, cancel or discard).
@@ -651,7 +667,8 @@ struct OrderComposerView: View {
         if store.platforms.isEmpty || force { await store.loadCatalog(.platforms) }
     }
 
-    func createDraft() {
+    /// After an unconfirmed create, the next press asks for "Create Anyway" first. Never retried automatically.
+    func createDraft(confirmedDespiteUnknownOutcome: Bool = false) {
         showEmailError = true
         do {
             if let createBlockedReason { validation = createBlockedReason; return }
@@ -675,18 +692,33 @@ struct OrderComposerView: View {
                 paymentID: paymentID, metadata: metadata, options: options, lines: lines
             )
             validation = nil
-            Task { await store.run("Create order draft") {
-                let response = try await store.client.request("POST", path: "/orders", body: body)
-                let data = responseObject(response)
-                let order = mergeOrderDraftEnvelope(data)
-                guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return an order number. Check Orders before creating another draft.") }
-                store.draft = ["order": order]
-                // A duplicated order's address belongs to that order's customer; don't make it the next draft's default.
-                if sourceOrderNumber == nil { store.lastDelivery = delivery }
-                let record = Record(values: order)
-                store.orders.removeAll { $0.id == record.id }; store.orders.insert(record, at: 0)
-                store.destination = .orders; dismiss()
-            } }
+            if draftCreateNeedsConfirmation(outcomeUnknown: store.draftCreateOutcomeUnknown, confirmed: confirmedDespiteUnknownOutcome) {
+                confirmCreateAnyway = true
+                return
+            }
+            Task {
+                var attempt = DraftCreateAttempt.notSent
+                let ran = await store.run("Create order draft", handlesError: { error in
+                    attempt = .failed(error)
+                    return false
+                }) {
+                    let response = try await store.client.request("POST", path: "/orders", body: body)
+                    let data = responseObject(response)
+                    let order = mergeOrderDraftEnvelope(data)
+                    // The POST went through, so a draft may exist: this failure leaves the outcome unknown.
+                    guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return an order number. Check Orders before creating another draft.") }
+                    attempt = .succeeded
+                    store.draft = ["order": order]
+                    // A duplicated order's address belongs to that order's customer; don't make it the next draft's default.
+                    if sourceOrderNumber == nil { store.lastDelivery = delivery }
+                    let record = Record(values: order)
+                    store.orders.removeAll { $0.id == record.id }; store.orders.insert(record, at: 0)
+                    store.destination = .orders; dismiss()
+                }
+                if ran {
+                    store.draftCreateOutcomeUnknown = draftCreateOutcomeUnknown(previous: store.draftCreateOutcomeUnknown, attempt: attempt)
+                }
+            }
         } catch { validation = error.localizedDescription }
     }
 }
@@ -1979,6 +2011,18 @@ struct OrderSummary: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+            if let reference = orderMarketplaceReference(order) {
+                let label = orderMarketplaceReferenceLabel(source: reference.source)
+                HStack {
+                    Text("\(label): \(reference.id)").textSelection(.enabled).lineLimit(2)
+                    Button { copyToPasteboard(reference.id) } label: { Image(systemName: "doc.on.doc") }
+                        .accessibilityLabel("Copy \(label.lowercased()) number").help("Copy \(label.lowercased()) number")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            // Keyed by order so amounts typed for one order never carry over to another.
+            ProfitCheckPanel(order: order).id(Record(values: order).id)
             Divider()
             Text("Tracking").font(.headline)
             if tracking.isEmpty {
