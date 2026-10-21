@@ -277,6 +277,12 @@ struct ModelsView: View {
                         if case .local(let id) = selection {
                             Menu {
                                 localFileActions(id)
+                                if let model = store.localModels.first(where: { $0.id == id }) {
+                                    // Opens the product editor only; nothing is uploaded or ordered from here.
+                                    Button("Save as Product…") {
+                                        store.openSavedProducts(prefill: savedProductPrefill(for: model, selectedFilamentID: store.filamentID))
+                                    }
+                                }
                                 if store.selectedLocal?.remoteID != nil {
                                     Divider()
                                     Button("Upload again…") { pendingReuploadID = id }
@@ -286,7 +292,7 @@ struct ModelsView: View {
                                 Label("More actions", systemImage: "ellipsis.circle")
                             }
                             .fixedSize()
-                            .help(store.selectedLocal?.remoteID != nil ? "Rename, export or upload again" : "Rename or export")
+                            .help(store.selectedLocal?.remoteID != nil ? "Rename, export, save as a product or upload again" : "Rename, export or save as a product")
                         }
                         if case .cloud(let id) = selection {
                             Menu {

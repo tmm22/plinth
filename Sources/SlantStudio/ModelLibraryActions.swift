@@ -301,7 +301,7 @@ func modelFileCommandsEnabled(destination: Destination, hasSelectedLocal: Bool, 
 extension StudioStore {
     /// Sheets the store itself drives. A rename only counts while its model still exists, so a stale ID can't block menus.
     var isPresentingSheet: Bool {
-        showOrderComposer || showPlatformComposer || showImportFromURL
+        showOrderComposer || showPlatformComposer || showImportFromURL || showSavedProducts
             || renameSheetIsShown(renamingModelID: renamingModelID, models: localModels)
     }
 

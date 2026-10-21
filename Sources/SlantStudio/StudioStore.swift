@@ -425,6 +425,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var localModels: [LocalModel] = []
     /// Saved products (SavedProducts.swift). References only; persisted to products.json.
     @Published var savedProducts: [SavedProduct] = []
+    @Published var showSavedProducts = false
+    /// A new product for the Saved Products editor (Models › Save as Product…); consumed when the sheet opens.
+    @Published var pendingSavedProductDraft: SavedProduct?
     @Published var selectedLocalID: UUID?
     @Published var files: [Record] = []
     @Published var platforms: [Record] = []

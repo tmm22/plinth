@@ -30,6 +30,36 @@ struct SavedProduct: Codable, Equatable, Identifiable {
     var created = Date()
 }
 
+// Decoding tolerates missing keys (older or hand-edited files) instead of dropping the whole list.
+extension SavedProductLine {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        type = try container.decodeIfPresent(String.self, forKey: .type) ?? "PRINT"
+        reference = try container.decodeIfPresent(String.self, forKey: .reference) ?? ""
+        localModelID = try container.decodeIfPresent(UUID.self, forKey: .localModelID)
+        filamentID = try container.decodeIfPresent(String.self, forKey: .filamentID) ?? ""
+        quantity = try container.decodeIfPresent(Int.self, forKey: .quantity) ?? 1
+        perOrder = try container.decodeIfPresent(Bool.self, forKey: .perOrder) ?? false
+        imageURL = try container.decodeIfPresent(String.self, forKey: .imageURL) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        optionsJSON = try container.decodeIfPresent(String.self, forKey: .optionsJSON) ?? "{}"
+    }
+}
+
+extension SavedProduct {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init()
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        sku = try container.decodeIfPresent(String.self, forKey: .sku) ?? ""
+        lines = try container.decodeIfPresent([SavedProductLine].self, forKey: .lines) ?? []
+        created = try container.decodeIfPresent(Date.self, forKey: .created) ?? Date()
+    }
+}
+
 /// The order lines for a saved product, plus what the user must know before using them.
 struct SavedProductResolution {
     var lines: [OrderLine] = []
@@ -82,6 +112,12 @@ func savedProductOrderLines(
         line.name = saved.name
         line.sku = product.sku.trimmingCharacters(in: .whitespacesAndNewlines)
         line.optionsJSON = saved.optionsJSON
+        let trimmedName = saved.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = trimmedName.isEmpty ? itemTypeLabel(saved.type) : trimmedName
+        guard saved.quantity > 0 else {
+            result.blockers.append("An item of “\(product.name)” has no quantity. Edit the product to set one.")
+            return result
+        }
         let (quantity, overflow) = saved.perOrder ? (saved.quantity, false) : saved.quantity.multipliedReportingOverflow(by: units)
         guard !overflow, quantity > 0, quantity <= 10_000 else {
             result.blockers.append("“\(product.name)” would need more than 10,000 of one item.")
@@ -89,29 +125,33 @@ func savedProductOrderLines(
         }
         line.quantity = quantity
         var reference = saved.reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        let label = saved.name.isEmpty ? itemTypeLabel(saved.type) : saved.name
         switch saved.type {
         case "PRINT":
+            var modelBlocked = false
             if let modelID = saved.localModelID {
                 if let model = localModels.first(where: { $0.id == modelID }) {
                     let current = model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     if current.isEmpty {
-                        result.blockers.append("“\(model.name)” isn’t uploaded to Slant. Upload it, then try again.")
+                        result.blockers.append("“\(model.name)” isn’t uploaded to Slant. Upload it from Models, then try again.")
+                        modelBlocked = true
                     } else if current != reference {
                         if !reference.isEmpty { result.notes.append("Using the latest upload of “\(model.name)”.") }
                         reference = current
                     }
                 } else if reference.isEmpty {
                     result.blockers.append("The model for “\(label)” is no longer in your library.")
+                    modelBlocked = true
                 } else {
                     result.notes.append("The model for “\(label)” is no longer in your library; using its last uploaded file.")
                 }
             }
-            if reference.isEmpty { result.blockers.append("Choose a model for “\(label)”.") }
-            if saved.filamentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if reference.isEmpty, !modelBlocked { result.blockers.append("Choose a model for “\(label)”.") }
+            let filamentID = saved.filamentID.trimmingCharacters(in: .whitespacesAndNewlines)
+            line.filamentID = filamentID
+            if filamentID.isEmpty {
                 result.blockers.append("Choose a material for “\(label)”.")
             } else if !filaments.isEmpty {
-                if let filament = filaments.first(where: { $0.id == saved.filamentID }) {
+                if let filament = filaments.first(where: { $0.id == filamentID }) {
                     if filamentAvailability(filament) == false { result.blockers.append("\(filament.name) is out of stock.") }
                 } else {
                     result.blockers.append("The material for “\(label)” is no longer offered.")
@@ -126,6 +166,9 @@ func savedProductOrderLines(
             if reference.isEmpty { result.blockers.append("Choose stationery for “\(label)”.") }
             else if !stationery.isEmpty, !stationery.contains(where: { $0.id == reference }) {
                 result.blockers.append("The stationery “\(label)” is no longer offered.")
+            }
+            if !isHTTPSImageURL(saved.imageURL) {
+                result.blockers.append("The image link for “\(label)” must be an https:// address.")
             }
         default:
             result.blockers.append("“\(label)” has an unknown item type.")
@@ -146,10 +189,26 @@ private func itemTypeLabel(_ type: String) -> String {
 
 let savedProductsFileName = "products.json"
 
-/// Saved products from disk; an unreadable or missing file gives an empty list.
+/// Decodes one product, or nil, so a single damaged entry doesn't discard the rest.
+private struct LossySavedProduct: Decodable {
+    let value: SavedProduct?
+    init(from decoder: Decoder) throws { value = try? SavedProduct(from: decoder) }
+}
+
+/// Where an unreadable products file is copied before the next save can replace it.
+func savedProductsBackupURL(for url: URL) -> URL {
+    url.deletingPathExtension().appendingPathExtension("unreadable.json")
+}
+
+/// Saved products from disk; a missing file gives an empty list. Entries that can't be read are skipped, and a file
+/// that can't be fully read is first copied beside it (`products.unreadable.json`), so the next save can't lose it.
 func loadSavedProducts(from url: URL) -> [SavedProduct] {
-    guard let data = try? Data(contentsOf: url) else { return [] }
-    return (try? JSONDecoder().decode([SavedProduct].self, from: data)) ?? []
+    guard let data = try? Data(contentsOf: url), !data.isEmpty else { return [] }
+    let rows = try? JSONDecoder().decode([LossySavedProduct].self, from: data)
+    if rows == nil || rows?.contains(where: { $0.value == nil }) == true {
+        try? data.write(to: savedProductsBackupURL(for: url), options: .atomic)
+    }
+    return rows?.compactMap(\.value) ?? []
 }
 
 extension StudioStore {
@@ -166,6 +225,14 @@ extension StudioStore {
         if let index = savedProducts.firstIndex(where: { $0.id == product.id }) { savedProducts[index] = product }
         else { savedProducts.append(product) }
         saveSavedProducts()
+    }
+
+    /// Opens the Saved Products sheet, optionally straight into a new product prefilled from a model. Never opens
+    /// over another sheet the store drives.
+    func openSavedProducts(prefill: SavedProduct? = nil) {
+        guard !isPresentingSheet else { return }
+        pendingSavedProductDraft = prefill
+        showSavedProducts = true
     }
 
     func removeSavedProduct(id: UUID) {
