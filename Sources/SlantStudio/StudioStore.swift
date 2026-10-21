@@ -415,7 +415,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var estimateContext = ""
     @Published var draft: [String: Any]?
     @Published var showOrderComposer = false
-    @Published var pendingOrderLine: OrderLine?
+    @Published var pendingOrderPrefill: OrderComposerPrefill?
     @Published var showPlatformComposer = false
     @Published var showImportFromURL = false
     @Published var accountLoaded = false
@@ -610,8 +610,40 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         pendingRetry = nil
     }
     func openOrderComposer(line: OrderLine? = nil) {
-        pendingOrderLine = line
+        openOrderComposer(prefill: line.map { OrderComposerPrefill(lines: [$0]) })
+    }
+
+    // MARK: - Order composer prefill and reorder
+
+    /// Opens the composer with optional prefilled lines/delivery. A composer that is already open is never
+    /// replaced, so a second request can't overwrite or leak into the user's in-progress draft.
+    func openOrderComposer(prefill: OrderComposerPrefill?) {
+        guard !showOrderComposer else { return }
+        pendingOrderPrefill = prefill
         showOrderComposer = true
+    }
+    func duplicateOrderBlockedReason(orderID: String) -> String? {
+        orderDuplicateBlockedReason(
+            draftBlockedReason: orderDraftBlockedReason, composerOpen: showOrderComposer,
+            outcomeUnknown: isOutcomeUnknown(orderID: orderID), busy: busy
+        )
+    }
+    /// Reads the order fresh (a GET only) and opens the composer prefilled for review. Nothing is created or charged
+    /// here: the user still creates the draft, which Slant prices anew, and places it through the charge review.
+    func duplicateOrderAsDraft(orderID: String) async {
+        if let reason = duplicateOrderBlockedReason(orderID: orderID) { showError(reason); return }
+        var prefill: OrderComposerPrefill?
+        _ = await run("Load order to duplicate") {
+            let response = try await client.request("GET", path: "/orders/\(encodedSegment(orderID))")
+            noteRateLimit(from: response)
+            let order = mergeOrderDraftEnvelope(responseObject(response))
+            guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return that order. Reload Orders and try again.") }
+            prefill = orderComposerPrefill(reordering: Record(values: order))
+        }
+        guard let prefill else { return }
+        // State may have changed while loading (e.g. another composer opened or an outcome became unknown).
+        if let reason = duplicateOrderBlockedReason(orderID: orderID) { showError(reason); return }
+        openOrderComposer(prefill: prefill)
     }
     func refreshCurrent() async {
         if destination == .catalog || destination.isCatalogKind {
@@ -689,7 +721,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         accountLoaded = false; filesLoaded = false; ordersLoaded = false; loadedCatalogs = []
         orderSearchActive = false; fileSearchActive = false
         filePage = 0; orderPage = 0; filesHasMore = false; ordersHasMore = false
-        lastDelivery = nil; orderFilter = OrderFilter()
+        lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
         disabledPlatformsThisSession = []; deadWebhooks = [:]; componentCategories = []
         unknownOutcomeOrderIDs = []
     }

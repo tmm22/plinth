@@ -176,7 +176,20 @@ struct OrderComposerView: View {
     @State private var draftPlatformID = ""
     @StateObject private var locationLookup = DeliveryLocationLookup()
     @State private var locationAddressApplied = false
+    @State private var didSeed = false
+    @State private var initialLines: [OrderLine] = []
+    @State private var initialDelivery = DeliveryDetails()
+    @State private var sourceOrderNumber: String?
+    @State private var skippedItems: [String] = []
+    @State private var deliveryCopied = true
+    @State private var confirmDiscard = false
 
+    var hasUnsavedInput: Bool {
+        orderComposerHasUnsavedInput(
+            lines: lines, initialLines: initialLines, delivery: delivery, initialDelivery: initialDelivery,
+            metadataFields: metadataFields, paymentID: paymentID
+        )
+    }
     var emailFieldError: String? {
         let trimmed = delivery.email.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return showEmailError ? "Enter an email like name@example.com." : nil }
@@ -204,6 +217,26 @@ struct OrderComposerView: View {
 
     var body: some View {
         Form {
+            if let sourceOrderNumber {
+                Section("Duplicated from order \(sourceOrderNumber)") {
+                    Text("Items and delivery details were copied for you to check. Slant calculates new prices when you create the draft, and you review the total before anything is charged.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    if lines.allSatisfy({ $0.reference.isEmpty }) {
+                        Text("No items could be copied. Choose them below.").font(.callout).foregroundStyle(.orange)
+                    }
+                    if !deliveryCopied {
+                        Text("This order had no delivery details to copy. Enter them below.").font(.callout).foregroundStyle(.orange)
+                    }
+                    if !skippedItems.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Not copied", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            ForEach(Array(skippedItems.enumerated()), id: \.offset) { _, reason in
+                                Text(reason).font(.callout)
+                            }
+                        }
+                    }
+                }
+            }
             Section("Items") {
                 ForEach($lines) { $item in
                     orderItemEditor($item)
@@ -251,7 +284,7 @@ struct OrderComposerView: View {
         .frame(minWidth: 720, minHeight: 640)
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { requestClose() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
                     .help(store.busy ? "Working…" : "Cancel")
@@ -268,7 +301,15 @@ struct OrderComposerView: View {
             .padding(16)
             .background(.bar)
         }
+        .interactiveDismissDisabled(hasUnsavedInput)
+        .confirmationDialog("Discard this order draft?", isPresented: $confirmDiscard) {
+            Button("Discard Draft", role: .destructive) { dismiss() }
+            Button("Keep Editing", role: .cancel) {}
+        } message: {
+            Text("Your items and delivery details haven’t been saved. Nothing has been sent to Slant.")
+        }
         .onAppear(perform: seedIfNeeded)
+        // Pending location work stops whenever the form actually closes (create, cancel or discard).
         .onDisappear { locationLookup.cancel() }
         .task(id: catalogTaskID) { await loadNeededCatalogs() }
         .task { await store.refreshFilamentsIfStale() }
@@ -325,20 +366,32 @@ struct OrderComposerView: View {
         TextField("Apartment, suite, etc. (optional)", text: $delivery.line2)
         TextField("City", text: $delivery.city)
         TextField(
-            orderStateIsRequired(delivery.countrySelection == orderCountryOtherTag ? delivery.customCountry : delivery.countrySelection)
+            orderStateIsRequired(orderCountryPickerValue(delivery))
                 ? "State / province"
                 : "State / province (optional)",
             text: $delivery.state
         )
         TextField("Postal code", text: $delivery.zip)
-        Picker("Country", selection: $delivery.countrySelection) {
+        countryPicker
+    }
+
+    /// Shortlist first, then every other country by name. Stays on "Choose a country" when nothing is known.
+    @ViewBuilder
+    var countryPicker: some View {
+        let picked = orderCountryPickerValue(delivery)
+        let others = orderOtherCountryChoicesForCurrentLocale
+        Picker("Country", selection: Binding(
+            get: { picked },
+            set: { delivery = deliveryApplyingCountryPick($0, to: delivery) }
+        )) {
             Text("Choose a country").tag("")
+            Divider()
             ForEach(orderCountryChoices, id: \.code) { Text($0.name).tag($0.code) }
-            Text("Other…").tag(orderCountryOtherTag)
-        }
-        if delivery.countrySelection == orderCountryOtherTag {
-            Text("Enter the two-letter country code used for shipping (for example US or AU).").font(.caption).foregroundStyle(.secondary)
-            TextField("Country code", text: $delivery.customCountry)
+            Divider()
+            if !picked.isEmpty, !orderCountryChoices.contains(where: { $0.code == picked }), !others.contains(where: { $0.code == picked }) {
+                Text("Country code \(picked)").tag(picked)
+            }
+            ForEach(others, id: \.code) { Text($0.name).tag($0.code) }
         }
     }
 
@@ -365,9 +418,19 @@ struct OrderComposerView: View {
                     .help(lines.count < 2 ? "An order needs at least one item." : "Remove item")
                     .disabled(lines.count < 2)
             }
+            if let warning = largeQuantityComposerWarning(item.wrappedValue.quantity) {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
             if item.wrappedValue.type == "PRINT" {
                 catalogOrLoad(kind: .models, empty: store.files.isEmpty, hasSelection: !item.wrappedValue.reference.isEmpty) {
                     orderCatalogPicker("Model", selection: item.reference, records: store.files, placeholder: "Choose an uploaded model")
+                }
+                if orderLineModelLooksMissing(item.wrappedValue, files: store.files,
+                                              filesFullyLoaded: store.filesLoaded && !store.filesHasMore && !store.fileSearchActive) {
+                    Label("This model isn’t in your uploaded models. It may have been deleted; choose another.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(.orange)
                 }
                 catalogOrLoad(kind: .materials, empty: store.filaments.isEmpty, hasSelection: !item.wrappedValue.filamentID.isEmpty) {
                     materialPicker(selection: item.filamentID)
@@ -476,19 +539,49 @@ struct OrderComposerView: View {
         }
     }
 
+    /// One-shot: a second onAppear must not overwrite what the user has typed.
     func seedIfNeeded() {
+        guard !didSeed else { return }
+        didSeed = true
         if draftPlatformID.isEmpty { draftPlatformID = store.platformID }
-        if lines.isEmpty {
+        let prefill = store.pendingOrderPrefill
+        store.pendingOrderPrefill = nil
+        if let prefill {
+            // Keep the source order's platform unless the loaded list shows it is no longer available.
+            if let platform = prefill.platformID, store.platforms.isEmpty || store.platforms.contains(where: { $0.id == platform }) {
+                draftPlatformID = platform
+            }
+            sourceOrderNumber = prefill.sourceOrderNumber
+            skippedItems = prefill.skippedItems
+            shippingProvider = prefill.shippingProvider
+        }
+        let seededLines = orderComposerInitialLines(prefill: prefill) {
             var filament = store.filamentID
             if filament.isEmpty, let fallback = store.defaultFilamentID { filament = fallback }
-            lines = [store.pendingOrderLine ?? OrderLine(reference: store.fileID, filamentID: filament, quantity: store.quantity)]
-            store.pendingOrderLine = nil
+            return OrderLine(reference: store.fileID, filamentID: filament, quantity: store.quantity)
         }
-        if let saved = store.lastDelivery {
-            delivery = saved
+        var seededDeliveryDetails = delivery
+        switch orderComposerDeliverySeed(prefill: prefill, lastDelivery: store.lastDelivery) {
+        case .copiedFromOrder(let copied):
+            seededDeliveryDetails = copied
+            seededDelivery = true
+            // An unknown country must be chosen explicitly, so show the fields instead of the summary.
+            editingDelivery = orderCountryPickerValue(copied).isEmpty
+        case .lastUsed(let saved):
+            seededDeliveryDetails = saved
             seededDelivery = true
             editingDelivery = false
+        case .blank(let missingFromSourceOrder):
+            deliveryCopied = !missingFromSourceOrder
         }
+        lines = seededLines
+        initialLines = seededLines
+        delivery = seededDeliveryDetails
+        initialDelivery = seededDeliveryDetails
+    }
+
+    func requestClose() {
+        if hasUnsavedInput { confirmDiscard = true } else { dismiss() }
     }
 
     func loadNeededCatalogs(force: Bool = false) async {
@@ -509,8 +602,14 @@ struct OrderComposerView: View {
         showEmailError = true
         do {
             if let createBlockedReason { validation = createBlockedReason; return }
+            let pickedCountry = orderCountryPickerValue(delivery)
+            let restOfAddressComplete = [delivery.name, delivery.line1, delivery.city, delivery.zip]
+                .allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } && isEmailAddress(delivery.email)
+            if pickedCountry.isEmpty, restOfAddressComplete { throw StudioError("Choose a delivery country.") }
             let country: String
-            if delivery.countrySelection == orderCountryOtherTag {
+            if pickedCountry.isEmpty {
+                country = ""
+            } else if delivery.countrySelection == orderCountryOtherTag {
                 country = try normalizedCountryCode(delivery.customCountry)
             } else {
                 country = delivery.countrySelection
@@ -617,6 +716,13 @@ struct OrdersView: View {
                     .width(80)
                     TableColumn("Order number", value: \.number) { (row: OrderTableRow) in
                         Text(row.number).foregroundStyle(.secondary)
+                    }
+                }
+                .contextMenu(forSelectionType: String.self) { ids in
+                    if ids.count == 1, let id = ids.first, let record = store.orders.first(where: { $0.id == id }) {
+                        Button("Duplicate as New Draft…") { Task { await store.duplicateOrderAsDraft(orderID: id) } }
+                            .disabled(store.duplicateOrderBlockedReason(orderID: id) != nil)
+                        Button("Copy Order ID") { copyToPasteboard(orderNumber(orderObject(record.values))) }
                     }
                 }
                 .overlay {
@@ -800,6 +906,10 @@ struct OrdersView: View {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        let duplicateBlocked = store.duplicateOrderBlockedReason(orderID: selected.id)
+                        Button("Duplicate as New Draft…") { Task { await store.duplicateOrderAsDraft(orderID: selected.id) } }
+                            .disabled(duplicateBlocked != nil)
+                            .help(duplicateBlocked ?? "Open a new draft with this order’s items and delivery details for review")
                         if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
                             Button("Review & Place Order…") { pendingConfirm = PendingOrderConfirm(method: "POST", orderID: selected.id) }
                                 .buttonStyle(.borderedProminent)
@@ -923,8 +1033,20 @@ struct OrderActionConfirmSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Status: \(orderStatusTitle(status ?? ""))")
                         if let items = order["items"] as? [[String: Any]], !items.isEmpty {
+                            // Visual fat-finger check only; the explicit Pay confirmation below is unchanged.
+                            if isPay, let warning = largeQuantityReviewWarning(items) {
+                                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange).fontWeight(.semibold)
+                            }
                             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                                Text("\(item["quantity"].map { String(describing: $0) } ?? "1") × \(orderItemDisplayName(item))")
+                                let text = "\(item["quantity"].map { String(describing: $0) } ?? "1") × \(orderItemDisplayName(item))"
+                                if isPay, orderItemHasLargeQuantity(item) {
+                                    Label(text, systemImage: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.orange).fontWeight(.semibold)
+                                        .accessibilityLabel("Large quantity: \(text)")
+                                } else {
+                                    Text(text)
+                                }
                             }
                         }
                         LabeledContent("Printing") { Text("\(money(order["printingCost"])) USD") }
@@ -1393,6 +1515,301 @@ func orderNumber(_ order: [String: Any]) -> String {
     if let publicId = order["publicId"] as? String, !publicId.isEmpty { return publicId }
     if let id = order["id"] as? String, !id.isEmpty { return id }
     return Record(values: order).id
+}
+
+// MARK: - Reorder, unsaved input and quantity review
+
+/// What the composer opens with. Old prices are never carried over: Slant prices the new draft when it is created,
+/// and placing it still goes through the explicit charge review.
+struct OrderComposerPrefill {
+    var lines: [OrderLine]
+    var delivery: DeliveryDetails? = nil
+    /// Human-readable descriptions of source items that could not be copied.
+    var skippedItems: [String] = []
+    var sourceOrderNumber: String? = nil
+    var shippingProvider = ""
+    var platformID: String? = nil
+}
+
+private func reorderText(_ value: Any?) -> String {
+    (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+/// First non-empty string for `key` on the item, then on its nested `printItem` / `componentItem` / `stationeryItem`.
+private func reorderField(_ item: [String: Any], _ keys: [String], nested: String?) -> String {
+    for key in keys {
+        let flat = reorderText(item[key])
+        if !flat.isEmpty { return flat }
+    }
+    if let nested, let inner = item[nested] as? [String: Any] {
+        for key in keys {
+            let value = reorderText(inner[key])
+            if !value.isEmpty { return value }
+        }
+    }
+    return ""
+}
+
+/// Whole-number quantity from an order item, or nil if missing, fractional, boolean or not a number.
+func orderItemQuantity(_ item: [String: Any]) -> Int? {
+    switch item["quantity"] {
+    case let number as NSNumber:
+        guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let value = number.doubleValue
+        guard value.rounded() == value, abs(value) < Double(Int.max) else { return nil }
+        return number.intValue
+    case let text as String:
+        return Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    default:
+        return nil
+    }
+}
+
+/// The item type to reorder as: the declared type, otherwise inferred from which reference is present.
+func orderItemReorderType(_ item: [String: Any]) -> String? {
+    let declared = reorderText(item["type"]).uppercased()
+    if ["PRINT", "COMPONENT", "STATIONERY"].contains(declared) { return declared }
+    guard declared.isEmpty else { return nil }
+    if item["printItem"] is [String: Any] || !reorderText(item["publicFileServiceId"]).isEmpty { return "PRINT" }
+    if item["componentItem"] is [String: Any] || !reorderText(item["componentId"]).isEmpty { return "COMPONENT" }
+    if item["stationeryItem"] is [String: Any] || !reorderText(item["stationeryId"]).isEmpty { return "STATIONERY" }
+    return nil
+}
+
+/// Maps a past order's items to new, editable composer lines. Prices are ignored.
+/// Items without a usable reference are returned in `skipped` so the composer can say what wasn't copied.
+func orderLinesForReorder(_ order: Record) -> (lines: [OrderLine], skipped: [String]) {
+    let values = orderObject(order.values)
+    let items = values["items"] as? [[String: Any]] ?? []
+    var lines: [OrderLine] = []
+    var skipped: [String] = []
+    for item in items {
+        let title = "“\(orderItemDisplayName(item))”"
+        guard let type = orderItemReorderType(item) else {
+            skipped.append("\(title): this item type can’t be reordered here.")
+            continue
+        }
+        let nested: String
+        let referenceKey: String
+        let missing: String
+        switch type {
+        case "PRINT": (nested, referenceKey, missing) = ("printItem", "publicFileServiceId", "uploaded model")
+        case "COMPONENT": (nested, referenceKey, missing) = ("componentItem", "componentId", "component")
+        default: (nested, referenceKey, missing) = ("stationeryItem", "stationeryId", "stationery")
+        }
+        let reference = reorderField(item, [referenceKey], nested: nested)
+        guard !reference.isEmpty else {
+            skipped.append("\(title): the order doesn’t include its \(missing) ID.")
+            continue
+        }
+        var line = OrderLine()
+        line.type = type
+        line.reference = reference
+        if let quantity = orderItemQuantity(item), quantity > 0 { line.quantity = quantity }
+        line.name = reorderField(item, ["name"], nested: nested)
+        line.sku = reorderField(item, ["SKU", "sku"], nested: nested)
+        if type == "PRINT" { line.filamentID = reorderField(item, ["filamentId"], nested: nested) }
+        if type == "STATIONERY" {
+            let image = reorderField(item, ["imageUrl"], nested: nested)
+            if isHTTPSImageURL(image) { line.imageURL = image }
+        }
+        if let options = item["options"] as? [String: Any], !options.isEmpty,
+           JSONSerialization.isValidJSONObject(options),
+           let data = try? JSONSerialization.data(withJSONObject: options, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            line.optionsJSON = text
+        }
+        lines.append(line)
+    }
+    return (lines, skipped)
+}
+
+/// Country picker state for an address country from Slant. Accepts an ISO code or an exact English/local country name;
+/// anything else leaves the country unselected so the user chooses it. Never falls back to US or the Mac region.
+func orderCountrySelection(fromAddressCountry value: Any?, locale: Locale = .current) -> (selection: String, customCode: String) {
+    let trimmed = reorderText(value)
+    guard !trimmed.isEmpty else { return ("", "") }
+    if isCountryCode(trimmed) { return defaultDeliveryCountry(regionCode: trimmed) }
+    let english = Locale(identifier: "en_US")
+    for region in Locale.Region.isoRegions where isCountryCode(region.identifier) {
+        let code = region.identifier
+        for candidate in [english, locale] {
+            if let name = candidate.localizedString(forRegionCode: code),
+               name.compare(trimmed, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+                return defaultDeliveryCountry(regionCode: code)
+            }
+        }
+    }
+    return ("", "")
+}
+
+/// Delivery details copied from a past order's shipping address, or nil if it has none.
+func deliveryDetails(fromOrder order: [String: Any]) -> DeliveryDetails? {
+    let values = orderObject(order)
+    let details = (values["customer"] as? [String: Any])?["details"] as? [String: Any] ?? [:]
+    let address = details["address"] as? [String: Any] ?? [:]
+    var delivery = DeliveryDetails()
+    delivery.email = reorderText(details["email"])
+    delivery.name = reorderText(address["name"])
+    if delivery.name.isEmpty { delivery.name = reorderText(details["name"]) }
+    delivery.line1 = reorderText(address["line1"])
+    delivery.line2 = reorderText(address["line2"])
+    delivery.city = reorderText(address["city"])
+    delivery.state = reorderText(address["state"])
+    delivery.zip = reorderText(address["zip"])
+    let country = orderCountrySelection(fromAddressCountry: address["country"])
+    delivery.countrySelection = country.selection
+    delivery.customCountry = country.customCode
+    let copied = [delivery.email, delivery.name, delivery.line1, delivery.city, delivery.zip]
+    return copied.allSatisfy(\.isEmpty) ? nil : delivery
+}
+
+/// Composer prefill for "Duplicate as New Draft". Metadata is not copied because it often holds per-order references.
+func orderComposerPrefill(reordering order: Record) -> OrderComposerPrefill {
+    let values = orderObject(order.values)
+    let mapped = orderLinesForReorder(order)
+    let provider = reorderText((values["options"] as? [String: Any])?["shippingProvider"]).uppercased()
+    let platform = reorderText(values["platformId"])
+    let number = orderNumber(values)
+    return OrderComposerPrefill(
+        lines: mapped.lines,
+        delivery: deliveryDetails(fromOrder: values),
+        skippedItems: mapped.skipped,
+        sourceOrderNumber: number.isEmpty ? nil : number,
+        shippingProvider: orderShippingProviderChoices.contains { !$0.code.isEmpty && $0.code == provider } ? provider : "",
+        platformID: platform.isEmpty ? nil : platform
+    )
+}
+
+/// Lines the composer opens with: prefilled lines, a blank line for a duplicate with nothing copyable (never an
+/// unrelated selected model), otherwise the caller's default line.
+func orderComposerInitialLines(prefill: OrderComposerPrefill?, defaultLine: () -> OrderLine) -> [OrderLine] {
+    if let lines = prefill?.lines, !lines.isEmpty { return lines }
+    if prefill?.sourceOrderNumber != nil { return [OrderLine()] }
+    return [defaultLine()]
+}
+
+enum OrderComposerDeliverySeed: Equatable {
+    case copiedFromOrder(DeliveryDetails)
+    case lastUsed(DeliveryDetails)
+    /// `missingFromSourceOrder` is true for a duplicate whose order had no address to copy.
+    case blank(missingFromSourceOrder: Bool)
+}
+
+/// A duplicate uses only its source order's address; it never falls back to another order's address from this session.
+func orderComposerDeliverySeed(prefill: OrderComposerPrefill?, lastDelivery: DeliveryDetails?) -> OrderComposerDeliverySeed {
+    if let copied = prefill?.delivery { return .copiedFromOrder(copied) }
+    if prefill?.sourceOrderNumber != nil { return .blank(missingFromSourceOrder: true) }
+    if let lastDelivery { return .lastUsed(lastDelivery) }
+    return .blank(missingFromSourceOrder: false)
+}
+
+/// Why "Duplicate as New Draft" is unavailable, or nil when it can open the composer.
+func orderDuplicateBlockedReason(draftBlockedReason: String?, composerOpen: Bool, outcomeUnknown: Bool, busy: Bool) -> String? {
+    if let draftBlockedReason { return draftBlockedReason }
+    if outcomeUnknown { return unknownOutcomeBlockMessage }
+    if composerOpen { return "Finish or close the open order draft first." }
+    if busy { return "Working…" }
+    return nil
+}
+
+/// A print line whose model isn't among the account's uploaded models (for example, deleted since the source order).
+/// Only judged when the complete file list is loaded, so a partial page never produces a false warning.
+func orderLineModelLooksMissing(_ line: OrderLine, files: [Record], filesFullyLoaded: Bool) -> Bool {
+    guard filesFullyLoaded, line.type == "PRINT" else { return false }
+    let reference = line.reference.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !reference.isEmpty else { return false }
+    return !files.contains { $0.id == reference }
+}
+
+func orderLinesHaveSameContent(_ lhs: [OrderLine], _ rhs: [OrderLine]) -> Bool {
+    guard lhs.count == rhs.count else { return false }
+    return zip(lhs, rhs).allSatisfy { a, b in
+        a.type == b.type && a.reference == b.reference && a.filamentID == b.filamentID && a.quantity == b.quantity
+            && a.imageURL == b.imageURL && a.name == b.name && a.sku == b.sku && a.optionsJSON == b.optionsJSON
+    }
+}
+
+/// True when closing the composer would lose something the user entered: lines or delivery changed from what the
+/// form opened with, or metadata / payment ID typed.
+func orderComposerHasUnsavedInput(
+    lines: [OrderLine], initialLines: [OrderLine],
+    delivery: DeliveryDetails, initialDelivery: DeliveryDetails,
+    metadataFields: [OrderMetadataField], paymentID: String
+) -> Bool {
+    if !orderLinesHaveSameContent(lines, initialLines) { return true }
+    if delivery != initialDelivery { return true }
+    if metadataFields.contains(where: { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { return true }
+    return !paymentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+/// Quantities at or above this are highlighted. Most print-on-demand lines are single or low double digits, so 25
+/// catches an extra zero on 3–10 (30–100) and similar slips while leaving dozen-scale batches unflagged.
+/// It is a visual check only; legitimate bulk orders still proceed through the normal review.
+let orderLargeQuantityThreshold = 25
+
+func isLargeOrderQuantity(_ quantity: Int, threshold: Int = orderLargeQuantityThreshold) -> Bool {
+    threshold > 0 && quantity >= threshold
+}
+
+func largeQuantityLines(_ lines: [OrderLine], threshold: Int = orderLargeQuantityThreshold) -> [OrderLine] {
+    lines.filter { isLargeOrderQuantity($0.quantity, threshold: threshold) }
+}
+
+func orderItemHasLargeQuantity(_ item: [String: Any], threshold: Int = orderLargeQuantityThreshold) -> Bool {
+    orderItemQuantity(item).map { isLargeOrderQuantity($0, threshold: threshold) } ?? false
+}
+
+/// Review-sheet banner text when any item quantity is unusually high.
+func largeQuantityReviewWarning(_ items: [[String: Any]], threshold: Int = orderLargeQuantityThreshold) -> String? {
+    let count = items.filter { orderItemHasLargeQuantity($0, threshold: threshold) }.count
+    guard count > 0 else { return nil }
+    let subject = count == 1 ? "1 item has" : "\(count) items have"
+    return "Check quantities: \(subject) a quantity of \(threshold) or more."
+}
+
+func largeQuantityComposerWarning(_ quantity: Int, threshold: Int = orderLargeQuantityThreshold) -> String? {
+    guard isLargeOrderQuantity(quantity, threshold: threshold) else { return nil }
+    return "Quantity \(quantity) is unusually high. Check it before creating the draft."
+}
+
+// MARK: - Complete country list
+
+/// Codes in `Locale.Region.isoRegions` that are not ISO 3166-1 countries or territories a parcel ships to.
+let orderNonCountryRegionCodes: Set<String> = ["AC", "CP", "CQ", "DG", "EA", "EU", "EZ", "IC", "QO", "TA", "UN"]
+
+/// Every other country, sorted by localized name, for the picker below the shortlist.
+func orderOtherCountryChoices(locale: Locale = .current) -> [(code: String, name: String)] {
+    let shortlist = Set(orderCountryChoices.map(\.code))
+    return Locale.Region.isoRegions.map(\.identifier)
+        .filter { isCountryCode($0) && !orderNonCountryRegionCodes.contains($0) && !shortlist.contains($0) }
+        .map { (code: $0, name: locale.localizedString(forRegionCode: $0) ?? $0) }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+}
+let orderOtherCountryChoicesForCurrentLocale = orderOtherCountryChoices()
+
+/// The single country picker shows one code; the stored model keeps shortlist codes in `countrySelection` and other
+/// codes under the "Other" tag in `customCountry`.
+func orderCountryPickerValue(_ delivery: DeliveryDetails) -> String {
+    delivery.countrySelection == orderCountryOtherTag
+        ? delivery.customCountry.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        : delivery.countrySelection
+}
+
+func deliveryApplyingCountryPick(_ code: String, to delivery: DeliveryDetails) -> DeliveryDetails {
+    var result = delivery
+    let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    if trimmed.isEmpty {
+        result.countrySelection = ""
+        result.customCountry = ""
+    } else if orderCountryChoices.contains(where: { $0.code == trimmed }) {
+        result.countrySelection = trimmed
+        result.customCountry = ""
+    } else {
+        result.countrySelection = orderCountryOtherTag
+        result.customCountry = trimmed
+    }
+    return result
 }
 
 struct OrderSummary: View {

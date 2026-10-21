@@ -390,4 +390,317 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertEqual(orderConfirmRecheckAbortError(price)?.message, "The price changed. Review the new total.")
         XCTAssertNil(orderConfirmRecheckAbortError(.proceed))
     }
+
+    // MARK: - Reorder
+
+    func testReorderMapsFlatSpecItemsWithoutPrices() throws {
+        let order = Record(values: ["publicId": "SLANT_1", "items": [
+            ["type": "PRINT", "publicFileServiceId": "file-1", "filamentId": "fil-1", "quantity": 3,
+             "name": "Widget", "SKU": "W-1", "price": "9.99", "options": ["infill": 20]],
+            ["type": "COMPONENT", "componentId": "comp-1", "quantity": 2, "price": "1.00"],
+            ["type": "STATIONERY", "stationeryId": "card-1", "quantity": 1, "imageUrl": "https://example.com/a.png"]
+        ]])
+        let result = orderLinesForReorder(order)
+        XCTAssertEqual(result.skipped, [])
+        XCTAssertEqual(result.lines.count, 3)
+        let print = result.lines[0]
+        XCTAssertEqual(print.type, "PRINT")
+        XCTAssertEqual(print.reference, "file-1")
+        XCTAssertEqual(print.filamentID, "fil-1")
+        XCTAssertEqual(print.quantity, 3)
+        XCTAssertEqual(print.name, "Widget")
+        XCTAssertEqual(print.sku, "W-1")
+        XCTAssertEqual(print.optionsJSON, #"{"infill":20}"#)
+        XCTAssertEqual(result.lines[1].type, "COMPONENT")
+        XCTAssertEqual(result.lines[1].reference, "comp-1")
+        XCTAssertEqual(result.lines[1].quantity, 2)
+        XCTAssertEqual(result.lines[1].filamentID, "")
+        XCTAssertEqual(result.lines[2].type, "STATIONERY")
+        XCTAssertEqual(result.lines[2].reference, "card-1")
+        XCTAssertEqual(result.lines[2].imageURL, "https://example.com/a.png")
+        // The new draft payload carries references and quantities, never the old price.
+        let payload = try print.payload()
+        XCTAssertNil(payload["price"])
+        XCTAssertEqual(payload["publicFileServiceId"] as? String, "file-1")
+    }
+
+    func testReorderMapsNestedItemShapesAndInfersType() {
+        let order = Record(values: ["order": ["publicId": "SLANT_2", "items": [
+            ["printItem": ["publicFileServiceId": "file-2", "filamentId": "fil-2", "name": "Gadget", "sku": "G-2"], "quantity": "4"],
+            ["componentItem": ["componentId": "comp-2", "componentName": "Bracket"], "quantity": 1],
+            ["type": "STATIONERY", "stationeryItem": ["stationeryId": "card-2", "stationeryName": "Card", "imageUrl": "http://insecure.example/a.png"]]
+        ]]])
+        let result = orderLinesForReorder(order)
+        XCTAssertEqual(result.skipped, [])
+        XCTAssertEqual(result.lines.map(\.type), ["PRINT", "COMPONENT", "STATIONERY"])
+        XCTAssertEqual(result.lines[0].reference, "file-2")
+        XCTAssertEqual(result.lines[0].filamentID, "fil-2")
+        XCTAssertEqual(result.lines[0].quantity, 4)
+        XCTAssertEqual(result.lines[0].name, "Gadget")
+        XCTAssertEqual(result.lines[0].sku, "G-2")
+        XCTAssertEqual(result.lines[1].reference, "comp-2")
+        XCTAssertEqual(result.lines[1].name, "", "catalog names are not copied as custom item names")
+        XCTAssertEqual(result.lines[2].reference, "card-2")
+        XCTAssertEqual(result.lines[2].quantity, 1, "missing quantity defaults to 1")
+        XCTAssertEqual(result.lines[2].imageURL, "", "non-https image links are dropped")
+    }
+
+    func testReorderSkipsItemsWithoutReferencesAndUnknownTypes() {
+        let order = Record(values: ["items": [
+            ["type": "PRINT", "name": "Lost part", "quantity": 2],
+            ["type": "COMPONENT", "componentItem": ["componentName": "Hinge"]],
+            ["type": "STATIONERY", "stationeryId": "  "],
+            ["type": "GIFT_CARD", "name": "Voucher"],
+            ["quantity": 1]
+        ]])
+        let result = orderLinesForReorder(order)
+        XCTAssertTrue(result.lines.isEmpty)
+        XCTAssertEqual(result.skipped, [
+            "“Lost part”: the order doesn’t include its uploaded model ID.",
+            "“Hinge”: the order doesn’t include its component ID.",
+            "“Stationery”: the order doesn’t include its stationery ID.",
+            "“Voucher”: this item type can’t be reordered here.",
+            "“Item”: this item type can’t be reordered here."
+        ])
+    }
+
+    func testReorderComponentOnlyAndEmptyOrders() {
+        let components = orderLinesForReorder(Record(values: ["items": [["type": "COMPONENT", "componentId": "c", "quantity": 5]]]))
+        XCTAssertEqual(components.lines.count, 1)
+        XCTAssertEqual(components.lines[0].type, "COMPONENT")
+        XCTAssertTrue(components.skipped.isEmpty)
+        for values in [[:], ["items": []], ["items": "not a list"]] as [[String: Any]] {
+            let result = orderLinesForReorder(Record(values: values))
+            XCTAssertTrue(result.lines.isEmpty)
+            XCTAssertTrue(result.skipped.isEmpty)
+        }
+    }
+
+    func testReorderQuantityParsingRejectsInvalidValues() {
+        XCTAssertEqual(orderItemQuantity(["quantity": 7]), 7)
+        XCTAssertEqual(orderItemQuantity(["quantity": NSNumber(value: 12)]), 12)
+        XCTAssertEqual(orderItemQuantity(["quantity": " 9 "]), 9)
+        XCTAssertNil(orderItemQuantity(["quantity": 2.5]))
+        XCTAssertNil(orderItemQuantity(["quantity": true]))
+        XCTAssertNil(orderItemQuantity(["quantity": "ten"]))
+        XCTAssertNil(orderItemQuantity([:]))
+        // Zero or negative quantities never reach a new line; it starts at 1 for the user to set.
+        for bad in [0, -3] {
+            let result = orderLinesForReorder(Record(values: ["items": [["type": "PRINT", "publicFileServiceId": "f", "quantity": bad]]]))
+            XCTAssertEqual(result.lines.first?.quantity, 1)
+        }
+    }
+
+    func testDeliveryDetailsFromOrderMapsAddressAndCountry() {
+        let order: [String: Any] = ["customer": ["details": [
+            "email": "sam@example.com",
+            "address": ["name": "Sam Lee", "line1": "1 Main St", "line2": "Unit 4", "city": "Sydney", "state": "NSW", "zip": "2000", "country": "AU"]
+        ]]]
+        let delivery = deliveryDetails(fromOrder: order)
+        XCTAssertEqual(delivery?.email, "sam@example.com")
+        XCTAssertEqual(delivery?.name, "Sam Lee")
+        XCTAssertEqual(delivery?.line1, "1 Main St")
+        XCTAssertEqual(delivery?.line2, "Unit 4")
+        XCTAssertEqual(delivery?.city, "Sydney")
+        XCTAssertEqual(delivery?.state, "NSW")
+        XCTAssertEqual(delivery?.zip, "2000")
+        XCTAssertEqual(delivery?.countrySelection, "AU")
+        XCTAssertEqual(delivery?.customCountry, "")
+
+        let wrapped = deliveryDetails(fromOrder: ["order": ["customer": ["details": ["address": ["name": "Kai", "line1": "Gatan 1", "country": "se"]]]]])
+        XCTAssertEqual(wrapped?.countrySelection, orderCountryOtherTag)
+        XCTAssertEqual(wrapped?.customCountry, "SE")
+    }
+
+    func testDeliveryDetailsUnknownCountryStaysUnselectedNeverUS() {
+        for country in [nil, "", "ZZ", "Atlantis", "USA", "001"] as [String?] {
+            var address: [String: Any] = ["name": "Pat", "line1": "1 Road", "city": "Town", "zip": "123"]
+            if let country { address["country"] = country }
+            let delivery = deliveryDetails(fromOrder: ["customer": ["details": ["email": "p@example.com", "address": address]]])
+            XCTAssertEqual(delivery?.countrySelection, "", String(describing: country))
+            XCTAssertEqual(delivery?.customCountry, "", String(describing: country))
+            XCTAssertEqual(delivery.map(orderCountryPickerValue), "")
+        }
+    }
+
+    func testCountryNamesFromSlantMapToCodes() {
+        let english = Locale(identifier: "en_US")
+        XCTAssertEqual(orderCountrySelection(fromAddressCountry: "United States", locale: english).selection, "US")
+        XCTAssertEqual(orderCountrySelection(fromAddressCountry: "australia", locale: english).selection, "AU")
+        let sweden = orderCountrySelection(fromAddressCountry: "Sweden", locale: english)
+        XCTAssertEqual(sweden.selection, orderCountryOtherTag)
+        XCTAssertEqual(sweden.customCode, "SE")
+        XCTAssertEqual(orderCountrySelection(fromAddressCountry: 42, locale: english).selection, "")
+    }
+
+    func testDeliveryDetailsMissingAddressReturnsNil() {
+        XCTAssertNil(deliveryDetails(fromOrder: [:]))
+        XCTAssertNil(deliveryDetails(fromOrder: ["customer": ["details": ["address": ["country": "US"]]]]))
+        XCTAssertEqual(deliveryDetails(fromOrder: ["customer": ["details": ["email": "a@example.com"]]])?.email, "a@example.com")
+        XCTAssertEqual(deliveryDetails(fromOrder: ["customer": ["details": ["name": "Fallback", "address": ["line1": "x"]]]])?.name, "Fallback")
+    }
+
+    func testComposerPrefillForReorderCarriesSourceAndProvider() {
+        let order = Record(values: [
+            "publicId": "SLANT_9", "platformId": "plat-1", "options": ["shippingProvider": "shippo"],
+            "metadata": ["externalOrder": "123"], "printingCost": "50.00", "totalCost": "60.00",
+            "items": [["type": "PRINT", "publicFileServiceId": "f", "quantity": 2], ["type": "PRINT", "quantity": 1]],
+            "customer": ["details": ["email": "a@example.com", "address": ["name": "A", "line1": "1", "city": "C", "zip": "Z", "country": "GB"]]]
+        ])
+        let prefill = orderComposerPrefill(reordering: order)
+        XCTAssertEqual(prefill.sourceOrderNumber, "SLANT_9")
+        XCTAssertEqual(prefill.platformID, "plat-1")
+        XCTAssertEqual(prefill.shippingProvider, "SHIPPO")
+        XCTAssertEqual(prefill.lines.count, 1)
+        XCTAssertEqual(prefill.skippedItems.count, 1)
+        XCTAssertEqual(prefill.delivery?.countrySelection, "GB")
+        XCTAssertEqual(orderComposerPrefill(reordering: Record(values: ["options": ["shippingProvider": "FEDEX"]])).shippingProvider, "")
+        XCTAssertNil(orderComposerPrefill(reordering: Record(values: [:])).sourceOrderNumber)
+    }
+
+    func testDuplicateBlockedReasons() {
+        XCTAssertNil(orderDuplicateBlockedReason(draftBlockedReason: nil, composerOpen: false, outcomeUnknown: false, busy: false))
+        XCTAssertEqual(orderDuplicateBlockedReason(draftBlockedReason: "Connect your account first.", composerOpen: false, outcomeUnknown: false, busy: false), "Connect your account first.")
+        XCTAssertEqual(orderDuplicateBlockedReason(draftBlockedReason: nil, composerOpen: false, outcomeUnknown: true, busy: false), unknownOutcomeBlockMessage)
+        XCTAssertEqual(orderDuplicateBlockedReason(draftBlockedReason: nil, composerOpen: true, outcomeUnknown: false, busy: false), "Finish or close the open order draft first.")
+        XCTAssertEqual(orderDuplicateBlockedReason(draftBlockedReason: nil, composerOpen: false, outcomeUnknown: false, busy: true), "Working…")
+    }
+
+    func testComposerSeedsLinesFromPrefillDuplicateOrDefault() {
+        let fallback = OrderLine(reference: "selected-model", quantity: 3)
+        let single = orderComposerInitialLines(prefill: OrderComposerPrefill(lines: [OrderLine(reference: "one")])) { fallback }
+        XCTAssertEqual(single.map(\.reference), ["one"])
+        let multi = orderComposerInitialLines(prefill: OrderComposerPrefill(lines: [OrderLine(reference: "a"), OrderLine(reference: "b")])) { fallback }
+        XCTAssertEqual(multi.map(\.reference), ["a", "b"])
+        XCTAssertEqual(orderComposerInitialLines(prefill: nil) { fallback }.map(\.reference), ["selected-model"])
+        let emptyDuplicate = orderComposerInitialLines(prefill: OrderComposerPrefill(lines: [], sourceOrderNumber: "SLANT_1")) { fallback }
+        XCTAssertEqual(emptyDuplicate.map(\.reference), [""], "a duplicate with nothing copyable starts blank, not with an unrelated model")
+    }
+
+    func testDuplicateNeverFallsBackToAnotherOrdersAddress() {
+        let session = DeliveryDetails(email: "other@example.com", name: "Other Customer", countrySelection: "US")
+        let copied = DeliveryDetails(email: "a@example.com", name: "Source", countrySelection: "GB")
+        XCTAssertEqual(orderComposerDeliverySeed(prefill: OrderComposerPrefill(lines: [], delivery: copied, sourceOrderNumber: "S"), lastDelivery: session), .copiedFromOrder(copied))
+        XCTAssertEqual(orderComposerDeliverySeed(prefill: OrderComposerPrefill(lines: [], sourceOrderNumber: "S"), lastDelivery: session), .blank(missingFromSourceOrder: true))
+        XCTAssertEqual(orderComposerDeliverySeed(prefill: OrderComposerPrefill(lines: [OrderLine()]), lastDelivery: session), .lastUsed(session))
+        XCTAssertEqual(orderComposerDeliverySeed(prefill: nil, lastDelivery: session), .lastUsed(session))
+        XCTAssertEqual(orderComposerDeliverySeed(prefill: nil, lastDelivery: nil), .blank(missingFromSourceOrder: false))
+    }
+
+    func testMissingModelWarningOnlyWhenFileListComplete() {
+        let files = [Record(values: ["publicFileServiceId": "file-1"])]
+        let deleted = OrderLine(reference: "file-gone")
+        XCTAssertTrue(orderLineModelLooksMissing(deleted, files: files, filesFullyLoaded: true))
+        XCTAssertFalse(orderLineModelLooksMissing(deleted, files: files, filesFullyLoaded: false), "partial pages never warn")
+        XCTAssertFalse(orderLineModelLooksMissing(OrderLine(reference: "file-1"), files: files, filesFullyLoaded: true))
+        XCTAssertFalse(orderLineModelLooksMissing(OrderLine(), files: files, filesFullyLoaded: true))
+        var component = OrderLine(reference: "comp"); component.type = "COMPONENT"
+        XCTAssertFalse(orderLineModelLooksMissing(component, files: files, filesFullyLoaded: true))
+    }
+
+    // MARK: - Unsaved input
+
+    func testUnsavedInputFalseWhenUnchangedFromPrefill() {
+        let lines = [OrderLine(reference: "f", filamentID: "m", quantity: 2)]
+        let copy = lines.map { line -> OrderLine in
+            var fresh = OrderLine(); fresh.type = line.type; fresh.reference = line.reference
+            fresh.filamentID = line.filamentID; fresh.quantity = line.quantity; return fresh
+        }
+        let delivery = DeliveryDetails(email: "a@example.com", name: "A", countrySelection: "US")
+        XCTAssertFalse(orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: delivery, initialDelivery: delivery, metadataFields: [], paymentID: ""))
+        XCTAssertTrue(orderLinesHaveSameContent(lines, copy), "content comparison ignores line identity")
+        XCTAssertFalse(orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: delivery, initialDelivery: delivery, metadataFields: [OrderMetadataField()], paymentID: "  "))
+    }
+
+    func testUnsavedInputDetectsTypedDeliveryAndLineChanges() {
+        let lines = [OrderLine(reference: "f", filamentID: "m", quantity: 2)]
+        let empty = DeliveryDetails(countrySelection: "")
+        var typed = empty; typed.line1 = "1 Main St"
+        XCTAssertTrue(orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: typed, initialDelivery: empty, metadataFields: [], paymentID: ""))
+        var changedCountry = empty; changedCountry.countrySelection = "JP"
+        XCTAssertTrue(orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: changedCountry, initialDelivery: empty, metadataFields: [], paymentID: ""))
+        var more = lines; more[0].quantity = 20
+        XCTAssertTrue(orderComposerHasUnsavedInput(lines: more, initialLines: lines, delivery: empty, initialDelivery: empty, metadataFields: [], paymentID: ""))
+        XCTAssertTrue(orderComposerHasUnsavedInput(lines: lines + [OrderLine()], initialLines: lines, delivery: empty, initialDelivery: empty, metadataFields: [], paymentID: ""))
+        XCTAssertTrue(orderComposerHasUnsavedInput(lines: [], initialLines: lines, delivery: empty, initialDelivery: empty, metadataFields: [], paymentID: ""))
+        XCTAssertTrue(orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: empty, initialDelivery: empty, metadataFields: [OrderMetadataField(key: "k")], paymentID: ""))
+        XCTAssertTrue(orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: empty, initialDelivery: empty, metadataFields: [], paymentID: "pay_1"))
+    }
+
+    func testAppliedLocationSuggestionCountsAsUnsavedInput() {
+        let start = DeliveryDetails(email: "a@example.com", name: "A", countrySelection: "")
+        let suggestion = DeliveryAddressSuggestion(street: "1 Main St", city: "Sydney", state: "NSW", postalCode: "2000", countryCode: "AU")
+        let applied = suggestion.applying(to: start)
+        let lines = [OrderLine(reference: "f")]
+        XCTAssertTrue(orderComposerHasUnsavedInput(lines: lines, initialLines: lines, delivery: applied, initialDelivery: start, metadataFields: [], paymentID: ""))
+    }
+
+    // MARK: - Large quantities
+
+    func testLargeQuantityThresholdBoundaries() {
+        XCTAssertEqual(orderLargeQuantityThreshold, 25)
+        XCTAssertFalse(isLargeOrderQuantity(24))
+        XCTAssertTrue(isLargeOrderQuantity(25))
+        XCTAssertTrue(isLargeOrderQuantity(100))
+        XCTAssertFalse(isLargeOrderQuantity(0))
+        XCTAssertFalse(isLargeOrderQuantity(-50))
+        XCTAssertFalse(isLargeOrderQuantity(1_000, threshold: 0), "a disabled threshold never flags")
+        XCTAssertTrue(isLargeOrderQuantity(10, threshold: 10))
+    }
+
+    func testLargeQuantityLinesAndComposerWarning() {
+        let lines = [OrderLine(reference: "a", quantity: 10), OrderLine(reference: "b", quantity: 100), OrderLine(reference: "c", quantity: 25)]
+        XCTAssertEqual(largeQuantityLines(lines).map(\.reference), ["b", "c"])
+        XCTAssertEqual(largeQuantityLines(lines, threshold: 101).count, 0)
+        XCTAssertNil(largeQuantityComposerWarning(24))
+        XCTAssertEqual(largeQuantityComposerWarning(100), "Quantity 100 is unusually high. Check it before creating the draft.")
+    }
+
+    func testLargeQuantityReviewWarningUsesSlantItems() {
+        XCTAssertNil(largeQuantityReviewWarning([]))
+        XCTAssertNil(largeQuantityReviewWarning([["quantity": 24], ["quantity": "3"], [:], ["quantity": 0], ["quantity": -30]]))
+        XCTAssertTrue(orderItemHasLargeQuantity(["quantity": "25"]))
+        XCTAssertFalse(orderItemHasLargeQuantity(["quantity": true]))
+        XCTAssertEqual(largeQuantityReviewWarning([["quantity": 100], ["quantity": 2]]), "Check quantities: 1 item has a quantity of 25 or more.")
+        XCTAssertEqual(largeQuantityReviewWarning([["quantity": 100], ["quantity": NSNumber(value: 30)]]), "Check quantities: 2 items have a quantity of 25 or more.")
+    }
+
+    // MARK: - Country list
+
+    func testOtherCountryChoicesAreCompleteSortedAndExcludeShortlist() {
+        let english = Locale(identifier: "en_US")
+        let choices = orderOtherCountryChoices(locale: english)
+        let codes = choices.map(\.code)
+        XCTAssertEqual(Set(codes).count, codes.count)
+        for code in ["SE", "CH", "ES", "MX", "BR", "IN", "ZA", "SG", "XK"] { XCTAssertTrue(codes.contains(code), code) }
+        for code in orderCountryChoices.map(\.code) { XCTAssertFalse(codes.contains(code), code) }
+        for code in ["EU", "EZ", "UN", "QO", "ZZ", "001"] { XCTAssertFalse(codes.contains(code), code) }
+        XCTAssertTrue(codes.allSatisfy(isCountryCode))
+        XCTAssertEqual(choices.first { $0.code == "CH" }?.name, "Switzerland")
+        let names = choices.map(\.name)
+        XCTAssertEqual(names, names.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        XCTAssertGreaterThan(choices.count, 200)
+    }
+
+    func testCountryPickerMapsToStoredSelection() {
+        let base = DeliveryDetails(name: "A", countrySelection: "")
+        XCTAssertEqual(orderCountryPickerValue(base), "")
+        let japan = deliveryApplyingCountryPick("JP", to: base)
+        XCTAssertEqual(japan.countrySelection, "JP")
+        XCTAssertEqual(japan.customCountry, "")
+        XCTAssertEqual(japan.name, "A")
+        let sweden = deliveryApplyingCountryPick("SE", to: japan)
+        XCTAssertEqual(sweden.countrySelection, orderCountryOtherTag)
+        XCTAssertEqual(sweden.customCountry, "SE")
+        XCTAssertEqual(orderCountryPickerValue(sweden), "SE")
+        let back = deliveryApplyingCountryPick("US", to: sweden)
+        XCTAssertEqual(back.countrySelection, "US")
+        XCTAssertEqual(back.customCountry, "", "switching back to the shortlist clears the other code")
+        let cleared = deliveryApplyingCountryPick("", to: sweden)
+        XCTAssertEqual(cleared.countrySelection, "")
+        XCTAssertEqual(cleared.customCountry, "")
+        // A region default outside the shortlist shows that country in the single picker.
+        let regional = defaultDeliveryCountry(regionCode: "SE")
+        XCTAssertEqual(orderCountryPickerValue(DeliveryDetails(countrySelection: regional.selection, customCountry: regional.customCode)), "SE")
+    }
 }

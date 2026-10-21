@@ -33,6 +33,7 @@ The app rejects fixes older than 60 seconds or with horizontal uncertainty over 
 - Fulfillment object (docs): `status`, `provider`, `deliveryMethod`, `address`, `trackingNumbers[]`, `deliveryInstructions`, `providerStatus`.
 - `options.shippingProvider`: **SHIPPO** | **SHIPSTATION**.
 - Metadata: at most **10** fields and depth **≤ 3**; no credentials; prefer camelCase.
+- **Duplicate as New Draft** (guided Orders) is client-side only: it reads the order with `GET /orders/{publicOrderId}` and prefills the composer with each item's `type`, `publicFileServiceId` / `componentId` / `stationeryId`, `filamentId`, `quantity`, `name`, `SKU`, `imageUrl` (https only) and `options`, from the flat spec shape or the nested `printItem` / `componentItem` / `stationeryItem` shape. Items without a reference are listed as not copied. The shipping address and email are copied; an address country that isn't a recognised ISO code or country name stays unselected (never assumed to be US). `options.shippingProvider` and the platform are copied when valid; metadata and all prices are not. The new draft is created with the normal `POST /orders`, priced by Slant, and placed only through the existing charge review.
 - Cancel (docs Cancel Order page): *“Currently cancelling an order will also refund it as well as cancel associated fulfillment. If already shipped then the order will only refund.”* A separate **Refund Order** docs section exists; **no refund endpoint is integrated** in OpenAPI or this app.
 
 ## Webhooks
@@ -111,7 +112,7 @@ Guided = dedicated Models / Orders / Connection UI. Workbench = API Workbench. U
 | Method | Path | Guided | Workbench | Unavailable | Notes |
 | --- | --- | --- | --- | --- | --- |
 | GET | `/files` | Models (cloud list) | Yes | | |
-| POST | `/files` | — (phase 2: URL import) | Yes | | type stl/obj/3mf |
+| POST | `/files` | Models (Import Model from URL…) | Yes | | type stl/obj/3mf; https links only |
 | GET | `/files/owner/{ownerId}` | | Yes | | |
 | GET | `/files/platform/{platformId}` | | Yes | | |
 | GET | `/files/{publicFileId}` | Models (detail) | Yes | | |
@@ -124,35 +125,35 @@ Guided = dedicated Models / Orders / Connection UI. Workbench = API Workbench. U
 | POST | `/files/{publicFileId}/estimate` | Models estimate | Yes | | |
 | GET | `/platforms` | Connection / browsers | Yes | | |
 | POST | `/platforms` | Create platform | Yes | | |
-| GET | `/platforms/{platformId}` | | Yes | | |
-| PATCH | `/platforms/{platformId}` | — (phase 2) | Yes | | |
-| DELETE | `/platforms/{platformId}` | — (phase 2) | Yes | | typed confirm |
-| PATCH | `/platforms/{platformId}/webhook-secret` | | Yes | | type `rotate` |
-| PATCH | `/platforms/{platformId}/enable` | — (phase 2) | Yes | | |
-| POST | `/platforms/{platformId}/webhook/dummy` | | Yes | | |
-| GET | `/platforms/{platformId}/webhook` | | Yes | | |
-| POST | `/platforms/{platformId}/webhook/resend` | | Yes | | |
-| POST | `/platforms/{platformId}/webhook/{webhookId}/resend` | | Yes | | |
+| GET | `/platforms/{platformId}` | Platforms (re-enable by ID) | Yes | | |
+| PATCH | `/platforms/{platformId}` | Platforms (edit) | Yes | | |
+| DELETE | `/platforms/{platformId}` | Platforms (disable, with confirm sheet) | Yes | | Workbench: typed confirm |
+| PATCH | `/platforms/{platformId}/webhook-secret` | Platforms (rotate secret) | Yes | | type `rotate` |
+| PATCH | `/platforms/{platformId}/enable` | Platforms (re-enable) | Yes | | |
+| POST | `/platforms/{platformId}/webhook/dummy` | Platforms (test webhook) | Yes | | |
+| GET | `/platforms/{platformId}/webhook` | Platforms (failed deliveries) | Yes | | |
+| POST | `/platforms/{platformId}/webhook/resend` | Platforms (resend failed deliveries) | Yes | | |
+| POST | `/platforms/{platformId}/webhook/{webhookId}/resend` | Platforms (resend one delivery) | Yes | | |
 | POST | `/slant/webhook` | | Yes | | custom server |
 | GET | `/platforms/stripe/public-key` | | Yes | | |
 | GET | `/orders` | Orders list | Yes | | limit ≤ 200 |
 | POST | `/orders` | Order draft | Yes | | |
-| GET | `/orders/{publicOrderId}` | Orders detail | Yes | | |
+| GET | `/orders/{publicOrderId}` | Orders detail, review sheets, Duplicate as New Draft | Yes | | |
 | POST | `/orders/{publicOrderId}` | Place order | Yes | | charge confirm |
 | DELETE | `/orders/{publicOrderId}` | Cancel | Yes | | refund-aware copy |
 | POST | `/orders/batch` | | Yes | | |
-| GET | `/orders/search` | — (phase 2 filters) | Yes | | |
+| GET | `/orders/search` | Orders search field (Return) | Yes | | falls back to `GET /orders?publicId=` on 404 |
 | GET | `/components` | Catalog | Yes | | |
 | GET | `/components/search` | | Yes | | |
-| GET | `/components/categories` | | Yes | | |
+| GET | `/components/categories` | Catalog (component categories) | Yes | | |
 | GET | `/components/{id}` | | Yes | | |
 | GET | `/filaments` | Materials | Yes | | `available` |
 | GET | `/stationery` | Catalog | Yes | | |
-| GET | `/usage` | | Yes | | |
+| GET | `/usage` | Connection (Load Usage) | Yes | | |
 | GET | `/apiKey` | | Link only | Session | Dashboard |
 | POST | `/apiKey` | | Link only | Session | Dashboard |
-| GET | `/health/status` | | Yes | | Public |
+| GET | `/health/status` | Connection (Check Service Status) | Yes | | Public |
 | — | Refund order (docs only) | | | Yes | Not in OpenAPI |
 | — | Customer create / checkout | | | Yes | Docs: not available |
 
-Phase 2 guided work (Orders/Models): richer tracking, refunds UX if/when API exposes it, search filters, platform management screens, URL import, multi-format upload pickers.
+Not yet guided (Workbench only): file metadata edits, owner/platform file lists, file and order batch lookups, OpenSCAD generation, Stripe public key, component search/detail and the custom webhook receiver. Possible later guided work: richer tracking, refunds UX if/when the API exposes it, and multi-format upload pickers in Models.
