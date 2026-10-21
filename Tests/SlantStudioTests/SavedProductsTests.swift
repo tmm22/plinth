@@ -412,4 +412,41 @@ final class SavedProductsTests: XCTestCase {
         XCTAssertTrue(orderComposerHasUnsavedInput(lines: lines, initialLines: [starter], delivery: DeliveryDetails(),
                                                    initialDelivery: DeliveryDetails(), metadataFields: [], paymentID: ""))
     }
+
+    // MARK: Add Saved Product popover
+
+    func testResolutionMarksOncePerOrderLines() {
+        let bracket = model()
+        let product = SavedProduct(name: "Kit", lines: [
+            printLine(model: bracket, reference: "file-new", quantity: 2),
+            SavedProductLine(type: "STATIONERY", reference: "slip-1", quantity: 1, perOrder: true)
+        ])
+        let result = resolve(product, units: 3, models: [bracket], stationery: [slip])
+        XCTAssertEqual(result.perOrder, [false, true])
+        XCTAssertEqual(result.perOrder.count, result.lines.count)
+    }
+
+    func testResolvedLinesSummaryShowsWhatIsAdded() {
+        let bracket = model()
+        let product = SavedProduct(name: "Kit", lines: [
+            printLine(model: bracket, reference: "file-new", quantity: 2),
+            SavedProductLine(type: "STATIONERY", reference: "slip-1", quantity: 1, perOrder: true)
+        ])
+        let lines = resolve(product, units: 3, models: [bracket], stationery: [slip]).lines
+        XCTAssertEqual(savedProductResolvedLinesSummary(lines, localModels: [bracket], components: [], stationery: [slip]),
+                       "6 × Bracket, 1 × Packing slip")
+        // Catalogs and library not loaded: falls back to type names; an item name always wins.
+        XCTAssertEqual(savedProductResolvedLinesSummary(lines, localModels: [], components: [], stationery: []), "6 × 3D print, 1 × Stationery")
+        var named = lines
+        named[0].name = "Left bracket"
+        XCTAssertEqual(savedProductOrderLineTitle(named[0], localModels: [bracket], components: [], stationery: []), "Left bracket")
+    }
+
+    func testUnitsSoldParsesWhatIsTyped() {
+        XCTAssertEqual(savedProductUnitsSold("3"), 3)
+        XCTAssertEqual(savedProductUnitsSold(" 10000 "), 10_000)
+        for text in ["", "0", "-1", "1.5", "3x", "10001", "1,000"] {
+            XCTAssertNil(savedProductUnitsSold(text), text)
+        }
+    }
 }

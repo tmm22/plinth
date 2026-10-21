@@ -246,7 +246,7 @@ final class OrderImportTests: XCTestCase {
     func testUnknownSKUAndBadQuantitiesBlock() throws {
         var order = try parse(shopify).orders[0]
         order.items = [OrderImportItem(sku: "NOPE", quantityText: "1", itemName: "", row: 2)]
-        XCTAssertEqual(orderImportCheck(order, context: context()).blockers, ["No saved product has SKU NOPE. Add it in Saved Products."])
+        XCTAssertEqual(orderImportCheck(order, context: context()).blockers, ["No saved product has SKU NOPE. Choose one under Match products, or add it in Saved Products."])
         for quantity in ["0", "1.5", "-1", "abc", "", "10001"] {
             order.items = [OrderImportItem(sku: "TIDY", quantityText: quantity, itemName: "", row: 2)]
             let check = orderImportCheck(order, context: context())
@@ -461,5 +461,210 @@ final class OrderImportTests: XCTestCase {
         XCTAssertEqual(order.items, [OrderImportItem(sku: "YOUR-SKU", quantityText: "1", itemName: "", row: 2)])
         XCTAssertEqual(orderImportMetadata(source: .template, sourceOrderID: " 1001 ") as? [String: String],
                        ["source": "csv", "sourceOrderId": "1001"])
+    }
+
+    // MARK: Delimiters and Excel's sep= line
+
+    func testDelimiterDetectionSkipsLeadingBlankLines() throws {
+        let csv = try parseOrderImportCSV("\n  \r\norder_id;name;note\n1;\"A; B\";x,y\n")
+        XCTAssertEqual(csv.header, ["order_id", "name", "note"])
+        XCTAssertEqual(csv.rows, [["1", "A; B", "x,y"]])
+        XCTAssertEqual(csv.rowNumbers, [4])
+        XCTAssertEqual(orderImportDelimiter(Array("\n\na\tb\tc\n1,2,3,4,5\n".unicodeScalars)), "\t")
+    }
+
+    func testExcelSepLineSetsTheDelimiterAndIsDropped() throws {
+        let semicolon = try parseOrderImportCSV("sep=;\r\norder_id;name,x\r\n1;A,B\r\n")
+        XCTAssertEqual(semicolon.header, ["order_id", "name,x"])
+        XCTAssertEqual(semicolon.rows, [["1", "A,B"]])
+        XCTAssertEqual(semicolon.rowNumbers, [2], "Excel hides the sep= line, so the header stays row 1")
+        let quotedTab = try parseOrderImportCSV("\"SEP=\t\"\na,b\tc\n1,2\t3\n")
+        XCTAssertEqual(quotedTab.header, ["a,b", "c"])
+        XCTAssertEqual(quotedTab.rows, [["1,2", "3"]])
+        // A header that merely starts with "sep" is data, not a delimiter line.
+        let header = try parseOrderImportCSV("separator,b\n1,2\n")
+        XCTAssertEqual(header.header, ["separator", "b"])
+        XCTAssertEqual(orderImportSeparatorLine(Array("sep=;;\n".unicodeScalars))?.delimiter, nil)
+        XCTAssertEqual(try parse("sep=;\n" + orderImportTemplateCSV().replacingOccurrences(of: ",", with: ";")).orders.count, 1)
+    }
+
+    func testRowsOfOnlyEmptyCellsAreSkipped() throws {
+        let csv = try parseOrderImportCSV(",,\na,b\n, ,\n1,2\n")
+        XCTAssertEqual(csv.header, ["a", "b"])
+        XCTAssertEqual(csv.rows, [["1", "2"]])
+        XCTAssertEqual(csv.rowNumbers, [4])
+    }
+
+    // MARK: Repeated rows
+
+    func testIdenticalShopifyFollowOnRowsAreNotRepeats() throws {
+        let text = """
+        Name,Email,Lineitem quantity,Lineitem name,Lineitem sku,Shipping Name,Shipping Address1,Shipping City,Shipping Zip,Shipping Province,Shipping Country
+        #1,ana@example.com,1,Desk Tidy,TIDY,Ana Lee,1 Main St,Boston,02134,MA,US
+        #1,,1,Cable Clip,CLIP-2,,,,,,
+        #1,,1,Cable Clip,CLIP-2,,,,,,
+        #1,ana@example.com,1,Cable Clip,CLIP-2,,,,,,
+        #1,ana@example.com,1,Cable Clip,CLIP-2,,,,,,
+        """
+        var order = try parse(text).orders[0]
+        XCTAssertEqual(order.repeatedRows, [], "follow-on rows, even ones repeating the email, aren't overlapping exports")
+        XCTAssertEqual(order.items.count, 5)
+        order.items.removeLast(2)
+        let check = orderImportCheck(order, context: context())
+        XCTAssertEqual(check.blockers, [])
+        XCTAssertEqual(check.lines.map(\.quantity), [1, 2], "the same SKU on two rows is one line with the units summed")
+        XCTAssertEqual(check.itemsSummary, "1 × Desk Tidy, 2 × Cable Clip")
+    }
+
+    func testOverlappingShopifyExportsStillBlock() throws {
+        let text = """
+        Name,Email,Lineitem quantity,Lineitem name,Lineitem sku,Shipping Name,Shipping Address1,Shipping City,Shipping Zip,Shipping Province,Shipping Country
+        #1,ana@example.com,1,Desk Tidy,TIDY,Ana Lee,1 Main St,Boston,02134,MA,US
+        #1,,1,Cable Clip,CLIP-2,,,,,,
+        #1,ana@example.com,1,Desk Tidy,TIDY,Ana Lee,1 Main St,Boston,02134,MA,US
+        #1,,1,Cable Clip,CLIP-2,,,,,,
+        """
+        let order = try parse(text).orders[0]
+        XCTAssertEqual(order.repeatedRows, [4])
+        XCTAssertFalse(orderImportCheck(order, context: context()).canTick)
+    }
+
+    // MARK: Units per product and once-per-order lines
+
+    private func slipLine(_ reference: String = "slip-1") -> SavedProductLine {
+        SavedProductLine(type: "STATIONERY", reference: reference, quantity: 1, perOrder: true, name: "Packing slip")
+    }
+
+    private func order(_ items: [(sku: String, quantity: String)], name: [String] = []) throws -> OrderImportOrder {
+        var order = try parse(shopify).orders[0]
+        order.items = items.enumerated().map { index, item in
+            OrderImportItem(sku: item.sku, quantityText: item.quantity, itemName: index < name.count ? name[index] : "", row: index + 2)
+        }
+        return order
+    }
+
+    func testTwoRowsOfTheSameSKUResolveOnceWithOneSlip() throws {
+        var tidy = product("Desk Tidy", sku: "TIDY")
+        tidy.lines.append(slipLine())
+        var ctx = context()
+        ctx.products = [tidy]
+        let check = orderImportCheck(try order([("TIDY", "2"), ("tidy ", "3")]), context: ctx)
+        XCTAssertEqual(check.blockers, [])
+        XCTAssertEqual(check.lines.map(\.quantity), [5, 1])
+        XCTAssertEqual(check.lines.map(\.type), ["PRINT", "STATIONERY"])
+        XCTAssertEqual(check.itemsSummary, "5 × Desk Tidy, 1 × Packing slip", "stationery is shown in the preview")
+        let items = try XCTUnwrap(check.body?["items"] as? [[String: Any]])
+        XCTAssertEqual(items.count, 2)
+    }
+
+    func testTwoSKUsSharingASlipGetItOnce() throws {
+        var tidy = product("Desk Tidy", sku: "TIDY")
+        var clip = product("Cable Clip", sku: "clip-2")
+        tidy.lines.append(slipLine())
+        clip.lines.append(slipLine())
+        var ctx = context()
+        ctx.products = [tidy, clip]
+        let shared = orderImportCheck(try order([("TIDY", "1"), ("CLIP-2", "2")]), context: ctx)
+        XCTAssertEqual(shared.blockers, [])
+        XCTAssertEqual(shared.lines.map(\.type), ["PRINT", "STATIONERY", "PRINT"])
+        XCTAssertEqual(shared.lines.map(\.quantity), [1, 1, 2])
+        XCTAssertEqual(shared.itemsSummary, "1 × Desk Tidy, 1 × Packing slip, 2 × Cable Clip")
+
+        // A different slip (or image) is a different item, so both are kept.
+        ctx.products[1].lines[1] = slipLine("slip-2")
+        XCTAssertEqual(orderImportCheck(try order([("TIDY", "1"), ("CLIP-2", "2")]), context: ctx).lines.filter { $0.type == "STATIONERY" }.count, 2)
+        ctx.products[1].lines[1] = slipLine()
+        ctx.products[1].lines[1].imageURL = "https://example.com/other.png"
+        XCTAssertEqual(orderImportCheck(try order([("TIDY", "1"), ("CLIP-2", "2")]), context: ctx).lines.filter { $0.type == "STATIONERY" }.count, 2)
+    }
+
+    func testTheUnitCapAppliesToEachProductsTotal() throws {
+        let over = orderImportCheck(try order([("TIDY", "6000"), ("TIDY", "5000")]), context: context())
+        XCTAssertEqual(over.blockers, ["This order has more than 10,000 units of “Desk Tidy” in total."])
+        XCTAssertNil(over.body)
+        XCTAssertEqual(orderImportCheck(try order([("TIDY", "6000"), ("TIDY", "4000")]), context: context()).lines.map(\.quantity), [10_000])
+    }
+
+    // MARK: Match products
+
+    func testUnmatchedKeysListEachSKUOrNameOnce() throws {
+        var first = try order([("NOPE", "1"), ("", "1"), ("TIDY", "1")], name: ["", "Gift  wrap", ""])
+        first.items.append(OrderImportItem(sku: "", quantityText: "1", itemName: "", row: 9))
+        var second = try order([("nope ", "2"), ("", "1")], name: ["", "gift wrap"])
+        second = OrderImportOrder(source: second.source, sourceOrderID: "#2", items: second.items)
+        let keys = orderImportUnmatchedKeys([first, second], products: products)
+        XCTAssertEqual(keys.map(\.id), ["sku|nope", "name|gift wrap"])
+        XCTAssertEqual(keys.map(\.display), ["NOPE", "Gift wrap"])
+        XCTAssertEqual(keys.map(\.orderCount), [2, 2])
+        XCTAssertEqual(orderImportMissingSKUs(keys), ["NOPE"])
+        XCTAssertEqual(orderImportMissingSKUSummary(["A", "B", "C"]), "3 SKUs have no saved product: A, B, C")
+        XCTAssertEqual(orderImportMissingSKUSummary(["A"]), "1 SKU has no saved product: A")
+        XCTAssertNil(orderImportMissingSKUSummary([]))
+    }
+
+    func testChosenProductsMatchOnlyWhatTheUserChose() throws {
+        var ctx = context()
+        let tidy = ctx.products[0]
+        let unmatched = try order([("NOPE", "2"), ("", "1")], name: ["", "Shipping protection"])
+        XCTAssertFalse(orderImportCheck(unmatched, context: ctx).canTick, "nothing is matched without a choice")
+
+        ctx.productChoices = ["sku|nope": .product(tidy.id), "name|shipping protection": .leaveOut]
+        let check = orderImportCheck(unmatched, context: ctx)
+        XCTAssertEqual(check.blockers, [])
+        XCTAssertTrue(check.usesProductChoice)
+        XCTAssertEqual(check.lines.map(\.quantity), [2])
+        XCTAssertEqual(check.lines.first?.reference, "file-TIDY")
+        XCTAssertEqual(check.itemsSummary, "2 × Desk Tidy")
+        XCTAssertTrue(check.notes.contains("SKU NOPE uses “Desk Tidy”, as you chose."))
+        XCTAssertTrue(check.notes.contains("The “Shipping protection” is left out of the draft, as you chose."))
+
+        // A choice never overrides a saved product that matches by SKU.
+        ctx.productChoices = ["sku|clip-2": .product(tidy.id)]
+        XCTAssertEqual(orderImportCheck(try order([("CLIP-2", "1")]), context: ctx).lines.first?.reference, "file-clip-2")
+        // A choice of a product that no longer exists matches nothing.
+        ctx.productChoices = ["sku|nope": .product(UUID())]
+        XCTAssertFalse(orderImportCheck(try order([("NOPE", "1")]), context: ctx).canTick)
+        // Leaving out every item leaves nothing to draft.
+        ctx.productChoices = ["sku|nope": .leaveOut]
+        XCTAssertEqual(orderImportCheck(try order([("NOPE", "1")]), context: ctx).blockers,
+                       ["Every item of this order is left out, so there’s nothing to draft."])
+        // Units of a chosen product and its SKU match are summed into one line.
+        ctx.productChoices = ["sku|nope": .product(tidy.id)]
+        XCTAssertEqual(orderImportCheck(try order([("NOPE", "2"), ("TIDY", "3")]), context: ctx).lines.map(\.quantity), [5])
+    }
+
+    func testItemsWithoutSKUOrNameCantBeMatched() throws {
+        let check = orderImportCheck(try order([("", "1")]), context: context())
+        XCTAssertEqual(check.blockers, ["The item on row 2 has no SKU or name. Add the SKU in your shop, or create this draft by hand."])
+        XCTAssertNil(orderImportMatchKey(for: OrderImportItem(sku: " ", quantityText: "1", itemName: " ", row: 2)))
+    }
+
+    func testOrdersAChoiceUnblocksAreTicked() {
+        var blocked = OrderImportCheck()
+        blocked.blockers = ["x"]
+        var warned = OrderImportCheck()
+        warned.warnings = ["y"]
+        let ready = OrderImportCheck()
+        let ticked = orderImportNewlyTickable(
+            before: ["a": blocked, "b": blocked, "c": ready, "d": blocked],
+            after: ["a": ready, "b": warned, "c": ready, "d": blocked])
+        XCTAssertEqual(ticked, ["a"], "only orders the choice unblocked, and that need no second look")
+    }
+
+    // MARK: Drafts
+
+    func testShowDraftsFilterAndWording() {
+        let filter = orderImportDraftsFilter()
+        XCTAssertEqual(filter.status, "DRAFT")
+        XCTAssertNil(filter.startDate)
+        XCTAssertNil(filter.endDate)
+        XCTAssertEqual(filter.sortOrder, "desc")
+        for text in [orderImportUnknownAdvice, orderImportDuplicateReason(
+            OrderImportOrder(source: .etsy, sourceOrderID: "1"), ledger: {
+                var ledger = OrderImportLedger(); ledger.record(.unknown, source: .etsy, sourceOrderID: "1"); return ledger
+            }(), loadedKeys: []) ?? ""] {
+            XCTAssertFalse(text.contains("Orders (Drafts)"), text)
+            XCTAssertTrue(text.contains("Show Drafts"), text)
+        }
     }
 }

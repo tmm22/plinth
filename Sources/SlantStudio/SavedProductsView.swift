@@ -42,6 +42,26 @@ func savedProductLineTitle(_ line: SavedProductLine, localModels: [LocalModel], 
     }
 }
 
+/// What a resolved draft line is called: its item name, else the model or catalog entry its reference names, else its type.
+func savedProductOrderLineTitle(_ line: OrderLine, localModels: [LocalModel], components: [Record], stationery: [Record]) -> String {
+    var saved = SavedProductLine()
+    saved.type = line.type
+    saved.reference = line.reference
+    saved.name = line.name
+    return savedProductLineTitle(saved, localModels: localModels, components: components, stationery: stationery)
+}
+
+/// The draft lines a product resolved to, e.g. "6 × Bracket, 1 × Packing slip".
+func savedProductResolvedLinesSummary(_ lines: [OrderLine], localModels: [LocalModel], components: [Record], stationery: [Record]) -> String {
+    lines.map { "\($0.quantity) × \(savedProductOrderLineTitle($0, localModels: localModels, components: components, stationery: stationery))" }
+        .joined(separator: ", ")
+}
+
+/// Units sold as typed in the Add Saved Product popover: a whole number from 1 to 10,000, otherwise nil.
+func savedProductUnitsSold(_ text: String) -> Int? {
+    orderImportQuantity(text)
+}
+
 /// One line per product in the list, e.g. "1 × Bracket in PLA Black · Packing slip per order".
 func savedProductItemsSummary(
     _ product: SavedProduct, localModels: [LocalModel], filaments: [Record], components: [Record], stationery: [Record]
@@ -352,7 +372,7 @@ struct SavedProductsSheet: View {
                             Label("\(skuConflict) Each SKU can belong to one product.", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption).foregroundStyle(.orange)
                         } else {
-                            Text("Your shop’s SKU for this product. It’s sent with each item of a draft made from it.")
+                            Text("Your shop’s SKU for this product. It’s sent with each item of a draft made from it. Needed to match imported orders.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -619,16 +639,18 @@ struct AddSavedProductPopover: View {
     @EnvironmentObject var store: StudioStore
     let onAdd: ([OrderLine]) -> Void
     @State private var productID: UUID?
-    @State private var units = 1
+    /// Typed text, parsed on every change, so Add never uses a value the field hasn't committed yet.
+    @State private var unitsText = "1"
 
     var products: [SavedProduct] { savedProductsSorted(store.savedProducts) }
     var product: SavedProduct? { store.savedProducts.first { $0.id == productID } }
+    var units: Int? { savedProductUnitsSold(unitsText) }
     var resolution: SavedProductResolution? {
-        product.map {
-            savedProductOrderLines($0, units: units, localModels: store.localModels, filaments: store.filaments,
-                                   components: store.components, stationery: store.stationery)
-        }
+        guard let product, let units else { return nil }
+        return savedProductOrderLines(product, units: units, localModels: store.localModels, filaments: store.filaments,
+                                      components: store.components, stationery: store.stationery)
     }
+    var canAdd: Bool { resolution.map { $0.blockers.isEmpty && !$0.lines.isEmpty } ?? false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -647,18 +669,24 @@ struct AddSavedProductPopover: View {
                 }
                 HStack(spacing: 8) {
                     Text("Units sold")
-                    TextField("Units sold", value: $units, format: .number)
+                    TextField("Units sold", text: $unitsText)
                         .labelsHidden()
                         .frame(width: 64)
-                    Stepper("Units sold", value: $units, in: 1...10000).labelsHidden()
+                    Stepper("Units sold", value: Binding(
+                        get: { units ?? 1 },
+                        set: { unitsText = String(min(max($0, 1), 10_000)) }
+                    ), in: 1...10000).labelsHidden()
                 }
-                if let product {
-                    Text(savedProductItemsSummary(product, localModels: store.localModels, filaments: store.filaments,
-                                                  components: store.components, stationery: store.stationery))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                if units == nil {
+                    Text("Enter a whole number of units from 1 to 10,000.").font(.caption).foregroundStyle(.orange)
                 }
                 if let resolution {
+                    if resolution.blockers.isEmpty, !resolution.lines.isEmpty {
+                        Text("Adds " + savedProductResolvedLinesSummary(resolution.lines, localModels: store.localModels,
+                                                                        components: store.components, stationery: store.stationery))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     ForEach(Array(resolution.notes.enumerated()), id: \.offset) { _, note in
                         Label(note, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -675,7 +703,8 @@ struct AddSavedProductPopover: View {
                         onAdd(resolution.lines)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(resolution.map { !$0.blockers.isEmpty || $0.lines.isEmpty } ?? true)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canAdd)
                     .help("Adds this product’s items to the draft. You review prices before anything is charged.")
                 }
             }
@@ -683,9 +712,5 @@ struct AddSavedProductPopover: View {
         .padding(16)
         .frame(width: 400)
         .onAppear { if product == nil { productID = products.first?.id } }
-        .onChange(of: units) { _, new in
-            let clamped = min(max(new, 1), 10_000)
-            if clamped != new { units = clamped }
-        }
     }
 }
