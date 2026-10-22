@@ -196,8 +196,8 @@ func unconfirmedDraftAttempts(previous: [UnconfirmedDraftAttempt], attempt: Draf
     }
 }
 
-/// Where to look for drafts: the orders list's Filters popover, Status set to Draft.
-let draftCreateCheckDraftsPath = "Orders › Filters › Status: Draft"
+/// Where to look for drafts: the Status menu in the Orders toolbar, set to Draft.
+let draftCreateCheckDraftsPath = "Orders toolbar › Status › Draft"
 
 /// The composer notice while earlier Create Draft attempts are unconfirmed. Names each attempt's recipient and time, so
 /// a composer for a different customer can tell the warning is about someone else's draft.
@@ -241,6 +241,59 @@ func orderComposerDiscardMessage(outcomeUnknown: Bool) -> String {
     outcomeUnknown
         ? "Your items and delivery details haven’t been saved. Slant may already have created a draft from an earlier attempt; check your drafts (\(draftCreateCheckDraftsPath))."
         : "Your items and delivery details haven’t been saved. Nothing has been sent to Slant."
+}
+
+// MARK: - Orders list and detail layout
+
+/// The note under the orders list while searching. Typing filters the loaded orders; Return asks Slant to search all
+/// orders, and clearing the box returns to the normal list. Nil when there's nothing to explain.
+func orderSearchHint(typed: String, searchActive: Bool) -> String? {
+    if searchActive { return "Showing results from all orders. Clear the search to return to the list." }
+    guard !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    return "Showing loaded orders that match. Press Return to search all orders."
+}
+
+/// Tracking is shown for orders being made or shipped, and whenever Slant returned tracking details. Drafts, cancelled
+/// orders and payment problems have nothing to track, so a "No tracking yet" line would only be noise.
+func orderDetailShowsTracking(status: String, hasTrackingDetails: Bool) -> Bool {
+    if hasTrackingDetails { return true }
+    let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return !["DRAFT", "CANCELED", "CANCELLED", "PAYMENT_ERROR"].contains(normalized)
+}
+
+/// Under the charge review's item list, which scrolls when long: says how many items are flagged for a large quantity,
+/// so a flagged line scrolled out of view isn't missed. Nil for a single item (its flag is in view) or none flagged.
+func orderReviewLargeQuantityNotice(_ items: [[String: Any]]) -> String? {
+    let flagged = items.filter { orderItemHasLargeQuantity($0) }.count
+    guard items.count > 1, flagged > 0 else { return nil }
+    return flagged == 1 ? "1 item has a large quantity. Check it above." : "\(flagged) items have a large quantity. Check them above."
+}
+
+// MARK: - Draft composer copy
+
+/// The composer's own heading (a sheet shows no window title).
+func orderComposerHeading(sourceOrderNumber: String?) -> String {
+    guard let number = sourceOrderNumber?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty else {
+        return "New Order Draft"
+    }
+    return "Duplicate of Order \(number)"
+}
+
+/// Shown when a new draft reuses the address from this session's last draft, such as
+/// "Same address as your last draft: Ada Lovelace, London".
+func orderComposerReusedAddressLine(_ delivery: DeliveryDetails) -> String {
+    let parts = [delivery.name, delivery.city]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    let summary = parts.isEmpty ? delivery.email.trimmingCharacters(in: .whitespacesAndNewlines) : parts.joined(separator: ", ")
+    return summary.isEmpty ? "Same address as your last draft" : "Same address as your last draft: \(summary)"
+}
+
+/// The composer's Advanced options start open when a duplicate copied a value into them, so copied values that will be
+/// sent are never hidden.
+func orderComposerAdvancedStartsExpanded(shippingProvider: String, metadataFields: [OrderMetadataField]) -> Bool {
+    func filled(_ text: String) -> Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    return filled(shippingProvider) || metadataFields.contains { filled($0.key) || filled($0.value) }
 }
 
 // MARK: - Copied item options

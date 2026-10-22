@@ -273,6 +273,32 @@ func profitMoney(_ amount: Decimal) -> String {
 
 let profitCheckExclusionsNote = "Not included: taxes, refunds, ads you pay for separately, currency conversion."
 
+/// One dated line for the fee rates in use, such as
+/// "Etsy (US): 6.5% + 3% + $0.25 + $0.20/unit · checked October 2026". Only fees that apply and aren't zero are listed;
+/// Offsite Ads only when this sale came from one. Edited preset rates say so, keeping the preset's checked date.
+func profitFeeRatesSummary(preset: ProfitFeePreset, rates: ProfitFeeRates, offsiteAds: Bool) -> String {
+    guard preset.hasRates else { return preset.title }
+    func usd(_ value: Decimal) -> String { money(NSDecimalNumber(decimal: value)) }
+    var parts: [String] = []
+    if preset != .shopifyBasicUS, rates.transactionPercent > 0 { parts.append("\(profitRateText(rates.transactionPercent))%") }
+    if rates.processingPercent > 0 { parts.append("\(profitRateText(rates.processingPercent))%") }
+    if rates.processingFixed > 0 { parts.append(usd(rates.processingFixed)) }
+    if preset != .shopifyBasicUS, rates.listingFeePerItem > 0 { parts.append("\(usd(rates.listingFeePerItem))/unit") }
+    if offsiteAds, preset.offersOffsiteAds, rates.offsiteAdsPercent > 0 {
+        parts.append("\(profitRateText(rates.offsiteAdsPercent))% Offsite Ads (max $100)")
+    }
+    let fees = parts.isEmpty ? "no fees entered" : parts.joined(separator: " + ")
+    let dated: String
+    if preset == .custom {
+        dated = "your rates"
+    } else if rates == preset.defaultRates {
+        dated = "checked \(profitFeeRatesCheckedDate)"
+    } else {
+        dated = "your rates (preset checked \(profitFeeRatesCheckedDate))"
+    }
+    return "\(preset.title): \(fees) · \(dated)"
+}
+
 // MARK: Saved fee settings (rates and preset only)
 
 enum ProfitFeeSettings {
@@ -321,6 +347,7 @@ struct ProfitCheckPanel: View {
     /// Marketplace units sold, for the per-unit listing fee. Like the amounts paid, a fact about this sale: not saved.
     @State private var unitsText = "1"
     @State private var loadedRates = false
+    @State private var ratesExpanded = false
 
     var body: some View {
         DisclosureGroup("Profit check", isExpanded: $expanded) {
@@ -361,18 +388,39 @@ struct ProfitCheckPanel: View {
         }
     }
 
+    /// The rate editor opens on request, and stays open while a rate is invalid or a Custom preset has no fees yet.
+    var rateEditorExpanded: Binding<Bool> {
+        Binding(
+            get: { ratesExpanded || validRates == nil || (preset == .custom && currentRates == ProfitFeeRates()) },
+            set: { ratesExpanded = $0 }
+        )
+    }
+
     @ViewBuilder
     var rateFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(preset == .custom
-                 ? "Enter your own fees."
-                 : "Assumed \(preset.title) fees, checked \(profitFeeRatesCheckedDate). Check your own account and edit them if yours differ.")
+            // One dated line instead of every rate; the rates stay editable below.
+            Text(validRates.map { profitFeeRatesSummary(preset: preset, rates: $0, offsiteAds: offsiteAds) }
+                 ?? "\(preset.title): check the highlighted rates.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if preset != .shopifyBasicUS { rateField(.transactionPercent, "Transaction fee (% of item + shipping)") }
-            rateField(.processingPercent, "Payment processing (%)")
-            rateField(.processingFixed, "Payment processing ($ per order)")
+            DisclosureGroup("Edit Rates", isExpanded: rateEditorExpanded) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if preset != .custom {
+                        Text("Assumed rates. Check your own account and edit them if yours differ.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if preset != .shopifyBasicUS { rateField(.transactionPercent, "Transaction fee (% of item + shipping)") }
+                    rateField(.processingPercent, "Payment processing (%)")
+                    rateField(.processingFixed, "Payment processing ($ per order)")
+                    if showsListingFee { rateField(.listingFeePerItem, "Listing fee ($ per unit sold)") }
+                    if preset.offersOffsiteAds { rateField(.offsiteAdsPercent, "Offsite Ads fee (%, max $100)") }
+                    if preset != .custom, currentRates != preset.defaultRates || rateTexts.values.contains(where: { $0.isEmpty }) {
+                        Button("Restore \(preset.title) Rates") { restoreDefaults() }.controlSize(.small)
+                    }
+                }
+                .padding(.top, 4)
+            }
             if showsListingFee {
-                rateField(.listingFeePerItem, "Listing fee ($ per unit sold)")
                 LabeledContent("Units sold") {
                     VStack(alignment: .trailing, spacing: 2) {
                         TextField("Units sold", text: $unitsText).labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
@@ -385,10 +433,6 @@ struct ProfitCheckPanel: View {
             }
             if preset.offersOffsiteAds {
                 Toggle("This sale came from Offsite Ads", isOn: $offsiteAds)
-                if offsiteAds { rateField(.offsiteAdsPercent, "Offsite Ads fee (%, max $100)") }
-            }
-            if preset != .custom, currentRates != preset.defaultRates || rateTexts.values.contains(where: { $0.isEmpty }) {
-                Button("Restore \(preset.title) Rates") { restoreDefaults() }.controlSize(.small)
             }
         }
     }

@@ -664,6 +664,7 @@ final class OrderImportTests: XCTestCase {
                 var ledger = OrderImportLedger(); ledger.record(.unknown, source: .etsy, sourceOrderID: "1"); return ledger
             }(), loadedKeys: []) ?? ""] {
             XCTAssertFalse(text.contains("Orders (Drafts)"), text)
+            XCTAssertFalse(text.contains("Filters"), text)
             XCTAssertTrue(text.contains("Show Drafts"), text)
         }
     }

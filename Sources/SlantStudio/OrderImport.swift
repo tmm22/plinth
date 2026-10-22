@@ -598,7 +598,7 @@ func orderImportDuplicateReason(_ order: OrderImportOrder, ledger: OrderImportLe
     case .created(let orderID)?:
         return "Already imported this session as draft \(orderID)."
     case .unknown?:
-        return "An earlier import of this order didn’t confirm and may have been created. Check your drafts (Show Drafts, or Orders › Filters › Status: Draft) before importing it again."
+        return "An earlier import of this order didn’t confirm and may have been created. Check your drafts (Show Drafts, or Orders toolbar › Status › Draft) before importing it again."
     case nil:
         break
     }

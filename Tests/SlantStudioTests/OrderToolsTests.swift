@@ -386,4 +386,67 @@ final class OrderToolsTests: XCTestCase {
         XCTAssertEqual(address?["zip"] as? String, "1234")
         XCTAssertEqual(address?["country"] as? String, "US")
     }
+
+    // MARK: Orders list and detail layout
+
+    func testSearchHintExplainsLoadedVersusAllOrders() {
+        XCTAssertNil(orderSearchHint(typed: "", searchActive: false))
+        XCTAssertNil(orderSearchHint(typed: "   ", searchActive: false))
+        // While typing, the box filters the loaded orders and Return searches all of them.
+        let typing = orderSearchHint(typed: "ada", searchActive: false)
+        XCTAssertEqual(typing, "Showing loaded orders that match. Press Return to search all orders.")
+        // After Return, results come from all orders, with the way back.
+        let searched = orderSearchHint(typed: "ada", searchActive: true)
+        XCTAssertEqual(searched, "Showing results from all orders. Clear the search to return to the list.")
+        XCTAssertFalse(searched?.contains("Press Return") ?? true)
+    }
+
+    func testTrackingHiddenOnlyWhenThereIsNothingToTrack() {
+        for status in ["DRAFT", "draft", "CANCELED", "CANCELLED", "PAYMENT_ERROR"] {
+            XCTAssertFalse(orderDetailShowsTracking(status: status, hasTrackingDetails: false), status)
+        }
+        for status in ["PAID", "QUEUED", "PRINTING", "AWAITING_SHIPMENT", "SHIPPED", "DELIVERED", "", "SOMETHING_NEW"] {
+            XCTAssertTrue(orderDetailShowsTracking(status: status, hasTrackingDetails: false), status)
+        }
+        // Tracking details Slant returned are never hidden, whatever the status.
+        XCTAssertTrue(orderDetailShowsTracking(status: "CANCELED", hasTrackingDetails: true))
+        XCTAssertTrue(orderDetailShowsTracking(status: "DRAFT", hasTrackingDetails: true))
+    }
+
+    func testReviewLargeQuantityNoticeForScrolledLists() {
+        let small: [String: Any] = ["quantity": 2, "name": "Bracket"]
+        let large: [String: Any] = ["quantity": 30, "name": "Bracket"]
+        XCTAssertNil(orderReviewLargeQuantityNotice([]))
+        XCTAssertNil(orderReviewLargeQuantityNotice([large]), "a single item's own flag is always in view")
+        XCTAssertNil(orderReviewLargeQuantityNotice(Array(repeating: small, count: 30)))
+        XCTAssertEqual(orderReviewLargeQuantityNotice(Array(repeating: small, count: 29) + [large]), "1 item has a large quantity. Check it above.")
+        XCTAssertEqual(orderReviewLargeQuantityNotice([large, small, large]), "2 items have a large quantity. Check them above.")
+    }
+
+    // MARK: Draft composer copy
+
+    func testComposerHeading() {
+        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: nil), "New Order Draft")
+        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: "  "), "New Order Draft")
+        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: "SLANT_9"), "Duplicate of Order SLANT_9")
+    }
+
+    func testReusedAddressLineNamesRecipientAndCity() {
+        let full = DeliveryDetails(email: "ada@example.com", name: " Ada Lovelace ", line1: "1 Main St", city: "London", countrySelection: "GB")
+        XCTAssertEqual(orderComposerReusedAddressLine(full), "Same address as your last draft: Ada Lovelace, London")
+        XCTAssertEqual(orderComposerReusedAddressLine(DeliveryDetails(name: "Ada", countrySelection: "")), "Same address as your last draft: Ada")
+        XCTAssertEqual(orderComposerReusedAddressLine(DeliveryDetails(email: "ada@example.com", countrySelection: "")),
+                       "Same address as your last draft: ada@example.com")
+        XCTAssertEqual(orderComposerReusedAddressLine(DeliveryDetails(countrySelection: "")), "Same address as your last draft")
+    }
+
+    func testAdvancedOptionsOpenWhenDuplicateCopiedValues() {
+        XCTAssertFalse(orderComposerAdvancedStartsExpanded(shippingProvider: "", metadataFields: []))
+        XCTAssertFalse(orderComposerAdvancedStartsExpanded(shippingProvider: " ", metadataFields: [OrderMetadataField()]))
+        XCTAssertTrue(orderComposerAdvancedStartsExpanded(shippingProvider: "", metadataFields: [OrderMetadataField(key: "shop", value: "")]))
+        // A duplicated order's shipping provider is copied into Advanced, so it starts open rather than hidden.
+        let prefill = orderComposerPrefill(reordering: Record(values: ["publicId": "S1", "options": ["shippingProvider": "shipstation"]]))
+        XCTAssertEqual(prefill.shippingProvider, "SHIPSTATION")
+        XCTAssertTrue(orderComposerAdvancedStartsExpanded(shippingProvider: prefill.shippingProvider, metadataFields: []))
+    }
 }
