@@ -28,7 +28,7 @@ struct SlantStudioApp: App {
                 Button("Import Model…") { store.importModelFromMenu() }
                     .keyboardShortcut("o")
                     .disabled(modalUIShown)
-                Button("Import Model from URL…") { store.importModelFromURLFromMenu() }
+                Button("Upload from URL…") { store.importModelFromURLFromMenu() }
                     .disabled(store.importFromURLBlockedReason != nil || modalUIShown)
                 Divider()
                 // Library file actions only; nothing here uploads, places, pays for or cancels anything.

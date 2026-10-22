@@ -140,7 +140,7 @@ final class ModelLibraryActionsTests: XCTestCase {
         let warning = scaleWarning(extentMM: SIMD3(2, 1, 0.5))!
         XCTAssertEqual(warning.largestMM, 2)
         XCTAssertEqual(warning.suggestions.map(\.factor), [25.4, 10])
-        XCTAssertEqual(warning.suggestions.first?.title, "Save copy ×25.4 (inches → 50.8 mm)")
+        XCTAssertEqual(warning.suggestions.first?.title, "Save Copy ×25.4 (inches → 50.8 mm)")
         XCTAssertTrue(warning.message.contains("2.00 mm"))
         XCTAssertEqual(scaleWarning(extentMM: SIMD3(0.12, 0.05, 0.02))?.suggestions.map(\.factor), [25.4, 1000])
     }

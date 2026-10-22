@@ -134,7 +134,7 @@ struct ScaleSuggestion: Equatable, Identifiable {
     let resultLargestMM: Float
     var id: Double { factor }
     var factorLabel: String { String(format: "%g", factor) }
-    var title: String { "Save copy ×\(factorLabel) (\(unit) → \(String(format: "%.1f", resultLargestMM)) mm)" }
+    var title: String { "Save Copy ×\(factorLabel) (\(unit) → \(String(format: "%.1f", resultLargestMM)) mm)" }
 }
 
 struct ScaleWarning: Equatable {
