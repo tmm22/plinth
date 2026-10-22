@@ -117,7 +117,7 @@ Secret is the platform `webhookSecret` (trim before use; used exactly as submitt
 
 ## Endpoint coverage (current app)
 
-Guided = dedicated Models / Orders / Connection UI. Workbench = API Workbench. Unavailable = not callable with an API key (session/dashboard only) or not offered by the public API.
+Guided = dedicated Models / Orders / Catalog / Settings UI (platforms are managed in Settings › Account; usage and service status in Settings › Advanced). Workbench = API Workbench. Unavailable = not callable with an API key (session/dashboard only) or not offered by the public API.
 
 | Method | Path | Guided | Workbench | Unavailable | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -133,17 +133,17 @@ Guided = dedicated Models / Orders / Connection UI. Workbench = API Workbench. U
 | POST | `/files/batch` | | Yes | | |
 | POST | `/files/openScad` | | Yes | | STL bytes |
 | POST | `/files/{publicFileId}/estimate` | Models estimate, Compare estimates | Yes | | one material/quantity per call; sequential comparison ≤ 20 calls |
-| GET | `/platforms` | Connection / browsers | Yes | | |
+| GET | `/platforms` | Settings › Account | Yes | | |
 | POST | `/platforms` | Create platform | Yes | | |
-| GET | `/platforms/{platformId}` | Platforms (re-enable by ID) | Yes | | |
-| PATCH | `/platforms/{platformId}` | Platforms (edit) | Yes | | |
-| DELETE | `/platforms/{platformId}` | Platforms (disable, with confirm sheet) | Yes | | Workbench: typed confirm |
-| PATCH | `/platforms/{platformId}/webhook-secret` | Platforms (rotate secret) | Yes | | type `rotate` |
-| PATCH | `/platforms/{platformId}/enable` | Platforms (re-enable) | Yes | | |
-| POST | `/platforms/{platformId}/webhook/dummy` | Platforms (test webhook) | Yes | | |
-| GET | `/platforms/{platformId}/webhook` | Platforms (failed deliveries) | Yes | | |
-| POST | `/platforms/{platformId}/webhook/resend` | Platforms (resend failed deliveries) | Yes | | |
-| POST | `/platforms/{platformId}/webhook/{webhookId}/resend` | Platforms (resend one delivery) | Yes | | |
+| GET | `/platforms/{platformId}` | Settings › Account platforms (re-enable by ID) | Yes | | |
+| PATCH | `/platforms/{platformId}` | Settings › Account platforms (edit) | Yes | | |
+| DELETE | `/platforms/{platformId}` | Settings › Account platforms (disable, with confirm sheet) | Yes | | Workbench: typed confirm |
+| PATCH | `/platforms/{platformId}/webhook-secret` | Settings › Account platforms (rotate secret) | Yes | | type `rotate` |
+| PATCH | `/platforms/{platformId}/enable` | Settings › Account platforms (re-enable) | Yes | | |
+| POST | `/platforms/{platformId}/webhook/dummy` | Settings › Account platforms (test webhook) | Yes | | |
+| GET | `/platforms/{platformId}/webhook` | Settings › Account platforms (failed deliveries) | Yes | | |
+| POST | `/platforms/{platformId}/webhook/resend` | Settings › Account platforms (resend failed deliveries) | Yes | | |
+| POST | `/platforms/{platformId}/webhook/{webhookId}/resend` | Settings › Account platforms (resend one delivery) | Yes | | |
 | POST | `/slant/webhook` | | Yes | | custom server |
 | GET | `/platforms/stripe/public-key` | | Yes | | |
 | GET | `/orders` | Orders list | Yes | | limit ≤ 200 |
@@ -159,10 +159,10 @@ Guided = dedicated Models / Orders / Connection UI. Workbench = API Workbench. U
 | GET | `/components/{id}` | | Yes | | |
 | GET | `/filaments` | Materials | Yes | | `available` |
 | GET | `/stationery` | Catalog | Yes | | |
-| GET | `/usage` | Connection (Load Usage) | Yes | | |
+| GET | `/usage` | Settings › Advanced (Load Usage) | Yes | | |
 | GET | `/apiKey` | | Link only | Session | Dashboard |
 | POST | `/apiKey` | | Link only | Session | Dashboard |
-| GET | `/health/status` | Connection (Check Service Status) | Yes | | Public |
+| GET | `/health/status` | Settings › Advanced (Check Service Status) | Yes | | Public |
 | — | Refund order (docs only) | | | Yes | Not in OpenAPI |
 | — | Customer create / checkout | | | Yes | Docs: not available |
 

@@ -5,7 +5,7 @@ final class ShellUXTests: XCTestCase {
     func testUserMessageMapsAuthNotFoundRateLimitAndServerErrors() {
         XCTAssertEqual(
             APIError.http(status: 401, body: #"{"message":"nope"}"#, retryAfter: nil, rateLimitReset: nil).userMessage,
-            "Slant rejected the saved key. Reconnect in Connection."
+            "Slant rejected the saved key. Reconnect in Settings."
         )
         XCTAssertEqual(
             APIError.http(status: 403, body: "", retryAfter: nil, rateLimitReset: nil).userMessage,
@@ -349,17 +349,97 @@ final class ShellUXTests: XCTestCase {
     }
 
     func testCatalogDestinationRedirect() {
-        let materials = redirectedCatalogSelection(.materials)
+        let materials = resolvedNavigation(requested: .materials, previous: .models, showDeveloperTools: false)
         XCTAssertEqual(materials.destination, .catalog)
         XCTAssertEqual(materials.catalogKind, .materials)
-        let platforms = redirectedCatalogSelection(.platforms)
-        XCTAssertEqual(platforms.destination, .catalog)
-        XCTAssertEqual(platforms.catalogKind, .platforms)
-        let models = redirectedCatalogSelection(.models)
+        XCTAssertFalse(materials.opensSettings)
+        let stationery = resolvedNavigation(requested: .stationery, previous: .orders, showDeveloperTools: false)
+        XCTAssertEqual(stationery.destination, .catalog)
+        XCTAssertEqual(stationery.catalogKind, .stationery)
+        let models = resolvedNavigation(requested: .models, previous: .orders, showDeveloperTools: false)
         XCTAssertEqual(models.destination, .models)
-        XCTAssertEqual(models.catalogKind, .materials)
+        XCTAssertNil(models.catalogKind)
         XCTAssertFalse(Destination.catalog.isCatalogKind)
         XCTAssertTrue(Destination.components.isCatalogKind)
+        XCTAssertEqual(Destination.catalogKinds, [.materials, .components, .stationery])
+    }
+
+    func testPlatformsOpenSettingsAndKeepTheCurrentScreen() {
+        // Platforms moved from Catalog to Settings › Account.
+        XCTAssertFalse(Destination.platforms.isCatalogKind)
+        let fromOrders = resolvedNavigation(requested: .platforms, previous: .orders, showDeveloperTools: false)
+        XCTAssertEqual(fromOrders.destination, .orders)
+        XCTAssertNil(fromOrders.catalogKind)
+        XCTAssertTrue(fromOrders.opensSettings)
+        let fromCatalog = resolvedNavigation(requested: .platforms, previous: .catalog, showDeveloperTools: true)
+        XCTAssertEqual(fromCatalog.destination, .catalog)
+        XCTAssertTrue(fromCatalog.opensSettings)
+        XCTAssertEqual(resolvedNavigation(requested: .platforms, previous: .platforms, showDeveloperTools: false).destination, .models)
+    }
+
+    func testDeveloperDestinationsNeedDeveloperTools() {
+        XCTAssertTrue(Destination.api.isDeveloperDestination)
+        XCTAssertTrue(Destination.activity.isDeveloperDestination)
+        XCTAssertFalse(Destination.models.isDeveloperDestination)
+        // Hidden: a request for a developer screen leaves the user where they are.
+        let hidden = resolvedNavigation(requested: .api, previous: .orders, showDeveloperTools: false)
+        XCTAssertEqual(hidden.destination, .orders)
+        XCTAssertFalse(hidden.opensSettings)
+        XCTAssertEqual(resolvedNavigation(requested: .activity, previous: .api, showDeveloperTools: false).destination, .models)
+        // Shown: reachable.
+        XCTAssertEqual(resolvedNavigation(requested: .api, previous: .orders, showDeveloperTools: true).destination, .api)
+        XCTAssertEqual(resolvedNavigation(requested: .activity, previous: .models, showDeveloperTools: true).destination, .activity)
+    }
+
+    func testHidingDeveloperToolsMovesDeveloperScreensToModels() {
+        XCTAssertEqual(destinationAfterDeveloperToolsChange(.api, showDeveloperTools: false), .models)
+        XCTAssertEqual(destinationAfterDeveloperToolsChange(.activity, showDeveloperTools: false), .models)
+        XCTAssertEqual(destinationAfterDeveloperToolsChange(.orders, showDeveloperTools: false), .orders)
+        XCTAssertEqual(destinationAfterDeveloperToolsChange(.catalog, showDeveloperTools: false), .catalog)
+        XCTAssertEqual(destinationAfterDeveloperToolsChange(.api, showDeveloperTools: true), .api)
+    }
+
+    func testDeveloperToolsSwitchWaitsForRequestsAndModalUI() {
+        // A Workbench request in flight, or a Workbench review sheet, must never be torn down by hiding the screen.
+        XCTAssertEqual(developerToolsToggleBlockedReason(busy: true, modalUIShown: false), "Wait for the current request to finish.")
+        XCTAssertEqual(developerToolsToggleBlockedReason(busy: false, modalUIShown: true), "Close the open sheet, alert or dialog first.")
+        XCTAssertNotNil(developerToolsToggleBlockedReason(busy: true, modalUIShown: true))
+        XCTAssertNil(developerToolsToggleBlockedReason(busy: false, modalUIShown: false))
+    }
+
+    func testConnectAccountPromptLeadsFirstLaunchToSettings() {
+        // First launch or a Keychain read failure: no key and an empty library.
+        XCTAssertTrue(showsConnectAccountPrompt(destination: .models, hasKey: false, hasLocalModels: false))
+        // The library works offline, so Models opens once it has models (its action bar offers Connect Account).
+        XCTAssertFalse(showsConnectAccountPrompt(destination: .models, hasKey: false, hasLocalModels: true))
+        for destination in [Destination.orders, .catalog] {
+            XCTAssertTrue(showsConnectAccountPrompt(destination: destination, hasKey: false, hasLocalModels: true))
+        }
+        // The Workbench lists public operations and Activity is local.
+        XCTAssertFalse(showsConnectAccountPrompt(destination: .api, hasKey: false, hasLocalModels: false))
+        XCTAssertFalse(showsConnectAccountPrompt(destination: .activity, hasKey: false, hasLocalModels: false))
+        for destination in Destination.allCases {
+            XCTAssertFalse(showsConnectAccountPrompt(destination: destination, hasKey: true, hasLocalModels: false))
+        }
+    }
+
+    func testCreatePlatformShowsInOneWindowAtATime() {
+        XCTAssertNil(createPlatformBlockedReason(hasKey: true, busy: false, limitReached: false, otherComposerOpen: false))
+        XCTAssertEqual(createPlatformBlockedReason(hasKey: true, busy: false, limitReached: false, otherComposerOpen: true),
+                       "Finish creating the platform in the main window first.")
+        XCTAssertEqual(createPlatformBlockedReason(hasKey: false, busy: false, limitReached: false, otherComposerOpen: false),
+                       "Connect your account first.")
+        XCTAssertNotNil(createPlatformBlockedReason(hasKey: true, busy: false, limitReached: true, otherComposerOpen: false))
+        XCTAssertNotNil(createPlatformBlockedReason(hasKey: true, busy: true, limitReached: false, otherComposerOpen: false))
+    }
+
+    func testSettingsWindowSheetsCountAsModalUI() {
+        // A sheet or dialog on the Settings window while it is key (the key window is the sheet itself)…
+        XCTAssertTrue(AppModalState(keyWindowIsSheet: true, anyWindowHasSheet: true).isPresenting)
+        // …or while the main window is key again: AppModalState looks at every window, not only the key one.
+        XCTAssertTrue(AppModalState(keyWindowIsSheet: false, anyWindowHasSheet: true).isPresenting)
+        // The Settings window on its own, with nothing presented, doesn't block menus.
+        XCTAssertFalse(AppModalState(hasModalWindow: false, keyWindowIsSheet: false, anyWindowHasSheet: false).isPresenting)
     }
 
     func testDeliveryDetailsClearedWithSession() {
@@ -447,7 +527,7 @@ final class ShellUXTests: XCTestCase {
         )
         XCTAssertEqual(
             connectionProminentAction(connected: true, savedKey: "sl_a", keyField: "sl_a", platformID: "p"),
-            .continueModels
+            .none
         )
     }
 
@@ -545,13 +625,6 @@ func applyClearAccountSession(hadRetry: Bool, accountLoaded: Bool) -> (error: St
     _ = hadRetry
     _ = accountLoaded
     return (nil, false, false, 0, 0, nil)
-}
-
-func redirectedCatalogSelection(_ destination: Destination) -> (destination: Destination, catalogKind: Destination) {
-    if destination.isCatalogKind {
-        return (.catalog, destination)
-    }
-    return (destination, .materials)
 }
 
 func clearedDeliveryDetails(afterSessionClear _: DeliveryDetails?) -> DeliveryDetails? { nil }

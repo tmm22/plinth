@@ -84,7 +84,7 @@ enum APIError: LocalizedError {
         case .http(let status, let body, let retryAfter, let rateLimitReset):
             switch status {
             case 401:
-                return "Slant rejected the saved key. Reconnect in Connection."
+                return "Slant rejected the saved key. Reconnect in Settings."
             case 403:
                 if let message = shortAPIMessage(from: body) {
                     return "Slant refused this request. \(message)"
@@ -114,7 +114,7 @@ enum APIError: LocalizedError {
         case .http(let status, let body, _, _):
             let base: String
             switch status {
-            case 401: base = "Slant rejected the saved key. Reconnect in Connection."
+            case 401: base = "Slant rejected the saved key. Reconnect in Settings."
             case 403: base = "You don’t have access to that item. It may belong to another API key."
             case 404: base = "That item wasn’t found. Refresh and try again."
             case 400, 409, 422:
@@ -235,7 +235,7 @@ struct APIClient {
 
     func request(_ method: String, path: String, query: [String: String] = [:], body: Any? = nil) async throws -> APIResponse {
         guard (path == "/health/status" || !apiKey.isEmpty), !apiKey.contains("\r"), !apiKey.contains("\n") else {
-            throw APIError.invalidRequest("Connect your account in Connection first.")
+            throw APIError.invalidRequest("Connect your account in Settings first.")
         }
         guard path.hasPrefix("/"), !path.contains("?"), !path.contains("#"), !path.contains("\\"),
               let decodedPath = path.removingPercentEncoding, !decodedPath.contains("\\"),

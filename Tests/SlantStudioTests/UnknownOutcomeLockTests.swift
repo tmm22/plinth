@@ -31,7 +31,7 @@ final class UnknownOutcomeLockTests: XCTestCase {
         for status in [400, 401, 402, 403, 404, 422, 429] {
             XCTAssertTrue(orderMutationErrorProvesNoEffect(http(status)), "HTTP \(status)")
         }
-        XCTAssertTrue(orderMutationErrorProvesNoEffect(APIError.invalidRequest("Connect your account in Connection first.")))
+        XCTAssertTrue(orderMutationErrorProvesNoEffect(APIError.invalidRequest("Connect your account in Settings first.")))
         // Outcome unknown: the request may have been processed.
         for status in [408, 409, 500, 502, 503, 504] {
             XCTAssertFalse(orderMutationErrorProvesNoEffect(http(status)), "HTTP \(status)")

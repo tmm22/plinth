@@ -54,7 +54,8 @@ struct SlantStudioApp: App {
             }
             SidebarCommands()
             CommandMenu("Go") {
-                ForEach(goMenuDestinations) { item in
+                // API Workbench and Activity are listed only when Settings › Advanced › Show developer tools is on.
+                ForEach(goMenuDestinations(showDeveloperTools: store.showDeveloperTools)) { item in
                     if item == sidebarDeveloperDestinations.first { Divider() }
                     let button = Button(item.rawValue) { store.goFromMenu(to: item) }
                         .disabled(modalUIShown)
@@ -66,10 +67,13 @@ struct SlantStudioApp: App {
                 }
             }
         }
+        // The single home for the account, default platform, platforms and developer options. Its sheets and dialogs
+        // count as modal UI (AppModalState checks every window), so main-window menu commands stay inert under them.
         Settings {
-            ConnectionView(presentsPlatformComposer: true)
+            SettingsView()
                 .environmentObject(store)
-                .frame(width: 640, height: 520)
+                .environmentObject(modalPresentation)
+                .tint(.studioAccent)
         }
     }
 }

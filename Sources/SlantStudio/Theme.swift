@@ -12,7 +12,6 @@ extension Color {
     })
     static let studioCanvas = Color(nsColor: .windowBackgroundColor)
     static let studioCard = Color(nsColor: .controlBackgroundColor)
-    static let studioSidebar = Color(red: 0.102, green: 0.102, blue: 0.102)
     static let studioHairline = Color.primary.opacity(0.08)
 }
 

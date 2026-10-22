@@ -216,7 +216,7 @@ final class MarginTests: XCTestCase {
         let serverError = APIError.http(status: 502, body: "", retryAfter: nil, rateLimitReset: nil)
         let conflict = APIError.http(status: 409, body: "", retryAfter: nil, rateLimitReset: nil)
         let refused = APIError.http(status: 400, body: "bad address", retryAfter: nil, rateLimitReset: nil)
-        let notSent = APIError.invalidRequest("Connect your account in Connection first.")
+        let notSent = APIError.invalidRequest("Connect your account in Settings first.")
         let noOrderNumber = StudioError("Slant didn’t return an order number.")
 
         let date = Date(timeIntervalSince1970: 1_000)

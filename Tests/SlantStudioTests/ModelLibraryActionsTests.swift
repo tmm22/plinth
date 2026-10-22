@@ -240,15 +240,22 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertEqual(goMenuShortcut(for: .models), "1")
         XCTAssertEqual(goMenuShortcut(for: .orders), "2")
         XCTAssertEqual(goMenuShortcut(for: .catalog), "3")
-        XCTAssertEqual(goMenuShortcut(for: .connection), "4")
+        // Developer destinations never take a number, so ⌘1–⌘3 don't move when developer tools are switched.
         XCTAssertNil(goMenuShortcut(for: .api))
         XCTAssertNil(goMenuShortcut(for: .activity))
-        let keys = goMenuDestinations.compactMap(goMenuShortcut(for:))
-        XCTAssertEqual(Set(keys).count, keys.count)
-        // File menu shortcuts use letters; Go never takes them.
-        XCTAssertTrue(Set(keys).isDisjoint(with: ["n", "o", "r", "e"]))
-        XCTAssertEqual(Set(goMenuDestinations), Set(sidebarPrimaryDestinations + sidebarDeveloperDestinations))
-        XCTAssertEqual(goMenuDestinations.count, Set(goMenuDestinations).count)
+        // Platforms live in Settings now; no Go item or shortcut.
+        XCTAssertNil(goMenuShortcut(for: .platforms))
+        for showDeveloperTools in [false, true] {
+            let destinations = goMenuDestinations(showDeveloperTools: showDeveloperTools)
+            let keys = destinations.compactMap(goMenuShortcut(for:))
+            XCTAssertEqual(keys, ["1", "2", "3"])
+            // File menu shortcuts use letters; Go never takes them.
+            XCTAssertTrue(Set(keys).isDisjoint(with: ["n", "o", "r", "e"]))
+            XCTAssertEqual(destinations, sidebarDestinations(showDeveloperTools: showDeveloperTools))
+            XCTAssertEqual(destinations.count, Set(destinations).count)
+        }
+        XCTAssertEqual(goMenuDestinations(showDeveloperTools: false), [.models, .orders, .catalog])
+        XCTAssertEqual(goMenuDestinations(showDeveloperTools: true), [.models, .orders, .catalog, .api, .activity])
     }
 
     func testModelFileCommandsEnabledOnlyForSelectedLocalModelOnModels() {

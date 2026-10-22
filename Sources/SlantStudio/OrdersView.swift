@@ -388,8 +388,8 @@ struct OrderComposerView: View {
                         TextField("Payment service ID (optional)", text: $paymentID)
                         let ownerID = store.ownerID.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !ownerID.isEmpty {
-                            // Sent with every draft; edited in Connection, where uploads use it too.
-                            Text("Owner ID \(ownerID) is sent with this draft. Change it in Connection › Advanced identifiers.")
+                            // Sent with every draft; edited in Settings › Advanced, where uploads use it too.
+                            Text("Owner ID \(ownerID) is sent with this draft. Change it in Settings › Advanced.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Text("Reference fields (metadata)").padding(.top, 4)

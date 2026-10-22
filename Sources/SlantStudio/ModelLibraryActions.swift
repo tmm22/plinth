@@ -226,10 +226,13 @@ extension STLMesh {
 
 // MARK: - Menus
 
-/// Destinations listed in the Go menu, in sidebar order.
-let goMenuDestinations: [Destination] = sidebarPrimaryDestinations + sidebarDeveloperDestinations
+/// Destinations listed in the Go menu, in sidebar order. Developer destinations appear only when developer tools are on.
+func goMenuDestinations(showDeveloperTools: Bool) -> [Destination] {
+    sidebarDestinations(showDeveloperTools: showDeveloperTools)
+}
 
-/// ⌘-number shortcuts for the main sidebar destinations; the Go menu owns them.
+/// ⌘1 Models, ⌘2 Orders, ⌘3 Catalog; the Go menu owns them. Developer destinations have no shortcut, so the numbers
+/// never shift when developer tools are switched on or off.
 func goMenuShortcut(for destination: Destination) -> Character? {
     guard let index = sidebarPrimaryDestinations.firstIndex(of: destination), index < 9 else { return nil }
     return Character("\(index + 1)")
@@ -301,7 +304,8 @@ func modelFileCommandsEnabled(destination: Destination, hasSelectedLocal: Bool, 
 extension StudioStore {
     /// Sheets the store itself drives. A rename only counts while its model still exists, so a stale ID can't block menus.
     var isPresentingSheet: Bool {
-        showOrderComposer || showPlatformComposer || showImportFromURL || showSavedProducts || showOrderImport
+        showOrderComposer || showPlatformComposer || showSettingsPlatformComposer || showImportFromURL || showSavedProducts
+            || showOrderImport
             || renameSheetIsShown(renamingModelID: renamingModelID, models: localModels)
     }
 
@@ -322,7 +326,8 @@ extension StudioStore {
     }
 
     func goFromMenu(to item: Destination) {
-        guard !isPresentingSheet, !appIsPresentingModalUI() else { return }
+        guard !isPresentingSheet, !appIsPresentingModalUI(),
+              goMenuDestinations(showDeveloperTools: showDeveloperTools).contains(item) else { return }
         destination = item
     }
 
