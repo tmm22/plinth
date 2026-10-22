@@ -571,7 +571,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     var importFromURLBlockedReason: String? {
         if !hasKey { return "Connect your account first." }
-        if platformID.isEmpty { return "Choose a platform first." }
+        if platformID.isEmpty { return "Choose a default platform in Settings › Account." }
         if busy { return "Working…" }
         return nil
     }
@@ -1305,7 +1305,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmedURL.lowercased().hasPrefix("https://") else { showError("Use an https:// link to upload a model."); return false }
         guard !trimmedName.isEmpty else { showError("Enter a name for the uploaded model."); return false }
-        guard !platformID.isEmpty else { showError("Choose a platform first."); return false }
+        guard !platformID.isEmpty else { showError("Choose a default platform in Settings › Account."); return false }
         let type = importModelType(url: trimmedURL, name: trimmedName)
         var ok = false
         let ran = await run("Upload model from URL") {
