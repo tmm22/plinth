@@ -435,13 +435,9 @@ struct SavedProductsSheet: View {
                     .help(canRemove ? "Remove item" : "A product needs at least one item.")
                     .disabled(!canRemove)
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Toggle("Once per order", isOn: line.perOrder)
-                Text(line.wrappedValue.perOrder
-                     ? "Added once to each order, however many units are sold."
-                     : "Multiplied by the number of units sold.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            // Explained once, in the Items footer.
+            Toggle("Once per order", isOn: line.perOrder)
+                .help("Added once to each order, however many units are sold")
             switch line.wrappedValue.type {
             case "PRINT":
                 modelPicker(line)

@@ -104,13 +104,13 @@ func orderShippingOptions(provider: String) -> [String: Any] {
 }
 
 func orderMetadataDictionary(_ fields: [OrderMetadataField]) throws -> [String: Any] {
-    guard fields.count <= 10 else { throw StudioError("Metadata supports up to 10 fields.") }
+    guard fields.count <= 10 else { throw StudioError("Add up to 10 reference fields (metadata).") }
     var result: [String: Any] = [:]
     var seen = Set<String>()
     for field in fields {
         let key = field.key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { throw StudioError("Metadata keys can’t be empty.") }
-        guard !seen.contains(key) else { throw StudioError("Metadata keys must be unique.") }
+        guard !key.isEmpty else { throw StudioError("Give every reference field (metadata) a key.") }
+        guard !seen.contains(key) else { throw StudioError("Each reference field (metadata) needs a different key.") }
         seen.insert(key)
         result[key] = field.value
     }
@@ -193,6 +193,7 @@ struct OrderComposerView: View {
     @State private var confirmDiscard = false
     @State private var showAddSavedProduct = false
     @State private var confirmCreateAnyway = false
+    @State private var advancedExpanded = false
 
     var hasUnsavedInput: Bool {
         orderComposerHasUnsavedInput(
@@ -233,6 +234,57 @@ struct OrderComposerView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // A sheet shows no window title, so the form carries its own heading.
+            Text(orderComposerHeading(sourceOrderNumber: sourceOrderNumber))
+                .font(.title2.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding([.horizontal, .top], 16)
+            composerForm
+        }
+        .navigationTitle(orderComposerHeading(sourceOrderNumber: sourceOrderNumber))
+        .frame(minWidth: 720, minHeight: 640)
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Button("Cancel", role: .cancel) { requestClose() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(store.busy)
+                    .help(store.busy ? "Working…" : "Cancel")
+                Spacer()
+                if let validation { Text(validation).font(.caption).foregroundStyle(.orange).lineLimit(3) }
+                else if let createBlockedReason { Text(createBlockedReason).font(.caption).foregroundStyle(.secondary) }
+                if store.busy { ProgressView().controlSize(.small) }
+                Button("Create Draft") { createDraft() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(store.busy || createBlockedReason != nil)
+                    .help(createBlockedReason ?? "Create an order draft")
+            }
+            .padding(16)
+            .background(.bar)
+        }
+        .interactiveDismissDisabled(hasUnsavedInput)
+        .confirmationDialog("Discard this order draft?", isPresented: $confirmDiscard) {
+            Button("Discard Draft", role: .destructive) { dismiss() }
+            Button("Keep Editing", role: .cancel) {}
+        } message: {
+            Text(orderComposerDiscardMessage(outcomeUnknown: store.draftCreateOutcomeUnknown))
+        }
+        .confirmationDialog("Create another draft?", isPresented: $confirmCreateAnyway, titleVisibility: .visible) {
+            Button("Create Anyway") { createDraft(confirmedDespiteUnknownOutcome: true) }
+            Button("Don’t Create", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(draftCreateAnywayMessage(store.unconfirmedDraftCreates))
+        }
+        .onAppear(perform: seedIfNeeded)
+        // Pending location work stops whenever the form actually closes (create, cancel or discard).
+        .onDisappear { locationLookup.cancel() }
+        .task(id: catalogTaskID) { await loadNeededCatalogs() }
+        .task { await store.refreshFilamentsIfStale() }
+    }
+
+    var composerForm: some View {
         Form {
             if store.draftCreateOutcomeUnknown {
                 Section {
@@ -241,8 +293,8 @@ struct OrderComposerView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if let sourceOrderNumber {
-                Section("Duplicated from order \(sourceOrderNumber)") {
+            if sourceOrderNumber != nil {
+                Section("Copied from the original order") {
                     Text("Items and delivery details were copied for you to check. Slant calculates new prices when you create the draft, and you review the total before anything is charged.")
                         .font(.callout).foregroundStyle(.secondary)
                     if lines.allSatisfy({ $0.reference.isEmpty }) {
@@ -286,14 +338,39 @@ struct OrderComposerView: View {
                         .environmentObject(store)
                     }
             }
-            Section("Deliver to") {
+            Section {
+                locationStatus
                 if seededDelivery, !editingDelivery {
-                    Text(deliverySummary.isEmpty ? delivery.email : deliverySummary)
-                        .foregroundStyle(.secondary)
+                    // Copied from the order being duplicated, or reused from this session's last draft (memory only).
+                    Text(sourceOrderNumber == nil
+                         ? orderComposerReusedAddressLine(delivery)
+                         : "Copied address: \(deliverySummary.isEmpty ? delivery.email : deliverySummary)")
                     if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.orange) }
-                    Button("Edit") { editingDelivery = true }
+                    HStack {
+                        Button("Edit") { editingDelivery = true }
+                        if sourceOrderNumber == nil {
+                            Button("Clear") { clearReusedDelivery() }
+                                .help("Start with an empty address for this draft")
+                        }
+                    }
                 } else {
                     deliveryFields
+                }
+            } header: {
+                HStack {
+                    Text("Deliver to")
+                    Spacer()
+                    // Location is only requested when this is pressed; manual entry stays available.
+                    Button {
+                        if seededDelivery { editingDelivery = true }
+                        locationAddressApplied = false
+                        locationLookup.start()
+                    } label: {
+                        Label("Use Current Location", systemImage: "location")
+                    }
+                    .controlSize(.small)
+                    .disabled(locationLookup.isBusy || store.busy)
+                    .help("Suggest an address from your Mac’s location, for you to check before using it")
                 }
             }
             Section("More options") {
@@ -303,116 +380,93 @@ struct OrderComposerView: View {
                 } else {
                     orderCatalogPicker("Platform", selection: $draftPlatformID, records: store.platforms, placeholder: "Choose a platform")
                 }
-                DisclosureGroup("Advanced") {
-                    TextField("Owner ID (optional)", text: $store.ownerID)
-                    TextField("Payment service ID (optional)", text: $paymentID)
-                }
-                Picker("Shipping provider", selection: $shippingProvider) {
-                    ForEach(orderShippingProviderChoices, id: \.code) { Text($0.name).tag($0.code) }
-                }
-                ForEach($metadataFields) { $field in
-                    HStack {
-                        TextField("Key", text: $field.key)
-                        TextField("Value", text: $field.value)
-                        Button(role: .destructive) { metadataFields.removeAll { $0.id == field.id } } label: { Image(systemName: "minus.circle") }
-                            .accessibilityLabel("Remove metadata field").help("Remove metadata field")
+                DisclosureGroup("Advanced", isExpanded: $advancedExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Shipping provider", selection: $shippingProvider) {
+                            ForEach(orderShippingProviderChoices, id: \.code) { Text($0.name).tag($0.code) }
+                        }
+                        TextField("Payment service ID (optional)", text: $paymentID)
+                        let ownerID = store.ownerID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !ownerID.isEmpty {
+                            // Sent with every draft; edited in Connection, where uploads use it too.
+                            Text("Owner ID \(ownerID) is sent with this draft. Change it in Connection › Advanced identifiers.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("Reference fields (metadata)").padding(.top, 4)
+                        Text("Optional notes saved with the order, such as your shop’s order number. Up to 10.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach($metadataFields) { $field in
+                            HStack {
+                                TextField("Key", text: $field.key)
+                                TextField("Value", text: $field.value)
+                                Button(role: .destructive) { metadataFields.removeAll { $0.id == field.id } } label: { Image(systemName: "minus.circle") }
+                                    .accessibilityLabel("Remove reference field").help("Remove reference field")
+                            }
+                        }
+                        if metadataFields.count < 10 {
+                            Button("Add Reference Field") { metadataFields.append(OrderMetadataField()) }
+                        }
                     }
-                }
-                if metadataFields.count < 10 {
-                    Button("Add metadata field") { metadataFields.append(OrderMetadataField()) }
+                    .padding(.top, 4)
                 }
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("New Order Draft")
-        .frame(minWidth: 720, minHeight: 640)
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Button("Cancel", role: .cancel) { requestClose() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(store.busy)
-                    .help(store.busy ? "Working…" : "Cancel")
-                Spacer()
-                if let validation { Text(validation).font(.caption).foregroundStyle(.orange).lineLimit(3) }
-                else if let createBlockedReason { Text(createBlockedReason).font(.caption).foregroundStyle(.secondary) }
-                if store.busy { ProgressView().controlSize(.small) }
-                Button("Create Draft") { createDraft() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(store.busy || createBlockedReason != nil)
-                    .help(createBlockedReason ?? "Create an order draft")
+    }
+
+    /// Location lookup progress, its explanation and the suggestion to review. Shown only after Use Current Location.
+    @ViewBuilder
+    var locationStatus: some View {
+        if locationLookup.isBusy || locationLookup.message != nil || locationLookup.suggestion != nil || locationAddressApplied {
+            VStack(alignment: .leading, spacing: 8) {
+                if locationLookup.isBusy || locationLookup.suggestion != nil {
+                    Text("With your permission, Apple uses your location to suggest an address. Check the building and add any apartment or unit number.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if locationLookup.isBusy {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("Finding your address")
+                        Text("Finding your address…").font(.callout).foregroundStyle(.secondary)
+                        Button("Stop Lookup") { locationLookup.cancel() }
+                    }
+                }
+                if let message = locationLookup.message {
+                    Text(message).font(.callout).foregroundStyle(.secondary)
+                }
+                if let suggestion = locationLookup.suggestion {
+                    Text("Suggested address").font(.headline)
+                    Text(suggestion.summary).textSelection(.enabled)
+                    Text("Confirm this is your delivery address. Using it replaces the address fields below; your name and email are kept.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Button("Use This Address") {
+                            delivery = suggestion.applying(to: delivery)
+                            locationLookup.clearSuggestion()
+                            locationAddressApplied = true
+                            editingDelivery = true
+                        }
+                        .disabled(store.busy)
+                        Button("Dismiss Suggestion") { locationLookup.clearSuggestion() }
+                    }
+                }
+                if locationAddressApplied {
+                    Label("Address filled in. Check it below and add any apartment or unit number before creating your draft.", systemImage: "checkmark.circle")
+                        .font(.callout)
+                }
             }
-            .padding(16)
-            .background(.bar)
         }
-        .interactiveDismissDisabled(hasUnsavedInput)
-        .confirmationDialog("Discard this order draft?", isPresented: $confirmDiscard) {
-            Button("Discard Draft", role: .destructive) { dismiss() }
-            Button("Keep Editing", role: .cancel) {}
-        } message: {
-            Text(orderComposerDiscardMessage(outcomeUnknown: store.draftCreateOutcomeUnknown))
-        }
-        .confirmationDialog("Create another draft?", isPresented: $confirmCreateAnyway, titleVisibility: .visible) {
-            Button("Create Anyway") { createDraft(confirmedDespiteUnknownOutcome: true) }
-            Button("Don’t Create", role: .cancel) {}
-                .keyboardShortcut(.defaultAction)
-        } message: {
-            Text(draftCreateAnywayMessage(store.unconfirmedDraftCreates))
-        }
-        .onAppear(perform: seedIfNeeded)
-        // Pending location work stops whenever the form actually closes (create, cancel or discard).
-        .onDisappear { locationLookup.cancel() }
-        .task(id: catalogTaskID) { await loadNeededCatalogs() }
-        .task { await store.refreshFilamentsIfStale() }
     }
 
     @ViewBuilder
     var deliveryFields: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Button {
-                    locationAddressApplied = false
-                    locationLookup.start()
-                } label: {
-                    Label("Use current location", systemImage: "location")
-                }
-                .disabled(locationLookup.isBusy || store.busy)
-                if locationLookup.isBusy {
-                    ProgressView().controlSize(.small)
-                        .accessibilityLabel("Finding your address")
-                    Button("Stop lookup") { locationLookup.cancel() }
-                }
-            }
-            Text("With your permission, Apple uses your location to suggest an address. Check the building and add any apartment or unit number.")
-                .font(.caption).foregroundStyle(.secondary)
-            if let message = locationLookup.message {
-                Text(message).font(.callout).foregroundStyle(.secondary)
-            }
-            if let suggestion = locationLookup.suggestion {
-                Text("Suggested address").font(.headline)
-                Text(suggestion.summary).textSelection(.enabled)
-                Text("Confirm this is your delivery address. Using it replaces the address fields below; your name and email are kept.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Use this address") {
-                        delivery = suggestion.applying(to: delivery)
-                        locationLookup.clearSuggestion()
-                        locationAddressApplied = true
-                    }
-                    .disabled(store.busy)
-                    Button("Dismiss suggestion") { locationLookup.clearSuggestion() }
-                }
-            }
-            if locationAddressApplied {
-                Label("Address filled in. Check it below and add any apartment or unit number before creating your draft.", systemImage: "checkmark.circle")
-                    .font(.callout)
-            }
-        }
         TextField("Full name", text: $delivery.name)
         VStack(alignment: .leading, spacing: 4) {
             TextField("Email", text: $delivery.email)
             if let emailFieldError { Text(emailFieldError).font(.caption).foregroundStyle(.orange) }
         }
+        // Country first: it decides whether State is required and how the postcode is checked.
+        countryPicker
         TextField("Street address", text: $delivery.line1)
         TextField("Apartment, suite, etc. (optional)", text: $delivery.line2)
         TextField("City", text: $delivery.city)
@@ -427,7 +481,6 @@ struct OrderComposerView: View {
                 .focused($postcodeFocused)
             if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.orange) }
         }
-        countryPicker
     }
 
     /// Shortlist first, then every other country by name. Stays on "Choose a country" when nothing is known.
@@ -656,6 +709,17 @@ struct OrderComposerView: View {
         initialDelivery = seededDeliveryDetails
         initialShippingProvider = shippingProvider
         initialDraftPlatformID = draftPlatformID
+        advancedExpanded = orderComposerAdvancedStartsExpanded(shippingProvider: shippingProvider, metadataFields: metadataFields)
+    }
+
+    /// Starts this draft's address from empty instead of the last draft's. Nothing typed is lost, so the empty form
+    /// becomes the discard check's starting point; the remembered address stays for the next draft.
+    func clearReusedDelivery() {
+        locationAddressApplied = false
+        delivery = DeliveryDetails()
+        initialDelivery = delivery
+        seededDelivery = false
+        editingDelivery = true
     }
 
     func requestClose() {
@@ -693,7 +757,12 @@ struct OrderComposerView: View {
             } else {
                 country = delivery.countrySelection
             }
-            let metadata = try orderMetadataDictionary(metadataFields)
+            let metadata: [String: Any]
+            do { metadata = try orderMetadataDictionary(metadataFields) } catch {
+                // The reference fields live under Advanced; show them so the problem can be fixed.
+                advancedExpanded = true
+                throw error
+            }
             let options = orderShippingOptions(provider: shippingProvider)
             let body = try orderDraftPayload(
                 platformID: draftPlatformID, ownerID: store.ownerID, email: delivery.email, recipientName: delivery.name,
@@ -774,7 +843,6 @@ struct OrdersView: View {
     @State private var pendingConfirm: PendingOrderConfirm?
     @State private var pendingLoadID: String?
     @State private var filtersPresented = false
-    @State private var draftFilterStatus = ""
     @State private var draftSortOrder = "desc"
     @State private var useFromDate = false
     @State private var useToDate = false
@@ -802,7 +870,8 @@ struct OrdersView: View {
     }
     var draftFilterPreview: OrderFilter {
         var filter = OrderFilter()
-        filter.status = draftFilterStatus.isEmpty ? nil : draftFilterStatus
+        // Status comes from the toolbar's Status menu, which applies on its own.
+        filter.status = store.orderFilter.status
         filter.sortOrder = draftSortOrder
         filter.startDate = useFromDate ? draftFromDate : nil
         filter.endDate = useToDate ? draftToDate : nil
@@ -855,13 +924,14 @@ struct OrdersView: View {
                         tableEmptyOverlay
                     }
                 }
-                if store.orderSearchActive {
-                    Text("Press Return to search all orders. Clear the search to load more orders.")
+                if let hint = orderSearchHint(typed: search, searchActive: store.orderSearchActive) {
+                    Text(hint)
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
-                        .padding(.bottom, 8)
-                } else if store.ordersHasMore {
+                        .padding(.vertical, 6)
+                }
+                if !store.orderSearchActive, store.ordersHasMore {
                     HStack {
                         Spacer()
                         Button("Load More") { Task { await store.loadMoreOrders() } }
@@ -910,12 +980,30 @@ struct OrdersView: View {
                 .help(store.orderImportBlockedReason ?? "Create order drafts from an Etsy, Shopify or template CSV file")
             }
             ToolbarItem(placement: .automatic) {
+                // Applies at once: reloads the list from Slant with this status, keeping the dates and sort from Filters.
+                Picker(selection: Binding(
+                    get: { store.orderFilter.status ?? "" },
+                    set: { applyStatusFilter($0) }
+                )) {
+                    Text("All Statuses").tag("")
+                    Divider()
+                    ForEach(orderStatusFilterOptions, id: \.self) { Text(orderStatusTitle($0)).tag($0) }
+                } label: {
+                    Label("Status", systemImage: "line.3.horizontal.decrease.circle")
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                .disabled(!store.hasKey || store.busy)
+                .help("Show orders with this status")
+            }
+            ToolbarItem(placement: .automatic) {
                 Button {
                     syncFilterDraftFromStore()
                     filtersPresented = true
                 } label: {
-                    Label("Filters", systemImage: "line.3.horizontal.decrease.circle")
+                    Label("Filters", systemImage: "calendar")
                 }
+                .help("Dates and Newest/Oldest order")
                 .popover(isPresented: $filtersPresented, arrowEdge: .bottom) {
                     filtersPopover
                 }
@@ -962,13 +1050,16 @@ struct OrdersView: View {
         }
     }
 
+    func applyStatusFilter(_ status: String) {
+        var filter = store.orderFilter
+        filter.status = status.isEmpty ? nil : status
+        guard filter != store.orderFilter else { return }
+        Task { await store.applyOrderFilter(filter) }
+    }
+
     var filtersPopover: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Filters").font(.headline)
-            Picker("Status", selection: $draftFilterStatus) {
-                Text("All").tag("")
-                ForEach(orderStatusFilterOptions, id: \.self) { Text(orderStatusTitle($0)).tag($0) }
-            }
             Picker("Sort", selection: $draftSortOrder) {
                 Text("Newest").tag("desc")
                 Text("Oldest").tag("asc")
@@ -985,17 +1076,20 @@ struct OrdersView: View {
                 Text(draftFilterValidation).font(.caption).foregroundStyle(.orange)
             }
             HStack {
-                Button("Clear filters") {
-                    draftFilterStatus = ""
+                // Resets the dates and sort shown here; the toolbar's Status menu keeps its choice.
+                Button("Reset") {
                     draftSortOrder = "desc"
                     useFromDate = false
                     useToDate = false
                     filtersPresented = false
+                    var filter = OrderFilter()
+                    filter.status = store.orderFilter.status
                     Task {
-                        await store.applyOrderFilter(OrderFilter())
+                        await store.applyOrderFilter(filter)
                         sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
                     }
                 }
+                .help("Clear the dates and sort newest first")
                 Spacer()
                 Button("Apply") {
                     filtersPresented = false
@@ -1015,7 +1109,6 @@ struct OrdersView: View {
     }
 
     func syncFilterDraftFromStore() {
-        draftFilterStatus = store.orderFilter.status ?? ""
         draftSortOrder = store.orderFilter.sortOrder
         useFromDate = store.orderFilter.startDate != nil
         useToDate = store.orderFilter.endDate != nil
@@ -1050,7 +1143,7 @@ struct OrdersView: View {
                         Button { load(selected.id) } label: { Image(systemName: "arrow.clockwise") }
                             .accessibilityLabel("Reload order").help("Reload order").disabled(store.busy)
                     }
-                    OrderSummary(order: displayed)
+                    // Actions sit under the header so placing a draft never needs scrolling; both open a review first.
                     HStack {
                         if canCancelSelected {
                             let status = (displayed["status"] as? String) ?? ""
@@ -1060,9 +1153,6 @@ struct OrdersView: View {
                             .disabled(store.busy)
                             .help("Review cancellation")
                         } else if let reason = orderCancellationBlockedReason((displayed["status"] as? String) ?? "") {
-                            Button("Cancel…", role: .destructive) {}
-                                .disabled(true)
-                                .help(reason)
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -1080,6 +1170,8 @@ struct OrdersView: View {
                     if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
                         Text("Placing charges your saved payment method.").font(.caption).foregroundStyle(.secondary)
                     }
+                    Divider()
+                    OrderSummary(order: displayed)
                 }
                 .padding(24)
             }
@@ -1195,16 +1287,14 @@ struct OrderActionConfirmSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Status: \(orderStatusTitle(status ?? ""))")
                         if let items = order["items"] as? [[String: Any]], !items.isEmpty {
-                            // Visual fat-finger check only; the explicit Pay confirmation below is unchanged.
-                            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                                let text = "\(item["quantity"].map { String(describing: $0) } ?? "1") × \(orderItemDisplayName(item))"
-                                if isPay, orderItemHasLargeQuantity(item) {
-                                    Label(text, systemImage: "exclamationmark.triangle.fill")
-                                        .foregroundStyle(.orange).fontWeight(.semibold)
-                                        .accessibilityLabel("Large quantity: \(text)")
-                                } else {
-                                    Text(text)
-                                }
+                            // A long list scrolls in a bounded box so the totals and buttons below always stay visible.
+                            ViewThatFits(in: .vertical) {
+                                reviewItemList(items)
+                                ScrollView { reviewItemList(items) }
+                            }
+                            .frame(maxHeight: 120)
+                            if isPay, let notice = orderReviewLargeQuantityNotice(items) {
+                                Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                             }
                         }
                         LabeledContent("Printing") { Text("\(money(order["printingCost"])) USD") }
@@ -1266,6 +1356,24 @@ struct OrderActionConfirmSheet: View {
             }
         }
     }
+    /// The reviewed items. Large quantities are highlighted as a visual fat-finger check only; the explicit Pay
+    /// confirmation is unchanged.
+    func reviewItemList(_ items: [[String: Any]]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                let text = "\(item["quantity"].map { String(describing: $0) } ?? "1") × \(orderItemDisplayName(item))"
+                if isPay, orderItemHasLargeQuantity(item) {
+                    Label(text, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange).fontWeight(.semibold)
+                        .accessibilityLabel("Large quantity: \(text)")
+                } else {
+                    Text(text)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     func loadFresh(keepUnknownMessage: Bool = false) {
         guard !writeSucceeded else { return }
         if !keepUnknownMessage { actionMessage = nil }
@@ -2027,6 +2135,11 @@ struct OrderSummary: View {
                 Text([address["name"], address["line1"], address["line2"], address["city"], address["state"], address["zip"], address["country"]].compactMap { $0 as? String }.filter { !$0.isEmpty }.joined(separator: ", "))
                     .font(.callout).foregroundStyle(.secondary)
             }
+            // Orders being made or shipped show tracking above the costs; drafts and cancelled orders skip it.
+            if orderDetailShowsTracking(status: status, hasTrackingDetails: !tracking.isEmpty || fulfillmentArriveBy(order) != nil) {
+                trackingSection
+                Divider()
+            }
             LabeledContent("Print cost") { Text(money(order["printingCost"])) }
             LabeledContent("Delivery cost") { Text(money(order["deliveryCost"])) }
             LabeledContent("Total") { Text(orderTotalMoney(order)).fontWeight(.semibold) }
@@ -2055,7 +2168,13 @@ struct OrderSummary: View {
             }
             // Keyed by order so amounts typed for one order never carry over to another.
             ProfitCheckPanel(order: order).id(Record(values: order).id)
-            Divider()
+            DisclosureGroup("Technical details") { JSONView(text: prettyJSON(hidingSecrets(order))).frame(height: 220) }
+        }
+    }
+
+    @ViewBuilder
+    var trackingSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Tracking").font(.headline)
             if tracking.isEmpty {
                 Text("No tracking yet.").font(.callout).foregroundStyle(.secondary)
@@ -2079,7 +2198,6 @@ struct OrderSummary: View {
             if let arrive = fulfillmentArriveBy(order) {
                 LabeledContent("Arrive by") { Text(arrive) }
             }
-            DisclosureGroup("Technical details") { JSONView(text: prettyJSON(hidingSecrets(order))).frame(height: 220) }
         }
     }
 }

@@ -254,15 +254,16 @@ final class MarginTests: XCTestCase {
         XCTAssertEqual(draftCreateUnknownNotice([], time: time), "")
         let one = draftCreateUnknownNotice([ada], time: time)
         XCTAssertEqual(one, "Your Create Draft for Ada Lovelace at 2:32 PM didn’t get a reply from Slant, so that draft may exist. "
-                       + "Check your drafts (Orders › Filters › Status: Draft) before creating it again.")
+                       + "Check your drafts (Orders toolbar › Status › Draft) before creating it again.")
         XCTAssertFalse(one.contains("Orders › Drafts"))
+        XCTAssertFalse(one.contains("Filters"), "Status is chosen from the toolbar's Status menu, not the Filters popover")
         let unnamed = draftCreateUnknownNotice([UnconfirmedDraftAttempt(recipient: "", date: Date())], time: time)
         XCTAssertTrue(unnamed.hasPrefix("Your Create Draft at 2:32 PM didn’t"))
         let two = draftCreateUnknownNotice([ada, UnconfirmedDraftAttempt(recipient: "Grace Hopper", date: Date())], time: time)
         XCTAssertTrue(two.hasPrefix("2 Create Draft attempts didn’t get a reply from Slant (for Ada Lovelace at 2:32 PM; for Grace Hopper at 2:32 PM)"))
         XCTAssertTrue(draftCreateAnywayMessage([ada], time: time).hasSuffix("If this is the same order, creating it again makes a second draft."))
         XCTAssertTrue(draftCreateAnywayMessage([ada, ada], time: time).hasSuffix("If this is one of those orders, creating it again makes a second draft."))
-        // The path names the real orders-list controls: Filters, then the Status picker's Draft option.
+        // The path names the real orders-list control: the toolbar's Status menu and its Draft option.
         XCTAssertTrue(orderStatusFilterOptions.contains("DRAFT"))
         XCTAssertEqual(orderStatusTitle("DRAFT"), "Draft")
     }
@@ -275,7 +276,7 @@ final class MarginTests: XCTestCase {
         XCTAssertFalse(isRetryableAPICall(method: "POST", path: "/orders"))
         XCTAssertTrue(orderComposerDiscardMessage(outcomeUnknown: false).contains("Nothing has been sent"))
         XCTAssertFalse(orderComposerDiscardMessage(outcomeUnknown: true).contains("Nothing has been sent"))
-        XCTAssertTrue(orderComposerDiscardMessage(outcomeUnknown: true).contains("Orders › Filters › Status: Draft"))
+        XCTAssertTrue(orderComposerDiscardMessage(outcomeUnknown: true).contains("Orders toolbar › Status › Draft"))
     }
 
     // MARK: Marketplace reference
@@ -317,5 +318,28 @@ final class MarginTests: XCTestCase {
         XCTAssertNil(orderMarketplaceReference(["metadata": ["sourceOrderId": ["nested": 1]]]))
         XCTAssertNil(orderMarketplaceReference(["metadata": ["sourceOrderId": true]]))
         XCTAssertNil(orderMarketplaceReference(["metadata": ["sourceOrderId": "1", "source": ["x"]]])?.source)
+    }
+
+    // MARK: Fee rates summary
+
+    func testProfitFeeRatesSummaryIsOneDatedLine() {
+        let etsy = ProfitFeePreset.etsyUS
+        XCTAssertEqual(profitFeeRatesSummary(preset: etsy, rates: etsy.defaultRates, offsiteAds: false),
+                       "Etsy (US): 6.5% + 3% + $0.25 + $0.20/unit · checked \(profitFeeRatesCheckedDate)")
+        // Offsite Ads only when this sale came from one.
+        XCTAssertEqual(profitFeeRatesSummary(preset: etsy, rates: etsy.defaultRates, offsiteAds: true),
+                       "Etsy (US): 6.5% + 3% + $0.25 + $0.20/unit + 15% Offsite Ads (max $100) · checked \(profitFeeRatesCheckedDate)")
+        let shopify = ProfitFeePreset.shopifyBasicUS
+        XCTAssertEqual(profitFeeRatesSummary(preset: shopify, rates: shopify.defaultRates, offsiteAds: true),
+                       "Shopify Payments (US Basic): 2.9% + $0.30 · checked \(profitFeeRatesCheckedDate)")
+        // Edited preset rates are labelled as the user's, still dated.
+        var edited = etsy.defaultRates
+        edited.processingPercent = 4
+        let editedSummary = profitFeeRatesSummary(preset: etsy, rates: edited, offsiteAds: false)
+        XCTAssertTrue(editedSummary.hasPrefix("Etsy (US): 6.5% + 4% + $0.25"), editedSummary)
+        XCTAssertTrue(editedSummary.hasSuffix("· your rates (preset checked \(profitFeeRatesCheckedDate))"), editedSummary)
+        XCTAssertEqual(profitFeeRatesSummary(preset: .custom, rates: ProfitFeeRates(), offsiteAds: false), "Custom: no fees entered · your rates")
+        XCTAssertEqual(profitFeeRatesSummary(preset: .custom, rates: ProfitFeeRates(processingPercent: 5), offsiteAds: true), "Custom: 5% · your rates")
+        XCTAssertEqual(profitFeeRatesSummary(preset: .none, rates: ProfitFeeRates(), offsiteAds: false), "None")
     }
 }
