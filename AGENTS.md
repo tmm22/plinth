@@ -73,6 +73,11 @@ Every task follows this process. Scale the number of agents to the size of the t
 - Geometry tools stay STL-only. OBJ/3MF models are previewed and uploaded in their original format; the tools work on a separate STL copy.
 - Geometry changes save separate copies and must retain existing validation; do not weaken checks to make tests pass.
 
+## UI conventions
+
+- User-visible text uses British spelling (Optimise, Colour, Cancelled) and Title Case for buttons and menu items; section headings and disclosure labels stay sentence case. Never change Slant's API values (such as the `CANCELED` status) to match.
+- Account setup belongs in the Settings window, developer-only surfaces behind Settings › Advanced › Show developer tools, and seller tasks in the sidebar (Models, Orders, Catalog).
+
 ## Documentation
 
 Update README.md for changed user flows, setup or privacy behaviour. Update docs/API_REFERENCE.md for integration changes. Keep this file focused on durable contributor guidance rather than session history or claims that live tests passed.
