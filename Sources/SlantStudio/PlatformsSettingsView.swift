@@ -13,6 +13,14 @@ func createPlatformBlockedReason(hasKey: Bool, busy: Bool, limitReached: Bool, o
     return nil
 }
 
+/// Takes the store's current error for showing inside Settings, and clears it so the main window's alert — usually
+/// behind the Settings window — doesn't keep an unseen alert open (which would also block menus and settings).
+@MainActor func takeStoreErrorForSettings(_ store: StudioStore) -> String? {
+    guard let message = store.error else { return nil }
+    store.dismissError()
+    return message
+}
+
 /// Sheet state for the platform sections, owned by the Account tab so its sheets attach to the Form rather than to a
 /// (lazily created) row.
 struct PlatformsSettingsState {
@@ -22,6 +30,9 @@ struct PlatformsSettingsState {
     var enableByID = ""
     var enableCandidate: Record?
     var confirmEnable = false
+    /// The last failed platform action in the Account tab, shown inline.
+    var error: String?
+    var showEnableByID = false
 }
 
 /// The default-platform picker, the platform list (each row opens its details and management) and re-enabling.
@@ -66,9 +77,18 @@ struct PlatformsSettingsSections: View {
                     .disabled(createBlocked != nil)
                     .help(createBlocked ?? "Create a platform")
                 Button(platformsLoaded ? "Reload Platforms" : "Load Platforms") {
-                    Task { await store.loadCatalog(.platforms) }
+                    Task {
+                        state.error = nil
+                        await store.loadCatalog(.platforms)
+                        state.error = takeStoreErrorForSettings(store)
+                    }
                 }
                 .disabled(!store.hasKey || store.busy)
+            }
+            if let error = state.error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
             if store.platformLimitReached {
                 Text("This account already has \(maxPlatforms) enabled platforms. Disable one before creating another.")
@@ -88,25 +108,36 @@ struct PlatformsSettingsSections: View {
                         Text(displayName(for: row.record, fallback: "Untitled platform"))
                         Spacer()
                         Button("Enable") {
-                            Task { _ = await store.setPlatformEnabled(id: row.record.id, enabled: true) }
+                            Task {
+                                state.error = nil
+                                if !(await store.setPlatformEnabled(id: row.record.id, enabled: true)) {
+                                    state.error = takeStoreErrorForSettings(store)
+                                }
+                            }
                         }
                         .disabled(store.busy)
                     }
                 }
-                HStack {
-                    TextField("Platform ID", text: $state.enableByID, prompt: Text("ID of a disabled platform"))
-                    Button("Look Up…") {
-                        Task {
-                            state.enableCandidate = await store.loadPlatform(id: state.enableByID)
-                            if state.enableCandidate != nil { state.confirmEnable = true }
+                DisclosureGroup("Enable a Platform by ID", isExpanded: $state.showEnableByID) {
+                    HStack {
+                        TextField("Platform ID", text: $state.enableByID, prompt: Text("ID of a disabled platform"))
+                        Button("Look Up…") {
+                            Task {
+                                state.error = nil
+                                state.enableCandidate = await store.loadPlatform(id: state.enableByID)
+                                if state.enableCandidate != nil { state.confirmEnable = true }
+                                else { state.error = takeStoreErrorForSettings(store) ?? "No platform found with that ID." }
+                            }
                         }
+                        .disabled(store.busy || state.enableByID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                    .disabled(store.busy || state.enableByID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             } header: {
                 Text("Disabled platforms")
             } footer: {
-                Text("Platforms you disable this session are listed here. To enable another, look it up by its ID.")
+                Text(store.disabledPlatformsThisSession.isEmpty
+                     ? "Disabled platforms don’t appear above. To enable one, look it up by its ID."
+                     : "Platforms you disable this session are listed here. To enable another, look it up by its ID.")
             }
         }
     }
@@ -183,8 +214,9 @@ struct PlatformsSettingsSheets: ViewModifier {
                 Spacer()
                 Button("Enable") {
                     Task {
-                        if let id = state.enableCandidate?.id {
-                            _ = await store.setPlatformEnabled(id: id, enabled: true)
+                        state.error = nil
+                        if let id = state.enableCandidate?.id, !(await store.setPlatformEnabled(id: id, enabled: true)) {
+                            state.error = takeStoreErrorForSettings(store)
                         }
                         state.confirmEnable = false
                         state.enableByID = ""
@@ -218,6 +250,8 @@ struct PlatformDetailSheet: View {
     @State private var deadLoaded = false
     @State private var testWebhookResult: WebhookTestResult?
     @State private var resendResult: WebhookResendResult?
+    /// The last failed action in this sheet or its confirmations, shown inline (the main window's alert is hidden).
+    @State private var actionError: String?
 
     private var livePlatform: Record {
         store.platforms.first { $0.id == record.id } ?? record
@@ -246,6 +280,7 @@ struct PlatformDetailSheet: View {
                         .accessibilityLabel("Done")
                 }
                 platformReadableFields(livePlatform)
+                actionErrorLabel
                 platformManagement
                 DisclosureGroup("Technical details") {
                     VStack(alignment: .leading, spacing: 12) {
@@ -277,6 +312,23 @@ struct PlatformDetailSheet: View {
     }
 
     @ViewBuilder
+    private var actionErrorLabel: some View {
+        if let actionError {
+            Label(actionError, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    /// Runs a platform request from this sheet, keeping any failure visible here.
+    private func perform<T>(_ operation: () async -> T?) async -> T? {
+        actionError = nil
+        let result = await operation()
+        if result == nil { actionError = takeStoreErrorForSettings(store) }
+        return result
+    }
+
+    @ViewBuilder
     private var platformManagement: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -291,7 +343,7 @@ struct PlatformDetailSheet: View {
                 if !livePlatform.string("webhookURL", "webhookUrl").isEmpty {
                     Button("Send Test Webhook") {
                         Task {
-                            testWebhookResult = await store.sendTestWebhook(platformID: record.id)
+                            testWebhookResult = await perform { await store.sendTestWebhook(platformID: record.id) }
                         }
                     }
                     .disabled(store.busy)
@@ -351,8 +403,7 @@ struct PlatformDetailSheet: View {
                 Spacer()
                 Button(deadLoaded || store.deadWebhooks[record.id] != nil ? "Reload" : "Load") {
                     Task {
-                        _ = await store.loadDeadWebhooks(platformID: record.id)
-                        deadLoaded = true
+                        if await perform({ await store.loadDeadWebhooks(platformID: record.id) }) != nil { deadLoaded = true }
                     }
                 }
                 .disabled(store.busy)
@@ -368,7 +419,7 @@ struct PlatformDetailSheet: View {
                 if resendResult.remaining > 0 {
                     Button("Resend Remaining (\(resendResult.remaining))") {
                         Task {
-                            if let result = await store.resendDeadWebhooks(platformID: record.id) {
+                            if let result = await perform({ await store.resendDeadWebhooks(platformID: record.id) }) {
                                 self.resendResult = result
                                 _ = await store.loadDeadWebhooks(platformID: record.id)
                                 deadLoaded = true
@@ -391,9 +442,10 @@ struct PlatformDetailSheet: View {
                             Spacer()
                             Button("Try Again") {
                                 Task {
-                                    _ = await store.resendDeadWebhook(platformID: record.id, webhookID: row.record.id)
-                                    _ = await store.loadDeadWebhooks(platformID: record.id)
-                                    deadLoaded = true
+                                    if await perform({ await store.resendDeadWebhook(platformID: record.id, webhookID: row.record.id) }) != nil {
+                                        _ = await perform { await store.loadDeadWebhooks(platformID: record.id) }
+                                        deadLoaded = true
+                                    }
                                 }
                             }
                             .disabled(store.busy || row.record.id.isEmpty)
@@ -409,6 +461,7 @@ struct PlatformDetailSheet: View {
             Text("Disable this platform?").font(.title3.weight(.semibold))
             Text("Disabled platforms disappear from this list. You can re-enable it here or by its ID.")
                 .foregroundStyle(.secondary)
+            actionErrorLabel
             HStack {
                 Button("Cancel") { confirmDisable = false }
                     .keyboardShortcut(.cancelAction)
@@ -416,9 +469,12 @@ struct PlatformDetailSheet: View {
                 Spacer()
                 Button("Disable Platform", role: .destructive) {
                     Task {
-                        _ = await store.setPlatformEnabled(id: record.id, enabled: false)
+                        actionError = nil
+                        let disabled = await store.setPlatformEnabled(id: record.id, enabled: false)
+                        if !disabled { actionError = takeStoreErrorForSettings(store) }
                         confirmDisable = false
-                        dismiss()
+                        // Only close the details once Slant confirms; a failure stays visible in the details.
+                        if disabled { dismiss() }
                     }
                 }
                 .disabled(store.busy)
@@ -440,9 +496,9 @@ struct PlatformDetailSheet: View {
                 Spacer()
                 Button("Resend All") {
                     Task {
-                        if let result = await store.resendDeadWebhooks(platformID: record.id) {
+                        if let result = await perform({ await store.resendDeadWebhooks(platformID: record.id) }) {
                             resendResult = result
-                            _ = await store.loadDeadWebhooks(platformID: record.id)
+                            _ = await perform { await store.loadDeadWebhooks(platformID: record.id) }
                             deadLoaded = true
                         }
                         confirmResendAll = false
@@ -464,6 +520,7 @@ struct PlatformDetailSheet: View {
             TextField("rotate", text: $rotateTyped)
                 .textFieldStyle(.roundedBorder)
                 .disabled(store.busy)
+            actionErrorLabel
             HStack {
                 Button("Cancel") { rotatePrompt = false }
                     .keyboardShortcut(.cancelAction)
@@ -471,7 +528,7 @@ struct PlatformDetailSheet: View {
                 Spacer()
                 Button("Rotate Secret") {
                     Task {
-                        if let secret = await store.rotateWebhookSecret(platformID: record.id) {
+                        if let secret = await perform({ await store.rotateWebhookSecret(platformID: record.id) }) {
                             rotatedSecret = secret
                             showSecret = true
                             rotatePrompt = false

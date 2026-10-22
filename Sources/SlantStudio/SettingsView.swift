@@ -36,6 +36,9 @@ private struct ProminentWhen: ViewModifier {
     }
 }
 
+/// Both tabs share one size so the window doesn't jump when switching tabs.
+let settingsTabHeight: CGFloat = 620
+
 enum ConnectionProminentAction: Equatable {
     case saveTest, createPlatform, none
 }
@@ -58,10 +61,20 @@ func developerToolsToggleBlockedReason(busy: Bool, modalUIShown: Bool) -> String
     return nil
 }
 
+/// Why Settings can't change or remove the API key right now, or nil. A new key may belong to another account and
+/// Disconnect replaces Orders with the connect prompt, so neither may happen under an open review, draft or other sheet,
+/// alert or dialog in any window, or while a request runs.
+func accountKeyChangeBlockedReason(busy: Bool, modalUIShown: Bool) -> String? {
+    if busy { return "Wait for the current request to finish." }
+    if modalUIShown { return "Close the open sheet, alert or dialog in the main window first." }
+    return nil
+}
+
 // MARK: - Account
 
 struct AccountSettingsTab: View {
     @EnvironmentObject var store: StudioStore
+    @EnvironmentObject var modalPresentation: ModalPresentationMonitor
     @State private var key = ""
     @State private var confirmDisconnect = false
     @State private var connectError: String?
@@ -76,17 +89,32 @@ struct AccountSettingsTab: View {
         )
     }
 
+    private var keyChanges: Bool {
+        key.trimmingCharacters(in: .whitespacesAndNewlines) != store.apiKey
+    }
+    private var keyChangeBlocked: String? {
+        accountKeyChangeBlockedReason(busy: store.busy, modalUIShown: store.isPresentingSheet || modalPresentation.isPresenting)
+    }
+    /// The action-time check is authoritative; the published modal state can lag behind AppKit.
+    private var keyChangeBlockedNow: String? {
+        accountKeyChangeBlockedReason(busy: store.busy, modalUIShown: store.isPresentingSheet || appIsPresentingModalUI())
+    }
+
     var body: some View {
         Form {
             Section {
                 SecureField("API key", text: $key, prompt: Text("sl-…"))
+                    .onSubmit { saveAndTest() }
                 HStack {
                     Button("Save & Test") { saveAndTest() }
                         .modifier(ProminentWhen(prominent == .saveTest))
-                        .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
+                        .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy
+                                  || (keyChanges && keyChangeBlocked != nil))
                     if store.hasKey {
-                        Button("Disconnect…", role: .destructive) { confirmDisconnect = true }
-                            .disabled(store.busy)
+                        Button("Disconnect…", role: .destructive) {
+                            if let reason = keyChangeBlockedNow { connectError = reason } else { confirmDisconnect = true }
+                        }
+                        .disabled(keyChangeBlocked != nil)
                     }
                     Spacer()
                     Link("Get an API Key", destination: URL(string: "https://slant3dapi.com")!)
@@ -100,6 +128,9 @@ struct AccountSettingsTab: View {
                 } else {
                     Text("Not connected").foregroundStyle(.secondary)
                 }
+                if store.hasKey || keyChanges, let keyChangeBlocked, !store.busy {
+                    Text(keyChangeBlocked).font(.caption).foregroundStyle(.secondary)
+                }
                 if let connectError {
                     Label(connectError, systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -108,13 +139,13 @@ struct AccountSettingsTab: View {
             } header: {
                 Text("Slant account")
             } footer: {
-                Text("The key is stored in the macOS Keychain on this Mac.")
+                Text("The key is stored in the macOS Keychain on this Mac. Billing is managed on the Slant website.")
             }
 
             PlatformsSettingsSections(state: $platforms, createProminent: prominent == .createPlatform)
         }
         .formStyle(.grouped)
-        .frame(width: 620, height: 640)
+        .frame(width: 620, height: settingsTabHeight)
         .onAppear { key = store.apiKey }
         .onChange(of: store.apiKey) { _, new in key = new }
         .modifier(PlatformsSettingsSheets(state: $platforms))
@@ -129,10 +160,16 @@ struct AccountSettingsTab: View {
 
     private func saveAndTest() {
         connectError = nil
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !store.busy else { return }
+        if trimmed != store.apiKey, let reason = keyChangeBlockedNow {
+            connectError = reason
+            return
+        }
         Task {
             await store.connect(key: key)
-            // The main window also shows the error, but it may be behind this window.
-            if !store.connected { connectError = store.error }
+            // Show the failure here; the main window's alert would sit unseen behind this window.
+            if !store.connected { connectError = takeStoreErrorForSettings(store) ?? connectError }
         }
     }
 }
@@ -142,6 +179,7 @@ struct AccountSettingsTab: View {
 struct AdvancedSettingsTab: View {
     @EnvironmentObject var store: StudioStore
     @EnvironmentObject var modalPresentation: ModalPresentationMonitor
+    @State private var manualPlatformID = ""
 
     private var developerToolsBlocked: String? {
         developerToolsToggleBlockedReason(busy: store.busy,
@@ -206,20 +244,19 @@ struct AdvancedSettingsTab: View {
                         .disabled(store.platformID.isEmpty)
                     }
                 }
+                HStack {
+                    TextField("Use platform ID", text: $manualPlatformID, prompt: Text("Paste an ID if platforms can’t be listed"))
+                    Button("Use") {
+                        store.platformID = manualPlatformID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        manualPlatformID = ""
+                    }
+                    .disabled(manualPlatformID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
+                }
                 TextField("Owner ID", text: $store.ownerID, prompt: Text("Optional"))
-                Text("Choose the default platform in Account. Customer accounts and checkout aren’t available in the Slant API yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             } header: {
                 Text("Advanced identifiers")
-            }
-
-            Section {
-                Text("Billing is managed on the Slant website.")
-                    .foregroundStyle(.secondary)
-                Link("Slant Documentation", destination: URL(string: "https://slant3dapi.com/documentation/introduction")!)
-            } header: {
-                Text("Billing")
+            } footer: {
+                Text("Choose the default platform in Account. Owner ID is optional and is sent with uploads and order drafts.")
             }
 
             Section {
@@ -244,7 +281,7 @@ struct AdvancedSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 620, height: 600)
+        .frame(width: 620, height: settingsTabHeight)
     }
 }
 

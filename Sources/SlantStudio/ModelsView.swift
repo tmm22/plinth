@@ -1151,9 +1151,9 @@ struct ImportFromURLSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
                 Spacer()
+                // No Return shortcut: no keyboard shortcut may upload (AGENTS.md); uploading takes a click.
                 Button("Upload") { importModel() }
                     .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
                     .disabled(store.busy || !store.hasKey)
             }
             .padding(20)

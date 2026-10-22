@@ -890,18 +890,13 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
         disabledPlatformsThisSession = []; deadWebhooks = [:]; componentCategories = []
     }
-    /// Safeguards about writes that may have reached the current account: the pay/cancel lock, the draft-create
-    /// notice and the import ledger. Cleared only once the account really changes (a new key is confirmed, or the
-    /// key is removed) — never by a failed key change, which leaves the app on the same account.
-    private func clearAccountWriteSafeguards() {
-        unknownOutcomeOrderIDs = []
-        unknownOutcomeContexts = [:]
-        unconfirmedDraftCreates = []
-        orderImportLedger = OrderImportLedger()
-    }
+    // The pay/cancel lock, the unconfirmed draft-create notice and the import ledger are deliberately NOT cleared
+    // by a key change or Disconnect: Studio can't tell whether a new key belongs to the same Slant account, and a
+    // write that may have reached that account must keep its safeguard for the rest of the session. Keeping them
+    // after a real account switch costs at most an extra confirmation; lock entries are keyed by order ID and
+    // never match another account's orders.
     private func resetAccountDataPreservingKey() {
         clearLoadedAccountDataKeepingCredentials()
-        clearAccountWriteSafeguards()
         platformID = ""
         cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""
     }
@@ -942,7 +937,6 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             noteRateLimit(from: response)
             try KeychainStore.save(trimmed)
             if keyChanged {
-                clearAccountWriteSafeguards()
                 platformID = ""
                 fileID = ""; filamentID = ""
                 cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""

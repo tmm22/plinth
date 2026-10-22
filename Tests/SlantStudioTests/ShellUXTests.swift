@@ -407,6 +407,15 @@ final class ShellUXTests: XCTestCase {
         XCTAssertNil(developerToolsToggleBlockedReason(busy: false, modalUIShown: false))
     }
 
+    func testKeyChangeAndDisconnectWaitForRequestsAndModalUI() {
+        // A Pay review or draft in the main window must not lose its account underneath it.
+        XCTAssertEqual(accountKeyChangeBlockedReason(busy: true, modalUIShown: false), "Wait for the current request to finish.")
+        XCTAssertEqual(accountKeyChangeBlockedReason(busy: false, modalUIShown: true),
+                       "Close the open sheet, alert or dialog in the main window first.")
+        XCTAssertNotNil(accountKeyChangeBlockedReason(busy: true, modalUIShown: true))
+        XCTAssertNil(accountKeyChangeBlockedReason(busy: false, modalUIShown: false))
+    }
+
     func testConnectAccountPromptLeadsFirstLaunchToSettings() {
         // First launch or a Keychain read failure: no key and an empty library.
         XCTAssertTrue(showsConnectAccountPrompt(destination: .models, hasKey: false, hasLocalModels: false))
