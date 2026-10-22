@@ -376,7 +376,7 @@ struct OrderComposerView: View {
             Section("More options") {
                 if store.platforms.isEmpty {
                     Text("Load platforms to choose one by name.").foregroundStyle(.secondary)
-                    Button("Load platforms") { Task { await store.loadCatalog(.platforms) } }.disabled(!store.hasKey || store.busy)
+                    Button("Load Platforms") { Task { await store.loadCatalog(.platforms) } }.disabled(!store.hasKey || store.busy)
                 } else {
                     orderCatalogPicker("Platform", selection: $draftPlatformID, records: store.platforms, placeholder: "Choose a platform")
                 }
@@ -848,7 +848,7 @@ struct OrdersView: View {
     @State private var useToDate = false
     @State private var draftFromDate = Date()
     @State private var draftToDate = Date()
-    /// Starts on (and resets to) the server's createdAt sort from Filters; column clicks re-sort the loaded rows.
+    /// Starts on (and resets to) the server's createdAt sort from Dates & Sort; column clicks re-sort the loaded rows.
     @State private var sortOrder = orderTableDefaultSort(serverSortOrder: "desc")
     @State private var tableSortSynced = false
 
@@ -957,17 +957,13 @@ struct OrdersView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 if let reason = store.orderDraftBlockedReason {
                     Text(reason).font(.caption).foregroundStyle(.secondary)
+                    if store.hasKey, store.platformID.isEmpty {
+                        platformSetupButton
+                    }
                 }
                 Button("New Order Draft…") { store.openOrderComposer() }
                     .disabled(store.orderDraftBlockedReason != nil || store.busy)
                     .help(store.orderDraftBlockedReason ?? "Create an order draft")
-            }
-            // Export Orders… lives in the File menu only, to keep this toolbar short.
-            ToolbarItem(placement: .automatic) {
-                Button { store.openSavedProducts() } label: {
-                    Label("Saved Products…", systemImage: "shippingbox")
-                }
-                .help("Products you sell often, to add to order drafts in one step")
             }
             ToolbarItem(placement: .automatic) {
                 // Opens the import sheet only; drafts are created there after an explicit confirmation.
@@ -980,7 +976,7 @@ struct OrdersView: View {
                 .help(store.orderImportBlockedReason ?? "Create order drafts from an Etsy, Shopify or template CSV file")
             }
             ToolbarItem(placement: .automatic) {
-                // Applies at once: reloads the list from Slant with this status, keeping the dates and sort from Filters.
+                // Applies at once: reloads the list from Slant with this status, keeping the dates and sort from Dates & Sort.
                 Picker(selection: Binding(
                     get: { store.orderFilter.status ?? "" },
                     set: { applyStatusFilter($0) }
@@ -1001,12 +997,26 @@ struct OrdersView: View {
                     syncFilterDraftFromStore()
                     filtersPresented = true
                 } label: {
-                    Label("Filters", systemImage: "calendar")
+                    Label("Dates & Sort", systemImage: "calendar.badge.clock")
                 }
-                .help("Dates and Newest/Oldest order")
+                .help("Date range and Newest/Oldest order")
                 .popover(isPresented: $filtersPresented, arrowEdge: .bottom) {
                     filtersPopover
                 }
+            }
+            ToolbarItem(placement: .automatic) {
+                // Less frequent tools. Neither sends anything to Slant: Saved Products… opens a local list, and
+                // Export Orders… only saves a CSV, through the same guarded path as File › Export Orders….
+                Menu {
+                    Button("Saved Products…") { store.openSavedProducts() }
+                        .help("Products you sell often, to add to order drafts in one step")
+                    Button("Export Orders…") { store.exportOrdersFromMenu() }
+                        .disabled(store.orders.isEmpty)
+                        .help("Save the orders in the list as a CSV file")
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+                .help("Saved Products and Export Orders")
             }
         }
         .onChange(of: store.ordersExportRequest) { _, _ in
@@ -1057,9 +1067,22 @@ struct OrdersView: View {
         Task { await store.applyOrderFilter(filter) }
     }
 
+    /// The route out of "Choose a default platform…", as on Models: Create Platform… when the account has none
+    /// (opens the sheet only; nothing is sent until it is submitted), otherwise Settings › Account.
+    @ViewBuilder
+    var platformSetupButton: some View {
+        switch platformSetupAction(platformsLoaded: store.loadedCatalogs.contains(.platforms), platformCount: store.platforms.count) {
+        case .createPlatform:
+            Button("Create Platform…") { store.showPlatformComposer = true }
+                .disabled(store.busy)
+        case .chooseInSettings:
+            Button("Choose Platform…") { store.requestSettings(.account) }
+        }
+    }
+
     var filtersPopover: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Filters").font(.headline)
+            Text("Dates & Sort").font(.headline)
             Picker("Sort", selection: $draftSortOrder) {
                 Text("Newest").tag("desc")
                 Text("Oldest").tag("asc")
@@ -1096,7 +1119,7 @@ struct OrdersView: View {
                     let filter = draftFilterPreview
                     Task {
                         await store.applyOrderFilter(filter)
-                        // Newest/Oldest from Filters wins over an earlier column sort.
+                        // Newest/Oldest from Dates & Sort wins over an earlier column sort.
                         sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
                     }
                 }
@@ -1152,7 +1175,7 @@ struct OrdersView: View {
                             }
                             .disabled(store.busy)
                             .help("Review cancellation")
-                        } else if let reason = orderCancellationBlockedReason((displayed["status"] as? String) ?? "") {
+                        } else if let reason = orderDetailCancelBlockedNote((displayed["status"] as? String) ?? "") {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -1280,7 +1303,7 @@ struct OrderActionConfirmSheet: View {
             case .failed:
                 VStack(alignment: .leading, spacing: 10) {
                     Text(isPay ? "Couldn’t load this order’s costs." : "Couldn’t load this order.").font(.callout).foregroundStyle(.orange)
-                    Button("Try again") { loadFresh() }.disabled(store.busy || writing)
+                    Button("Try Again") { loadFresh() }.disabled(store.busy || writing)
                 }
             case .loaded:
                 if let order = fresh {
@@ -1323,7 +1346,7 @@ struct OrderActionConfirmSheet: View {
                         if let reason = writeAttempted ? mutationLock.1 : unknownOutcomeBlockMessage {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
-                        Button("Reload order") { loadFresh(keepUnknownMessage: true) }
+                        Button("Reload Order") { loadFresh(keepUnknownMessage: true) }
                             .disabled(store.busy || writing)
                     }
                 } else if isPay {
@@ -1521,7 +1544,7 @@ func orderConfirmRecheck(method: String, shown: [String: Any], latest: [String: 
             return .statusBlocked("This order’s status changed. Review it again.")
         }
         if !orderCanRequestCancellation(status) {
-            return .statusBlocked(orderCancellationBlockedReason(status) ?? "This order can’t be canceled.")
+            return .statusBlocked(orderCancellationBlockedReason(status) ?? "This order can’t be cancelled.")
         }
     }
     if orderCostsChanged(shown: shown, latest: latest) { return .priceChanged }
@@ -1590,6 +1613,8 @@ func orderMatchesSearch(_ order: Record, query: String) -> Bool {
     var fields = [
         order.string("publicId", "id"),
         orderStatusTitle(order.string("status")),
+        // Slant's own status word too, so "canceled" still finds orders shown as "Cancelled".
+        order.string("status").replacingOccurrences(of: "_", with: " "),
         orderRecipientName(values),
         orderCity(values)
     ]
@@ -1616,15 +1641,22 @@ func orderCancellationIsRefundOnly(_ status: String) -> Bool {
 func orderCancellationBlockedReason(_ status: String) -> String? {
     if orderCanRequestCancellation(status) { return nil }
     switch status.uppercased() {
-    case "CANCELED": return "This order was already canceled."
-    case "": return "This order can’t be canceled."
-    default: return "This order can’t be canceled."
+    case "CANCELED": return "This order was already cancelled."
+    case "": return "This order can’t be cancelled."
+    default: return "This order can’t be cancelled."
     }
+}
+/// The note shown in an order's details instead of Cancel…, or nil. Omitted for finished orders (cancelled, shipped,
+/// delivered, complete), whose status heading already says why; kept where it tells the user something.
+func orderDetailCancelBlockedNote(_ status: String) -> String? {
+    let finished: Set<String> = ["CANCELED", "SHIPPED", "DELIVERED", "COMPLETE"]
+    if finished.contains(status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()) { return nil }
+    return orderCancellationBlockedReason(status)
 }
 func orderCancelConfirmAllowed(status: String?, loaded: Bool) -> (Bool, String?) {
     guard loaded else { return (false, "Couldn’t load this order.") }
     guard let status, orderCanRequestCancellation(status) else {
-        return (false, orderCancellationBlockedReason(status ?? "") ?? "This order can’t be canceled.")
+        return (false, orderCancellationBlockedReason(status ?? "") ?? "This order can’t be cancelled.")
     }
     return (true, nil)
 }
@@ -1682,7 +1714,7 @@ func orderStatusTitle(_ status: String) -> String {
     case "AWAITING_SHIPMENT": "Awaiting shipment"
     case "SHIPPED": "Shipped"
     case "DELIVERED": "Delivered"
-    case "CANCELED": "Canceled"
+    case "CANCELED": "Cancelled"
     case "PAYMENT_ERROR": "Payment problem"
     case "": "Order"
     default: status.replacingOccurrences(of: "_", with: " ").capitalized

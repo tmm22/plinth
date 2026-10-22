@@ -60,7 +60,7 @@ struct StudioView: View {
         }
         .alert("Unable to complete request", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
             if store.canRetry {
-                Button("Try again") { Task { await store.retryLast() } }.keyboardShortcut(.defaultAction)
+                Button("Try Again") { Task { await store.retryLast() } }.keyboardShortcut(.defaultAction)
             }
             Button("OK", role: .cancel) { store.dismissError() }
         } message: { Text(store.error ?? "") }
@@ -95,8 +95,29 @@ func showsConnectAccountPrompt(destination: Destination, hasKey: Bool, hasLocalM
 
 struct ConnectAccountPrompt: View {
     @EnvironmentObject var store: StudioStore
+    @State private var dropTargeted = false
 
     var body: some View {
+        if store.destination == .models {
+            // Imports work without an account, so model files dropped here import exactly as they do on Models.
+            prompt
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .overlay {
+                    if dropTargeted {
+                        RoundedRectangle(cornerRadius: 12).stroke(Color.studioAccent, lineWidth: 3).padding(8)
+                    }
+                }
+                .dropDestination(for: URL.self) { urls, _ in
+                    urls.forEach { store.importModel($0) }
+                    return !urls.isEmpty
+                } isTargeted: { dropTargeted = $0 }
+        } else {
+            prompt
+        }
+    }
+
+    private var prompt: some View {
         EmptyState(
             icon: "person.crop.circle.badge.plus",
             title: "Connect your Slant account",

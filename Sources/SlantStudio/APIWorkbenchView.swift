@@ -175,7 +175,7 @@ struct EndpointView: View {
             if crossSheetUnknown {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(workbenchUnknownOutcomeBlockMessage).font(.callout).foregroundStyle(.orange)
-                    Button("Reload order") { startOrderPreview(pending) }.disabled(store.busy || previewLoading)
+                    Button("Reload Order") { startOrderPreview(pending) }.disabled(store.busy || previewLoading)
                 }
             } else if let unknownReason {
                 Text(unknownReason).font(.callout).foregroundStyle(.orange)
@@ -194,7 +194,7 @@ struct EndpointView: View {
                 } else if previewFailed {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(isCharge ? "Couldn’t load this order’s costs." : "Couldn’t load this order.").font(.callout).foregroundStyle(.orange)
-                        Button("Try again") { startOrderPreview(pending) }.disabled(store.busy)
+                        Button("Try Again") { startOrderPreview(pending) }.disabled(store.busy)
                     }
                 }
             }

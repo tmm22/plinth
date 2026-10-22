@@ -101,6 +101,16 @@ final class ShellUXTests: XCTestCase {
         XCTAssertEqual(clippedAPIAlertMessage("All good."), "All good.")
     }
 
+    func testUnexpectedFailureMessageSaysHowToReachActivity() {
+        // Activity is hidden unless developer tools are on, so the message names the setting.
+        let message = APIError.http(status: 418, body: "{\"apiKey\":\"sl_secret\"}", retryAfter: nil, rateLimitReset: nil).userMessage
+        XCTAssertEqual(message, slantRequestFailedSeeActivityMessage)
+        XCTAssertTrue(message.contains("Settings › Advanced › Show developer tools"))
+        XCTAssertFalse(message.contains("sl_secret"))
+        let long = NSError(domain: "x", code: 1, userInfo: [NSLocalizedDescriptionKey: String(repeating: "a", count: 200)])
+        XCTAssertEqual(friendlyAPIMessage(long), slantRequestFailedSeeActivityMessage)
+    }
+
     func testInvalidResponseUserMessageIsPlain() {
         let error = APIError.invalidResponse("The API reported a failure (HTTP 200):\n{\"filePlaceholder\":true}")
         let message = error.userMessage
@@ -466,9 +476,9 @@ final class ShellUXTests: XCTestCase {
     }
 
     func testOrderDraftBlockedReason() {
-        XCTAssertEqual(orderDraftBlockedReason(hasKey: false, platformID: ""), "Connect your account first.")
-        XCTAssertEqual(orderDraftBlockedReason(hasKey: true, platformID: ""), "Choose a platform first.")
-        XCTAssertNil(orderDraftBlockedReason(hasKey: true, platformID: "p1"))
+        XCTAssertEqual(orderDraftBlockedReasonText(hasKey: false, platformID: ""), "Connect your account first.")
+        XCTAssertEqual(orderDraftBlockedReasonText(hasKey: true, platformID: ""), "Choose a default platform in Settings › Account.")
+        XCTAssertNil(orderDraftBlockedReasonText(hasKey: true, platformID: "p1"))
     }
 
     func testConnectOnlyRefreshesWhenAttemptSucceeded() {
@@ -637,9 +647,3 @@ func applyClearAccountSession(hadRetry: Bool, accountLoaded: Bool) -> (error: St
 }
 
 func clearedDeliveryDetails(afterSessionClear _: DeliveryDetails?) -> DeliveryDetails? { nil }
-
-func orderDraftBlockedReason(hasKey: Bool, platformID: String) -> String? {
-    if !hasKey { return "Connect your account first." }
-    if platformID.isEmpty { return "Choose a platform first." }
-    return nil
-}

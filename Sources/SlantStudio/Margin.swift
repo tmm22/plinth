@@ -273,17 +273,22 @@ func profitMoney(_ amount: Decimal) -> String {
 
 let profitCheckExclusionsNote = "Not included: taxes, refunds, ads you pay for separately, currency conversion."
 
-/// One dated line for the fee rates in use, such as
-/// "Etsy (US): 6.5% + 3% + $0.25 + $0.20/unit · checked October 2026". Only fees that apply and aren't zero are listed;
+/// One dated line for the fee rates in use, such as "Etsy (US): 6.5% transaction + 3% + $0.25 processing +
+/// $0.20/unit listing · checked October 2026". Only fees that apply and aren't zero are listed, each named;
 /// Offsite Ads only when this sale came from one. Edited preset rates say so, keeping the preset's checked date.
 func profitFeeRatesSummary(preset: ProfitFeePreset, rates: ProfitFeeRates, offsiteAds: Bool) -> String {
     guard preset.hasRates else { return preset.title }
     func usd(_ value: Decimal) -> String { money(NSDecimalNumber(decimal: value)) }
     var parts: [String] = []
-    if preset != .shopifyBasicUS, rates.transactionPercent > 0 { parts.append("\(profitRateText(rates.transactionPercent))%") }
-    if rates.processingPercent > 0 { parts.append("\(profitRateText(rates.processingPercent))%") }
-    if rates.processingFixed > 0 { parts.append(usd(rates.processingFixed)) }
-    if preset != .shopifyBasicUS, rates.listingFeePerItem > 0 { parts.append("\(usd(rates.listingFeePerItem))/unit") }
+    if preset != .shopifyBasicUS, rates.transactionPercent > 0 {
+        parts.append("\(profitRateText(rates.transactionPercent))% transaction")
+    }
+    // Payment processing's percentage and fixed fee read as one named fee: "3% + $0.25 processing".
+    var processing: [String] = []
+    if rates.processingPercent > 0 { processing.append("\(profitRateText(rates.processingPercent))%") }
+    if rates.processingFixed > 0 { processing.append(usd(rates.processingFixed)) }
+    if !processing.isEmpty { parts.append(processing.joined(separator: " + ") + " processing") }
+    if preset != .shopifyBasicUS, rates.listingFeePerItem > 0 { parts.append("\(usd(rates.listingFeePerItem))/unit listing") }
     if offsiteAds, preset.offersOffsiteAds, rates.offsiteAdsPercent > 0 {
         parts.append("\(profitRateText(rates.offsiteAdsPercent))% Offsite Ads (max $100)")
     }
@@ -297,6 +302,13 @@ func profitFeeRatesSummary(preset: ProfitFeePreset, rates: ProfitFeeRates, offsi
         dated = "your rates (preset checked \(profitFeeRatesCheckedDate))"
     }
     return "\(preset.title): \(fees) · \(dated)"
+}
+
+/// Whether the rate editor must be open: a rate is invalid, or a Custom preset has no fees yet. The panel latches the
+/// editor open when this is true, so it never closes by itself while the user types.
+func profitRateEditorNeedsAttention(preset: ProfitFeePreset, ratesValid: Bool, currentRates: ProfitFeeRates) -> Bool {
+    guard preset.hasRates else { return false }
+    return !ratesValid || (preset == .custom && currentRates == ProfitFeeRates())
 }
 
 // MARK: Saved fee settings (rates and preset only)
@@ -390,10 +402,15 @@ struct ProfitCheckPanel: View {
 
     /// The rate editor opens on request, and stays open while a rate is invalid or a Custom preset has no fees yet.
     var rateEditorExpanded: Binding<Bool> {
-        Binding(
-            get: { ratesExpanded || validRates == nil || (preset == .custom && currentRates == ProfitFeeRates()) },
-            set: { ratesExpanded = $0 }
-        )
+        Binding(get: { ratesExpanded || rateEditorNeedsAttention }, set: { ratesExpanded = $0 })
+    }
+    var rateEditorNeedsAttention: Bool {
+        profitRateEditorNeedsAttention(preset: preset, ratesValid: validRates != nil, currentRates: currentRates)
+    }
+    /// Once the editor has opened by itself it stays open (until the user closes it), so fixing a rate or typing the
+    /// first Custom fee doesn't collapse it mid-edit.
+    func latchRateEditorIfNeeded() {
+        if rateEditorNeedsAttention { ratesExpanded = true }
     }
 
     @ViewBuilder
@@ -403,7 +420,7 @@ struct ProfitCheckPanel: View {
             Text(validRates.map { profitFeeRatesSummary(preset: preset, rates: $0, offsiteAds: offsiteAds) }
                  ?? "\(preset.title): check the highlighted rates.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            DisclosureGroup("Edit Rates", isExpanded: rateEditorExpanded) {
+            DisclosureGroup("Edit rates", isExpanded: rateEditorExpanded) {
                 VStack(alignment: .leading, spacing: 6) {
                     if preset != .custom {
                         Text("Assumed rates. Check your own account and edit them if yours differ.")
@@ -439,7 +456,12 @@ struct ProfitCheckPanel: View {
 
     @ViewBuilder
     func rateField(_ field: ProfitRateField, _ title: String) -> some View {
-        let binding = Binding(get: { rateTexts[field] ?? "" }, set: { rateTexts[field] = $0; persist() })
+        let binding = Binding(get: { rateTexts[field] ?? "" }, set: {
+            latchRateEditorIfNeeded()
+            rateTexts[field] = $0
+            persist()
+            latchRateEditorIfNeeded()
+        })
         LabeledContent(title) {
             VStack(alignment: .trailing, spacing: 2) {
                 TextField(title, text: binding).labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
@@ -510,6 +532,7 @@ struct ProfitCheckPanel: View {
         guard !loadedRates else { return }
         loadedRates = true
         fillRateTexts(ProfitFeeSettings.loadRates(preset))
+        latchRateEditorIfNeeded()
     }
     func fillRateTexts(_ rates: ProfitFeeRates) {
         let separator = Locale.current.decimalSeparator ?? "."
@@ -525,6 +548,7 @@ struct ProfitCheckPanel: View {
         preset = newPreset
         fillRateTexts(ProfitFeeSettings.loadRates(newPreset))
         persist()
+        latchRateEditorIfNeeded()
     }
     func restoreDefaults() {
         ProfitFeeSettings.resetRates(preset)

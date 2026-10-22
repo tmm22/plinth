@@ -389,18 +389,24 @@ struct PrintOrientationCard: View {
                     if options.isEmpty && goal.profile != nil {
                         Text("No matching material is currently listed as available. Keep the material chosen in Print configuration.")
                             .font(.callout).foregroundStyle(.secondary)
-                    } else if let selected = options.first(where: { $0.id == store.filamentID }) {
-                        Label("Print configuration already uses \(selected.name).", systemImage: "checkmark.circle")
-                            .font(.callout).foregroundStyle(.secondary)
-                    } else if !options.isEmpty {
-                        Menu("Use a Suggested Material") {
-                            ForEach(options) { material in
-                                Button(material.name) { store.filamentID = material.id }
-                            }
+                    } else {
+                        let selected = options.first(where: { $0.id == store.filamentID })
+                        let others = options.filter { $0.id != store.filamentID }
+                        if let selected {
+                            Label("Print configuration already uses \(selected.name).", systemImage: "checkmark.circle")
+                                .font(.callout).foregroundStyle(.secondary)
                         }
-                        .fixedSize()
-                        .disabled(store.busy || preparing)
-                        .help("Sets the material in Print configuration")
+                        // Kept alongside the "already uses" line so another suggestion can still be chosen.
+                        if !others.isEmpty {
+                            Menu(selected == nil ? "Use a Suggested Material" : "Use Another Suggested Material") {
+                                ForEach(others) { material in
+                                    Button(material.name) { store.filamentID = material.id }
+                                }
+                            }
+                            .fixedSize()
+                            .disabled(store.busy || preparing)
+                            .help("Sets the material in Print configuration")
+                        }
                     }
                 }
             }.padding(.top, 8)

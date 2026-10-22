@@ -87,7 +87,7 @@ final class WorkbenchSafetyTests: XCTestCase {
             XCTAssertNil(workbenchCancelAllowed(status: status, loaded: true).1, status)
         }
 
-        XCTAssertEqual(workbenchCancelAllowed(status: "CANCELED", loaded: true).1, "This order was already canceled.")
+        XCTAssertEqual(workbenchCancelAllowed(status: "CANCELED", loaded: true).1, "This order was already cancelled.")
         XCTAssertEqual(workbenchCancelAllowed(status: "SHIPPED", loaded: true).0, true)
         XCTAssertNil(workbenchCancelAllowed(status: "SHIPPED", loaded: true).1)
         XCTAssertEqual(workbenchCancelAllowed(status: nil, loaded: true).0, false)

@@ -213,7 +213,7 @@ func orderStatusFilterTitle(_ status: String) -> String {
     case "AWAITING_SHIPMENT": return "Awaiting shipment"
     case "SHIPPED": return "Shipped"
     case "DELIVERED": return "Delivered"
-    case "CANCELED": return "Canceled"
+    case "CANCELED": return "Cancelled"
     case "PAYMENT_ERROR": return "Payment error"
     case "": return "Any status"
     default: return status.replacingOccurrences(of: "_", with: " ").capitalized
@@ -567,9 +567,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     var defaultFilamentID: String? { plaBlackFilamentID(in: filaments) }
     var platformLimitReached: Bool { platforms.count >= maxPlatforms }
     var orderDraftBlockedReason: String? {
-        if !hasKey { return "Connect your account first." }
-        if platformID.isEmpty { return "Choose a platform first." }
-        return nil
+        orderDraftBlockedReasonText(hasKey: hasKey, platformID: platformID)
     }
     var importFromURLBlockedReason: String? {
         if !hasKey { return "Connect your account first." }
@@ -1413,6 +1411,12 @@ struct PlatformDraft {
         return true
     }
 }
+/// Why New Order Draft… (and Import Orders…) can't start yet, or nil. Says where the platform is chosen.
+func orderDraftBlockedReasonText(hasKey: Bool, platformID: String) -> String? {
+    if !hasKey { return "Connect your account first." }
+    if platformID.isEmpty { return "Choose a default platform in Settings › Account." }
+    return nil
+}
 func friendlyAPIMessage(_ error: Error) -> String {
     if let api = error as? APIError { return api.userMessage }
     if let urlError = error as? URLError {
@@ -1425,8 +1429,11 @@ func friendlyAPIMessage(_ error: Error) -> String {
     }
     let text = error.localizedDescription
     let line = text.split(separator: "\n").first.map(String.init) ?? text
-    return line.count > 180 ? "Slant couldn’t complete that request. The details are in Activity." : line
+    return line.count > 180 ? slantRequestFailedSeeActivityMessage : line
 }
+/// Activity is hidden unless developer tools are on, so the alert says how to reach it.
+let slantRequestFailedSeeActivityMessage =
+    "Slant couldn’t complete that request. To see the details, turn on Settings › Advanced › Show developer tools, then open Activity."
 func activityDetail(for error: Error) -> String {
     if let api = error as? APIError { return api.activityDetail }
     return friendlyAPIMessage(error)

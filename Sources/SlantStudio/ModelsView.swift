@@ -13,6 +13,12 @@ enum ModelsNextStep: Equatable {
     case needsSetup, needsPlatform, needsModel, uploading, needsUpload, needsEstimate, estimateStale, readyForDraft
 }
 
+/// The next-step bar is hidden while nothing is selected and the only step is importing a model or connecting:
+/// the empty inspector already says that and offers both buttons.
+func showsModelsNextStepBar(hasSelection: Bool, step: ModelsNextStep) -> Bool {
+    hasSelection || (step != .needsModel && step != .needsSetup)
+}
+
 func librarySelection(selectedLocalID: UUID?, fileID: String) -> LibrarySelection? {
     if let selectedLocalID { return .local(selectedLocalID) }
     if !fileID.isEmpty { return .cloud(fileID) }
@@ -266,11 +272,13 @@ struct ModelsView: View {
                 .padding(StudioMetrics.pagePadding)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                nextStepBlock
-                    .padding(.horizontal, StudioMetrics.pagePadding)
-                    .padding(.vertical, 12)
-                    .background(.regularMaterial)
-                    .overlay(alignment: .top) { Divider() }
+                if showsModelsNextStepBar(hasSelection: hasSelection, step: currentNextStep) {
+                    nextStepBlock
+                        .padding(.horizontal, StudioMetrics.pagePadding)
+                        .padding(.vertical, 12)
+                        .background(.regularMaterial)
+                        .overlay(alignment: .top) { Divider() }
+                }
             }
             .onChange(of: configurationRequest) { _, _ in
                 withAnimation { proxy.scrollTo("print-configuration", anchor: .top) }
@@ -451,8 +459,7 @@ struct ModelsView: View {
                     Button("Try Upload Again") { startUpload() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!store.hasKey || store.platformID.isEmpty)
-                } else if hasSelection || (step != .needsSetup && step != .needsModel) {
-                    // Otherwise the empty inspector above already offers Import Model… and Connect Slant Account….
+                } else {
                     nextStepAction(step)
                 }
             }
@@ -1817,7 +1824,7 @@ func catalogReadableFields(_ record: Record, kind: Destination, categories: [Rec
     let provider = record.string("provider")
     if !provider.isEmpty { LabeledContent("Provider", value: provider) }
     let color = record.string("color")
-    if kind != .materials, !color.isEmpty { LabeledContent("Color", value: color) }
+    if kind != .materials, !color.isEmpty { LabeledContent("Colour", value: color) }
 }
 
 func catalogRecordMatches(_ record: Record, search: String) -> Bool {
