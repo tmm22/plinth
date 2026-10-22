@@ -4,20 +4,25 @@ import AppKit
 struct StudioView: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject private var openQueue = ExternalModelOpenQueue.shared
+    @Environment(\.openSettings) private var openSettings
     var body: some View {
         NavigationSplitView {
             StudioSidebar()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 216, max: 250)
         } detail: {
             Group {
-                switch store.destination {
-                case .models: ModelsView()
-                case .orders: OrdersView()
-                case .catalog, .materials, .components, .stationery, .platforms:
-                    CatalogView(kind: store.catalogKind).id(store.catalogKind)
-                case .api: APIWorkbenchView()
-                case .activity: ActivityView()
-                case .connection: ConnectionView()
+                if showsConnectAccountPrompt(destination: store.destination, hasKey: store.hasKey,
+                                             hasLocalModels: !store.localModels.isEmpty) {
+                    ConnectAccountPrompt()
+                } else {
+                    switch store.destination {
+                    case .models: ModelsView()
+                    case .orders: OrdersView()
+                    // `.platforms` never stays selected (it opens Settings); Catalog shows its saved kind.
+                    case .catalog, .materials, .components, .stationery, .platforms:
+                        CatalogView(kind: store.catalogKind).id(store.catalogKind)
+                    case .api: APIWorkbenchView()
+                    case .activity: ActivityView()
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -67,6 +72,9 @@ struct StudioView: View {
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }
+        // Store-driven "open Settings" requests (Connect Account buttons, the platforms redirect). Opening Settings
+        // only brings its window forward; nothing in this window changes.
+        .onChange(of: store.settingsOpenRequest) { _, _ in openSettings() }
     }
 
     var detailTitle: String {
@@ -74,116 +82,117 @@ struct StudioView: View {
     }
 }
 
-struct StudioSidebar: View {
+/// Shown instead of a screen that can't work without an API key, so first launch (or a Keychain read failure) always
+/// leads to entering a key. Models still opens once the library has models, since the library works offline.
+func showsConnectAccountPrompt(destination: Destination, hasKey: Bool, hasLocalModels: Bool) -> Bool {
+    guard !hasKey else { return false }
+    switch destination {
+    case .models: return !hasLocalModels
+    case .orders, .catalog, .materials, .components, .stationery, .platforms: return true
+    case .api, .activity: return false
+    }
+}
+
+struct ConnectAccountPrompt: View {
     @EnvironmentObject var store: StudioStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            brand
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 20)
-            VStack(alignment: .leading, spacing: 2) {
-                // ⌘-number shortcuts live in the Go menu so they are discoverable and defined once.
-                ForEach(sidebarPrimaryDestinations) { navRow($0) }
-            }
-            .padding(.horizontal, 10)
-            Spacer(minLength: 16)
-            Text("DEVELOPER")
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(1.2)
-                .foregroundStyle(.white.opacity(0.4))
-                .padding(.horizontal, 20)
-                .padding(.bottom, 6)
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(sidebarDeveloperDestinations) { navRow($0) }
-            }
-            .padding(.horizontal, 10)
-            Divider().overlay(Color.white.opacity(0.08)).padding(.top, 12)
-            connectionStatus
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.studioSidebar.ignoresSafeArea())
-        .environment(\.colorScheme, .dark)
-    }
-
-    private var brand: some View {
-        HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 7)
-                .fill(Color.studioAccent)
-                .frame(width: 28, height: 28)
-                .overlay(Text("S").font(.system(size: 16, weight: .heavy, design: .rounded)).foregroundStyle(.black))
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Slant 3D").font(.system(size: 14, weight: .bold))
-                Text("Studio").font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private func navRow(_ item: Destination) -> some View {
-        let selected = store.destination == item
-        return Button { store.destination = item } label: {
-            HStack(spacing: 10) {
-                Image(systemName: item.icon)
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 18)
-                    .foregroundStyle(selected ? Color.studioAccent : .white.opacity(0.65))
-                Text(item.rawValue)
-                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? .white : .white.opacity(0.75))
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(selected ? Color.white.opacity(0.09) : .clear)
-            )
-            .overlay(alignment: .leading) {
-                if selected {
-                    Capsule().fill(Color.studioAccent).frame(width: 3, height: 16).offset(x: -6)
+        EmptyState(
+            icon: "person.crop.circle.badge.plus",
+            title: "Connect your Slant account",
+            detail: "Add your Slant 3D API key in Settings to upload models, get estimates and create orders. The key is stored in the macOS Keychain on this Mac."
+        ) {
+            VStack(spacing: 10) {
+                Button("Connect Slant Account…") { store.requestSettings(.account) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                if store.destination == .models {
+                    Button("Import Model…") { store.importModel() }
+                        .help("Models you import stay on this Mac until you upload them.")
                 }
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .help(goMenuShortcut(for: item).map { "\(item.rawValue) (⌘\($0))" } ?? item.rawValue)
-        .accessibilityLabel(item.rawValue)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+let sidebarPrimaryDestinations: [Destination] = [.models, .orders, .catalog]
+let sidebarDeveloperDestinations: [Destination] = [.api, .activity]
+
+/// Every destination the sidebar lists, in order. Developer destinations only when developer tools are on.
+func sidebarDestinations(showDeveloperTools: Bool) -> [Destination] {
+    sidebarPrimaryDestinations + (showDeveloperTools ? sidebarDeveloperDestinations : [])
+}
+
+/// A standard source-list sidebar: system selection, arrow-key navigation, translucency and sizing. The brand shows
+/// through the app accent colour and the row icons.
+struct StudioSidebar: View {
+    @EnvironmentObject var store: StudioStore
+
+    private var selection: Binding<Destination?> {
+        Binding(
+            get: { store.destination },
+            set: { if let new = $0 { store.destination = new } }
+        )
     }
 
-    @ViewBuilder
-    private var connectionStatus: some View {
+    var body: some View {
+        List(selection: selection) {
+            // ⌘-number shortcuts live in the Go menu so they are discoverable and defined once.
+            Section {
+                ForEach(sidebarPrimaryDestinations) { row($0) }
+            }
+            if store.showDeveloperTools {
+                Section("Developer") {
+                    ForEach(sidebarDeveloperDestinations) { row($0) }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ConnectionStatusFooter()
+        }
+    }
+
+    private func row(_ item: Destination) -> some View {
+        Label(item.rawValue, systemImage: item.icon)
+            .tag(item)
+            .help(goMenuShortcut(for: item).map { "\(item.rawValue) (⌘\($0))" } ?? item.rawValue)
+    }
+}
+
+/// Compact account status under the sidebar. It opens Settings › Account; first-run connection is also offered in the
+/// main window, so this is never the only way in.
+struct ConnectionStatusFooter: View {
+    @EnvironmentObject var store: StudioStore
+
+    var body: some View {
         let status = connectionFooterStatus(
             hasKey: store.hasKey,
             connected: store.connected,
             accountLoaded: store.accountLoaded,
             busy: store.busy
         )
-        Button { store.destination = .connection } label: {
-            HStack(spacing: 8) {
+        Button { store.requestSettings(.account) } label: {
+            HStack(spacing: 6) {
                 Circle()
-                    .fill(store.connected ? Color.green : (store.hasKey ? Color.orange : Color.white.opacity(0.35)))
+                    .fill(store.connected ? Color.green : (store.hasKey ? Color.orange : Color.secondary.opacity(0.6)))
                     .frame(width: 7, height: 7)
                 Text(status)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Spacer()
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Open Connection")
-        .accessibilityLabel("\(status). Open Connection")
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .help("Open Settings to manage your Slant account")
+        .accessibilityLabel("\(status). Open Settings")
     }
 }
-
-let sidebarPrimaryDestinations: [Destination] = [.models, .orders, .catalog, .connection]
-let sidebarDeveloperDestinations: [Destination] = [.api, .activity]
 
 struct EmptyState<Actions: View>: View {
     let icon: String
@@ -229,293 +238,6 @@ struct JSONView: View {
                 .padding(14)
         }
         .background(.black.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct ProminentWhen: ViewModifier {
-    let isProminent: Bool
-    init(_ isProminent: Bool) { self.isProminent = isProminent }
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isProminent {
-            content.buttonStyle(.borderedProminent)
-        } else {
-            content.buttonStyle(.bordered)
-        }
-    }
-}
-
-enum ConnectionProminentAction: Equatable {
-    case saveTest, createPlatform, continueModels, none
-}
-
-func connectionProminentAction(connected: Bool, savedKey: String, keyField: String, platformID: String) -> ConnectionProminentAction {
-    let trimmedField = keyField.trimmingCharacters(in: .whitespacesAndNewlines)
-    let keyDiffers = trimmedField != savedKey
-    if !connected || keyDiffers { return .saveTest }
-    if platformID.isEmpty { return .createPlatform }
-    return .continueModels
-}
-
-struct ConnectionView: View {
-    @EnvironmentObject var store: StudioStore
-    var presentsPlatformComposer = false
-    @State private var key = ""
-    @State private var confirmDisconnect = false
-    @State private var showPlatformComposerLocal = false
-
-    private var prominent: ConnectionProminentAction {
-        connectionProminentAction(
-            connected: store.connected,
-            savedKey: store.apiKey,
-            keyField: key,
-            platformID: store.platformID
-        )
-    }
-
-    var body: some View {
-        Form {
-            Section {
-                SecureField("sl-…", text: $key)
-                Button("Save & Test") { Task { await store.connect(key: key) } }
-                    .modifier(ProminentWhen(prominent == .saveTest))
-                    .disabled(key.isEmpty || store.busy)
-                Link("Get an API key", destination: URL(string: "https://slant3dapi.com")!)
-                if store.hasKey {
-                    Button("Disconnect", role: .destructive) { confirmDisconnect = true }
-                        .disabled(store.busy)
-                }
-                if store.connected {
-                    Label("Connection verified", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                } else if store.hasKey {
-                    Label(connectionFooterStatus(hasKey: true, connected: false, accountLoaded: store.accountLoaded, busy: store.busy), systemImage: "antenna.radiowaves.left.and.right")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Not connected").foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("API key")
-            } footer: {
-                Text("Stored in the macOS Keychain on this Mac.")
-            }
-
-            Section {
-                if !store.platforms.isEmpty || !store.platformID.isEmpty {
-                    Picker("Platform", selection: $store.platformID) {
-                        Text("Choose a platform").tag("")
-                        if !store.platformID.isEmpty, !store.platforms.contains(where: { $0.id == store.platformID }) {
-                            Text("Saved platform (not loaded)").tag(store.platformID)
-                        }
-                        ForEach(indexedRecords(store.platforms), id: \.id) { row in
-                            Text(displayName(for: row.record, fallback: "Untitled platform")).tag(row.record.id)
-                        }
-                    }
-                } else if store.connected {
-                    Text("Choose or create a platform next. Uploads and orders need one.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(store.loadedCatalogs.contains(.platforms) ? "No platforms on this account yet." : "No platforms yet. Load them, or create one.")
-                        .foregroundStyle(.secondary)
-                }
-                Button("Create Platform…") {
-                    if presentsPlatformComposer { showPlatformComposerLocal = true }
-                    else { store.showPlatformComposer = true }
-                }
-                .modifier(ProminentWhen(prominent == .createPlatform))
-                .disabled(!store.hasKey || store.busy || store.platformLimitReached)
-                if !store.loadedCatalogs.contains(.platforms) {
-                    Button("Load Platforms…") { Task { await store.loadCatalog(.platforms) } }
-                        .disabled(!store.hasKey || store.busy)
-                }
-                if store.platformLimitReached {
-                    Text("This account already has \(maxPlatforms) enabled platforms. Disable one before creating another.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if store.connected, !store.platformID.isEmpty {
-                    Button("Continue to Models") { store.destination = .models }
-                        .modifier(ProminentWhen(prominent == .continueModels))
-                }
-            } header: {
-                Text("Default platform")
-            }
-
-            Section {
-                if let rate = store.rateLimit {
-                    if let remaining = rate.remaining, let limit = rate.limit {
-                        LabeledContent("Rate limit") { Text("\(remaining) of \(limit) remaining") }
-                    } else if let remaining = rate.remaining {
-                        LabeledContent("Remaining") { Text("\(remaining)") }
-                    }
-                    if let reset = rate.reset {
-                        LabeledContent("Resets") { Text(reset, style: .time) }
-                    }
-                    if let role = rate.role, !role.isEmpty {
-                        LabeledContent("Role") { Text(role) }
-                    }
-                } else {
-                    Text("Rate-limit headers appear after the next request.").foregroundStyle(.secondary)
-                }
-                if let usage = store.usage {
-                    ForEach(usageSummaryRows(usage), id: \.0) { row in
-                        LabeledContent(row.0) { Text(row.1) }
-                    }
-                }
-                Button("Load Usage") { Task { await store.loadUsage() } }
-                    .disabled(!store.hasKey || store.busy)
-                if let health = store.healthStatus {
-                    Text(healthOverallLabel(health)).font(.callout)
-                    ForEach(healthServiceRows(health), id: \.name) { row in
-                        LabeledContent(row.name) { Text(row.status) }
-                    }
-                }
-                Button("Check Service Status") { Task { await store.loadHealth() } }
-                    .disabled(store.busy)
-            } header: {
-                Text("Usage")
-            }
-
-            Section {
-                TextField("Platform ID", text: $store.platformID)
-                TextField("Owner ID (optional)", text: $store.ownerID)
-                Text("Customer accounts and checkout aren’t available in the Slant API yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("Advanced identifiers")
-            }
-
-            Section {
-                Text("Billing is managed on the Slant website.")
-                    .foregroundStyle(.secondary)
-                Link("Slant documentation", destination: URL(string: "https://slant3dapi.com/documentation/introduction")!)
-            }
-        }
-        .formStyle(.grouped)
-        .onAppear { key = store.apiKey }
-        .sheet(isPresented: $showPlatformComposerLocal) {
-            PlatformComposerView().environmentObject(store)
-        }
-        .confirmationDialog("Disconnect this Mac?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
-            Button("Disconnect", role: .destructive) { store.disconnect(); key = "" }
-                .disabled(store.busy)
-            Button("Keep connected", role: .cancel) {}
-        } message: {
-            Text("This removes the saved API key from the Keychain on this Mac.")
-        }
-    }
-}
-
-func usageSummaryRows(_ usage: [String: Any]) -> [(String, String)] {
-    var rows: [(String, String)] = []
-    if let user = usage["user"] as? [String: Any] {
-        rows.append(contentsOf: usageScalarRows(from: user))
-    }
-    if let summary = usage["summary"] as? [String: Any] {
-        rows.append(contentsOf: usageScalarRows(from: summary))
-    }
-    if let keys = usage["apiKeys"] as? [Any] {
-        rows.append(("API keys", "\(keys.count)"))
-    }
-    if rows.isEmpty {
-        rows.append(contentsOf: usageScalarRows(from: usage))
-    }
-    return rows
-}
-
-func healthServiceRows(_ health: [String: Any]) -> [(name: String, status: String)] {
-    var rows: [(name: String, status: String)] = []
-    for (key, value) in health.sorted(by: { $0.key < $1.key }) {
-        guard let service = value as? [String: Any] else { continue }
-        let healthy: Bool
-        if let flag = service["healthy"] as? Bool { healthy = flag }
-        else if let number = service["healthy"] as? NSNumber { healthy = number.boolValue }
-        else { continue }
-        rows.append((key, healthy ? "Healthy" : "Unavailable"))
-    }
-    return rows
-}
-
-func healthOverallLabel(_ health: [String: Any]) -> String {
-    let rows = healthServiceRows(health)
-    guard !rows.isEmpty else { return "No service data" }
-    let bad = rows.filter { $0.status != "Healthy" }.count
-    if bad == 0 { return "All services healthy" }
-    return "\(bad) service\(bad == 1 ? "" : "s") having problems"
-}
-
-struct PlatformComposerView: View {
-    @EnvironmentObject var store: StudioStore
-    @Environment(\.dismiss) var dismiss
-    private let editing: Record?
-    @State private var draft: PlatformDraft
-    @State private var validation: String?
-
-    /// Create mode when `editing` is nil; update mode when a platform record is supplied.
-    init(editing: Record? = nil) {
-        self.editing = editing
-        _draft = State(initialValue: editing.map { PlatformDraft(platform: $0) } ?? PlatformDraft())
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(editing == nil ? "Create a platform" : "Edit platform").font(.title2.weight(.bold))
-                Text("A platform groups your uploads and orders.").foregroundStyle(.secondary)
-            }.padding(24)
-            Divider()
-            Form {
-                Section {
-                    TextField("Name", text: $draft.name, prompt: Text("My print shop"))
-                    TextField("Application address", text: $draft.url, prompt: Text("https://yourstore.com"))
-                    TextField("Description", text: $draft.description, prompt: Text("Optional"))
-                }
-                Section {
-                    DisclosureGroup("Advanced") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            TextField("Webhook URL", text: $draft.webhookURL, prompt: Text("Optional · https://example.com/webhooks/slant"))
-                            if editing != nil {
-                                Text("Leave the webhook URL blank to remove it from this platform.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                SecureField("Webhook secret (optional)", text: $draft.webhookSecret)
-                                Text("32–256 printable ASCII characters. Leave blank to keep the current secret.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            } else {
-                                Text("Slant sends order status updates to this address. Leave it blank if you don’t run your own server. A signing secret is generated when the platform is created.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }.padding(.top, 6)
-                    }
-                }
-                if let validation {
-                    Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                }
-            }.formStyle(.grouped)
-            Divider()
-            HStack {
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(store.busy)
-                    .help(store.busy ? "Working…" : "Cancel")
-                Spacer()
-                if store.busy { ProgressView().controlSize(.small) }
-                Button(editing == nil ? "Create platform" : "Save changes") { submit() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(store.busy || !store.hasKey)
-            }.padding(20)
-        }.frame(width: 560, height: 520)
-    }
-
-    func submit() {
-        do { _ = try draft.payload(); validation = nil } catch { validation = error.localizedDescription; return }
-        Task {
-            if let editing {
-                if await store.updatePlatform(id: editing.id, draft: draft) { dismiss() }
-            } else {
-                if await store.createPlatform(draft) { dismiss() }
-            }
-        }
     }
 }
 

@@ -96,9 +96,14 @@ final class LibraryRemovalAndCatalogIconTests: XCTestCase {
     }
 
     func testSidebarListsEveryTopLevelDestinationOnce() {
-        let shown = sidebarPrimaryDestinations + sidebarDeveloperDestinations
+        let shown = sidebarDestinations(showDeveloperTools: true)
         XCTAssertEqual(Set(shown).count, shown.count)
-        XCTAssertEqual(Set(shown), [.models, .orders, .catalog, .connection, .api, .activity])
+        XCTAssertEqual(Set(shown), [.models, .orders, .catalog, .api, .activity])
+        // Developer tools off (the default): only the three everyday destinations.
+        XCTAssertEqual(sidebarDestinations(showDeveloperTools: false), [.models, .orders, .catalog])
+        // Every listed destination, and every Catalog kind, has a distinct icon.
+        let icons = (shown + Destination.catalogKinds).map(\.icon)
+        XCTAssertEqual(Set(icons).count, icons.count)
     }
 }
 

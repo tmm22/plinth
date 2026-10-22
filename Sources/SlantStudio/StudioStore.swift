@@ -96,7 +96,7 @@ struct Activity: Identifiable {
     let success: Bool
 }
 enum Destination: String, CaseIterable, Identifiable {
-    case models = "Models", materials = "Materials", orders = "Orders", components = "Components", stationery = "Stationery", platforms = "Platforms", catalog = "Catalog", api = "API Workbench", activity = "Activity", connection = "Connection"
+    case models = "Models", materials = "Materials", orders = "Orders", components = "Components", stationery = "Stationery", platforms = "Platforms", catalog = "Catalog", api = "API Workbench", activity = "Activity"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -109,15 +109,39 @@ enum Destination: String, CaseIterable, Identifiable {
         case .catalog: "square.grid.2x2"
         case .api: "chevron.left.forwardslash.chevron.right"
         case .activity: "clock.arrow.circlepath"
-        case .connection: "person.crop.circle"
         }
     }
-    var isCatalogKind: Bool {
-        switch self {
-        case .materials, .components, .stationery, .platforms: return true
-        default: return false
-        }
+    /// The kinds Catalog's picker shows. Platforms are managed in Settings › Account, not in Catalog.
+    static let catalogKinds: [Destination] = [.materials, .components, .stationery]
+    var isCatalogKind: Bool { Self.catalogKinds.contains(self) }
+    /// API Workbench and Activity: listed only when Settings › Advanced › Show developer tools is on.
+    var isDeveloperDestination: Bool { self == .api || self == .activity }
+}
+
+/// Tabs of the Settings window (⌘,), the single home for the account, platforms and developer options.
+enum SettingsTab: Hashable {
+    case account, advanced
+}
+
+let showDeveloperToolsDefaultsKey = "showDeveloperTools"
+
+/// Where the main window goes when developer tools are switched on or off: hiding them moves a developer screen to
+/// Models; anything else stays put.
+func destinationAfterDeveloperToolsChange(_ destination: Destination, showDeveloperTools: Bool) -> Destination {
+    (!showDeveloperTools && destination.isDeveloperDestination) ? .models : destination
+}
+
+/// Where a navigation request lands. Platforms open Settings instead (the screen stays put), and developer screens
+/// can't be reached while developer tools are hidden. Catalog kinds land on Catalog.
+func resolvedNavigation(requested: Destination, previous: Destination, showDeveloperTools: Bool) -> (destination: Destination, catalogKind: Destination?, opensSettings: Bool) {
+    if requested == .platforms {
+        return (previous == .platforms ? .models : previous, nil, true)
     }
+    if requested.isDeveloperDestination, !showDeveloperTools {
+        return (previous.isDeveloperDestination ? .models : previous, nil, false)
+    }
+    if requested.isCatalogKind { return (.catalog, requested, false) }
+    return (requested, nil, false)
 }
 
 struct OrderFilter: Equatable {
@@ -412,9 +436,31 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
 
 @MainActor final class StudioStore: ObservableObject {
     @Published var destination: Destination = .models {
-        didSet { redirectCatalogDestinationIfNeeded() }
+        didSet { redirectDestinationIfNeeded(from: oldValue) }
     }
-    @Published var catalogKind: Destination = .materials
+    @Published var catalogKind: Destination = .materials {
+        didSet {
+            // Platforms moved to Settings › Account; Catalog only shows materials, components and stationery.
+            guard !catalogKind.isCatalogKind else { return }
+            let requested = catalogKind
+            catalogKind = oldValue.isCatalogKind ? oldValue : .materials
+            if requested == .platforms { requestSettings(.account) }
+        }
+    }
+    /// Settings › Advanced › Show developer tools (off by default). It only changes what the sidebar and Go menu list:
+    /// Activity keeps recording and no lock, request or safeguard is touched. Settings refuses the change while a
+    /// request runs or anything modal is shown, so a Workbench review or request is never torn down part-way.
+    @Published var showDeveloperTools = UserDefaults.standard.bool(forKey: showDeveloperToolsDefaultsKey) {
+        didSet {
+            UserDefaults.standard.set(showDeveloperTools, forKey: showDeveloperToolsDefaultsKey)
+            let next = destinationAfterDeveloperToolsChange(destination, showDeveloperTools: showDeveloperTools)
+            if next != destination { destination = next }
+        }
+    }
+    /// The Settings tab to show; set by `requestSettings(_:)` and by the Settings window itself.
+    @Published var settingsTab: SettingsTab = .account
+    /// Bumped to ask the main window to open the Settings window (the window owns the `openSettings` action).
+    @Published private(set) var settingsOpenRequest = 0
     @Published var apiKey = ""
     @Published var platformID = UserDefaults.standard.string(forKey: "platformID") ?? "" { didSet { UserDefaults.standard.set(platformID, forKey: "platformID") } }
     @Published var ownerID = UserDefaults.standard.string(forKey: "ownerID") ?? "" { didSet { UserDefaults.standard.set(ownerID, forKey: "ownerID") } }
@@ -446,7 +492,18 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var draft: [String: Any]?
     @Published var showOrderComposer = false
     @Published var pendingOrderPrefill: OrderComposerPrefill?
-    @Published var showPlatformComposer = false
+    /// Create Platform sheet in the main window (for example from the Models next-action bar). Only one window shows
+    /// the composer at a time: while Settings has its own open, this request brings Settings forward instead.
+    @Published var showPlatformComposer = false {
+        didSet {
+            if showPlatformComposer, showSettingsPlatformComposer {
+                showPlatformComposer = false
+                requestSettings(.account)
+            }
+        }
+    }
+    /// Create Platform sheet in the Settings window (Account tab). Counted in `isPresentingSheet`.
+    @Published var showSettingsPlatformComposer = false
     @Published var showImportFromURL = false
     /// Import Orders sheet (OrderImport.swift).
     @Published var showOrderImport = false
@@ -542,17 +599,23 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     init() {
         do { apiKey = try KeychainStore.load() } catch {
-            destination = .connection
-            showError("Slant Studio couldn’t read the saved key. Enter it again.")
+            // With no key loaded, the main window shows its Connect Slant Account prompt.
+            showError("Slant Studio couldn’t read the saved key. Enter it again in Settings.")
         }
         let path = Self.supportDirectory.appendingPathComponent("models.json")
         if let data = try? Data(contentsOf: path), let saved = try? JSONDecoder().decode([LocalModel].self, from: data) { localModels = saved }
         savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
     }
-    private func redirectCatalogDestinationIfNeeded() {
-        guard destination.isCatalogKind else { return }
-        catalogKind = destination
-        if destination != .catalog { destination = .catalog }
+    private func redirectDestinationIfNeeded(from oldValue: Destination) {
+        let resolved = resolvedNavigation(requested: destination, previous: oldValue, showDeveloperTools: showDeveloperTools)
+        if let kind = resolved.catalogKind { catalogKind = kind }
+        if resolved.destination != destination { destination = resolved.destination }
+        if resolved.opensSettings { requestSettings(.account) }
+    }
+    /// Asks the main window to open the Settings window on `tab`. Opening Settings never changes the main window.
+    func requestSettings(_ tab: SettingsTab = .account) {
+        settingsTab = tab
+        settingsOpenRequest += 1
     }
     private func noteRateLimit(from response: APIResponse) {
         rateLimit = response.rateLimit
@@ -935,7 +998,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         } catch { showError(error.localizedDescription) }
     }
     func refresh() async {
-        guard hasKey else { destination = .connection; return }
+        guard hasKey else { requestSettings(.account); return }
         _ = await run("Refresh", retryable: true, retry: .refresh) {
             let p = try await client.request("GET", path: "/platforms")
             noteRateLimit(from: p)

@@ -554,7 +554,7 @@ struct ModelsView: View {
     private func nextStepAction(_ step: ModelsNextStep) -> some View {
         switch step {
         case .needsSetup:
-            Button("Connect Account") { store.destination = .connection }
+            Button("Connect Account") { store.requestSettings(.account) }
                 .buttonStyle(.borderedProminent)
                 .accessibilityLabel("Connect Account")
         case .needsPlatform:
@@ -1388,14 +1388,6 @@ func importFromURLValidation(url: String, name: String) -> String? {
     return nil
 }
 
-func webhookRotateTypedConfirmAllowed(_ typed: String) -> Bool {
-    typed.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("rotate") == .orderedSame
-}
-
-func displayedWebhookSecret(rotatedSecret: String?, currentSecret: String) -> String {
-    rotatedSecret ?? currentSecret
-}
-
 private extension String {
     var nilIfEmpty: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1405,21 +1397,13 @@ private extension String {
 
 // MARK: - CatalogView
 
-enum CatalogDetailFollowUp {
-    case editPlatform(Record)
-    case orderDraft(OrderLine)
-}
-
+/// Materials, components and stationery. Platforms are managed in Settings › Account (PlatformsSettingsView.swift).
 struct CatalogView: View {
     @EnvironmentObject var store: StudioStore
     let kind: Destination
     @State private var search = ""
     @State private var selected: Record?
-    @State private var editingPlatform: Record?
-    @State private var pendingFollowUp: CatalogDetailFollowUp?
-    @State private var enableByID = ""
-    @State private var loadedEnableCandidate: Record?
-    @State private var confirmEnableCandidate = false
+    @State private var pendingOrderLine: OrderLine?
     @State private var materialType: String?
 
     private var records: [Record] {
@@ -1427,7 +1411,6 @@ struct CatalogView: View {
         case .materials: store.filaments
         case .components: store.components
         case .stationery: store.stationery
-        case .platforms: store.platforms
         default: []
         }
     }
@@ -1440,9 +1423,7 @@ struct CatalogView: View {
 
     var body: some View {
         Group {
-            if records.isEmpty && kind != .platforms {
-                emptyCatalog
-            } else if records.isEmpty && kind == .platforms && store.disabledPlatformsThisSession.isEmpty {
+            if records.isEmpty {
                 emptyCatalog
             } else {
                 catalogContent
@@ -1452,45 +1433,19 @@ struct CatalogView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("Catalog", selection: $store.catalogKind) {
-                    Text("Materials").tag(Destination.materials)
-                    Text("Components").tag(Destination.components)
-                    Text("Stationery").tag(Destination.stationery)
-                    Text("Platforms").tag(Destination.platforms)
+                    ForEach(Destination.catalogKinds) { kind in
+                        Text(kind.rawValue).tag(kind)
+                    }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
-            }
-            if kind == .platforms {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Create Platform…") { store.showPlatformComposer = true }
-                        .disabled(!store.hasKey || store.busy || store.platformLimitReached)
-                        .help(store.platformLimitReached
-                              ? "This account already has \(maxPlatforms) platforms. Disable one before creating another."
-                              : "Create a platform")
-                }
+                .frame(maxWidth: 360)
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            if kind == .platforms, store.platformLimitReached {
-                Text("This account already has \(maxPlatforms) platforms. Disable one before creating another.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(10)
-                    .background(.bar)
-            }
-        }
-        .sheet(item: $selected, onDismiss: presentPendingFollowUp) { record in
-            CatalogDetailSheet(record: record, kind: kind) { followUp in
-                pendingFollowUp = followUp
+        .sheet(item: $selected, onDismiss: presentPendingOrderDraft) { record in
+            CatalogDetailSheet(record: record, kind: kind) { line in
+                pendingOrderLine = line
             }
             .environmentObject(store)
-        }
-        .sheet(item: $editingPlatform) { platform in
-            PlatformComposerView(editing: platform).environmentObject(store)
-        }
-        .sheet(isPresented: $confirmEnableCandidate) {
-            enableCandidateSheet
         }
         .onAppear {
             if kind == .components {
@@ -1523,19 +1478,15 @@ struct CatalogView: View {
             detail: emptyCatalogDetail(loaded: loaded)
         ) {
             if !loaded {
-                Button(store.hasKey ? "Load" : "Connect Account") {
+                Button(store.hasKey ? "Load" : "Connect Slant Account…") {
                     if store.hasKey {
                         Task { await store.loadCatalog(kind) }
                     } else {
-                        store.destination = .connection
+                        store.requestSettings(.account)
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(store.hasKey && store.busy)
-            } else if kind == .platforms, store.hasKey {
-                Button("Create Platform…") { store.showPlatformComposer = true }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.busy || store.platformLimitReached)
             }
         }
     }
@@ -1577,12 +1528,6 @@ struct CatalogView: View {
                     }
                     .padding(StudioMetrics.pagePadding)
                 }
-
-                if kind == .platforms {
-                    platformsReenableSections
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 24)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -1622,76 +1567,10 @@ struct CatalogView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    @ViewBuilder
-    private var platformsReenableSections: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if !store.disabledPlatformsThisSession.isEmpty {
-                Text("Disabled this session").font(.headline)
-                ForEach(indexedRecords(store.disabledPlatformsThisSession), id: \.id) { row in
-                    HStack {
-                        Text(displayName(for: row.record, fallback: "Untitled platform"))
-                        Spacer()
-                        Button("Enable") {
-                            Task { _ = await store.setPlatformEnabled(id: row.record.id, enabled: true) }
-                        }
-                        .disabled(store.busy)
-                    }
-                }
-            }
-            Text("Enable a Platform by ID…").font(.headline)
-            HStack {
-                TextField("Platform ID", text: $enableByID)
-                    .textFieldStyle(.roundedBorder)
-                Button("Look up") {
-                    Task {
-                        loadedEnableCandidate = await store.loadPlatform(id: enableByID)
-                        if loadedEnableCandidate != nil { confirmEnableCandidate = true }
-                    }
-                }
-                .disabled(store.busy || enableByID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-    }
-
-    private var enableCandidateSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Enable platform").font(.title3.weight(.semibold))
-            if let candidate = loadedEnableCandidate {
-                Text(displayName(for: candidate, fallback: "Untitled platform")).font(.headline)
-                Text(candidate.id).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-            }
-            HStack {
-                Button("Cancel") { confirmEnableCandidate = false }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(store.busy)
-                Spacer()
-                Button("Enable") {
-                    Task {
-                        if let id = loadedEnableCandidate?.id {
-                            _ = await store.setPlatformEnabled(id: id, enabled: true)
-                        }
-                        confirmEnableCandidate = false
-                        enableByID = ""
-                        loadedEnableCandidate = nil
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.busy || loadedEnableCandidate == nil)
-            }
-        }
-        .padding(24)
-        .frame(width: 420)
-    }
-
-    private func presentPendingFollowUp() {
-        guard let pendingFollowUp else { return }
-        self.pendingFollowUp = nil
-        switch pendingFollowUp {
-        case .editPlatform(let platform):
-            editingPlatform = platform
-        case .orderDraft(let line):
-            store.openOrderComposer(line: line)
-        }
+    private func presentPendingOrderDraft() {
+        guard let line = pendingOrderLine else { return }
+        pendingOrderLine = nil
+        store.openOrderComposer(line: line)
     }
 
     private func catalogCard(_ record: Record) -> some View {
@@ -1714,9 +1593,6 @@ struct CatalogView: View {
                 HStack(spacing: 6) {
                     catalogCardBadge(record)
                     Spacer()
-                    if kind == .platforms, record.id == store.platformID {
-                        StudioBadge(text: "Default", tone: .accent)
-                    }
                 }
             }
             .padding(14)
@@ -1751,8 +1627,6 @@ struct CatalogView: View {
                 .filter { !$0.isEmpty }.joined(separator: " · ")
         case .components:
             return category ?? record.string("dimensions").nilIfEmpty.map { "\($0) mm" } ?? "Component"
-        case .platforms:
-            return record.string("url", "description").nilIfEmpty ?? "Platform"
         default:
             return record.string("description", "dimensions").nilIfEmpty ?? kind.rawValue
         }
@@ -1768,8 +1642,6 @@ struct CatalogView: View {
             }
         } else if metricDisplayValue(record.values["price"]) != nil {
             StudioBadge(text: money(record.values["price"]), tone: .accent)
-        } else if kind == .platforms {
-            StudioBadge(text: "Enabled", tone: .success)
         }
     }
 }
@@ -1779,46 +1651,22 @@ struct CatalogDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     let record: Record
     let kind: Destination
-    var onFollowUp: (CatalogDetailFollowUp) -> Void
-
-    @State private var confirmDisable = false
-    @State private var confirmResendAll = false
-    @State private var showSecret = false
-    @State private var rotatePrompt = false
-    @State private var rotateTyped = ""
-    @State private var rotatedSecret: String?
-    @State private var deadLoaded = false
-    @State private var testWebhookResult: WebhookTestResult?
-    @State private var resendResult: WebhookResendResult?
+    /// Called before dismissing for New Order Draft with This Item; the composer opens once this sheet has closed.
+    var onOrderDraft: (OrderLine) -> Void
 
     private var untitledFallback: String { catalogDisplayFallback(kind) }
-    private var livePlatform: Record {
-        store.platforms.first { $0.id == record.id } ?? record
-    }
-    private var currentSecret: String {
-        livePlatform.string("webhookSecret", "secret")
-    }
-    private var displayedSecret: String {
-        displayedWebhookSecret(rotatedSecret: rotatedSecret, currentSecret: currentSecret)
-    }
-    private var platformDeadWebhooks: [Record] {
-        store.deadWebhooks[record.id] ?? []
-    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Text(displayName(for: livePlatform, fallback: untitledFallback)).font(.title2.weight(.bold))
+                    Text(displayName(for: record, fallback: untitledFallback)).font(.title2.weight(.bold))
                     Spacer()
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.cancelAction)
                         .accessibilityLabel("Done")
                 }
-                catalogReadableFields(livePlatform, kind: kind, categories: store.componentCategories)
-                if kind == .platforms {
-                    platformManagement
-                }
+                catalogReadableFields(record, kind: kind, categories: store.componentCategories)
                 DisclosureGroup("Technical details") {
                     VStack(alignment: .leading, spacing: 12) {
                         Button("Copy ID") {
@@ -1826,13 +1674,13 @@ struct CatalogDetailSheet: View {
                             NSPasteboard.general.setString(record.id, forType: .string)
                         }
                         .accessibilityLabel("Copy ID")
-                        JSONView(text: prettyJSON(hidingSecrets(livePlatform.values))).frame(height: 220)
+                        JSONView(text: prettyJSON(hidingSecrets(record.values))).frame(height: 220)
                     }
                 }
                 HStack {
                     Spacer()
                     if kind == .materials {
-                        Button("Use this material") {
+                        Button("Use This Material") {
                             store.filamentID = record.id
                             dismiss()
                             store.destination = .models
@@ -1841,21 +1689,12 @@ struct CatalogDetailSheet: View {
                         .keyboardShortcut(.defaultAction)
                         .disabled(filamentAvailability(record) == false || store.busy)
                     }
-                    if kind == .platforms {
-                        Button("Use this platform") {
-                            store.platformID = record.id
-                            dismiss()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(store.busy)
-                    }
                     if kind == .components || kind == .stationery {
                         Button("New Order Draft with This Item") {
-                            onFollowUp(.orderDraft(OrderLine(
+                            onOrderDraft(OrderLine(
                                 type: kind == .components ? "COMPONENT" : "STATIONERY",
                                 reference: record.id
-                            )))
+                            ))
                             dismiss()
                         }
                         .buttonStyle(.borderedProminent)
@@ -1865,227 +1704,9 @@ struct CatalogDetailSheet: View {
             }
             .padding(28)
         }
-        .frame(width: 640, height: kind == .platforms ? 640 : 520)
-        .sheet(isPresented: $confirmDisable) { disableConfirmSheet }
-        .sheet(isPresented: $confirmResendAll) { resendAllConfirmSheet }
-        .sheet(isPresented: $rotatePrompt) { rotateSecretSheet }
-    }
-
-    @ViewBuilder
-    private var platformManagement: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Button("Edit…") {
-                    onFollowUp(.editPlatform(livePlatform))
-                    dismiss()
-                }
-                .disabled(store.busy)
-                Button("Disable…") { confirmDisable = true }
-                    .tint(.red)
-                    .disabled(store.busy)
-                if !livePlatform.string("webhookURL", "webhookUrl").isEmpty {
-                    Button("Send test webhook") {
-                        Task {
-                            testWebhookResult = await store.sendTestWebhook(platformID: record.id)
-                        }
-                    }
-                    .disabled(store.busy)
-                }
-            }
-            if let testWebhookResult {
-                Text(webhookTestResultMessage(testWebhookResult))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            webhookSecretSection
-            DisclosureGroup("How to verify webhooks") {
-                Text(webhookVerificationRecipe)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            deadWebhooksSection
-        }
-    }
-
-    private var webhookSecretSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Webhook secret").font(.headline)
-            if displayedSecret.isEmpty {
-                Text("Hidden · rotate to mint a new secret.").font(.caption).foregroundStyle(.secondary)
-            } else if showSecret {
-                Text(displayedSecret).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-            } else {
-                Text("••••••••••••").foregroundStyle(.secondary)
-            }
-            HStack {
-                if !displayedSecret.isEmpty {
-                    Button(showSecret ? "Hide" : "Show") { showSecret.toggle() }
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(displayedSecret, forType: .string)
-                    }
-                }
-                Button("Rotate…") {
-                    rotateTyped = ""
-                    rotatePrompt = true
-                }
-                .disabled(store.busy)
-            }
-            if rotatedSecret != nil {
-                Text("Update your webhook receiver with the new secret now. The old one stops working.")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-        }
-    }
-
-    private var deadWebhooksSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Failed deliveries").font(.headline)
-                Spacer()
-                Button(deadLoaded || store.deadWebhooks[record.id] != nil ? "Reload" : "Load") {
-                    Task {
-                        _ = await store.loadDeadWebhooks(platformID: record.id)
-                        deadLoaded = true
-                    }
-                }
-                .disabled(store.busy)
-                if deadLoaded || store.deadWebhooks[record.id] != nil, !platformDeadWebhooks.isEmpty {
-                    Button("Resend all") { confirmResendAll = true }
-                        .disabled(store.busy)
-                }
-            }
-            if let resendResult {
-                Text(webhookResendResultMessage(resendResult))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if resendResult.remaining > 0 {
-                    Button("Resend remaining (\(resendResult.remaining))") {
-                        Task {
-                            if let result = await store.resendDeadWebhooks(platformID: record.id) {
-                                self.resendResult = result
-                                _ = await store.loadDeadWebhooks(platformID: record.id)
-                                deadLoaded = true
-                            }
-                        }
-                    }
-                    .disabled(store.busy)
-                }
-            }
-            if deadLoaded || store.deadWebhooks[record.id] != nil {
-                if platformDeadWebhooks.isEmpty {
-                    Text("No failed deliveries.").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    ForEach(indexedRecords(platformDeadWebhooks), id: \.id) { row in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(displayName(for: row.record, fallback: row.record.id)).font(.callout)
-                                Text(row.record.string("status", "error", "reason")).font(.caption2).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Try again") {
-                                Task {
-                                    _ = await store.resendDeadWebhook(platformID: record.id, webhookID: row.record.id)
-                                    _ = await store.loadDeadWebhooks(platformID: record.id)
-                                    deadLoaded = true
-                                }
-                            }
-                            .disabled(store.busy || row.record.id.isEmpty)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var disableConfirmSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Disable this platform?").font(.title3.weight(.semibold))
-            Text("Disabled platforms disappear from this list. You can re-enable it here or by its ID.")
-                .foregroundStyle(.secondary)
-            HStack {
-                Button("Cancel") { confirmDisable = false }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(store.busy)
-                Spacer()
-                Button("Disable platform", role: .destructive) {
-                    Task {
-                        _ = await store.setPlatformEnabled(id: record.id, enabled: false)
-                        confirmDisable = false
-                        dismiss()
-                    }
-                }
-                .disabled(store.busy)
-            }
-        }
-        .padding(24)
-        .frame(width: 440)
-    }
-
-    private var resendAllConfirmSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Resend all failed deliveries?").font(.title3.weight(.semibold))
-            Text("Slant will attempt delivery for every failed webhook on this platform.")
-                .foregroundStyle(.secondary)
-            HStack {
-                Button("Cancel") { confirmResendAll = false }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(store.busy)
-                Spacer()
-                Button("Resend all") {
-                    Task {
-                        if let result = await store.resendDeadWebhooks(platformID: record.id) {
-                            resendResult = result
-                            _ = await store.loadDeadWebhooks(platformID: record.id)
-                            deadLoaded = true
-                        }
-                        confirmResendAll = false
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.busy)
-            }
-        }
-        .padding(24)
-        .frame(width: 440)
-    }
-
-    private var rotateSecretSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Rotate webhook secret").font(.title3.weight(.semibold))
-            Text("Type rotate to confirm secret rotation. The previous secret stops working immediately.")
-                .foregroundStyle(.secondary)
-            TextField("rotate", text: $rotateTyped)
-                .textFieldStyle(.roundedBorder)
-                .disabled(store.busy)
-            HStack {
-                Button("Cancel") { rotatePrompt = false }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(store.busy)
-                Spacer()
-                Button("Rotate secret") {
-                    Task {
-                        if let secret = await store.rotateWebhookSecret(platformID: record.id) {
-                            rotatedSecret = secret
-                            showSecret = true
-                            rotatePrompt = false
-                        }
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!webhookRotateTypedConfirmAllowed(rotateTyped) || store.busy)
-            }
-        }
-        .padding(24)
-        .frame(width: 420)
+        .frame(width: 640, height: 520)
     }
 }
-
-let webhookVerificationRecipe = #"""
-X-Webhook-Signature-256 = "sha256=" + hex(HMAC-SHA256(secret, `${timestamp}.${rawBody}`))
-Reject timestamps older than 5 minutes.
-"""#
 
 @ViewBuilder
 func catalogReadableFields(_ record: Record, kind: Destination, categories: [Record] = []) -> some View {
@@ -2112,12 +1733,6 @@ func catalogReadableFields(_ record: Record, kind: Destination, categories: [Rec
     if !provider.isEmpty { LabeledContent("Provider", value: provider) }
     let color = record.string("color")
     if kind != .materials, !color.isEmpty { LabeledContent("Color", value: color) }
-    if kind == .platforms {
-        let url = record.string("url")
-        if !url.isEmpty { LabeledContent("URL", value: url) }
-        let webhook = record.string("webhookURL", "webhookUrl")
-        if !webhook.isEmpty { LabeledContent("Webhook", value: webhook) }
-    }
 }
 
 func catalogRecordMatches(_ record: Record, search: String) -> Bool {
