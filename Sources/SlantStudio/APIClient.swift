@@ -102,7 +102,7 @@ enum APIError: LocalizedError {
             case 500...599:
                 return "Slant is having trouble right now. Try again in a moment."
             default:
-                return "Slant couldn’t complete that request. The details are in Activity."
+                return slantRequestFailedSeeActivityMessage
             }
         case .keychain:
             return "Slant Studio couldn’t read the saved key. Enter it again."

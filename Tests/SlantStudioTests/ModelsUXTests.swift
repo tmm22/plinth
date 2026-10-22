@@ -195,6 +195,17 @@ final class ModelsUXTests: XCTestCase {
         XCTAssertNil(importFromURLValidation(url: "https://example.com/a.stl", name: "Bracket"))
     }
 
+    func testNextStepBarHiddenOnlyForEmptyImportOrConnectStates() {
+        // The empty inspector already says "Import your first model" / "Connect Slant Account…".
+        XCTAssertFalse(showsModelsNextStepBar(hasSelection: false, step: .needsModel))
+        XCTAssertFalse(showsModelsNextStepBar(hasSelection: false, step: .needsSetup))
+        // Platform setup and an upload of another model still need the bar.
+        XCTAssertTrue(showsModelsNextStepBar(hasSelection: false, step: .needsPlatform))
+        XCTAssertTrue(showsModelsNextStepBar(hasSelection: false, step: .uploading))
+        XCTAssertTrue(showsModelsNextStepBar(hasSelection: true, step: .needsSetup))
+        XCTAssertTrue(showsModelsNextStepBar(hasSelection: true, step: .readyForDraft))
+    }
+
     func testModelsNextStepProgression() {
         XCTAssertEqual(
             modelsNextStep(hasKey: false, platformID: "", hasSelection: false, hasLocalNeedingUpload: false, fileID: "", filamentID: "", hasEstimate: false, estimateIsCurrent: false, isUploading: false),

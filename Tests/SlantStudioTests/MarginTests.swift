@@ -325,21 +325,35 @@ final class MarginTests: XCTestCase {
     func testProfitFeeRatesSummaryIsOneDatedLine() {
         let etsy = ProfitFeePreset.etsyUS
         XCTAssertEqual(profitFeeRatesSummary(preset: etsy, rates: etsy.defaultRates, offsiteAds: false),
-                       "Etsy (US): 6.5% + 3% + $0.25 + $0.20/unit · checked \(profitFeeRatesCheckedDate)")
+                       "Etsy (US): 6.5% transaction + 3% + $0.25 processing + $0.20/unit listing · checked \(profitFeeRatesCheckedDate)")
         // Offsite Ads only when this sale came from one.
         XCTAssertEqual(profitFeeRatesSummary(preset: etsy, rates: etsy.defaultRates, offsiteAds: true),
-                       "Etsy (US): 6.5% + 3% + $0.25 + $0.20/unit + 15% Offsite Ads (max $100) · checked \(profitFeeRatesCheckedDate)")
+                       "Etsy (US): 6.5% transaction + 3% + $0.25 processing + $0.20/unit listing + 15% Offsite Ads (max $100) · checked \(profitFeeRatesCheckedDate)")
         let shopify = ProfitFeePreset.shopifyBasicUS
         XCTAssertEqual(profitFeeRatesSummary(preset: shopify, rates: shopify.defaultRates, offsiteAds: true),
-                       "Shopify Payments (US Basic): 2.9% + $0.30 · checked \(profitFeeRatesCheckedDate)")
+                       "Shopify Payments (US Basic): 2.9% + $0.30 processing · checked \(profitFeeRatesCheckedDate)")
         // Edited preset rates are labelled as the user's, still dated.
         var edited = etsy.defaultRates
         edited.processingPercent = 4
         let editedSummary = profitFeeRatesSummary(preset: etsy, rates: edited, offsiteAds: false)
-        XCTAssertTrue(editedSummary.hasPrefix("Etsy (US): 6.5% + 4% + $0.25"), editedSummary)
+        XCTAssertTrue(editedSummary.hasPrefix("Etsy (US): 6.5% transaction + 4% + $0.25 processing"), editedSummary)
         XCTAssertTrue(editedSummary.hasSuffix("· your rates (preset checked \(profitFeeRatesCheckedDate))"), editedSummary)
         XCTAssertEqual(profitFeeRatesSummary(preset: .custom, rates: ProfitFeeRates(), offsiteAds: false), "Custom: no fees entered · your rates")
-        XCTAssertEqual(profitFeeRatesSummary(preset: .custom, rates: ProfitFeeRates(processingPercent: 5), offsiteAds: true), "Custom: 5% · your rates")
+        XCTAssertEqual(profitFeeRatesSummary(preset: .custom, rates: ProfitFeeRates(processingPercent: 5), offsiteAds: true), "Custom: 5% processing · your rates")
         XCTAssertEqual(profitFeeRatesSummary(preset: .none, rates: ProfitFeeRates(), offsiteAds: false), "None")
+        // A fixed processing fee on its own is still named.
+        XCTAssertEqual(profitFeeRatesSummary(preset: .custom, rates: ProfitFeeRates(processingFixed: Decimal(string: "0.30")!), offsiteAds: false),
+                       "Custom: $0.30 processing · your rates")
+    }
+
+    func testRateEditorNeedsAttentionOnlyForInvalidOrEmptyCustomRates() {
+        let etsy = ProfitFeePreset.etsyUS
+        XCTAssertFalse(profitRateEditorNeedsAttention(preset: etsy, ratesValid: true, currentRates: etsy.defaultRates))
+        XCTAssertTrue(profitRateEditorNeedsAttention(preset: etsy, ratesValid: false, currentRates: etsy.defaultRates))
+        // An empty Custom preset opens the editor; the panel latches it open, so the first typed fee (which makes this
+        // false) doesn't collapse it.
+        XCTAssertTrue(profitRateEditorNeedsAttention(preset: .custom, ratesValid: true, currentRates: ProfitFeeRates()))
+        XCTAssertFalse(profitRateEditorNeedsAttention(preset: .custom, ratesValid: true, currentRates: ProfitFeeRates(processingPercent: 5)))
+        XCTAssertFalse(profitRateEditorNeedsAttention(preset: .none, ratesValid: false, currentRates: ProfitFeeRates()))
     }
 }

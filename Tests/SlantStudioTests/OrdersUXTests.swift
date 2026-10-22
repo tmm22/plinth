@@ -45,7 +45,7 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertEqual(orderStatusTitle("AWAITING_SHIPMENT"), "Awaiting shipment")
         XCTAssertEqual(orderStatusTitle("SHIPPED"), "Shipped")
         XCTAssertEqual(orderStatusTitle("DELIVERED"), "Delivered")
-        XCTAssertEqual(orderStatusTitle("CANCELED"), "Canceled")
+        XCTAssertEqual(orderStatusTitle("CANCELED"), "Cancelled")
         XCTAssertEqual(orderStatusTitle("PAYMENT_ERROR"), "Payment problem")
         XCTAssertEqual(orderStatusTitle("weird_status"), "Weird Status")
     }
@@ -59,11 +59,31 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertFalse(orderCanRequestCancellation("CANCELED"))
         XCTAssertFalse(orderCanRequestCancellation(""))
         XCTAssertFalse(orderCanRequestCancellation("UNKNOWN"))
-        XCTAssertEqual(orderCancellationBlockedReason("CANCELED"), "This order was already canceled.")
+        XCTAssertEqual(orderCancellationBlockedReason("CANCELED"), "This order was already cancelled.")
         XCTAssertTrue(orderCancellationIsRefundOnly("SHIPPED"))
         XCTAssertTrue(orderCancellationIsRefundOnly("DELIVERED"))
         XCTAssertFalse(orderCancellationIsRefundOnly("PRINTING"))
         XCTAssertFalse(orderCancellationIsRefundOnly("DRAFT"))
+    }
+
+    func testOrderDetailCancelNoteSkipsFinishedStatuses() {
+        // The status heading already says the order is finished, so the detail pane doesn't repeat it.
+        for status in ["CANCELED", "canceled", "SHIPPED", "DELIVERED", "COMPLETE"] {
+            XCTAssertNil(orderDetailCancelBlockedNote(status), status)
+        }
+        // Still explained where it's informative; the review sheet and Workbench keep the full reason.
+        XCTAssertEqual(orderDetailCancelBlockedNote("ON_HOLD"), "This order can’t be cancelled.")
+        XCTAssertEqual(orderDetailCancelBlockedNote(""), "This order can’t be cancelled.")
+        XCTAssertNil(orderDetailCancelBlockedNote("PRINTING"))
+        XCTAssertEqual(orderCancellationBlockedReason("CANCELED"), "This order was already cancelled.")
+    }
+
+    func testOrderSearchFindsSlantStatusWordToo() {
+        let record = Record(values: ["publicId": "SLANT_7", "status": "CANCELED"])
+        XCTAssertTrue(orderMatchesSearch(record, query: "Cancelled"))
+        XCTAssertTrue(orderMatchesSearch(record, query: "canceled"))
+        let waiting = Record(values: ["publicId": "SLANT_8", "status": "AWAITING_SHIPMENT"])
+        XCTAssertTrue(orderMatchesSearch(waiting, query: "awaiting shipment"))
     }
 
     func testCancelActionCopyMatrix() {

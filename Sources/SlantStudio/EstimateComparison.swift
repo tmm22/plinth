@@ -516,7 +516,7 @@ extension StudioStore {
 
 // MARK: - Views
 
-/// Whether Print configuration shows **Compare estimates…** at all: only once the model is uploaded and materials
+/// Whether Print configuration shows **Compare Estimates…** at all: only once the model is uploaded and materials
 /// are loaded on a connected account. Before then the button would only ever be disabled, so it stays out of the way.
 func compareEstimatesIsOffered(hasKey: Bool, connected: Bool, fileID: String, filaments: [Record]) -> Bool {
     hasKey && connected && !fileID.isEmpty && !filaments.isEmpty
@@ -532,7 +532,7 @@ struct CompareEstimatesButton: View {
         if compareEstimatesIsOffered(hasKey: store.hasKey, connected: store.connected, fileID: store.fileID, filaments: store.filaments) {
             let reason = compareEstimatesBlockedReason(hasKey: store.hasKey, connected: store.connected, fileID: store.fileID,
                                                        filaments: store.filaments, busy: store.busy)
-            Button("Compare estimates…") { showing = true }
+            Button("Compare Estimates…") { showing = true }
                 .buttonStyle(.bordered)
                 .disabled(reason != nil)
                 .help(reason ?? "Price up to \(comparisonMaxMaterials) materials at up to \(comparisonMaxQuantities) quantities side by side")
