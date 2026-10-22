@@ -190,8 +190,8 @@ final class ModelsUXTests: XCTestCase {
     }
 
     func testImportFromURLValidation() {
-        XCTAssertEqual(importFromURLValidation(url: "http://example.com/a.stl", name: "Part"), "Use an https:// link to import a model.")
-        XCTAssertEqual(importFromURLValidation(url: "https://example.com/a.stl", name: "  "), "Enter a name for the imported model.")
+        XCTAssertEqual(importFromURLValidation(url: "http://example.com/a.stl", name: "Part"), "Use an https:// link to upload a model.")
+        XCTAssertEqual(importFromURLValidation(url: "https://example.com/a.stl", name: "  "), "Enter a name for the uploaded model.")
         XCTAssertNil(importFromURLValidation(url: "https://example.com/a.stl", name: "Bracket"))
     }
 
@@ -269,5 +269,60 @@ final class ModelsUXTests: XCTestCase {
         XCTAssertEqual(displayedWebhookSecret(rotatedSecret: "new-secret", currentSecret: "old-secret"), "new-secret")
         XCTAssertEqual(displayedWebhookSecret(rotatedSecret: nil, currentSecret: "old-secret"), "old-secret")
         XCTAssertEqual(displayedWebhookSecret(rotatedSecret: nil, currentSecret: ""), "")
+    }
+}
+
+final class ModelsSimplificationTests: XCTestCase {
+    func testPlatformSetupCreatesOnlyWhenTheLoadedAccountHasNone() {
+        XCTAssertEqual(platformSetupAction(platformsLoaded: true, platformCount: 0), .createPlatform)
+        XCTAssertEqual(platformSetupAction(platformsLoaded: true, platformCount: 2), .chooseInSettings)
+        // Unknown until platforms load: Settings can load them, so never assume the account has none.
+        XCTAssertEqual(platformSetupAction(platformsLoaded: false, platformCount: 0), .chooseInSettings)
+        XCTAssertTrue(platformSetupStatus(.createPlatform).hasSuffix("."))
+        XCTAssertTrue(platformSetupStatus(.chooseInSettings).contains("Settings"))
+    }
+
+    func testMaterialPickerGroupsByTypeKeepingEveryMaterialAndItsOrder() {
+        let filaments = [
+            Record(values: ["publicId": "1", "name": "PLA Black", "profile": "PLA"]),
+            Record(values: ["publicId": "2", "name": "PETG Clear", "profile": "PETG", "available": false]),
+            Record(values: ["publicId": "3", "name": "PLA White", "profile": "pla "]),
+            Record(values: ["publicId": "4", "name": "Mystery", "profile": ""])
+        ]
+        let sections = materialPickerSections(filaments)
+        XCTAssertEqual(sections.map(\.type), ["PETG", "PLA", "Other"])
+        XCTAssertEqual(sections.map { $0.materials.map(\.id) }, [["2"], ["1", "3"], ["4"]])
+        XCTAssertEqual(Set(sections.flatMap { $0.materials.map(\.id) }), Set(filaments.map(\.id)))
+        // Out-of-stock materials stay listed, labelled as before.
+        XCTAssertEqual(filamentPickerLabel(sections[0].materials[0]), "PETG Clear · Out of stock")
+        XCTAssertTrue(materialPickerSections([]).isEmpty)
+    }
+
+    func testAutoImproveSummarySaysWhatToDoFirst() {
+        var intent = PartIntent()
+        XCTAssertTrue(autoImproveSummary(intent: intent, hasRecipe: false, improved: false).hasPrefix("One click"))
+        intent.purpose = .bracket
+        XCTAssertEqual(autoImproveSummary(intent: intent, hasRecipe: false, improved: false),
+                       "First choose the main stress direction in Optimise for purpose.")
+        // A prepared copy keeps its placement, so it doesn't need a direction.
+        XCTAssertTrue(autoImproveSummary(intent: intent, hasRecipe: true, improved: false).hasPrefix("One click"))
+        intent.load = .x
+        XCTAssertTrue(autoImproveSummary(intent: intent, hasRecipe: false, improved: false).hasPrefix("One click"))
+        intent.purpose = .custom
+        XCTAssertEqual(autoImproveSummary(intent: intent, hasRecipe: false, improved: false),
+                       "First describe the part in Optimise for purpose.")
+        intent.load = .unknown
+        XCTAssertEqual(autoImproveSummary(intent: intent, hasRecipe: false, improved: false),
+                       "First describe the part and choose its main stress direction in Optimise for purpose.")
+        XCTAssertEqual(autoImproveSummary(intent: intent, hasRecipe: false, improved: true), "Auto-improved copy · Original preserved")
+    }
+
+    func testEdgeImprovementIsOfferedOnlyForPlainBoxesLargeEnoughToEdit() {
+        let box = EdgeDesignCheck(plainBox: true, hasSharpJoins: true, hasTransitions: false, complete: true)
+        let detailed = EdgeDesignCheck(plainBox: false, hasSharpJoins: true, hasTransitions: true, complete: true)
+        XCTAssertTrue(edgeImprovementAvailable(box, extent: SIMD3(10, 10, 10)))
+        XCTAssertTrue(edgeImprovementAvailable(box, extent: SIMD3(10, 0.4, 10)))
+        XCTAssertFalse(edgeImprovementAvailable(box, extent: SIMD3(10, 0.39, 10)))
+        XCTAssertFalse(edgeImprovementAvailable(detailed, extent: SIMD3(10, 10, 10)))
     }
 }

@@ -16,9 +16,9 @@ struct ReinforcementCard: View {
                         Text("\(record.settings.kind.rawValue) applied to this copy.")
                         Text("Original preserved · Review the fit and test the print for its intended use.")
                             .font(.callout).foregroundStyle(.secondary)
-                        if mesh != nil { Button("Add another reinforcement…") { reviewing = true }.disabled(store.busy) }
+                        if mesh != nil { Button("Add Another Reinforcement…") { reviewing = true }.disabled(store.busy) }
                         if let original = store.localModels.first(where: { $0.id == record.sourceID }) {
-                            Button("Return to original") { store.select(original) }
+                            Button("Return to Original") { store.select(original) }
                         }
                     } else if !model.supportsPreview {
                         Text(stlOnlyToolNote(model) ?? stlCopyToolNote)
@@ -27,11 +27,11 @@ struct ReinforcementCard: View {
                     } else if mesh != nil {
                         Text("Add ribs, gussets, collars, fillets or overhang chamfers; match thin walls to line width; add teardrop holes or counterbore bridging; or split the part with alignment pins. Gap and cell treatments are saved as experimental test copies.")
                             .font(.callout).foregroundStyle(.secondary)
-                        Button("Review reinforcement…") { reviewing = true }.disabled(store.busy)
+                        Button("Review Reinforcement…") { reviewing = true }.disabled(store.busy)
                     } else { ProgressView("Loading reinforcement tools…") }
                 }.fixedSize(horizontal: false, vertical: true).padding(.top, 12)
             } label: {
-                SectionHeading(title: "Reinforce this part", caption: model.reinforcement == nil ? "Optional · Preview changes in unused space" : "Reinforcement copy · View details")
+                SectionHeading(title: "Reinforce this part", caption: model.reinforcement == nil ? "Add ribs, gussets and other features you place and preview" : "Reinforcement copy · View details")
             }
         }
         .task(id: expanded) {
@@ -123,17 +123,17 @@ private struct ReinforcementReview: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     vectorFields("Position", value: $region.offset)
                                     vectorFields("Size", value: $region.size)
-                                    Button("Remove region") { settings.protectedRegions.removeAll { $0.id == region.id } }
+                                    Button("Remove Region") { settings.protectedRegions.removeAll { $0.id == region.id } }
                                 }.padding(10).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
                             }
-                            Button("Add keep-clear region") {
+                            Button("Add Keep-Clear Region") {
                                 settings.protectedRegions.append(ReinforcementBox(offset: (source.maximum-source.minimum)*0.25, size: (source.maximum-source.minimum)*0.5))
                             }.disabled(settings.protectedRegions.count >= 8)
                         }.padding(.top, 10)
                     }
                     HStack {
-                        Button("Suggest position") { suggestPosition() }.disabled(working)
-                        Button(working ? "Preparing preview…" : "Update preview") { updatePreview() }.disabled(working)
+                        Button("Suggest Position") { suggestPosition() }.disabled(working)
+                        Button(working ? "Preparing Preview…" : "Update Preview") { updatePreview() }.disabled(working)
                         if working { ProgressView().controlSize(.small); Button("Stop") { cancelPreview() } }
                         Spacer()
                         Toggle("Cutaway view", isOn: $section).toggleStyle(.switch).disabled(!current || preview?.proposedSection == nil)
@@ -141,7 +141,7 @@ private struct ReinforcementReview: View {
                     if let failure { Text(failure).font(.callout).foregroundStyle(.secondary) }
                     HStack(spacing: 14) {
                         previewPane("Original", mesh: section && current ? preview?.originalSection : source)
-                        previewPane(current ? (settings.kind == .split ? "Proposed parts" : "Proposed copy") : "Update preview to see changes", mesh: current ? (section ? preview?.proposedSection : preview?.exploded ?? preview?.mesh) : nil)
+                        previewPane(current ? (settings.kind == .split ? "Proposed parts" : "Proposed copy") : "Choose Update Preview to see changes", mesh: current ? (section ? preview?.proposedSection : preview?.exploded ?? preview?.mesh) : nil)
                     }.frame(height: 235)
                     if section && current {
                         Text("Cutaway is for inspection only. The saved STL contains the complete part.").font(.caption).foregroundStyle(.secondary)
@@ -171,7 +171,7 @@ private struct ReinforcementReview: View {
                 HStack {
                     Button("Cancel") { cancelPreview(); dismiss() }.keyboardShortcut(.cancelAction)
                     Spacer()
-                    Button(settings.kind.isExperimental ? "Save experimental test copy" : settings.kind == .split ? "Save two part copies" : "Apply to new copy") { save() }
+                    Button(settings.kind.isExperimental ? "Save Experimental Test Copy" : settings.kind == .split ? "Save Two Part Copies" : "Apply to New Copy") { save() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!current || !confirmed || (settings.kind.isExperimental && !experimentalConfirmed) || working || saving || store.busy)
                 }
@@ -210,7 +210,7 @@ private struct ReinforcementReview: View {
                 STLSceneView(mesh: mesh, showsPrintBed: false).id("\(generation)-\(title)-\(section)")
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             } else {
-                Text("Choose the region and update the preview.").foregroundStyle(.secondary)
+                Text("Choose the region, then choose Update Preview.").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }

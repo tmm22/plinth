@@ -53,13 +53,13 @@ struct ModelsView: View {
     @State private var quantityText = "1"
     @State private var pendingRemoval: LibrarySelection?
     @State private var showHiddenFiles = false
-    @State private var materialType: String?
     @State private var configurationRequest = 0
     @State private var pendingReuploadID: UUID?
     @State private var previewMesh: LoadedPreviewMesh?
     @State private var savingScaledCopy = false
     @State private var savingSTLCopy = false
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         HSplitView {
@@ -73,7 +73,7 @@ struct ModelsView: View {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button("Import Model…") { store.importModel() }
-                    Button("Import Model from URL…") { store.showImportFromURL = true }
+                    Button("Upload from URL…") { store.showImportFromURL = true }
                         .disabled(store.importFromURLBlockedReason != nil)
                 } label: {
                     Label("Import Model", systemImage: "square.and.arrow.down")
@@ -120,13 +120,6 @@ struct ModelsView: View {
         .sheet(item: renamingModel) { model in
             RenameModelSheet(model: model).environmentObject(store)
         }
-        .onChange(of: materialType) { _, type in
-            store.filamentID = filamentIDAfterTypeChange(currentID: store.filamentID, type: type, filaments: store.filaments)
-        }
-        .onChange(of: store.filamentID) { _, id in
-            guard materialType != nil, let chosen = store.filaments.first(where: { $0.id == id }) else { return }
-            if filamentType(chosen) != materialType { materialType = filamentType(chosen) }
-        }
         .onAppear {
             Task { await store.refreshFilamentsIfStale() }
             syncSelectionFromStore()
@@ -153,9 +146,9 @@ struct ModelsView: View {
         List(selection: $selection) {
             Section("On this Mac") {
                 if store.localModels.isEmpty {
-                    Text("No models on this Mac yet").font(.caption).foregroundStyle(.secondary)
+                    Text("No models on this Mac yet.").font(.caption).foregroundStyle(.secondary)
                 } else if filteredLocalModels.isEmpty {
-                    Text("No local models match “\(search)”").font(.caption).foregroundStyle(.secondary)
+                    Text("No local models match “\(search)”.").font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(filteredLocalModels) { model in
                     HStack(spacing: 10) {
@@ -171,24 +164,19 @@ struct ModelsView: View {
                     .padding(.vertical, 3)
                     .tag(LibrarySelection.local(model.id))
                     .accessibilityLabel("\(model.name), \(model.remoteID == nil ? "Ready to upload" : "Uploaded")")
-                    .contextMenu {
-                        localFileActions(model.id)
-                        Divider()
-                        Button("Remove from Library…", role: .destructive) { pendingRemoval = .local(model.id) }
-                            .disabled(isUploading(model.id))
-                    }
+                    .contextMenu { localModelMenuItems(model) }
                 }
             }
             Section("Uploaded to Slant") {
                 if !store.filesLoaded && store.files.isEmpty {
-                    Text(store.hasKey ? "Not loaded yet" : "Connect your account to load cloud models")
+                    Text(store.hasKey ? "Not loaded yet." : "Connect your account to load cloud models.")
                         .font(.caption).foregroundStyle(.secondary)
-                } else if store.filesLoaded && store.files.isEmpty && search.isEmpty {
-                    Text("No models uploaded yet").font(.caption).foregroundStyle(.secondary)
+                } else if store.filesLoaded && store.files.isEmpty {
+                    Text("No models uploaded yet.").font(.caption).foregroundStyle(.secondary)
                 } else if filteredCloudFiles.isEmpty && !search.isEmpty && !store.files.isEmpty {
-                    Text("No cloud models match “\(search)”").font(.caption).foregroundStyle(.secondary)
+                    Text("No cloud models match “\(search)”.").font(.caption).foregroundStyle(.secondary)
                 } else if filteredCloudFiles.isEmpty && !store.files.isEmpty {
-                    Text("All uploaded models are hidden").font(.caption).foregroundStyle(.secondary)
+                    Text("All uploaded models are hidden.").font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(indexedRecords(filteredCloudFiles), id: \.id) { row in
                     let hidden = store.hiddenFileIDs.contains(row.record.id)
@@ -197,10 +185,11 @@ struct ModelsView: View {
                         StudioTile(symbol: "icloud", imageURL: httpsPreviewImageURL(row.record), size: 30)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(cloudModelDisplayName(row.record)).lineLimit(1)
-                            HStack(spacing: 4) {
-                                StudioBadge(text: hidden ? "Hidden" : "In Slant", tone: hidden ? .neutral : .accent)
-                                if linked != nil {
-                                    StudioBadge(text: "On this Mac", tone: .success)
+                            // Every row here is in Slant, so only the exceptions are badged.
+                            if hidden || linked != nil {
+                                HStack(spacing: 4) {
+                                    if hidden { StudioBadge(text: "Hidden", tone: .neutral) }
+                                    if linked != nil { StudioBadge(text: "On this Mac", tone: .success) }
                                 }
                             }
                         }
@@ -209,35 +198,19 @@ struct ModelsView: View {
                     .padding(.vertical, 3)
                     .tag(LibrarySelection.cloud(row.record.id))
                     .accessibilityLabel(linked == nil ? cloudModelDisplayName(row.record) : "\(cloudModelDisplayName(row.record)), also on this Mac")
-                    .contextMenu {
-                        if let linked {
-                            Button("Show Local Copy") { store.select(linked) }
-                            Divider()
-                        }
-                        Button("Copy ID") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(row.record.id, forType: .string)
-                        }
-                        Divider()
-                        if hidden {
-                            Button("Show in List") { store.unhideCloudModel(id: row.record.id) }
-                        } else {
-                            Button("Hide from List") { store.hideCloudModel(id: row.record.id) }
-                        }
-                        Button("Delete from Slant…", role: .destructive) { pendingRemoval = .cloud(row.record.id) }
-                            .disabled(!store.hasKey || store.busy)
-                    }
+                    .contextMenu { cloudModelMenuItems(row.record.id) }
                 }
                 if hiddenCloudCount > 0 {
-                    Button(showHiddenFiles ? "Stop showing hidden models" : "Show \(hiddenCloudCount) hidden") {
+                    Button(showHiddenFiles ? "Stop Showing Hidden Models" : "Show \(hiddenCloudCount) Hidden") {
                         showHiddenFiles.toggle()
                     }
                     .buttonStyle(.link)
                     .font(.caption)
                 }
                 if store.hasKey {
-                    if !store.filesLoaded || store.files.isEmpty {
-                        Button("Load cloud models") {
+                    // After a load that found nothing, "No models uploaded yet." stands alone; Refresh reloads.
+                    if !store.filesLoaded {
+                        Button("Load Cloud Models") {
                             Task { await store.refresh() }
                         }
                         .disabled(store.busy)
@@ -268,76 +241,27 @@ struct ModelsView: View {
                             .font(.callout).foregroundStyle(.secondary)
                     }
 
-                    HStack(alignment: .center, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(inspectorTitle).font(.title2.weight(.semibold)).lineLimit(2).textSelection(.enabled)
-                            Text(inspectorSubtitle).font(.caption2.weight(.semibold)).tracking(1.3).foregroundStyle(.secondary)
+                    if hasSelection {
+                        inspectorHeader
+                        previewBlock
+                        if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
+                            MeshHealthPanel(model: local, mesh: loaded.mesh, objectCount: loaded.objectCount)
                         }
-                        Spacer()
-                        if case .local(let id) = selection {
-                            Menu {
-                                localFileActions(id)
-                                if let model = store.localModels.first(where: { $0.id == id }) {
-                                    // Opens the product editor only; nothing is uploaded or ordered from here.
-                                    Button("Save as Product…") {
-                                        store.openSavedProducts(prefill: savedProductPrefill(for: model, selectedFilamentID: store.filamentID))
-                                    }
-                                }
-                                if store.selectedLocal?.remoteID != nil {
-                                    Divider()
-                                    Button("Upload again…") { pendingReuploadID = id }
-                                        .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
-                                }
-                            } label: {
-                                Label("More actions", systemImage: "ellipsis.circle")
+                        scaleNoticeBlock
+                        printConfigurationCard.id("print-configuration")
+                        if let local = store.selectedLocal {
+                            if local.supportsPreview {
+                                ImproveForPrintingSection(model: local).id(local.id)
+                            } else if local.supportsMeshPreview {
+                                // OBJ and 3MF: the tools need an STL copy, so only this notice is shown.
+                                stlToolsNotice(local)
                             }
-                            .fixedSize()
-                            .help(store.selectedLocal?.remoteID != nil ? "Rename, export, save as a product or upload again" : "Rename, export or save as a product")
                         }
-                        if case .cloud(let id) = selection {
-                            Menu {
-                                if store.hiddenFileIDs.contains(id) {
-                                    Button("Show in List") { store.unhideCloudModel(id: id) }
-                                } else {
-                                    Button("Hide from List") { store.hideCloudModel(id: id) }
-                                }
-                                Divider()
-                                Button("Delete from Slant…", role: .destructive) { pendingRemoval = .cloud(id) }
-                                    .disabled(removalDisabled(.cloud(id)))
-                            } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                            .menuStyle(.button)
-                            .buttonStyle(.bordered)
-                            .fixedSize()
-                            .help("Hide this model or delete it from Slant")
-                        } else if let selection {
-                            Button(role: .destructive) { pendingRemoval = selection } label: {
-                                Label(removalButtonTitle(selection), systemImage: "trash")
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(removalDisabled(selection))
-                            .help(removalButtonTitle(selection))
+                        if let file = selectedCloud {
+                            modelAnalysisCard(file)
                         }
-                    }
-
-                    previewBlock
-                    if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
-                        MeshHealthPanel(model: local, mesh: loaded.mesh, objectCount: loaded.objectCount)
-                    }
-                    scaleNoticeBlock
-                    printConfigurationCard.id("print-configuration")
-                    if let local = store.selectedLocal {
-                        if local.supportsMeshPreview && !local.supportsPreview {
-                            stlToolsNotice(local)
-                        }
-                        AutoImproveCard(model: local).id(local.id)
-                        PrintOrientationCard(model: local).id(local.id)
-                        DesignImprovementsCard(model: local).id(local.id)
-                        ReinforcementCard(model: local).id(local.id)
-                    }
-                    if let file = selectedCloud {
-                        modelAnalysisCard(file)
+                    } else {
+                        emptyInspector
                     }
                 }
                 .padding(StudioMetrics.pagePadding)
@@ -378,27 +302,19 @@ struct ModelsView: View {
                         Text("“\(linked.name)” in your library on this Mac is linked to this file.")
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
-                        Button("Show local copy") { store.select(linked) }
+                        Button("Show Local Copy") { store.select(linked) }
                             .buttonStyle(.borderedProminent)
-                            .accessibilityLabel("Show local copy")
-                        Button("Download a separate copy") { downloadSelected() }
+                        Button("Download a Separate Copy") { downloadSelected() }
                             .buttonStyle(.link)
                             .font(.caption)
                             .disabled(store.busy)
                             .help("Adds another copy of this model to your library")
-                    } else if selectedCloud != nil {
+                    } else {
                         Text("Cloud model selected").font(.headline)
                         Text("Download its model to inspect the shape in 3D.").foregroundStyle(.secondary)
-                        Button("Download into library") { downloadSelected() }
+                        Button("Download into Library") { downloadSelected() }
                             .buttonStyle(.bordered)
                             .disabled(store.busy)
-                            .accessibilityLabel("Download into library")
-                    } else {
-                        Text("Import a model to preview, upload, and estimate.")
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                        Text("or drop an STL, OBJ, or 3MF anywhere in this panel")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .padding(22)
@@ -413,6 +329,112 @@ struct ModelsView: View {
         )
     }
 
+    private var inspectorHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(inspectorTitle).font(.title2.weight(.semibold)).lineLimit(2).textSelection(.enabled)
+                Text(inspectorSubtitle).font(.caption2.weight(.semibold)).tracking(1.3).foregroundStyle(.secondary)
+            }
+            Spacer()
+            // One More menu for local and cloud models, with the same items as the library's context menu.
+            Menu {
+                if let local = store.selectedLocal {
+                    localModelMenuItems(local)
+                } else if let file = selectedCloud {
+                    cloudModelMenuItems(file.id)
+                }
+            } label: {
+                Label("More", systemImage: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .labelStyle(.iconOnly)
+            .fixedSize()
+            .help("More actions")
+            .accessibilityLabel("More actions")
+        }
+    }
+
+    /// Shown instead of the inspector while no model is selected. The next-action bar below still says what's missing.
+    private var emptyInspector: some View {
+        let libraryEmpty = store.localModels.isEmpty && store.files.isEmpty
+        return VStack(spacing: 14) {
+            Image(systemName: "cube.transparent")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(Color.studioAccent)
+                .accessibilityHidden(true)
+            Text(libraryEmpty ? "Import your first model" : "Choose a model")
+                .font(.title2.weight(.semibold))
+            Text(libraryEmpty
+                 ? "Import an STL, OBJ or 3MF file to preview, upload and estimate it. You can also drop a file here."
+                 : "Select a model in the library, or import a new one. You can also drop a file here.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Button("Import Model…") { store.importModel() }
+                    .buttonStyle(.borderedProminent)
+                if !store.hasKey {
+                    // The connection is set up in the Settings window.
+                    Button("Connect Slant Account…") { openSettings() }
+                        .buttonStyle(.bordered)
+                }
+            }
+        }
+        .frame(maxWidth: 420)
+        .padding(40)
+        .frame(maxWidth: .infinity, minHeight: 360)
+        .overlay(
+            RoundedRectangle(cornerRadius: StudioMetrics.cardRadius)
+                .stroke(targeted ? Color.studioAccent : Color.studioHairline,
+                        style: StrokeStyle(lineWidth: targeted ? 3 : 1, dash: targeted ? [] : [6, 4]))
+        )
+    }
+
+    /// The More menu and a library row's context menu for a local model. Destructive items come last.
+    @ViewBuilder
+    private func localModelMenuItems(_ model: LocalModel) -> some View {
+        Button("Rename…") { store.renamingModelID = model.id }
+        Button("Export…") { store.exportLocalModel(id: model.id) }
+        // Opens the product editor only; nothing is uploaded or ordered from here.
+        Button("Save as Product…") {
+            store.openSavedProducts(prefill: savedProductPrefill(for: model, selectedFilamentID: store.filamentID))
+        }
+        if model.remoteID != nil {
+            Divider()
+            // Only asks: the upload starts from the confirmation, and only for the selected model.
+            Button("Upload Again…") {
+                if store.selectedLocalID != model.id { store.select(model) }
+                pendingReuploadID = model.id
+            }
+            .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
+        }
+        Divider()
+        Button("Remove from Library…", role: .destructive) { pendingRemoval = .local(model.id) }
+            .disabled(isUploading(model.id))
+    }
+
+    /// The More menu and a library row's context menu for an uploaded model. Destructive items come last.
+    @ViewBuilder
+    private func cloudModelMenuItems(_ id: String) -> some View {
+        if let linked = localModel(linkedTo: id, in: store.localModels) {
+            Button("Show Local Copy") { store.select(linked) }
+            Divider()
+        }
+        Button("Copy ID") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(id, forType: .string)
+        }
+        Divider()
+        if store.hiddenFileIDs.contains(id) {
+            Button("Show in List") { store.unhideCloudModel(id: id) }
+        } else {
+            Button("Hide from List") { store.hideCloudModel(id: id) }
+        }
+        Button("Delete from Slant…", role: .destructive) { pendingRemoval = .cloud(id) }
+            .disabled(removalDisabled(.cloud(id)))
+    }
+
     private var nextStepBlock: some View {
         let step = currentNextStep
         let uploadFailed = step == .needsUpload && (store.selectedLocal.map { uploadFailedIDs.contains($0.id) && $0.remoteID == nil } ?? false)
@@ -424,24 +446,25 @@ struct ModelsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            if store.busy {
-                ProgressView().controlSize(.small)
-                    .accessibilityLabel(store.progress.isEmpty ? "Working" : store.progress)
-            } else if uploadFailed {
-                Button("Try upload again") { startUpload() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!store.hasKey || store.platformID.isEmpty)
-            } else {
-                nextStepAction(step)
+            // While busy, the status line says what is running and the window toolbar shows the only spinner.
+            if !store.busy {
+                if uploadFailed {
+                    Button("Try Upload Again") { startUpload() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!store.hasKey || store.platformID.isEmpty)
+                } else if hasSelection || (step != .needsSetup && step != .needsModel) {
+                    // Otherwise the empty inspector above already offers Import Model… and Connect Slant Account….
+                    nextStepAction(step)
+                }
             }
         }
         .confirmationDialog(
-            "Upload another copy to Slant?",
+            "Upload this model again?",
             isPresented: Binding(get: { pendingReuploadID != nil }, set: { if !$0 { pendingReuploadID = nil } }),
             titleVisibility: .visible,
             presenting: pendingReuploadID
         ) { id in
-            Button("Upload Another Copy") {
+            Button("Upload Again") {
                 guard store.selectedLocalID == id else { return }
                 startUpload()
             }
@@ -452,23 +475,18 @@ struct ModelsView: View {
         }
     }
 
-    @ViewBuilder
-    private func localFileActions(_ id: UUID) -> some View {
-        Button("Rename…") { store.renamingModelID = id }
-        Button("Export…") { store.exportLocalModel(id: id) }
-    }
-
-    /// Shown once, above the STL-only tool cards, for OBJ and 3MF models.
+    /// Shown for OBJ and 3MF models in place of the Improve for printing tools, which work on an STL copy.
     private func stlToolsNotice(_ local: LocalModel) -> some View {
         let loaded = previewMesh.flatMap { $0.url == local.url ? $0 : nil }
         let blocked = loaded.flatMap { stlCopyBlockedReason(format: $0.format, inexactFaces: $0.inexactFaces) }
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Label("These tools work on STL files.", systemImage: "info.circle")
+                Label(stlToolsNoticeText, systemImage: "info.circle")
                     .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 if let loaded, blocked == nil {
-                    Button(savingSTLCopy ? "Saving…" : "Save STL copy") {
+                    Button(savingSTLCopy ? "Saving…" : "Save STL Copy") {
                         guard !savingSTLCopy else { return }
                         savingSTLCopy = true
                         Task {
@@ -519,7 +537,7 @@ struct ModelsView: View {
                                 .buttonStyle(.bordered)
                                 .disabled(savingScaledCopy || store.busy)
                         } else {
-                            Menu("Save scaled copy") {
+                            Menu("Save Scaled Copy") {
                                 ForEach(warning.suggestions) { suggestion in
                                     Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor) }
                                 }
@@ -536,12 +554,13 @@ struct ModelsView: View {
     private func actionStatus(_ step: ModelsNextStep, uploadFailed: Bool) -> String {
         if store.busy { return store.progress.isEmpty ? "Working…" : store.progress }
         if uploadFailed { return "Upload didn’t finish. Your local model is still available." }
+        if step == .needsPlatform { return platformSetupStatus(currentPlatformSetupAction) }
         if step == .needsEstimate || step == .estimateStale || step == .readyForDraft {
             if printQuantity(quantityText) == nil { return "Enter a whole-number quantity from 1 to 10,000." }
             if chosenMaterialOutOfStock { return "This material is out of stock. Choose another material." }
             if store.filamentID.isEmpty { return "Choose a material to get your print estimate." }
             if step == .readyForDraft, let estimate = store.estimate {
-                return "\(money(estimate["total"])) USD · Shipping calculated in draft"
+                return "\(money(estimate["total"])) USD. Shipping is calculated in the draft."
             }
             if store.selectedLocal.map({ uploadConfirmedIDs.contains($0.id) }) == true {
                 return "Upload complete. Your model is ready to estimate."
@@ -554,42 +573,47 @@ struct ModelsView: View {
     private func nextStepAction(_ step: ModelsNextStep) -> some View {
         switch step {
         case .needsSetup:
-            Button("Connect Account") { store.destination = .connection }
+            // The connection is set up in the Settings window.
+            Button("Connect Slant Account…") { openSettings() }
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Connect Account")
         case .needsPlatform:
-            Button("Open Platforms") { store.destination = .catalog; store.catalogKind = .platforms }
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Open Platforms")
+            switch currentPlatformSetupAction {
+            case .createPlatform:
+                // Opens the Create Platform sheet only; nothing is sent until it is submitted.
+                Button("Create Platform…") { store.showPlatformComposer = true }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.busy)
+            case .chooseInSettings:
+                Button("Choose Platform…") { openSettings() }
+                    .buttonStyle(.borderedProminent)
+            }
         case .needsModel:
             Button("Import Model…") { store.importModel() }
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Import Model")
         case .uploading:
             EmptyView()
         case .needsUpload:
-            Button("Upload model") { startUpload() }
+            Button("Upload Model") { startUpload() }
                 .buttonStyle(.borderedProminent)
                 .disabled(store.selectedLocal == nil || store.busy || !store.hasKey || store.platformID.isEmpty)
-                .accessibilityLabel("Upload model")
         case .needsEstimate, .estimateStale:
             if store.filamentID.isEmpty || chosenMaterialOutOfStock {
-                Button("Choose material") { configurationRequest += 1 }
+                Button("Choose Material") { configurationRequest += 1 }
                     .buttonStyle(.borderedProminent)
             } else if printQuantity(quantityText) == nil {
-                Button("Edit quantity") { configurationRequest += 1 }
+                Button("Edit Quantity") { configurationRequest += 1 }
                     .buttonStyle(.borderedProminent)
             } else {
-                Button(step == .estimateStale ? "Get a new estimate" : "Get estimate") { requestEstimate() }
+                Button(step == .estimateStale ? "Get New Estimate" : "Get Estimate") { requestEstimate() }
                     .buttonStyle(.borderedProminent)
                     .disabled(store.fileID.isEmpty || !store.hasKey || store.busy)
             }
         case .readyForDraft:
             if printQuantity(quantityText) == nil {
-                Button("Edit quantity") { configurationRequest += 1 }
+                Button("Edit Quantity") { configurationRequest += 1 }
                     .buttonStyle(.borderedProminent)
             } else if chosenMaterialOutOfStock {
-                Button("Choose material") { configurationRequest += 1 }
+                Button("Choose Material") { configurationRequest += 1 }
                     .buttonStyle(.borderedProminent)
             } else {
                 Button("New Order Draft…") { store.openOrderComposer() }
@@ -603,28 +627,27 @@ struct ModelsView: View {
     private var printConfigurationCard: some View {
         Card {
             VStack(alignment: .leading, spacing: 18) {
-                SectionHeading(title: "Print configuration", caption: selectedModelName)
-                if filamentTypes(in: store.filaments).count > 1 {
-                    LabeledContent("Type") {
-                        Picker("Type", selection: $materialType) {
-                            Text("All types").tag(String?.none)
-                            ForEach(filamentTypes(in: store.filaments), id: \.self) { type in
-                                Text(type).tag(String?.some(type))
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 280)
-                        .accessibilityLabel("Material type")
-                    }
-                }
+                SectionHeading(title: "Print configuration")
                 LabeledContent("Material") {
+                    // One picker, grouped by type when there is more than one. Changing it marks the estimate stale.
                     Picker("Material", selection: $store.filamentID) {
                         Text("Choose a material").tag("")
                         if materialNeedsPreviousChoiceTag {
                             Text("Previously chosen material").tag(store.filamentID)
                         }
-                        ForEach(indexedRecords(pickerFilaments), id: \.id) { row in
-                            Text(filamentPickerLabel(row.record)).tag(row.record.id)
+                        let sections = materialPickerSections(store.filaments)
+                        if sections.count > 1 {
+                            ForEach(sections, id: \.type) { section in
+                                Section(section.type) {
+                                    ForEach(indexedRecords(section.materials), id: \.id) { row in
+                                        Text(filamentPickerLabel(row.record)).tag(row.record.id)
+                                    }
+                                }
+                            }
+                        } else {
+                            ForEach(indexedRecords(store.filaments), id: \.id) { row in
+                                Text(filamentPickerLabel(row.record)).tag(row.record.id)
+                            }
                         }
                     }
                     .labelsHidden()
@@ -635,7 +658,7 @@ struct ModelsView: View {
                     HStack {
                         Text("Load materials to choose a print material.")
                             .font(.caption).foregroundStyle(.secondary)
-                        Button("Load materials") { Task { await store.loadCatalog(.materials) } }
+                        Button("Load Materials") { Task { await store.loadCatalog(.materials) } }
                             .disabled(!store.hasKey || store.busy)
                     }
                 }
@@ -646,7 +669,7 @@ struct ModelsView: View {
                             .font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if mismatch.canApply, let name = mismatch.name {
-                            Button("Use prepared material (\(name))") { store.filamentID = mismatch.filamentID }
+                            Button("Use Prepared Material (\(name))") { store.filamentID = mismatch.filamentID }
                                 .buttonStyle(.bordered)
                                 .accessibilityLabel("Use prepared material, \(name)")
                         }
@@ -679,11 +702,11 @@ struct ModelsView: View {
                             Text("\(money(estimate["total"])) USD")
                                 .font(.system(size: 30, weight: .semibold, design: .rounded))
                             if store.estimateIsCurrent && printQuantity(quantityText) != nil {
-                                Text("Print estimate · shipping calculated in draft")
+                                Text("Print estimate. Shipping is calculated in the draft.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             } else {
-                                Label("Previous estimate · update your configuration and request a new estimate", systemImage: "exclamationmark.circle")
+                                Label("Previous estimate. The configuration has changed, so get a new estimate.", systemImage: "exclamationmark.circle")
                                     .font(.caption).foregroundStyle(.orange)
                             }
                         }
@@ -707,7 +730,7 @@ struct ModelsView: View {
     private func modelAnalysisCard(_ file: Record) -> some View {
         Card {
             VStack(alignment: .leading, spacing: 14) {
-                SectionHeading(title: "Model analysis", caption: cloudModelDisplayName(file))
+                SectionHeading(title: "Model analysis")
                 if let notes = slantProductionNotes(file) {
                     VStack(alignment: .leading, spacing: 6) {
                         Label("Notes from Slant’s production team", systemImage: "text.bubble")
@@ -738,7 +761,7 @@ struct ModelsView: View {
                     if let support = supportRequiredCaption(file) {
                         Text(support).font(.callout).foregroundStyle(.secondary)
                     }
-                    Text("Analyzing… metrics appear once Slant finishes processing.")
+                    Text("Analysing… Metrics appear once Slant finishes processing.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 125))], alignment: .leading, spacing: 16) {
@@ -798,14 +821,14 @@ struct ModelsView: View {
         if let local = store.selectedLocal {
             return ModelFileFormat(url: local.url).map { "\($0.displayName) MODEL · LOCAL PREVIEW" } ?? "MODEL · LOCAL"
         }
-        return "MODEL INSPECTOR"
+        return "MODEL · UPLOADED TO SLANT"
+    }
+    private var hasSelection: Bool { store.selectedLocal != nil || selectedCloud != nil }
+    private var currentPlatformSetupAction: PlatformSetupAction {
+        platformSetupAction(platformsLoaded: store.loadedCatalogs.contains(.platforms), platformCount: store.platforms.count)
     }
     private var materialNeedsPreviousChoiceTag: Bool {
         !store.filamentID.isEmpty && !store.filaments.contains { $0.id == store.filamentID }
-    }
-    /// Includes the chosen material so the picker always has a matching tag while the selection catches up.
-    private var pickerFilaments: [Record] {
-        store.filaments.filter { filamentType($0) == materialType || materialType == nil || $0.id == store.filamentID }
     }
     private var chosenMaterialOutOfStock: Bool {
         guard let filament = store.filaments.first(where: { $0.id == store.filamentID }) else { return false }
@@ -814,7 +837,6 @@ struct ModelsView: View {
     private var currentNextStep: ModelsNextStep {
         let localNeedsUpload = store.selectedLocal.map { $0.remoteID == nil } ?? false
         let uploading = uploadFocusID != nil && store.busy && isUploadStageProgress(store.progress)
-        let hasSelection = store.selectedLocal != nil || selectedCloud != nil
         return modelsNextStep(
             hasKey: store.hasKey,
             platformID: store.platformID,
@@ -830,11 +852,6 @@ struct ModelsView: View {
 
     private func isUploading(_ id: UUID) -> Bool {
         uploadFocusID == id && store.busy
-    }
-
-    private func removalButtonTitle(_ target: LibrarySelection) -> String {
-        if case .cloud = target { return "Delete from Slant…" }
-        return "Remove from Library…"
     }
 
     private func removalDisabled(_ target: LibrarySelection) -> Bool {
@@ -1005,17 +1022,81 @@ struct LoadedPreviewMesh {
     }
 }
 
+/// Shown for OBJ and 3MF models in place of the Improve for printing tools.
+let stlToolsNoticeText = "The Improve for printing tools work on STL files, so they use a separate STL copy of this model."
+
+/// The optional geometry tools for an STL model, collapsed and in the order they're usually used. Each saves a
+/// separate copy; this view only arranges them. Design improvements appears only when it can edit this model (a plain
+/// rectangular box) or when the model is a copy with an edge edit, whose summary it shows.
+struct ImproveForPrintingSection: View {
+    let model: LocalModel
+    /// The model's mesh, loaded only when its edges can be edited automatically.
+    @State private var edgeEditableMesh: STLMesh?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeading(title: "Improve for printing", caption: "Optional · Each tool saves a separate copy and keeps your original.")
+                .padding(.top, 4)
+            PrintOrientationCard(model: model)
+            AutoImproveCard(model: model)
+            ReinforcementCard(model: model)
+            if model.designImprovement != nil || edgeEditableMesh != nil {
+                DesignImprovementsCard(model: model, mesh: edgeEditableMesh)
+            }
+        }
+        .task(id: model.id) {
+            edgeEditableMesh = nil
+            guard model.supportsPreview, model.designImprovement == nil else { return }
+            let url = model.url
+            let mesh = await Task.detached(priority: .userInitiated) { () -> STLMesh? in
+                guard let mesh = try? STLMesh.read(from: url),
+                      edgeImprovementAvailable(mesh.edgeDesignCheck(), extent: mesh.maximum - mesh.minimum) else { return nil }
+                return mesh
+            }.value
+            guard !Task.isCancelled else { return }
+            edgeEditableMesh = mesh
+        }
+    }
+}
+
 private func nextStepStatusText(_ step: ModelsNextStep) -> String {
     switch step {
     case .needsSetup: return "Connect your account to upload and estimate."
-    case .needsPlatform: return "Choose or create a platform"
+    case .needsPlatform: return "Choose or create a platform to upload and order."
     case .needsModel: return "Import a model to get started."
     case .uploading: return "Uploading your model…"
     case .needsUpload: return "Upload this model to request an estimate."
     case .needsEstimate: return "Choose a material and get an estimate."
-    case .estimateStale: return "Configuration changed · request a new estimate"
-    case .readyForDraft: return "Estimate is ready · create an order draft when you’re set."
+    case .estimateStale: return "The configuration has changed. Get a new estimate."
+    case .readyForDraft: return "Your estimate is ready. Create an order draft when you’re set."
     }
+}
+
+/// What the next-action bar offers while no platform is chosen: create the first one directly when the account has
+/// none, otherwise choose one in Settings (also where platforms load if they haven't yet).
+enum PlatformSetupAction: Equatable {
+    case createPlatform, chooseInSettings
+}
+
+func platformSetupAction(platformsLoaded: Bool, platformCount: Int) -> PlatformSetupAction {
+    platformsLoaded && platformCount == 0 ? .createPlatform : .chooseInSettings
+}
+
+func platformSetupStatus(_ action: PlatformSetupAction) -> String {
+    switch action {
+    case .createPlatform: return "Create a platform to upload models and place orders."
+    case .chooseInSettings: return "Choose a default platform in Settings to upload models and place orders."
+    }
+}
+
+/// The Material picker's sections: one per type, in `filamentTypes` order, keeping the catalog order within each.
+struct MaterialPickerSection {
+    let type: String
+    let materials: [Record]
+}
+
+func materialPickerSections(_ filaments: [Record]) -> [MaterialPickerSection] {
+    filamentTypes(in: filaments).map { MaterialPickerSection(type: $0, materials: filamentsMatching(filaments, type: $0)) }
 }
 
 func localModelRemovalMessage(name: String, isUploaded: Bool, movesToTrash: Bool = true) -> String {
@@ -1038,7 +1119,7 @@ func cloudDownloadExtension(recordType: String?, downloadURL: URL) -> String {
     return "stl"
 }
 
-// MARK: - Import from URL
+// MARK: - Upload from URL
 
 struct ImportFromURLSheet: View {
     @EnvironmentObject var store: StudioStore
@@ -1049,11 +1130,17 @@ struct ImportFromURLSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Import from URL").font(.title2.weight(.bold)).padding(24)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Upload from URL").font(.title2.weight(.bold))
+                Text("Slant fetches the model from this link straight into your Slant account. It isn’t added to your library on this Mac.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(24)
             Divider()
             Form {
-                TextField("https://…", text: $url)
-                TextField("Model name", text: $name)
+                TextField("Link", text: $url, prompt: Text("https://…"))
+                TextField("Name", text: $name, prompt: Text("Model name in Slant"))
                 if let validation {
                     Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 }
@@ -1066,14 +1153,14 @@ struct ImportFromURLSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
                 Spacer()
-                Button("Import") { importModel() }
+                Button("Upload") { importModel() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(store.busy || !store.hasKey)
             }
             .padding(20)
         }
-        .frame(width: 480, height: 320)
+        .frame(width: 480, height: 350)
     }
 
     private func importModel() {
@@ -1383,8 +1470,8 @@ func catalogItemImageURL(_ record: Record) -> URL? {
 func importFromURLValidation(url: String, name: String) -> String? {
     let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !trimmedURL.lowercased().hasPrefix("https://") { return "Use an https:// link to import a model." }
-    if trimmedName.isEmpty { return "Enter a name for the imported model." }
+    if !trimmedURL.lowercased().hasPrefix("https://") { return "Use an https:// link to upload a model." }
+    if trimmedName.isEmpty { return "Enter a name for the uploaded model." }
     return nil
 }
 

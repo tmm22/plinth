@@ -30,52 +30,70 @@ private final class CancelFlag: @unchecked Sendable {
     func stop() { flag?.set(); flag = nil; task?.cancel(); task = nil; working = false }
 }
 
+/// Auto-improve's caption, which stays visible while the card is collapsed. It needs the part's purpose to be complete
+/// in Optimise for purpose first (a stress direction, and a description for a custom part), so it says so.
+func autoImproveSummary(intent: PartIntent, hasRecipe: Bool, improved: Bool) -> String {
+    if improved { return "Auto-improved copy · Original preserved" }
+    if hasRecipe || intent.isReady { return "One click · Places the part and adds the treatments its shape needs" }
+    let needsDirection = intent.purpose.needsDirection && intent.load == .unknown
+    let needsDetails = intent.purpose == .custom && intent.details.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    if needsDirection && needsDetails { return "First describe the part and choose its main stress direction in Optimise for purpose." }
+    if needsDetails { return "First describe the part in Optimise for purpose." }
+    return "First choose the main stress direction in Optimise for purpose."
+}
+
 struct AutoImproveCard: View {
     @EnvironmentObject var store: StudioStore
     let model: LocalModel
     @StateObject private var run = AutoImproveRun()
+    @State private var expanded = false
 
     private var intent: PartIntent { designEditIntent(model) ?? PartIntent() }
+    private var ready: Bool { intent.isReady || model.printRecipe != nil }
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeading(title: "Auto-improve", caption: model.autoImprovement == nil ? "One click · Best placement and treatments for this part" : "Auto-improved copy · Original preserved")
-                if let record = model.autoImprovement {
-                    summary(record)
-                } else if !model.supportsPreview {
-                    // OBJ and 3MF get one notice above the tool cards instead.
-                    if let note = stlOnlyToolNote(model) {
-                        Text(note).font(.callout).foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("Places the part for its purpose, then adds the treatments its shape needs: bridging for counterbores, chamfers under ledges, wall thickness matched to the extrusion line and fillets in inside corners. Each change is checked as a closed solid and skipped if it fails. Saves one new copy; your original is kept.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Text(purposeLine).font(.caption).foregroundStyle(.secondary)
-                    if intent.isReady || model.printRecipe != nil {
-                        HStack {
-                            Button(run.working ? "Improving…" : "Auto-improve & save copy") { improve() }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(run.working || store.busy)
-                            if run.working {
-                                ProgressView().controlSize(.small)
-                                Text(run.status).font(.caption).foregroundStyle(.secondary)
-                                Button("Stop") { run.stop() }
-                            }
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let record = model.autoImprovement {
+                        summary(record)
+                    } else if !model.supportsPreview {
+                        // OBJ and 3MF get one notice in place of the tools instead.
+                        if let note = stlOnlyToolNote(model) {
+                            Text(note).font(.callout).foregroundStyle(.secondary)
                         }
                     } else {
-                        Text("Choose the main stress direction in Optimise for purpose first, so the part is placed for its load.")
-                            .font(.callout)
+                        Text("Places the part for its purpose, then adds what its shape needs: bridging for counterbores, chamfers under ledges, walls matched to the line width and fillets in inside corners. Each change is checked and skipped if it fails. Ribs, gussets, collars, teardrop holes and splits are never automatic; add them in Reinforce this part.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Text(purposeLine).font(.caption).foregroundStyle(.secondary)
+                        if ready {
+                            HStack {
+                                Button(run.working ? "Improving…" : "Auto-Improve & Save Copy") { improve() }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(run.working || store.busy)
+                                if run.working {
+                                    ProgressView().controlSize(.small)
+                                    Text(run.status).font(.caption).foregroundStyle(.secondary)
+                                    Button("Stop") { run.stop() }
+                                }
+                            }
+                        } else {
+                            Text(autoImproveSummary(intent: intent, hasRecipe: model.printRecipe != nil, improved: false))
+                                .font(.callout)
+                        }
+                        if let result = run.unchanged {
+                            Text("No automatic changes suit this part, so nothing was saved.").font(.callout)
+                            notes(skipped: result.skipped, manual: result.manual)
+                        }
                     }
-                    if let result = run.unchanged {
-                        Text("No automatic changes suit this part, so nothing was saved.").font(.callout)
-                        notes(skipped: result.skipped, manual: result.manual)
-                    }
-                    Text("Never automatic: ribs, gussets, mounting collars, teardrop holes, splits and experimental gaps or cells. These depend on how the part is used; add them in Reinforce this part.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 12)
+            } label: {
+                SectionHeading(title: "Auto-improve", caption: run.working
+                               ? run.status
+                               : autoImproveSummary(intent: intent, hasRecipe: model.printRecipe != nil, improved: model.autoImprovement != nil))
             }
-            .fixedSize(horizontal: false, vertical: true)
         }
         .onDisappear { run.stop() }
     }
@@ -103,7 +121,7 @@ struct AutoImproveCard: View {
             Text("Review the copy before ordering. Fillets and matched walls take a little space from inside corners and cavities; check that mating parts still fit.")
                 .font(.caption).foregroundStyle(.secondary)
             if let original = store.localModels.first(where: { $0.id == record.sourceID }) {
-                Button("Return to original") { store.select(original) }.disabled(store.busy)
+                Button("Return to Original") { store.select(original) }.disabled(store.busy)
             }
         }
     }

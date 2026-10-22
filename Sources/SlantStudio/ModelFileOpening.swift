@@ -180,7 +180,7 @@ func stlOnlyToolNote(_ model: LocalModel) -> String? {
 }
 
 /// Inside a collapsed tool card for an OBJ or 3MF model, pointing back to the shared notice.
-let stlCopyToolNote = "Works on an STL copy. Use Save STL copy above."
+let stlCopyToolNote = "Works on an STL copy. Use Save STL Copy above."
 
 /// Scale card wording; OBJ and 3MF sources are saved as STL.
 func scaledCopyExplanation(format: ModelFileFormat) -> String {

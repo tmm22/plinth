@@ -1248,12 +1248,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     func importModelFromURL(_ url: String, name: String) async -> Bool {
         let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedURL.lowercased().hasPrefix("https://") else { showError("Use an https:// link to import a model."); return false }
-        guard !trimmedName.isEmpty else { showError("Enter a name for the imported model."); return false }
+        guard trimmedURL.lowercased().hasPrefix("https://") else { showError("Use an https:// link to upload a model."); return false }
+        guard !trimmedName.isEmpty else { showError("Enter a name for the uploaded model."); return false }
         guard !platformID.isEmpty else { showError("Choose a platform first."); return false }
         let type = importModelType(url: trimmedURL, name: trimmedName)
         var ok = false
-        let ran = await run("Import model from URL") {
+        let ran = await run("Upload model from URL") {
             var body: [String: Any] = ["URL": trimmedURL, "name": trimmedName, "platformId": platformID, "type": type]
             if !ownerID.isEmpty { body["ownerId"] = ownerID }
             let response = try await client.request("POST", path: "/files", body: body)

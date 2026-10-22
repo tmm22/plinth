@@ -122,7 +122,7 @@ Guided = dedicated Models / Orders / Connection UI. Workbench = API Workbench. U
 | Method | Path | Guided | Workbench | Unavailable | Notes |
 | --- | --- | --- | --- | --- | --- |
 | GET | `/files` | Models (cloud list) | Yes | | |
-| POST | `/files` | Models (Import Model from URL…) | Yes | | type stl/obj/3mf; https links only |
+| POST | `/files` | Models (Upload from URL…) | Yes | | type stl/obj/3mf; https links only |
 | GET | `/files/owner/{ownerId}` | | Yes | | |
 | GET | `/files/platform/{platformId}` | | Yes | | |
 | GET | `/files/{publicFileId}` | Models (detail) | Yes | | |

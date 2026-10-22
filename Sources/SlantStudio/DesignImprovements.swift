@@ -167,12 +167,17 @@ func designEditIntent(_ model: LocalModel) -> PartIntent? {
     return intent
 }
 
+/// Whether the automatic edge edit can act on a mesh: a plain closed rectangular box at least 0.4 mm on every side.
+func edgeImprovementAvailable(_ check: EdgeDesignCheck, extent: SIMD3<Float>) -> Bool {
+    check.plainBox && extent.min() >= 0.4
+}
+
+/// Shown only when `edgeImprovementAvailable` (with that mesh passed in) or for a copy that already has an edge edit.
 struct DesignImprovementsCard: View {
     @EnvironmentObject var store: StudioStore
     let model: LocalModel
-    @State private var mesh: STLMesh?
-    @State private var check: EdgeDesignCheck?
-    @State private var failure: String?
+    /// The model's mesh when its edges can be edited; nil for a copy that already has an edge edit.
+    let mesh: STLMesh?
     @State private var kind: EdgeImprovement = .bottomChamfer
     @State private var amount = 0.5
     @State private var review = false
@@ -185,51 +190,23 @@ struct DesignImprovementsCard: View {
         Card {
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 14) {
-                if let applied = model.designImprovement {
-                    Text("\(applied.kind.rawValue) already applied to this copy.")
-                    Text(String(format: "Size: %.2f mm · Original preserved", applied.sizeMM)).font(.caption)
-                } else if !model.supportsPreview {
-                    Text(stlOnlyToolNote(model) ?? stlCopyToolNote)
-                } else if let failure {
-                    Text(failure)
-                } else if let check {
-                    if check.plainBox, let mesh, (mesh.maximum - mesh.minimum).min() >= 0.4 {
-                        Text("Square edges detected. Consider a bottom chamfer for clearance or rounded corners for handling. Review the fit before applying.")
-                        Button("Review an edge improvement…") { review = true }
+                    if let applied = model.designImprovement {
+                        Text("\(applied.kind.rawValue) already applied to this copy.")
+                        Text(String(format: "Size: %.2f mm · Original preserved", applied.sizeMM)).font(.caption)
+                    } else if mesh != nil {
+                        Text("This part is a plain box with square edges. A bottom chamfer adds clearance; rounded corners are easier to handle. Review the fit before applying.")
+                        Button("Review Edge Improvement…") { review = true }
                             .disabled(store.busy)
-                    } else {
-                        if check.hasTransitions {
-                            Text("Angled or curved transitions detected; some edges may already be chamfered or rounded.")
-                        }
-                        if check.hasSharpJoins {
-                            Text("Other joins could benefit from a fillet or clearance chamfer. Edit specific edges in the source CAD model to preserve nearby features.")
-                        }
-                        Text(check.complete
-                             ? "Automatic editing supports plain solid rectangular parts only. Existing treatments and mating surfaces cannot always be identified from an STL."
-                             : "This mesh needs an edge review in its original CAD model.")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
-                } else { ProgressView("Checking existing edge treatments…") }
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 16)
             } label: {
-                SectionHeading(title: "Design improvements", caption: model.designImprovement == nil ? "Optional · Check chamfers and fillets" : "Edge improvement applied · View details")
+                SectionHeading(title: "Design improvements", caption: model.designImprovement == nil ? "Square edges · Add a bottom chamfer or rounded corners" : "Edge improvement applied · View details")
             }
         }
-        .task(id: model.id) {
-            guard model.supportsPreview, model.designImprovement == nil else { return }
-            let url = model.url
-            let result = await Task.detached(priority: .userInitiated) {
-                Result { let mesh = try STLMesh.read(from: url); return (mesh, mesh.edgeDesignCheck()) }
-            }.value
-            guard !Task.isCancelled else { return }
-            switch result {
-            case .success(let value):
-                mesh = value.0; check = value.1
-                amount = Double(min(0.5, (value.0.maximum - value.0.minimum).min() / 4))
-            case .failure(let error): failure = error.localizedDescription
-            }
+        .onAppear {
+            if let mesh { amount = Double(min(0.5, (mesh.maximum - mesh.minimum).min() / 4)) }
         }
         .sheet(isPresented: $review) { reviewSheet }
     }
@@ -282,7 +259,7 @@ struct DesignImprovementsCard: View {
                 HStack {
                     Button("Cancel") { review = false }.keyboardShortcut(.cancelAction)
                     Spacer()
-                    Button(saving ? "Saving…" : "Apply to new copy") { saveCopy() }
+                    Button(saving ? "Saving…" : "Apply to New Copy") { saveCopy() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!edgesAreFree || preview == nil || store.busy || saving)
                 }

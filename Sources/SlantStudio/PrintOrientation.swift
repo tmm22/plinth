@@ -289,7 +289,6 @@ struct PrintOrientationCard: View {
                             Text("Keeps Z up: this copy has features that depend on the print layers, such as cells, gaps, teardrop holes, bridging or matched walls. Prepare a different orientation from the source before adding them.")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
-                        materialAdvice
                         if let best {
                             DisclosureGroup("Preview print placement") {
                                 VStack(alignment: .leading, spacing: 8) {
@@ -300,12 +299,13 @@ struct PrintOrientationCard: View {
                                 }.padding(.top, 8)
                             }
                             Text(intent.explanation).font(.callout).foregroundStyle(.secondary)
-                            Button(preparing ? "Preparing…" : "Optimise & save copy") { prepareCopy(mesh, orientation: best.orientation) }
+                            Button(preparing ? "Preparing…" : "Optimise & Save Copy") { prepareCopy(mesh, orientation: best.orientation) }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(store.busy || preparing)
                         } else if intent.isReady {
                             Text("No flat-bed placement fits among the positions checked. Prepare a custom orientation in your CAD tool or slicer, then import it here.")
                         }
+                        materialAdvice
                         DisclosureGroup("How optimisation works") {
                             Text("Compares standard placements and up to 24 additional face directions without changing shape, dimensions, holes or clearances. Uses your chosen material. Finished strength and tolerances depend on Slant’s production settings; this is not a mechanical simulation.")
                                 .font(.callout).foregroundStyle(.secondary).padding(.top, 8)
@@ -317,7 +317,7 @@ struct PrintOrientationCard: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 16)
             } label: {
-                SectionHeading(title: "Optimise for purpose", caption: model.printRecipe.map { "Prepared for \($0.intent.purpose.rawValue.lowercased()) · View recipe" } ?? "Optional · Choose a printing orientation for this part")
+                SectionHeading(title: "Optimise for purpose", caption: model.printRecipe.map { "Prepared for \($0.intent.purpose.rawValue.lowercased()) · View recipe" } ?? "Choose how this part sits on the print bed for its use")
             }
         }
         .task(id: model.id) {
@@ -374,33 +374,38 @@ struct PrintOrientationCard: View {
         .disabled(preparing)
     }
 
+    /// Optional guidance under the placement. The material itself is chosen in Print configuration; a suggestion
+    /// changes it only when picked here.
     private var materialAdvice: some View {
-        DisclosureGroup("Match material to use") {
+        DisclosureGroup("Material suggestions for this use") {
             VStack(alignment: .leading, spacing: 10) {
                 Picker("Main requirement", selection: Binding(get: { intent.materialGoal ?? .keepCurrent }, set: { intent.materialGoal = $0 })) {
                     ForEach(MaterialGoal.allCases) { Text($0.rawValue).tag($0) }
                 }
+                .fixedSize()
                 if let goal = intent.materialGoal, goal != .keepCurrent {
                     Text(goal.guidance).font(.callout).foregroundStyle(.secondary)
                     let options = recommendedMaterials(for: goal, in: store.filaments)
                     if options.isEmpty && goal.profile != nil {
-                        Text("No matching material is currently listed as available. Keep your selection or browse the material catalogue.")
+                        Text("No matching material is currently listed as available. Keep the material chosen in Print configuration.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else if let selected = options.first(where: { $0.id == store.filamentID }) {
+                        Label("Print configuration already uses \(selected.name).", systemImage: "checkmark.circle")
                             .font(.callout).foregroundStyle(.secondary)
                     } else if !options.isEmpty {
-                        Menu("Choose suggested material") {
+                        Menu("Use a Suggested Material") {
                             ForEach(options) { material in
-                                Button(store.filamentID == material.id ? "Selected: \(material.name)" : material.name) {
-                                    store.filamentID = material.id
-                                }
+                                Button(material.name) { store.filamentID = material.id }
                             }
-                        }.disabled(store.busy || preparing)
-                        if let selected = options.first(where: { $0.id == store.filamentID }) {
-                            Text("Selected: \(selected.name)").font(.callout).foregroundStyle(.secondary)
                         }
+                        .fixedSize()
+                        .disabled(store.busy || preparing)
+                        .help("Sets the material in Print configuration")
                     }
                 }
             }.padding(.top, 8)
         }
+        .font(.callout)
     }
 
     private func preparedSummary(_ recipe: PreparedPrintRecipe) -> some View {
@@ -420,7 +425,7 @@ struct PrintOrientationCard: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             if let original = store.localModels.first(where: { $0.id == recipe.sourceID }) {
-                Button("Prepare another version") { store.select(original) }
+                Button("Prepare Another Version") { store.select(original) }
                     .disabled(store.busy)
             }
         }
