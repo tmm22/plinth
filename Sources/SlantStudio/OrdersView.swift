@@ -865,6 +865,11 @@ struct OrdersView: View {
     @State private var tableSortSynced = false
     /// Orders the "Since you last looked" banner's Show focused the list on (OrderWatch.swift); nil shows every order.
     @State private var watchFocus: Set<String>?
+    // Order detail extras (OrderDetailExtras.swift): Report a Problem…, and the next sheet to open once the current
+    // one has closed (Reprint as New Draft…, Review Next Draft).
+    @State private var problemReport: OrderProblemReportRequest?
+    @State private var reprintAfterDismiss: String?
+    @State private var nextReviewAfterDismiss: String?
 
     // From all loaded orders, not just the visible list: a new draft or a just-paid order stays shown even when the
     // typed search no longer matches it.
@@ -1043,6 +1048,13 @@ struct OrdersView: View {
                     Button("Export Orders…") { store.exportOrdersFromMenu() }
                         .disabled(store.orders.isEmpty)
                         .help("Save the orders in the list as a CSV file")
+                    // Opens the charge review for the first draft in the list; each review still needs its own Pay.
+                    if tableRows.contains(where: { ((orderObject($0.record.values)["status"] as? String) ?? "").uppercased() == "DRAFT" }) {
+                        Divider()
+                        Button("Review Drafts in Order…") { reviewDraftsInOrder() }
+                            .disabled(store.busy || nextDraftForReview(after: nil) == nil)
+                            .help("Review each draft in the list in turn, starting at the top. Each is paid only if you press Pay & Send to Production in its own review.")
+                    }
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
                 }
@@ -1084,13 +1096,24 @@ struct OrdersView: View {
                 sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
             }
         }
-        .sheet(item: $pendingConfirm) { request in
-            OrderActionConfirmSheet(method: request.method, orderID: request.orderID) { orderID, order in
+        .sheet(item: $pendingConfirm, onDismiss: openNextReviewIfRequested) { request in
+            OrderActionConfirmSheet(method: request.method, orderID: request.orderID, onCompleted: { orderID, order in
                 let record = Record(values: order)
                 if !record.id.isEmpty, let index = store.orders.firstIndex(where: { $0.id == orderID }) {
                     store.orders[index] = record
                 }
                 if selection == orderID { detail = order }
+            }, nextDraft: nextDraftForReview(after:), onReviewNext: { id in
+                // Opens only after this review has closed; that review then needs its own Pay press.
+                nextReviewAfterDismiss = id
+                pendingConfirm = nil
+            })
+            .environmentObject(store)
+        }
+        .sheet(item: $problemReport, onDismiss: reprintIfRequested) { request in
+            OrderProblemReportSheet(order: request.order) {
+                reprintAfterDismiss = request.id
+                problemReport = nil
             }
             .environmentObject(store)
         }
@@ -1115,6 +1138,35 @@ struct OrdersView: View {
                 load(current) // its detail was read before the change
             }
         }
+    }
+
+    // MARK: Order detail extras hooks (OrderDetailExtras.swift)
+
+    /// The next draft in the list's order for Review Next Draft, with a caption naming it.
+    func nextDraftForReview(after currentID: String?) -> (id: String, caption: String)? {
+        guard let id = orderNextDraftToReview(rows: orderDraftReviewRows(tableRows.map(\.record)), after: currentID,
+                                              isLocked: { store.isOutcomeUnknown(orderID: $0) }),
+              let row = tableRows.first(where: { $0.id == id }) else { return nil }
+        return (id, orderNextDraftCaption(recipient: row.recipient, number: row.number))
+    }
+    /// Review Drafts in Order…: opens the existing charge review for the first draft in the list. It never pays.
+    func reviewDraftsInOrder() {
+        guard !store.menuCommandsBlockedByModalUI, !store.busy, pendingConfirm == nil,
+              let next = nextDraftForReview(after: nil) else { return }
+        selection = next.id
+        pendingConfirm = PendingOrderConfirm(method: "POST", orderID: next.id)
+    }
+    func openNextReviewIfRequested() {
+        guard let id = nextReviewAfterDismiss else { return }
+        nextReviewAfterDismiss = nil
+        guard store.orders.contains(where: { $0.id == id }) else { return }
+        selection = id
+        pendingConfirm = PendingOrderConfirm(method: "POST", orderID: id)
+    }
+    func reprintIfRequested() {
+        guard let id = reprintAfterDismiss else { return }
+        reprintAfterDismiss = nil
+        Task { await store.duplicateOrderAsDraft(orderID: id) }
     }
 
     func applyStatusFilter(_ status: String) {
@@ -1272,6 +1324,12 @@ struct OrdersView: View {
                                 .fixedSize()
                                 .help("Review and pay")
                         }
+                        // Takes the slot Review & Place Order uses on drafts, so the row never gets wider.
+                        if orderOffersProblemReport(status: (displayed["status"] as? String) ?? selected.string("status")) {
+                            Button("Report a Problem…") { problemReport = OrderProblemReportRequest(id: selected.id, order: displayed) }
+                                .fixedSize()
+                                .help("Put together a message about this order for Slant support, to copy")
+                        }
                     }
                     if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
                         Text(orderDetailDraftCaption).font(.caption).foregroundStyle(.secondary)
@@ -1341,6 +1399,10 @@ struct OrderActionConfirmSheet: View {
     let method: String
     let orderID: String
     let onCompleted: (_ orderID: String, _ order: [String: Any]) -> Void
+    /// Review Next Draft (OrderDetailExtras.swift): offered only after this order was placed. It closes this review
+    /// and opens a new one for the next draft, which loads fresh and needs its own Pay press; it never pays.
+    var nextDraft: ((_ after: String) -> (id: String, caption: String)?)? = nil
+    var onReviewNext: ((_ orderID: String) -> Void)? = nil
     @State private var fresh: [String: Any]?
     @State private var loadState: OrderConfirmLoadState = .loading
     @State private var awaitingBusy = false
@@ -1430,6 +1492,14 @@ struct OrderActionConfirmSheet: View {
                 Button(writeSucceeded ? "Done" : "Go Back", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(writing)
+                // Review Next Draft: never the default button, and kept away from the trailing Pay position so a
+                // repeated click can't land on the next review's Pay.
+                if isPay, writeSucceeded, let onReviewNext, let next = nextDraft?(orderID) {
+                    Button("Review Next Draft") { onReviewNext(next.id) }
+                        .disabled(store.busy)
+                        .help("Close this and review the next draft in the list. Nothing is paid until you press Pay in that review.")
+                    Text(next.caption).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
                 Spacer()
                 if writeSucceeded {
                     EmptyView()
@@ -2300,6 +2370,10 @@ struct OrderSummary: View {
                         if showsItemStatus, let itemStatus = orderItemStatusTitle(item) {
                             Text("Item status: \(itemStatus)").font(.caption).foregroundStyle(.secondary)
                         }
+                        // Slant's per-item production progress (OrderDetailExtras.swift); never shown for drafts.
+                        if let progress = orderItemProgressLine(item, orderStatus: status) {
+                            Text("Production: \(progress)").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
             } else {
@@ -2308,6 +2382,14 @@ struct OrderSummary: View {
             if let address = ((order["customer"] as? [String: Any])?["details"] as? [String: Any])?["address"] as? [String: Any] {
                 Text([address["name"], address["line1"], address["line2"], address["city"], address["state"], address["zip"], address["country"]].compactMap { $0 as? String }.filter { !$0.isEmpty }.joined(separator: ", "))
                     .font(.callout).foregroundStyle(.secondary)
+            }
+            // Advisory only: the address Slant's label was made for, when it differs (OrderDetailExtras.swift).
+            if let advisory = orderLabelAddressAdvisory(order) {
+                Label(advisory.line, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                    .help("Differs in: \(advisory.differences.joined(separator: ", ")). Check with Slant if the label address is wrong.")
             }
             // Orders being made or shipped show tracking above the costs; drafts and cancelled orders skip it.
             if orderDetailShowsTracking(status: status, hasTrackingDetails: !tracking.isEmpty || fulfillmentArriveBy(order) != nil) {
