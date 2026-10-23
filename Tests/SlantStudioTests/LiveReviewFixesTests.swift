@@ -34,7 +34,8 @@ final class LiveReviewFixesTests: XCTestCase {
     func testResetHeaderRejectsGarbage() {
         for raw: String? in [nil, "", "  ", "soon", "-5", "-1800000685873", "nan", "NaN", "inf", "1e400", "12abc",
                              "1800000685873000", // microseconds: would be ~58,000 years away
-                             "200000"] {       // relative but more than a day away
+                             "200000",          // relative but more than a day away
+                             "60000"] {         // relative milliseconds would be 16.7 h: refused, not trusted
             XCTAssertNil(rateLimitResetDate(raw, now: liveNow), String(describing: raw))
         }
         XCTAssertNil(rateLimitInfo(from: ["X-RateLimit-Reset": "garbage"], now: liveNow).reset)

@@ -34,8 +34,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
-<key>NSLocationUsageDescription</key><string>Use your current location to suggest a delivery address when you choose Use current location. You review the address before using it.</string>
-<key>NSLocationWhenInUseUsageDescription</key><string>Use your current location to suggest a delivery address when you choose Use current location. You review the address before using it.</string>
+<key>NSLocationUsageDescription</key><string>Use your current location to suggest a delivery address when you choose Use Current Location. You review the address before using it.</string>
+<key>NSLocationWhenInUseUsageDescription</key><string>Use your current location to suggest a delivery address when you choose Use Current Location. You review the address before using it.</string>
 <key>NSHumanReadableCopyright</key><string>Independent client. Not affiliated with Slant 3D.</string>
 <key>CFBundleDocumentTypes</key><array>
 <dict><key>CFBundleTypeName</key><string>STL Model</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.standard-tesselated-geometry-format</string></array></dict>

@@ -444,6 +444,8 @@ final class OrderImportTests: XCTestCase {
         XCTAssertEqual(orderImportPacing(lastRequestStart: nil, rateLimit: plenty, rateLimitedUntil: nil, now: now), .wait(0))
         let pastReset = RateLimitInfo(limit: 100, remaining: 0, reset: now.addingTimeInterval(-1), role: nil)
         XCTAssertEqual(orderImportPacing(lastRequestStart: nil, rateLimit: pastReset, rateLimitedUntil: nil, now: now), .wait(0))
+        let lowNoReset = RateLimitInfo(limit: 100, remaining: 2, reset: nil, role: nil)
+        XCTAssertEqual(orderImportPacing(lastRequestStart: nil, rateLimit: lowNoReset, rateLimitedUntil: nil, now: now), .wait(60))
         guard case .stop = orderImportPacing(lastRequestStart: nil, rateLimit: nil, rateLimitedUntil: now.addingTimeInterval(3600), now: now) else {
             return XCTFail("an hour-long wait should stop the batch")
         }

@@ -1037,8 +1037,13 @@ func orderImportPacing(lastRequestStart: Date?, rateLimit: RateLimitInfo?, rateL
     var wait: TimeInterval = 0
     if let lastRequestStart { wait = max(0, minimumSpacing - now.timeIntervalSince(lastRequestStart)) }
     if let rateLimitedUntil, rateLimitedUntil > now { wait = max(wait, rateLimitedUntil.timeIntervalSince(now)) }
-    if let rateLimit, let remaining = rateLimit.remaining, remaining <= reserve, let reset = rateLimit.reset, reset > now {
-        wait = max(wait, reset.timeIntervalSince(now))
+    if let rateLimit, let remaining = rateLimit.remaining, remaining <= reserve {
+        if let reset = rateLimit.reset {
+            if reset > now { wait = max(wait, reset.timeIntervalSince(now)) }
+        } else {
+            // A low count without a usable reset time: wait out a whole one-minute window rather than press on.
+            wait = max(wait, 60)
+        }
     }
     if wait > maxWait {
         return .stop("Stopped to wait for Slant’s rate limit. \(rateLimitResetWaitCopy(secondsFromNow: wait))")

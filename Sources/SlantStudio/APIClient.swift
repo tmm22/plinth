@@ -37,7 +37,7 @@ struct APIResponse {
 
 /// When Slant's `X-RateLimit-Reset` says the allowance refills. Live responses (observed 23 Oct 2026) send epoch
 /// **milliseconds** (`1800000685873` = 08:11:25 UTC, 60 s after the request). Epoch seconds are tolerated too, and a
-/// small number is read as seconds from now. Negative, non-finite or unparseable values, and times more than a day
+/// small number (up to an hour) is read as seconds from now. Negative, non-finite or unparseable values, and times more than a day
 /// away (an unknown unit), give nil.
 func rateLimitResetDate(_ raw: String?, now: Date) -> Date? {
     guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
@@ -48,6 +48,8 @@ func rateLimitResetDate(_ raw: String?, now: Date) -> Date? {
     } else if value >= 1e9 {
         date = Date(timeIntervalSince1970: value)
     } else {
+        // Slant's windows are a minute (OpenSCAD an hour); a larger relative value is probably another unit.
+        guard value <= 3600 else { return nil }
         date = now.addingTimeInterval(value)
     }
     guard date.timeIntervalSince(now) <= rateLimitResetMaxLead else { return nil }

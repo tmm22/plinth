@@ -866,7 +866,8 @@ struct OrdersView: View {
     }
     var listRecords: [Record] {
         if store.orderSearchActive { return store.orders }
-        return store.orders.filter { orderMatchesSearch($0, query: search) }
+        let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
+        return store.orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) }
     }
     var tableRows: [OrderTableRow] {
         orderTableRowsSorted(listRecords.map { OrderTableRow(record: $0) }, using: sortOrder)
@@ -905,7 +906,7 @@ struct OrdersView: View {
                     TableColumn("Status", value: \.status) { (row: OrderTableRow) in
                         Text(row.status).lineLimit(1).help(row.status)
                     }
-                    .width(min: 64, ideal: 96, max: 150)
+                    .width(min: 64, ideal: 118, max: 160)
                     TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
                         Text(row.created.isEmpty ? "—" : row.created).lineLimit(1)
                     }
@@ -1324,7 +1325,7 @@ struct OrderActionConfirmSheet: View {
                             if orderReviewItemListScrolls(itemCount: items.count) {
                                 ScrollView { reviewItemList(items).padding(.trailing, 12) }
                                     .scrollIndicators(.visible)
-                                    .frame(height: 112)
+                                    .frame(height: 128)
                             } else {
                                 reviewItemList(items)
                             }
@@ -1404,20 +1405,21 @@ struct OrderActionConfirmSheet: View {
         return VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 let text = orderItemLineText(item, modelNames: modelNames)
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                // One line each, material as a caption (as in the order detail), so the list's height is predictable.
+                VStack(alignment: .leading, spacing: 1) {
                     if isPay, orderItemHasLargeQuantity(item) {
                         Label(text, systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange).fontWeight(.semibold)
-                            .lineLimit(2).truncationMode(.middle).layoutPriority(1)
+                            .lineLimit(1).truncationMode(.middle)
                             .accessibilityLabel("Large quantity: \(text)")
                     } else {
-                        Text(text).lineLimit(2).truncationMode(.middle).layoutPriority(1)
+                        Text(text).lineLimit(1).truncationMode(.middle)
                     }
-                    Spacer(minLength: 8)
                     if let material = orderItemMaterialName(item, filaments: store.filaments) {
-                        Text(material).foregroundStyle(.secondary).lineLimit(1)
+                        Text("Material: \(material)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
+                .help(text)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1632,7 +1634,7 @@ func orderDetailCaption(_ order: [String: Any]) -> String {
     if !date.isEmpty { return date }
     return "Order details"
 }
-func orderMatchesSearch(_ order: Record, query: String) -> Bool {
+func orderMatchesSearch(_ order: Record, query: String, modelNames: [String: String] = [:]) -> Bool {
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return true }
     let values = orderObject(order.values)
@@ -1645,7 +1647,7 @@ func orderMatchesSearch(_ order: Record, query: String) -> Bool {
         orderCity(values)
     ]
     if let items = values["items"] as? [[String: Any]] {
-        fields.append(contentsOf: items.map { orderItemDisplayName($0) })
+        fields.append(contentsOf: items.map { orderItemDisplayName($0, modelNames: modelNames) })
     }
     if let reference = orderMarketplaceReference(values) { fields.append(reference.id) }
     return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
