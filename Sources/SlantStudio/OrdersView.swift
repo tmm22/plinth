@@ -194,6 +194,8 @@ struct OrderComposerView: View {
     @State private var showAddSavedProduct = false
     @State private var confirmCreateAnyway = false
     @State private var advancedExpanded = false
+    /// Use My Address asks before replacing details already in the form (SellerAddress.swift).
+    @State private var confirmUseMyAddress = false
 
     var hasUnsavedInput: Bool {
         orderComposerHasUnsavedInput(
@@ -272,6 +274,12 @@ struct OrderComposerView: View {
             Button("Keep Editing", role: .cancel) {}
         } message: {
             Text(orderComposerDiscardMessage(outcomeUnknown: store.draftCreateOutcomeUnknown))
+        }
+        .confirmationDialog("Replace the delivery details?", isPresented: $confirmUseMyAddress, titleVisibility: .visible) {
+            Button("Use My Address") { applyMyAddress() }
+            Button("Keep Current Details", role: .cancel) {}
+        } message: {
+            Text("The name, email and address in this draft are replaced with your saved address.")
         }
         .confirmationDialog("Create another draft?", isPresented: $confirmCreateAnyway, titleVisibility: .visible) {
             Button("Create Anyway") { createDraft(confirmedDespiteUnknownOutcome: true) }
@@ -363,6 +371,22 @@ struct OrderComposerView: View {
                 HStack {
                     Text("Deliver to")
                     Spacer()
+                    // Shown only once the seller has saved their own address in Settings › Account.
+                    if store.sellerAddress != nil {
+                        Button {
+                            if let address = store.sellerAddress,
+                               useMyAddressNeedsConfirmation(current: delivery, replacement: deliveryDetails(fromSellerAddress: address)) {
+                                confirmUseMyAddress = true
+                            } else {
+                                applyMyAddress()
+                            }
+                        } label: {
+                            Label("Use My Address", systemImage: "house")
+                        }
+                        .controlSize(.small)
+                        .disabled(store.busy)
+                        .help("Fill in your own address from Settings › Account, for a sample sent to you")
+                    }
                     // Location is only requested when this is pressed; manual entry stays available.
                     Button {
                         if seededDelivery { editingDelivery = true }
@@ -650,7 +674,7 @@ struct OrderComposerView: View {
             ForEach(filamentTypes(in: store.filaments), id: \.self) { type in
                 Section(type) {
                     ForEach(indexedRecords(filamentsMatching(store.filaments, type: type)), id: \.id) { row in
-                        let title = displayName(for: row.record, fallback: "Untitled")
+                        let title = materialDisplayName(displayName(for: row.record, fallback: "Untitled"))
                         if let stock = filamentAvailabilityLabel(row.record) {
                             Text("\(title) (\(stock))").tag(row.record.id)
                         } else {
@@ -670,8 +694,10 @@ struct OrderComposerView: View {
                 let savedName = store.localModels.first { $0.remoteID == selection.wrappedValue }?.name
                 Text(savedName ?? "Previously chosen item").tag(selection.wrappedValue)
             }
+            // Same-named entries (such as several uploads of one model) get a type/date detail (LibraryNameDetails.swift).
+            let details = recordDuplicateNameDetailsByID(records)
             ForEach(indexedRecords(records), id: \.id) { row in
-                Text(displayName(for: row.record, fallback: "Untitled")).tag(row.record.id)
+                Text(nameWithDetail(displayName(for: row.record, fallback: "Untitled"), details[row.record.id])).tag(row.record.id)
             }
         }
     }
@@ -722,6 +748,15 @@ struct OrderComposerView: View {
         initialShippingProvider = shippingProvider
         initialDraftPlatformID = draftPlatformID
         advancedExpanded = orderComposerAdvancedStartsExpanded(shippingProvider: shippingProvider, metadataFields: metadataFields)
+        // A sample to the seller's own address shows the fields so they can be checked before Create Draft.
+        if prefill?.usesSellerAddress == true { editingDelivery = true }
+    }
+
+    /// Fills every delivery field with the seller's saved address and shows the fields to check.
+    func applyMyAddress() {
+        guard let address = store.sellerAddress else { return }
+        delivery = deliveryDetails(fromSellerAddress: address)
+        editingDelivery = true
     }
 
     /// Starts this draft's address from empty instead of the last draft's. Nothing typed is lost, so the empty form
@@ -1959,6 +1994,8 @@ struct OrderComposerPrefill {
     var sourceOrderNumber: String? = nil
     var shippingProvider = ""
     var platformID: String? = nil
+    /// `delivery` is the seller's own saved address (Order a Sample to Me…), shown as fields to check.
+    var usesSellerAddress = false
 }
 
 private func reorderText(_ value: Any?) -> String {

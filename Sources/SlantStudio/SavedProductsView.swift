@@ -524,7 +524,7 @@ struct SavedProductsSheet: View {
                 ForEach(filamentTypes(in: store.filaments), id: \.self) { type in
                     Section(type) {
                         ForEach(indexedRecords(filamentsMatching(store.filaments, type: type)), id: \.id) { row in
-                            let title = displayName(for: row.record, fallback: "Untitled")
+                            let title = materialDisplayName(displayName(for: row.record, fallback: "Untitled"))
                             if let stock = filamentAvailabilityLabel(row.record) {
                                 Text("\(title) (\(stock))").tag(row.record.id)
                             } else {

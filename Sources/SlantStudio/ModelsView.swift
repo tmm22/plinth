@@ -125,6 +125,7 @@ struct ModelsView: View {
         .sheet(item: renamingModel) { model in
             RenameModelSheet(model: model).environmentObject(store)
         }
+        .modifier(SellerAddressNeededAlert()) // Order a Sample to Me… without a saved address (SellerAddressView.swift)
         .onAppear {
             Task { await store.refreshFilamentsIfStale() }
             syncSelectionFromStore()
@@ -155,11 +156,16 @@ struct ModelsView: View {
                 } else if filteredLocalModels.isEmpty {
                     Text("No local models match “\(search)”.").font(.caption).foregroundStyle(.secondary)
                 }
+                // Same-named models get a format/date line (LibraryNameDetails.swift).
+                let nameDetails = localModelDuplicateNameDetails(store.localModels)
                 ForEach(filteredLocalModels) { model in
                     HStack(spacing: 10) {
                         LocalModelThumbnail(model: model, size: 30)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(model.name).lineLimit(1)
+                            if let detail = nameDetails[model.id] {
+                                Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
                             StudioBadge(
                                 text: model.remoteID == nil ? "Ready to upload" : "Uploaded",
                                 tone: model.remoteID == nil ? .neutral : .success
@@ -168,7 +174,7 @@ struct ModelsView: View {
                     }
                     .padding(.vertical, 3)
                     .tag(LibrarySelection.local(model.id))
-                    .accessibilityLabel("\(model.name), \(model.remoteID == nil ? "Ready to upload" : "Uploaded")")
+                    .accessibilityLabel("\(nameWithDetail(model.name, nameDetails[model.id])), \(model.remoteID == nil ? "Ready to upload" : "Uploaded")")
                     .contextMenu { localModelMenuItems(model) }
                 }
             }
@@ -183,6 +189,7 @@ struct ModelsView: View {
                 } else if filteredCloudFiles.isEmpty && !store.files.isEmpty {
                     Text("All uploaded models are hidden.").font(.caption).foregroundStyle(.secondary)
                 }
+                let cloudNameDetails = recordDuplicateNameDetailsByID(store.files, fallback: "Untitled model")
                 ForEach(indexedRecords(filteredCloudFiles), id: \.id) { row in
                     let hidden = store.hiddenFileIDs.contains(row.record.id)
                     let linked = localModel(linkedTo: row.record.id, in: store.localModels)
@@ -190,6 +197,9 @@ struct ModelsView: View {
                         StudioTile(symbol: "icloud", imageURL: httpsPreviewImageURL(row.record), size: 30)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(cloudModelDisplayName(row.record)).lineLimit(1)
+                            if let detail = cloudNameDetails[row.record.id] {
+                                Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
                             // Every row here is in Slant, so only the exceptions are badged.
                             if hidden || linked != nil {
                                 HStack(spacing: 4) {
@@ -202,7 +212,9 @@ struct ModelsView: View {
                     .opacity(hidden ? 0.6 : 1)
                     .padding(.vertical, 3)
                     .tag(LibrarySelection.cloud(row.record.id))
-                    .accessibilityLabel(linked == nil ? cloudModelDisplayName(row.record) : "\(cloudModelDisplayName(row.record)), also on this Mac")
+                    .accessibilityLabel(linked == nil
+                                        ? nameWithDetail(cloudModelDisplayName(row.record), cloudNameDetails[row.record.id])
+                                        : "\(nameWithDetail(cloudModelDisplayName(row.record), cloudNameDetails[row.record.id])), also on this Mac")
                     .contextMenu { cloudModelMenuItems(row.record.id) }
                 }
                 if hiddenCloudCount > 0 {
@@ -412,6 +424,11 @@ struct ModelsView: View {
             store.openSavedProducts(prefill: savedProductPrefill(for: model, selectedFilamentID: store.filamentID))
         }
         if model.remoteID != nil {
+            // Opens the composer for review only; nothing is created or paid from here (SellerAddress.swift).
+            Button("Order a Sample to Me…") { store.orderSampleToMe(fileID: model.remoteID) }
+                .disabled(store.busy || store.orderDraftBlockedReason != nil)
+        }
+        if model.remoteID != nil {
             Divider()
             // Only asks: the upload starts from the confirmation, and only for the selected model.
             Button("Upload Again…") {
@@ -436,6 +453,9 @@ struct ModelsView: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(id, forType: .string)
         }
+        // Opens the composer for review only; nothing is created or paid from here (SellerAddress.swift).
+        Button("Order a Sample to Me…") { store.orderSampleToMe(fileID: id) }
+            .disabled(store.busy || store.orderDraftBlockedReason != nil)
         Divider()
         if store.hiddenFileIDs.contains(id) {
             Button("Show in List") { store.unhideCloudModel(id: id) }
@@ -1443,7 +1463,7 @@ func webhookResendResultMessage(_ result: WebhookResendResult) -> String {
 }
 
 func filamentPickerLabel(_ record: Record) -> String {
-    let name = displayName(for: record, fallback: "Untitled material")
+    let name = materialDisplayName(displayName(for: record, fallback: "Untitled material"))
     if let stock = filamentAvailabilityLabel(record) { return "\(name) · \(stock)" }
     return name
 }
@@ -1460,7 +1480,10 @@ func componentFactRows(_ record: Record) -> [(String, String)] {
         rows.append(("Dimensions", unit.isEmpty ? dimensions : "\(dimensions) \(unit)"))
     }
     let weight = record.string("weight")
-    if !weight.isEmpty { rows.append(("Weight", weight)) }
+    // The Component schema sends `weight` as a number with a separate `weightUnit` ("g").
+    if let number = catalogNumberText(record.values["weight"]), let unit = record.string("weightUnit").nilIfEmpty {
+        rows.append(("Weight", "\(number) \(unit)"))
+    } else if !weight.isEmpty { rows.append(("Weight", weight)) }
     if let tags = record.values["tags"] as? [Any] {
         let labels = tags.compactMap { metricDisplayValue($0) }
         if !labels.isEmpty { rows.append(("Tags", labels.joined(separator: ", "))) }
@@ -1564,7 +1587,8 @@ struct CatalogView: View {
     }
     private var filtered: [Record] {
         let typed = kind == .materials ? filamentsMatching(records, type: materialType) : records
-        return typed.filter { catalogRecordMatches($0, search: search) }
+        let categories = kind == .components ? store.componentCategories : []
+        return typed.filter { catalogRecordMatches($0, search: search, categories: categories) }
     }
     private var untitledFallback: String { catalogDisplayFallback(kind) }
     private var catalogLoaded: Bool { store.loadedCatalogs.contains(kind) }
@@ -1671,7 +1695,7 @@ struct CatalogView: View {
                                 catalogCard(row.record)
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel(displayName(for: row.record, fallback: untitledFallback))
+                            .accessibilityLabel(catalogRecordTitle(row.record, kind: kind))
                         }
                     }
                     .padding(StudioMetrics.pagePadding)
@@ -1730,7 +1754,7 @@ struct CatalogView: View {
                 .background(Color.primary.opacity(0.03))
             Divider()
             VStack(alignment: .leading, spacing: 6) {
-                Text(displayName(for: record, fallback: untitledFallback))
+                Text(catalogRecordTitle(record, kind: kind))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(2)
                     .frame(height: 34, alignment: .topLeading)
@@ -1775,6 +1799,8 @@ struct CatalogView: View {
                 .filter { !$0.isEmpty }.joined(separator: " · ")
         case .components:
             return category ?? record.string("dimensions").nilIfEmpty.map { "\($0) mm" } ?? "Component"
+        case .stationery:
+            return stationeryCardSubtitle(record)
         default:
             return record.string("description", "dimensions").nilIfEmpty ?? kind.rawValue
         }
@@ -1808,7 +1834,7 @@ struct CatalogDetailSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Text(displayName(for: record, fallback: untitledFallback)).font(.title2.weight(.bold))
+                    Text(catalogRecordTitle(record, kind: kind)).font(.title2.weight(.bold))
                     Spacer()
                     Button("Done") { dismiss() }
                         .keyboardShortcut(.cancelAction)
@@ -1867,6 +1893,11 @@ func catalogReadableFields(_ record: Record, kind: Destination, categories: [Rec
             Text(stock).foregroundStyle(.orange)
         }
     }
+    if kind == .stationery {
+        ForEach(stationeryFactRows(record), id: \.0) { row in
+            LabeledContent(row.0, value: row.1)
+        }
+    }
     if kind == .components {
         ForEach(componentFactRows(record), id: \.0) { row in
             LabeledContent(row.0, value: row.1)
@@ -1883,15 +1914,11 @@ func catalogReadableFields(_ record: Record, kind: Destination, categories: [Rec
     if kind != .materials, !color.isEmpty { LabeledContent("Colour", value: color) }
 }
 
-func catalogRecordMatches(_ record: Record, search: String) -> Bool {
+/// `categories` lets a component match its category's name (see `catalogSearchFields`, CatalogDisplay.swift).
+func catalogRecordMatches(_ record: Record, search: String, categories: [Record] = []) -> Bool {
     let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return true }
-    let fields = [
-        record.string("name"), record.string("description"), record.string("profile"),
-        record.string("category"), record.string("categoryName"), record.string("provider"),
-        record.string("color"), record.string("tags")
-    ]
-    return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
+    return catalogSearchFields(record, categories: categories).contains { $0.localizedCaseInsensitiveContains(trimmed) }
 }
 
 func hidingSecrets(_ value: Any) -> Any {
