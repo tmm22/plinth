@@ -94,6 +94,13 @@ Secret is the platform `webhookSecret` (trim before use; used exactly as submitt
 
 ## Orders query params (docs)
 
+- Order watch polls `GET /orders?page=1&limit=100&sortBy=createdAt&sortOrder=DESC&platformId=…` every 4 minutes and reads only the order-level `status`.
+- Items (seen 23 Oct 2026 on a DRAFT): both the item and `printItem` carry `estimatedPrintCompletion` (null), `printItem.assignments` is an empty array, and the item `status` is PROCESSING, so item status isn't production progress. Docs describe assignments with a status (QUEUED/PRINTING/ON_SHELF), `krakenStatus` and printer details; Studio reads assignment `status` only (shape unverified until a paid order is seen). `fulfillment` is null on drafts; `fulfillment.address` is compared with the shipping address for display only, and `fulfillment.provider` may be the label service (Shippo, ShipStation) rather than the carrier. Not yet confirmed: whether list rows include `fulfillment` and whether `arriveByDate` is filled in.
+- `POST /orders/batch` takes `{"publicIds": [...]}` and returns `data: [orders]` (seen 23 Oct 2026); the spec's `public_ids` is refused with 400 “No public IDs provided”. Studio doesn't use it yet.
+- No Slant support address is documented; the OpenAPI `info.contact` is the API developer contact, so Report a Problem only copies its message.
+- Stationery (spec): nullable `price` and `weight`, a `dimensions` string, an integer `quantity` (meaning undocumented) and `available`, with no unit fields. Studio shows units only if Slant sends `priceUnit`, `dimensionUnit` or `weightUnit` (unverified). Components send `weight` with `weightUnit`.
+- `POST /files/openScad` (Personalise from Template): the body is `{ scadCode }`, holding the template with the values appended as assignments; the reply is STL bytes. Studio counts 5 an hour per session, one at a time, counts every request sent whatever the outcome, and never retries. After a 429 it waits for a numeric `Retry-After`, else a future `X-RateLimit-Reset` (each capped at 1 h), else 1 h. Templates with `include`/`use` aren't sent. Unverified: Slant's fonts and libraries, whether failed generations count, and which headers its 429 carries.
+- The live OpenAPI at `https://slant3dapi.com/v2/api/openapi.json` no longer lists `POST /files` (upload by URL, used by **Upload from URL…**), though the docs still describe it (checked 23 Oct 2026). Keep the feature, but expect it may be withdrawn.
 - `GET /orders/search` is answered like `GET /orders/{publicOrderId}` with the ID `search`: every query, even an exact order number, returns 400 “Order not found.” (seen 23 Oct 2026; `GET /orders/xyz` gives the same reply). `search` and `q` parameters on `GET /orders` are ignored. Studio therefore falls back to `GET /orders?publicId=` (upper-cased, `SLANT_` added to a bare number), which matches exact order numbers only, and the search hint promises only that.
 - `startDate` / `endDate`: ISO 8601. Docs describe endDate as returning orders **up to that point**; file filters phrase endDate as “created **before this date**” (exclusive upper bound). Studio’s guided Orders filter sends the day after the chosen “To” date so the selected day is included.
 - `sortOrder`: `ASC` | `DESC` (invalid sort/limit → 400 naming the parameter).
@@ -132,7 +139,7 @@ Guided = dedicated Models / Orders / Catalog / Settings UI (platforms are manage
 | POST | `/files/direct-upload` | Models upload | Yes | | + confirm |
 | POST | `/files/confirm-upload` | Models upload | Yes | | |
 | POST | `/files/batch` | | Yes | | |
-| POST | `/files/openScad` | | Yes | | STL bytes |
+| POST | `/files/openScad` | Personalise from Template (Slant engine) | Yes | | STL bytes; 5/hour, never retried |
 | POST | `/files/{publicFileId}/estimate` | Models estimate, Compare estimates | Yes | | one material/quantity per call; sequential comparison ≤ 20 calls |
 | GET | `/platforms` | Settings › Account | Yes | | |
 | POST | `/platforms` | Create platform | Yes | | |
@@ -167,4 +174,4 @@ Guided = dedicated Models / Orders / Catalog / Settings UI (platforms are manage
 | — | Refund order (docs only) | | | Yes | Not in OpenAPI |
 | — | Customer create / checkout | | | Yes | Docs: not available |
 
-Not yet guided (Workbench only): file metadata edits, owner/platform file lists, file and order batch lookups, OpenSCAD generation, Stripe public key, component search/detail and the custom webhook receiver. Possible later guided work: richer tracking and refunds UX if/when the API exposes it. The Models import panel, drag and drop, Finder **Open With** and URL import already accept STL, OBJ and 3MF.
+Not yet guided (Workbench only): file metadata edits, owner/platform file lists, file and order batch lookups, Stripe public key, component search/detail and the custom webhook receiver. Possible later guided work: richer tracking and refunds UX if/when the API exposes it. The Models import panel, drag and drop, Finder **Open With** and URL import already accept STL, OBJ and 3MF.
