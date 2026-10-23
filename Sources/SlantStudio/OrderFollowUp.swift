@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-// Order follow-up: getting Slant's tracking back to the marketplace (Mark Shipped in Your Shop…), a Shopify tracking
+// Order follow-up: getting Slant's tracking back to the marketplace (Tracking for Your Shop…), a Shopify tracking
 // CSV, the arrive-by date and the Needs Attention check. Everything here reads orders already loaded; nothing sends a
 // request, and nothing is written to disk except a CSV the user saves.
 
@@ -30,10 +30,20 @@ func orderArriveByIsDateOnly(_ date: Date) -> Bool {
     return parts.hour == 0 && parts.minute == 0 && parts.second == 0 && (parts.nanosecond ?? 0) < 1_000_000
 }
 
-/// When the order counts as late: the end of the arrive-by day for a date-only value (so a parcel due "25 Oct" isn't
-/// late at midnight UTC that morning), otherwise the timestamp itself.
-func orderArriveByDeadline(_ date: Date) -> Date {
-    orderArriveByIsDateOnly(date) ? date.addingTimeInterval(86_400) : date
+/// When the order counts as late: for a date-only value, the end of that calendar day in the Mac's time zone (so a
+/// parcel due "25 Oct" isn't late during the 25th anywhere, west or east of Greenwich); otherwise the timestamp itself.
+func orderArriveByDeadline(_ date: Date, timeZone: TimeZone = .current) -> Date {
+    guard orderArriveByIsDateOnly(date) else { return date }
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = arriveByUTC
+    var local = Calendar(identifier: .gregorian)
+    local.timeZone = timeZone
+    // The day Slant sent (read in UTC), as a local calendar day; late from the start of the next local day.
+    let day = utc.dateComponents([.year, .month, .day], from: date)
+    guard let start = local.date(from: day), let end = local.date(byAdding: .day, value: 1, to: start) else {
+        return date.addingTimeInterval(86_400)
+    }
+    return end
 }
 
 /// "25 Oct 2026". A date-only value is shown in UTC, so it isn't shifted to the previous day west of Greenwich.
@@ -92,7 +102,7 @@ enum OrderAttention: Equatable {
         case .paymentProblem:
             return "Slant had a problem charging for this order."
         case .pastArriveBy(let date):
-            return "Past its arrive-by date (\(orderArriveByLabel(date))) and not delivered."
+            return "Past its arrive-by date (\(orderArriveByLabel(date))) and not shipped yet."
         case .notShipped(let days, let sincePlaced):
             return "Not shipped \(orderAttentionDays(days)) after it was \(sincePlaced ? "placed" : "created")."
         case .draftNotPlaced(let days):
@@ -105,12 +115,19 @@ func orderAttentionDays(_ days: Int) -> String { days == 1 ? "1 day" : "\(days) 
 
 /// The most pressing reason the order needs a look, or nil. Payment problems first, then a missed arrive-by date,
 /// then an order not shipped in time, then a draft left unplaced. Cancelled and delivered orders never need one;
-/// unknown statuses aren't guessed at.
-func orderAttention(_ order: [String: Any], now: Date) -> OrderAttention? {
+/// unknown statuses aren't guessed at. A shipped order is never late here (it's on its way), and neither is a draft
+/// past the `orderAttentionDraftIgnoredAfterDays` window (or with no creation date), which Slant can't remove.
+func orderAttention(_ order: [String: Any], now: Date, timeZone: TimeZone = .current) -> OrderAttention? {
     let status = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     guard !status.isEmpty, !["CANCELED", "CANCELLED", "DELIVERED"].contains(status) else { return nil }
     if status == "PAYMENT_ERROR" { return .paymentProblem }
-    if let arriveBy = orderArriveByDate(order), now > orderArriveByDeadline(arriveBy) { return .pastArriveBy(arriveBy) }
+    let draftInWindow = orderCreatedDate(order).map {
+        now.timeIntervalSince($0) <= Double(orderAttentionDraftIgnoredAfterDays) * 86_400
+    } ?? false
+    let canBeLate = status != "SHIPPED" && (status != "DRAFT" || draftInWindow)
+    if canBeLate, let arriveBy = orderArriveByDate(order), now > orderArriveByDeadline(arriveBy, timeZone: timeZone) {
+        return .pastArriveBy(arriveBy)
+    }
     func age(from start: Date?) -> TimeInterval? {
         guard let start else { return nil }
         let interval = now.timeIntervalSince(start)
@@ -173,9 +190,9 @@ struct OrderStatusCell: View {
     }
 }
 
-// MARK: - Mark shipped in your shop
+// MARK: - Tracking for your shop
 
-/// One loaded order with tracking, as listed in Mark Shipped in Your Shop….
+/// One loaded order with tracking, as listed in Tracking for Your Shop….
 struct ShopFollowUpEntry: Identifiable, Equatable {
     let id: String
     let slantOrderNumber: String
@@ -310,17 +327,19 @@ func shopifyTrackingCSVDefaultFileName(date: Date = Date()) -> String {
 // MARK: - Store hooks
 
 extension StudioStore {
-    /// File › Mark Shipped in Your Shop…: opens the sheet only (no request), and only when nothing modal is shown.
+    /// File › Tracking for Your Shop…: opens the sheet only (no request), and only when nothing modal is shown.
     func openShopFollowUpFromMenu() {
         guard !menuCommandsBlockedByModalUI, !orders.isEmpty else { return }
         destination = .orders
         showShopFollowUp = true
     }
 
-    /// Writes the Shopify tracking CSV to a file the user picks. Activity records the count only.
-    func exportShopifyTrackingCSV(_ entries: [ShopFollowUpEntry]) {
+    /// Writes the Shopify tracking CSV to a file the user picks. Activity records the count only. Returns the
+    /// message for a failed write, which the sheet shows itself: a window alert behind the sheet would wait until
+    /// it closes.
+    func exportShopifyTrackingCSV(_ entries: [ShopFollowUpEntry]) -> String? {
         let count = shopifyTrackingCSVRows(entries).count
-        guard count > 0 else { return }
+        guard count > 0 else { return nil }
         let panel = NSSavePanel()
         panel.title = "Export Shopify Tracking"
         panel.message = count == 1
@@ -329,13 +348,14 @@ extension StudioStore {
         panel.nameFieldStringValue = shopifyTrackingCSVDefaultFileName()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        guard panel.runModal() == .OK, let destination = panel.url else { return nil }
         let data = Data([0xEF, 0xBB, 0xBF]) + Data(shopifyTrackingCSV(entries).utf8)
         do {
             try data.write(to: destination, options: .atomic)
             activities.insert(Activity(title: "Export Shopify tracking", detail: count == 1 ? "1 order" : "\(count) orders", success: true), at: 0)
+            return nil
         } catch {
-            showError("Could not export tracking: \(error.localizedDescription)")
+            return "Not exported: \(error.localizedDescription)"
         }
     }
 }
@@ -346,6 +366,7 @@ struct ShopFollowUpSheet: View {
     @EnvironmentObject var store: StudioStore
     @Environment(\.dismiss) private var dismiss
     @State private var showDone = false
+    @State private var exportError: String?
 
     var body: some View {
         let groups = shopFollowUpGroups(store.orders, done: store.shopFollowUpDoneIDs, showDone: showDone)
@@ -353,16 +374,16 @@ struct ShopFollowUpSheet: View {
         let shopifyCount = shopifyTrackingCSVRows(listed.filter { !store.shopFollowUpDoneIDs.contains($0.id) }).count
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Mark Shipped in Your Shop").font(.title2.bold())
-                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Tick an order once you’ve marked it shipped there; ticks last until you quit Studio. Only loaded orders are listed.")
+                Text("Tracking for your shop").font(.title2.bold())
+                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop; marks last until you quit Studio. Only loaded orders are listed.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if listed.isEmpty {
                 ContentUnavailableView {
-                    Label(groups.doneCount > 0 ? "All marked shipped" : "No tracking yet", systemImage: "shippingbox")
+                    Label(groups.doneCount > 0 ? "All orders marked as done" : "No tracking yet", systemImage: "shippingbox")
                 } description: {
                     Text(groups.doneCount > 0
-                         ? "Every loaded order with tracking is ticked as done in your shop."
+                         ? "Every loaded order with tracking is marked as done in your shop. Show Marked Orders lists them again."
                          : "None of the loaded orders has tracking from Slant yet. Refresh Orders later to check again.")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -372,24 +393,28 @@ struct ShopFollowUpSheet: View {
                         Section("Marketplace orders") { ForEach(groups.imported) { row($0) } }
                     }
                     if !groups.notImported.isEmpty {
-                        Section("Not imported") { ForEach(groups.notImported) { row($0) } }
+                        Section("Other orders") { ForEach(groups.notImported) { row($0) } }
                     }
                 }
                 .frame(minHeight: 240)
             }
             HStack {
                 Button("Export Shopify Tracking CSV…") {
-                    store.exportShopifyTrackingCSV(listed.filter { !store.shopFollowUpDoneIDs.contains($0.id) })
+                    exportError = store.exportShopifyTrackingCSV(listed.filter { !store.shopFollowUpDoneIDs.contains($0.id) })
                 }
                 .disabled(shopifyCount == 0)
                 .help(shopifyCount == 0
                       ? "No imported Shopify orders with tracking are listed"
                       : "Order name, tracking number and company for a Shopify bulk-fulfilment app")
                 if groups.doneCount > 0 {
-                    Toggle("Show Ticked (\(groups.doneCount))", isOn: $showDone)
+                    Toggle("Show Marked Orders (\(groups.doneCount))", isOn: $showDone)
                         .toggleStyle(.checkbox)
                 }
                 Spacer()
+                // Shown here, as in the spending report: a window alert would wait behind the sheet.
+                if let exportError {
+                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).lineLimit(2)
+                }
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
@@ -409,11 +434,11 @@ struct ShopFollowUpSheet: View {
                 if ticked { store.shopFollowUpDoneIDs.insert(entry.id) } else { store.shopFollowUpDoneIDs.remove(entry.id) }
             })
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Toggle("Done in shop", isOn: done)
+            Toggle("Done in Your Shop", isOn: done)
                 .toggleStyle(.checkbox)
                 .labelsHidden()
-                .accessibilityLabel("Done in shop, \(shopFollowUpOrderTitle(entry))")
-                .help("Tick once you’ve marked this order shipped in your shop (this session only)")
+                .accessibilityLabel("Marked as done in your shop, \(shopFollowUpOrderTitle(entry))")
+                .help("Mark as done once you’ve added this order’s tracking in your shop (this session only)")
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(shopFollowUpOrderTitle(entry)).font(.body.weight(.medium)).textSelection(.enabled)

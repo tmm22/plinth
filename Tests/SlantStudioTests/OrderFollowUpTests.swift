@@ -164,9 +164,25 @@ final class OrderFollowUpTests: XCTestCase {
         var style = Date.FormatStyle(date: .abbreviated, time: .omitted)
         style.timeZone = TimeZone(identifier: "UTC")!
         XCTAssertEqual(orderArriveByLabel(midnight), midnight.formatted(style))
-        XCTAssertEqual(orderArriveByDeadline(midnight), midnight.addingTimeInterval(day), "late only after that whole day")
+        let utc = TimeZone(identifier: "UTC")!
+        XCTAssertEqual(orderArriveByDeadline(midnight, timeZone: utc), midnight.addingTimeInterval(day), "late only after that whole day")
         let timed = midnight.addingTimeInterval(15 * 3600)
         XCTAssertEqual(orderArriveByDeadline(timed), timed)
+    }
+
+    func testDateOnlyArriveByEndsAtTheEndOfThatDayOnThisMac() {
+        let midnight = ISO8601DateFormatter().date(from: "2026-10-25T00:00:00Z")!
+        // West of Greenwich: the 25th ends at 07:00 UTC on the 26th in Los Angeles (PDT, UTC−7).
+        let losAngeles = TimeZone(identifier: "America/Los_Angeles")!
+        XCTAssertEqual(orderArriveByDeadline(midnight, timeZone: losAngeles), ISO8601DateFormatter().date(from: "2026-10-26T07:00:00Z")!)
+        // East: the 25th ends at 11:00 UTC on the 25th in Auckland (NZDT, UTC+13).
+        let auckland = TimeZone(identifier: "Pacific/Auckland")!
+        XCTAssertEqual(orderArriveByDeadline(midnight, timeZone: auckland), ISO8601DateFormatter().date(from: "2026-10-25T11:00:00Z")!)
+        // During the due day in Los Angeles (evening of the 25th there, already the 26th in UTC) it isn't late yet.
+        let values = order("L", status: "PRINTING", created: nil, extra: ["arriveByDate": "2026-10-25T00:00:00.000Z"]).values
+        let eveningInLA = ISO8601DateFormatter().date(from: "2026-10-26T05:00:00Z")!
+        XCTAssertNil(orderAttention(values, now: eveningInLA, timeZone: losAngeles))
+        XCTAssertNotNil(orderAttention(values, now: eveningInLA.addingTimeInterval(3 * 3600), timeZone: losAngeles))
     }
 
     // MARK: Needs attention
@@ -175,16 +191,32 @@ final class OrderFollowUpTests: XCTestCase {
         XCTAssertEqual(orderAttention(order("P", status: "PAYMENT_ERROR", created: iso(now)).values, now: now), .paymentProblem)
     }
 
-    func testPastArriveByAndNotDelivered() {
+    func testPastArriveByAndNotShipped() {
+        let utc = TimeZone(identifier: "UTC")!
         let due = ISO8601DateFormatter().date(from: "2026-10-22T00:00:00Z")!
-        let values = order("L", status: "SHIPPED", extra: ["arriveByDate": "2026-10-22T00:00:00Z"]).values
-        XCTAssertEqual(orderAttention(values, now: now), .pastArriveBy(due))
+        let values = order("L", status: "PRINTING", extra: ["arriveByDate": "2026-10-22T00:00:00Z"]).values
+        XCTAssertEqual(orderAttention(values, now: now, timeZone: utc), .pastArriveBy(due))
         // Still within the arrive-by day.
         let sameDay = ISO8601DateFormatter().date(from: "2026-10-22T20:00:00Z")!
-        XCTAssertNil(orderAttention(values, now: sameDay))
-        for status in ["DELIVERED", "CANCELED"] {
-            XCTAssertNil(orderAttention(order("L", status: status, extra: ["arriveByDate": "2026-10-01T00:00:00Z"]).values, now: now))
+        XCTAssertNil(orderAttention(values, now: sameDay, timeZone: utc))
+        // Shipped orders are on their way; delivered and cancelled ones are done.
+        for status in ["SHIPPED", "DELIVERED", "CANCELED", "CANCELLED"] {
+            XCTAssertNil(orderAttention(order("L", status: status, extra: ["arriveByDate": "2026-10-01T00:00:00Z"]).values, now: now),
+                         status)
         }
+        XCTAssertEqual(OrderAttention.pastArriveBy(due).title, "Late")
+    }
+
+    func testPastArriveByLeavesOldDraftsAlone() {
+        let arriveBy = ["arriveByDate": "2026-10-01T00:00:00Z"]
+        func draft(created: String?) -> OrderAttention? {
+            orderAttention(order("D", status: "DRAFT", created: created, extra: arriveBy).values, now: now)
+        }
+        XCTAssertEqual(draft(created: iso(now.addingTimeInterval(-25 * day)))?.title, "Late", "inside the 30-day window")
+        XCTAssertNil(draft(created: iso(now.addingTimeInterval(-Double(orderAttentionDraftIgnoredAfterDays + 1) * day))),
+                     "a draft past the window is never flagged, late or not")
+        XCTAssertNil(draft(created: nil), "a draft of unknown age isn't flagged")
+        XCTAssertEqual(draft(created: iso(now.addingTimeInterval(day)))?.title, "Late", "clock skew counts as new")
     }
 
     func testNotShippedAfterProductionDays() {

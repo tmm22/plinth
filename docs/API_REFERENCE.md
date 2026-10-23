@@ -94,7 +94,7 @@ Secret is the platform `webhookSecret` (trim before use; used exactly as submitt
 
 ## Orders query params (docs)
 
-- Order watch polls `GET /orders?page=1&limit=100&sortBy=createdAt&sortOrder=DESC&platformId=…` every 4 minutes and reads only the order-level `status`.
+- Order watch polls `GET /orders?page=1&limit=100&sortBy=createdAt&sortOrder=DESC&platformId=…` every 4 minutes and reads only the order-level `status`. Its rate-limit figures replace Studio's only when they aren't older (a later `X-RateLimit-Reset`, or the same window with the same or lower `X-RateLimit-Remaining`), because its reply can arrive after a newer one to the seller's own request.
 - Items (seen 23 Oct 2026 on a DRAFT): both the item and `printItem` carry `estimatedPrintCompletion` (null), `printItem.assignments` is an empty array, and the item `status` is PROCESSING, so item status isn't production progress. Docs describe assignments with a status (QUEUED/PRINTING/ON_SHELF), `krakenStatus` and printer details; Studio reads assignment `status` only (shape unverified until a paid order is seen). `fulfillment` is null on drafts; `fulfillment.address` is compared with the shipping address for display only, and `fulfillment.provider` may be the label service (Shippo, ShipStation) rather than the carrier. Not yet confirmed: whether list rows include `fulfillment` and whether `arriveByDate` is filled in.
 - `POST /orders/batch` takes `{"publicIds": [...]}` and returns `data: [orders]` (seen 23 Oct 2026); the spec's `public_ids` is refused with 400 “No public IDs provided”. Studio doesn't use it yet.
 - No Slant support address is documented; the OpenAPI `info.contact` is the API developer contact, so Report a Problem only copies its message.

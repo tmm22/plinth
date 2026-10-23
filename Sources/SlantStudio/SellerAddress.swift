@@ -98,9 +98,12 @@ func deliveryHasEnteredDetails(_ delivery: DeliveryDetails) -> Bool {
 }
 
 /// Use My Address never silently replaces details already in the form: it asks first unless the form is empty or
-/// already holds exactly this address.
-func useMyAddressNeedsConfirmation(current: DeliveryDetails, replacement: DeliveryDetails) -> Bool {
-    deliveryHasEnteredDetails(current) && current != replacement
+/// already holds exactly this address. A country the seller picked counts as entered when the address would change
+/// it; the Mac-region default alone never does.
+func useMyAddressNeedsConfirmation(current: DeliveryDetails, replacement: DeliveryDetails, countryPicked: Bool = false) -> Bool {
+    guard current != replacement else { return false }
+    if deliveryHasEnteredDetails(current) { return true }
+    return countryPicked && orderCountryPickerValue(current) != orderCountryPickerValue(replacement)
 }
 
 /// One line for Settings and the composer, such as "Ada Lovelace, London, GB".

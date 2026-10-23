@@ -124,16 +124,16 @@ func orderProgressDateText(_ date: Date, dateOnly: Bool = false, now: Date = Dat
     return formatter.string(from: date)
 }
 
-/// One caption line: "Printing · estimated done 24 Oct, 15:10", "On the shelf" or "Estimated done 24 Oct".
+/// One caption line: "Printing · due to finish 24 Oct, 15:10", "On the shelf" or "Due to finish 24 Oct".
 func orderItemProgressLine(_ progress: OrderItemProgress, now: Date = Date(),
                            locale: Locale = .current, timeZone: TimeZone = .current) -> String? {
     let estimate = progress.estimatedCompletion.map {
         orderProgressDateText($0, dateOnly: progress.estimateIsDateOnly, now: now, locale: locale, timeZone: timeZone)
     }
     switch (progress.stage, estimate) {
-    case (let stage?, let estimate?): return "\(stage) · estimated done \(estimate)"
+    case (let stage?, let estimate?): return "\(stage) · due to finish \(estimate)"
     case (let stage?, nil): return stage
-    case (nil, let estimate?): return "Estimated done \(estimate)"
+    case (nil, let estimate?): return "Due to finish \(estimate)"
     case (nil, nil): return nil
     }
 }
@@ -242,7 +242,7 @@ func orderLabelAddressAdvisory(_ order: [String: Any]) -> (line: String, differe
               seen.insert(text.lowercased()).inserted else { return nil }
         return text
     }
-    return ("Slant’s label address differs: " + parts.joined(separator: ", "), differences)
+    return ("The shipping label was made for: " + parts.joined(separator: ", ") + ". Check with Slant if this is wrong.", differences)
 }
 
 // MARK: Report a problem
@@ -302,6 +302,16 @@ func orderProblemMessage(order: [String: Any], problem: OrderProblemKind, detail
     return lines.joined(separator: "\n")
 }
 
+/// The problems that fit the order's status, "Other" last and always offered: late while it's being made or on its
+/// way; damaged, wrong, missing or a print defect only once it has shipped or been delivered.
+func orderProblemKinds(status: String) -> [OrderProblemKind] {
+    let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    var kinds: [OrderProblemKind] = []
+    if ["SHIPPED", "DELIVERED"].contains(normalized) { kinds += [.damaged, .wrongItem, .missingItem, .printDefect] }
+    if orderAttentionProductionStatuses.contains(normalized) || normalized == "SHIPPED" { kinds.append(.late) }
+    return kinds + [.other]
+}
+
 /// The detail's Report a Problem… button is offered once an order has been placed: a draft has nothing to report.
 func orderOffersProblemReport(status: String) -> Bool {
     let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -340,7 +350,7 @@ struct OrderProblemReportSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             Picker("Problem", selection: $problem) {
                 Text("Choose…").tag(OrderProblemKind?.none)
-                ForEach(OrderProblemKind.allCases) { Text($0.title).tag(OrderProblemKind?.some($0)) }
+                ForEach(orderProblemKinds(status: (order["status"] as? String) ?? "")) { Text($0.title).tag(OrderProblemKind?.some($0)) }
             }
             .fixedSize()
             VStack(alignment: .leading, spacing: 4) {
@@ -425,6 +435,15 @@ func orderNextDraftCaption(recipient: String, number: String) -> String {
     case (true, false): return "Next: \(id)"
     case (true, true): return "Next: another draft"
     }
+}
+
+/// The list as it was when the first review opened (`snapshotIDs`, in the order shown then), with each order's status
+/// from the loaded orders now. An order no longer loaded gets no status, so it's skipped. Re-sorting, Needs attention
+/// or a paid draft leaving the list therefore can't move the review's place or make it wrap round.
+func orderDraftReviewRows(snapshotIDs: [String], orders: [Record]) -> [(id: String, status: String)] {
+    var statuses: [String: String] = [:]
+    for row in orderDraftReviewRows(orders) where statuses[row.id] == nil { statuses[row.id] = row.status }
+    return snapshotIDs.map { (id: $0, status: statuses[$0] ?? "") }
 }
 
 /// The list's orders, in the order shown, as the ID and Slant status that `orderNextDraftToReview` reads.

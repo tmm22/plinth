@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Combine
 import UserNotifications
 
 // MARK: - Order watch: settings and limits
@@ -176,10 +177,45 @@ func orderWatchAcknowledging(_ snapshot: OrderWatchSnapshot, ids: Set<String>? =
     return next
 }
 
-/// The sidebar badge: unseen changes that need attention or reached the customer. Production progress is listed in
-/// Orders but doesn't badge, so a busy print queue doesn't keep a number on the sidebar.
+/// Statuses that badge the sidebar: the notable ones except Delivered, which needs nothing from the seller (it is
+/// still listed in the banner and notified).
+let orderWatchBadgeStatuses: Set<String> = orderWatchNotableStatuses.subtracting(["DELIVERED"])
+
+/// The sidebar badge: unseen changes that need attention or shipped. Production progress and deliveries are listed
+/// in Orders but don't badge, so a busy print queue or a run of deliveries doesn't keep a number on the sidebar.
 func orderWatchBadgeCount(_ changes: [OrderWatchChange]) -> Int {
-    changes.filter { orderWatchNotableStatuses.contains($0.to) }.count
+    changes.filter { orderWatchBadgeStatuses.contains($0.to) }.count
+}
+
+/// The banner offers Tracking for Your Shop… while a listed change is to Shipped.
+func orderWatchChangesIncludeShipped(_ changes: [OrderWatchChange]) -> Bool {
+    changes.contains { $0.to == "SHIPPED" }
+}
+
+/// Whether the platform the watch follows has changed, so the saved statuses (another platform's orders) are
+/// forgotten. Only a change between two known platforms counts: the blank in between a key change (Studio clears the
+/// platform, then the refresh picks one) is not a platform.
+func orderWatchPlatformChanged(from previous: String?, to next: String) -> Bool {
+    let old = (previous ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let new = next.trimmingCharacters(in: .whitespacesAndNewlines)
+    return !old.isEmpty && !new.isEmpty && old != new
+}
+
+/// Whether a background check's rate-limit figures may replace the ones Studio already has. The check's reply can
+/// arrive after a newer reply to the seller's own request, so stale figures must never win: within one window the
+/// allowance only falls, so a higher `remaining` is older. Figures are applied when nothing is known (or the known
+/// window has passed), when they belong to a later window, or when they show the same or less allowance. With no reset
+/// time to tell windows apart, only the same or a lower `remaining` is applied: under-reporting the allowance is the
+/// safe way to be wrong.
+func orderWatchShouldApplyRateLimit(current: RateLimitInfo?, incoming: RateLimitInfo, now: Date) -> Bool {
+    guard incoming.hasValues else { return false }
+    guard let current, current.hasValues else { return true }
+    if let reset = current.reset, reset <= now { return true }
+    if let newReset = incoming.reset, let oldReset = current.reset, newReset.timeIntervalSince(oldReset) > 1 { return true }
+    if let newReset = incoming.reset, let oldReset = current.reset, oldReset.timeIntervalSince(newReset) > 1 { return false }
+    guard let remaining = incoming.remaining else { return false }
+    guard let known = current.remaining else { return true }
+    return remaining <= known
 }
 
 /// Unseen changes counted by new status: attention first, then shipped/delivered, then progress in Slant's order.
@@ -406,6 +442,10 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
     private var pausedAccount: String?
     private var pausedAt: Date?
     private var failureLogged = false
+    /// The last known default platform. The saved statuses belong to it (only order IDs, statuses and times are saved,
+    /// never the platform), so they are forgotten when it changes.
+    private var watchedPlatformID: String?
+    private var accountObservers: Set<AnyCancellable> = []
 
     var unseenChanges: [OrderWatchChange] { enabled ? orderWatchUnseenChanges(snapshot) : [] }
     var badgeCount: Int { orderWatchBadgeCount(unseenChanges) }
@@ -421,6 +461,7 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
                 snapshot = orderWatchPruned(saved, now: Date())
             }
         }
+        observeAccount(store)
         if orderWatchNotificationsAvailable() {
             UNUserNotificationCenter.current().delegate = OrderWatchNotificationDelegate.shared
             if notify { refreshNotificationPermission() }
@@ -438,6 +479,36 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
                 delay = await self.tick()
             }
         }
+    }
+
+    /// Another default platform (or another account's) forgets the saved statuses, so the banner, badge and Show only
+    /// ever refer to the platform being watched; the next check records its orders silently. Disconnect forgets them
+    /// too, so nothing about the account's orders stays on this Mac after it is disconnected.
+    private func observeAccount(_ store: StudioStore) {
+        accountObservers = []
+        let current = store.platformID.trimmingCharacters(in: .whitespacesAndNewlines)
+        watchedPlatformID = current.isEmpty ? nil : current
+        // @Published sends the new value as it is set, on the main actor.
+        store.$platformID
+            .sink { [weak self] id in
+                MainActor.assumeIsolated { self?.platformDidChange(to: id) }
+            }
+            .store(in: &accountObservers)
+        store.$apiKey
+            .map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] hasKey in
+                MainActor.assumeIsolated { if !hasKey { self?.forgetSavedStatuses() } }
+            }
+            .store(in: &accountObservers)
+    }
+
+    private func platformDidChange(to id: String) {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if orderWatchPlatformChanged(from: watchedPlatformID, to: trimmed) { forgetSavedStatuses() }
+        watchedPlatformID = trimmed
     }
 
     private func accountToken(_ store: StudioStore) -> String {
@@ -473,7 +544,10 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
             let response = try await client.request("GET", path: "/orders", query: query)
             // A key or platform change, Forget or turning the watch off while this was in flight discards it.
             guard runGeneration == generation, enabled, accountToken(store) == token else { return orderWatchRecheckDelay }
-            store.noteBackgroundRateLimit(from: response)
+            // Only figures at least as new as Studio's: this reply may land after a newer one to the seller's request.
+            if orderWatchShouldApplyRateLimit(current: store.rateLimit, incoming: response.rateLimit, now: Date()) {
+                store.noteBackgroundRateLimit(from: response)
+            }
             failureLogged = false
             record(orderWatchObservations(responseRecords(response)), now: Date())
         } catch {

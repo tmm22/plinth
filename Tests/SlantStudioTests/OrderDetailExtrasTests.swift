@@ -89,11 +89,11 @@ final class OrderDetailExtrasTests: XCTestCase {
         let nextYear = orderProgressDateText(ISO8601DateFormatter().date(from: "2027-01-02T09:00:00Z")!, now: now, locale: gb, timeZone: utc)
         XCTAssertTrue(nextYear.contains("2027"), nextYear)
         let both = orderItemProgressLine(OrderItemProgress(stage: "Printing", estimatedCompletion: date), now: now, locale: gb, timeZone: utc)
-        XCTAssertEqual(both, "Printing · estimated done \(text)")
+        XCTAssertEqual(both, "Printing · due to finish \(text)")
         XCTAssertEqual(orderItemProgressLine(OrderItemProgress(stage: "On the shelf"), now: now, locale: gb, timeZone: utc), "On the shelf")
         let dayOnly = orderItemProgressLine(OrderItemProgress(stage: nil, estimatedCompletion: orderProgressDate("2026-10-24")!.date, estimateIsDateOnly: true),
                                             now: now, locale: gb, timeZone: TimeZone(identifier: "America/Los_Angeles")!)
-        XCTAssertEqual(dayOnly, "Estimated done 24 Oct")
+        XCTAssertEqual(dayOnly, "Due to finish 24 Oct")
         XCTAssertNil(orderItemProgressLine(OrderItemProgress(), now: now, locale: gb, timeZone: utc))
     }
 
@@ -128,7 +128,7 @@ final class OrderDetailExtrasTests: XCTestCase {
     func testDifferentLabelAddressIsNamed() {
         let label: [String: Any] = ["line1": "125 Main Street", "city": "Springfield", "zip": "62705", "country": "US", "state": "IL"]
         let advisory = orderLabelAddressAdvisory(order(shipping: shipping, label: label))
-        XCTAssertEqual(advisory?.line, "Slant’s label address differs: 125 Main Street, Springfield, IL, 62705, US")
+        XCTAssertEqual(advisory?.line, "The shipping label was made for: 125 Main Street, Springfield, IL, 62705, US. Check with Slant if this is wrong.")
         XCTAssertEqual(advisory?.differences, ["street", "postcode"])
         let otherCountry = orderLabelAddressDifferences(
             label: OrderComparableAddress(line1: "", city: "Springfield", zip: "", country: "CA"),
@@ -214,6 +214,40 @@ final class OrderDetailExtrasTests: XCTestCase {
         XCTAssertEqual(orderNextDraftToReview(rows: duplicate, after: "missing", isLocked: { _ in false }), "b")
         // A just-placed order whose list row still says DRAFT is skipped because it is the current one.
         XCTAssertEqual(orderNextDraftToReview(rows: [("p", "DRAFT"), ("q", "DRAFT")], after: "p", isLocked: { _ in false }), "q")
+    }
+
+    func testProblemKindsFitTheStatus() {
+        XCTAssertEqual(orderProblemKinds(status: "PRINTING"), [.late, .other])
+        XCTAssertEqual(orderProblemKinds(status: "awaiting_shipment"), [.late, .other])
+        XCTAssertEqual(orderProblemKinds(status: "SHIPPED"), [.damaged, .wrongItem, .missingItem, .printDefect, .late, .other])
+        XCTAssertEqual(orderProblemKinds(status: " DELIVERED "), [.damaged, .wrongItem, .missingItem, .printDefect, .other])
+        for status in ["CANCELED", "PAYMENT_ERROR", "SOMETHING_NEW", ""] {
+            XCTAssertEqual(orderProblemKinds(status: status), [.other], status)
+        }
+    }
+
+    func testNextDraftUsesTheSnapshotWithCurrentStatuses() {
+        // The list when the run began: b, then c, then e. Since then b was paid and, with Needs Attention on, has
+        // left the visible list, and the list was re-sorted; the snapshot still says c comes next.
+        let orders = [
+            Record(values: ["publicId": "e", "status": "DRAFT"]),
+            Record(values: ["publicId": "c", "status": "DRAFT"]),
+            Record(values: ["publicId": "b", "status": "PAID"]),
+            Record(values: ["publicId": "d", "status": "DRAFT"])
+        ]
+        let snapshot = ["a", "b", "c", "e"]
+        let rows = orderDraftReviewRows(snapshotIDs: snapshot, orders: orders)
+        XCTAssertEqual(rows.map(\.id), snapshot)
+        XCTAssertEqual(rows.map(\.status), ["", "PAID", "DRAFT", "DRAFT"], "an order no longer loaded has no status")
+        XCTAssertEqual(orderNextDraftToReview(rows: rows, after: "b", isLocked: { _ in false }), "c")
+        // Paid meanwhile (status now from the store) and locked orders are skipped; d, added later, is never offered.
+        var paid = orders
+        paid[1] = Record(values: ["publicId": "c", "status": "PAID"])
+        let later = orderDraftReviewRows(snapshotIDs: snapshot, orders: paid)
+        XCTAssertEqual(orderNextDraftToReview(rows: later, after: "b", isLocked: { _ in false }), "e")
+        XCTAssertNil(orderNextDraftToReview(rows: later, after: "b", isLocked: { $0 == "e" }))
+        XCTAssertNil(orderNextDraftToReview(rows: rows, after: "e", isLocked: { _ in false }), "never wraps round")
+        XCTAssertTrue(orderDraftReviewRows(snapshotIDs: [], orders: orders).isEmpty)
     }
 
     func testReviewRowsReadSlantStatusAndCaptions() {

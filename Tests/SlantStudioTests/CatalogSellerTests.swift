@@ -274,6 +274,20 @@ final class CatalogSellerTests: XCTestCase {
         XCTAssertTrue(useMyAddressNeedsConfirmation(current: unitOnly, replacement: mine))
     }
 
+    func testUseMyAddressAsksBeforeReplacingAPickedCountry() {
+        let mine = deliveryDetails(fromSellerAddress: ada) // GB
+        var blank = DeliveryDetails()
+        blank = deliveryApplyingCountryPick("US", to: blank)
+        XCTAssertFalse(useMyAddressNeedsConfirmation(current: blank, replacement: mine, countryPicked: false),
+                       "the region default still doesn't count")
+        XCTAssertTrue(useMyAddressNeedsConfirmation(current: blank, replacement: mine, countryPicked: true),
+                      "a country the seller chose counts as entered")
+        let sameCountry = deliveryApplyingCountryPick("GB", to: DeliveryDetails())
+        XCTAssertFalse(useMyAddressNeedsConfirmation(current: sameCountry, replacement: mine, countryPicked: true),
+                       "nothing is lost when the address keeps the chosen country")
+        XCTAssertFalse(useMyAddressNeedsConfirmation(current: mine, replacement: mine, countryPicked: true))
+    }
+
     // MARK: Order a Sample to Me…
 
     func testSampleOrderBlockedReasons() {

@@ -239,6 +239,54 @@ final class OrderWatchTests: XCTestCase {
         XCTAssertEqual(orderWatchFocusCaption(count: 3), "Showing 3 orders that changed since you last looked.")
     }
 
+    func testDeliveredIsListedButNotBadged() {
+        let changes = [
+            OrderWatchChange(id: "A", from: "SHIPPED", to: "DELIVERED"),
+            OrderWatchChange(id: "B", from: "PRINTING", to: "SHIPPED"),
+            OrderWatchChange(id: "C", from: "QUEUED", to: "PRINTING"),
+            OrderWatchChange(id: "D", from: "PAID", to: "CANCELED")
+        ]
+        XCTAssertEqual(orderWatchBadgeCount(changes), 2, "shipped and cancelled badge; delivered and progress don't")
+        XCTAssertEqual(orderWatchBadgeCount([changes[0]]), 0)
+        XCTAssertTrue(orderWatchSummaryText(changes).contains("1 delivered"), "still listed in the banner")
+        XCTAssertTrue(orderWatchShouldNotify(OrderWatchTransition(id: "A", number: "A", from: "SHIPPED", to: "DELIVERED")))
+        XCTAssertTrue(orderWatchChangesIncludeShipped(changes))
+        XCTAssertFalse(orderWatchChangesIncludeShipped([changes[0], changes[2]]))
+    }
+
+    func testPlatformChangeForgetsOnlyBetweenKnownPlatforms() {
+        XCTAssertTrue(orderWatchPlatformChanged(from: "plat_A", to: "plat_B"))
+        XCTAssertFalse(orderWatchPlatformChanged(from: "plat_A", to: "plat_A"))
+        XCTAssertFalse(orderWatchPlatformChanged(from: " plat_A ", to: "plat_A"))
+        XCTAssertFalse(orderWatchPlatformChanged(from: "plat_A", to: ""), "the blank during a key change isn't a platform")
+        XCTAssertFalse(orderWatchPlatformChanged(from: nil, to: "plat_A"), "the first platform adopts the saved statuses")
+        XCTAssertFalse(orderWatchPlatformChanged(from: "", to: "plat_A"))
+    }
+
+    func testBackgroundRateLimitNeverOverwritesNewerFigures() {
+        let now = t0
+        let reset = now.addingTimeInterval(40)
+        let current = RateLimitInfo(limit: 100, remaining: 50, reset: reset)
+        // Same window: the allowance only falls, so a higher figure is older.
+        XCTAssertFalse(orderWatchShouldApplyRateLimit(current: current, incoming: RateLimitInfo(limit: 100, remaining: 51, reset: reset), now: now))
+        XCTAssertTrue(orderWatchShouldApplyRateLimit(current: current, incoming: RateLimitInfo(limit: 100, remaining: 49, reset: reset), now: now))
+        XCTAssertTrue(orderWatchShouldApplyRateLimit(current: current, incoming: RateLimitInfo(limit: 100, remaining: 50, reset: reset.addingTimeInterval(0.5)), now: now))
+        // A later window wins; an earlier one never does.
+        XCTAssertTrue(orderWatchShouldApplyRateLimit(current: current, incoming: RateLimitInfo(limit: 100, remaining: 99, reset: reset.addingTimeInterval(60)), now: now))
+        XCTAssertFalse(orderWatchShouldApplyRateLimit(current: current, incoming: RateLimitInfo(limit: 100, remaining: 10, reset: reset.addingTimeInterval(-30)), now: now))
+        // Nothing known, or the known window has passed.
+        XCTAssertTrue(orderWatchShouldApplyRateLimit(current: nil, incoming: RateLimitInfo(remaining: 80), now: now))
+        XCTAssertTrue(orderWatchShouldApplyRateLimit(current: RateLimitInfo(), incoming: RateLimitInfo(remaining: 80), now: now))
+        XCTAssertTrue(orderWatchShouldApplyRateLimit(current: RateLimitInfo(remaining: 5, reset: now.addingTimeInterval(-1)),
+                                                     incoming: RateLimitInfo(remaining: 80), now: now))
+        // No reset time to tell windows apart: only the same or less allowance.
+        XCTAssertFalse(orderWatchShouldApplyRateLimit(current: RateLimitInfo(remaining: 50), incoming: RateLimitInfo(remaining: 60), now: now))
+        XCTAssertTrue(orderWatchShouldApplyRateLimit(current: RateLimitInfo(remaining: 50), incoming: RateLimitInfo(remaining: 50), now: now))
+        // A reply without figures, or without a remaining count, changes nothing.
+        XCTAssertFalse(orderWatchShouldApplyRateLimit(current: current, incoming: RateLimitInfo(), now: now))
+        XCTAssertFalse(orderWatchShouldApplyRateLimit(current: current, incoming: RateLimitInfo(limit: 100), now: now))
+    }
+
     func testNotificationsUnavailableOutsideAnAppBundle() {
         // The test runner is an .xctest bundle, never the packaged .app.
         XCTAssertFalse(orderWatchNotificationsAvailable(bundle: Bundle(for: OrderWatchTests.self)))
