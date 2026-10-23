@@ -360,6 +360,12 @@ final class OrderImportTests: XCTestCase {
         XCTAssertEqual(created.warnings, ["Already imported this session as draft ORD-1."])
         XCTAssertFalse(created.tickedByDefault)
         XCTAssertTrue(created.canTick)
+        // A row this sheet just created ORD-1 for shows "Draft created" instead; any other state or draft keeps it.
+        XCTAssertEqual(orderImportVisibleWarnings(created.warnings, rowState: .created("ORD-1")), [])
+        XCTAssertEqual(orderImportVisibleWarnings(created.warnings, rowState: .created("ORD-9")), created.warnings)
+        XCTAssertEqual(orderImportVisibleWarnings(created.warnings, rowState: nil), created.warnings)
+        XCTAssertEqual(orderImportVisibleWarnings(created.warnings, rowState: .notSent), created.warnings)
+        XCTAssertEqual(orderImportVisibleWarnings(created.warnings, rowState: .unknown("Timed out")), created.warnings)
 
         ledger.record(.unknown, source: .shopify, sourceOrderID: "#1001")
         XCTAssertTrue(orderImportCheck(order, context: context(ledger: ledger)).warnings[0].contains("may have been created"))

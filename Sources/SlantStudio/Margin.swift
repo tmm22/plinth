@@ -371,6 +371,8 @@ struct ProfitCheckPanel: View {
                     content(slantTotal: slantTotal)
                 }
             }
+            // Inputs and results line up in one right-aligned column, like a receipt.
+            .labeledContentStyle(.receipt)
             .padding(.top, 6)
         }
         .onAppear(perform: loadRatesIfNeeded)
@@ -382,8 +384,12 @@ struct ProfitCheckPanel: View {
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         moneyField("Item total paid", text: $itemText)
         moneyField("Shipping charged", text: $shippingText)
-        Picker("Marketplace fees", selection: Binding(get: { preset }, set: { choosePreset($0) })) {
-            ForEach(ProfitFeePreset.allCases) { Text($0.title).tag($0) }
+        LabeledContent("Marketplace fees") {
+            Picker("Marketplace fees", selection: Binding(get: { preset }, set: { choosePreset($0) })) {
+                ForEach(ProfitFeePreset.allCases) { Text($0.title).tag($0) }
+            }
+            .labelsHidden()
+            .fixedSize()
         }
         if preset.hasRates { rateFields }
         Divider()

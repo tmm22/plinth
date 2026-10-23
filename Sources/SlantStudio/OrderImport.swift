@@ -596,7 +596,7 @@ func orderImportLoadedSourceKeys(_ orders: [Record]) -> Set<String> {
 func orderImportDuplicateReason(_ order: OrderImportOrder, ledger: OrderImportLedger, loadedKeys: Set<String>) -> String? {
     switch ledger.entry(source: order.source, sourceOrderID: order.sourceOrderID) {
     case .created(let orderID)?:
-        return "Already imported this session as draft \(orderID)."
+        return orderImportAlreadyImportedWarning(orderID)
     case .unknown?:
         return "An earlier import of this order didn’t confirm and may have been created. Check your drafts (Show Drafts, or Orders toolbar › Status › Draft) before importing it again."
     case nil:
@@ -606,6 +606,31 @@ func orderImportDuplicateReason(_ order: OrderImportOrder, ledger: OrderImportLe
         return "An order in the loaded list was already imported from this \(order.source.marketplace) order."
     }
     return nil
+}
+
+func orderImportAlreadyImportedWarning(_ orderID: String) -> String {
+    "Already imported this session as draft \(orderID)."
+}
+
+/// A row's warnings as shown. A row this sheet has just created a draft for already says "Draft created", so the
+/// ledger's "Already imported … as draft" warning for that same draft is left out. It still shows when the file is
+/// chosen again (results reset) or for any other draft ID, so the duplicate check is unchanged.
+func orderImportVisibleWarnings(_ warnings: [String], rowState: OrderImportRowState?) -> [String] {
+    guard case .created(let orderID)? = rowState else { return warnings }
+    let own = orderImportAlreadyImportedWarning(orderID)
+    return warnings.filter { $0 != own }
+}
+
+/// The import sheet before a file is chosen.
+let orderImportEmptyHint = "Choose a CSV file to check its orders here. Nothing is sent to Slant until you confirm."
+
+/// The Create button's title; "Create Drafts" while nothing is ready (before a file is chosen or after a run).
+func orderImportCreateButtonTitle(_ count: Int) -> String {
+    switch count {
+    case ...0: return "Create Drafts"
+    case 1: return "Create 1 Draft"
+    default: return "Create \(count) Drafts"
+    }
 }
 
 /// Shown when the duplicate check can't see every earlier order.
@@ -1283,6 +1308,13 @@ struct OrderImportSheet: View {
             }
             if let parsed {
                 preview(parsed, checks: currentChecks)
+            } else if loadError == nil {
+                ContentUnavailableView {
+                    Label("No file chosen", systemImage: "doc.text")
+                } description: {
+                    Text(orderImportEmptyHint)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Spacer(minLength: 0)
             }
@@ -1443,7 +1475,7 @@ struct OrderImportSheet: View {
                 ForEach(check.blockers, id: \.self) { text in
                     Label(text, systemImage: "xmark.octagon.fill").font(.caption).foregroundStyle(.red)
                 }
-                ForEach(check.warnings, id: \.self) { text in
+                ForEach(orderImportVisibleWarnings(check.warnings, rowState: state), id: \.self) { text in
                     Label(text, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
                 }
                 if let padded = orderImportPaddedUSZIP(order.zip), order.countryCode == "US" {
@@ -1542,7 +1574,7 @@ struct OrderImportSheet: View {
     }
 
     private func createButtonTitle(_ count: Int) -> String {
-        count == 1 ? "Create 1 Draft" : "Create \(count) Drafts"
+        orderImportCreateButtonTitle(count)
     }
 
     private func confirmTitle(_ checks: [String: OrderImportCheck]) -> String {
