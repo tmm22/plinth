@@ -495,6 +495,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var showSavedProducts = false
     /// A new product for the Saved Products editor (Models › Save as Product…); consumed when the sheet opens.
     @Published var pendingSavedProductDraft: SavedProduct?
+    /// The seller's own address (SellerAddress.swift): opt-in, saved to seller-address.json, removable in Settings.
+    @Published var sellerAddress: SellerAddress?
+    /// Order a Sample to Me… without a saved address: the main window explains and offers Settings.
+    @Published var showSellerAddressNeeded = false
     @Published var selectedLocalID: UUID?
     @Published var files: [Record] = []
     @Published var platforms: [Record] = []
@@ -624,6 +628,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         let path = Self.supportDirectory.appendingPathComponent("models.json")
         if let data = try? Data(contentsOf: path), let saved = try? JSONDecoder().decode([LocalModel].self, from: data) { localModels = saved }
         savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
+        sellerAddress = loadSellerAddress(from: Self.sellerAddressURL)
     }
     private func redirectDestinationIfNeeded(from oldValue: Destination) {
         let resolved = resolvedNavigation(requested: destination, previous: oldValue, showDeveloperTools: showDeveloperTools)
