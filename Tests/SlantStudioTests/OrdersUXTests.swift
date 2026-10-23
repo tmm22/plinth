@@ -51,10 +51,19 @@ final class OrdersUXTests: XCTestCase {
     }
 
     func testCancellationEligibilityAndBlockedReasons() {
-        for status in orderKnownStatuses where status != "CANCELED" {
+        for status in orderKnownStatuses where status != "CANCELED" && status != "DRAFT" {
             XCTAssertTrue(orderCanRequestCancellation(status), status)
             XCTAssertNil(orderCancellationBlockedReason(status), status)
         }
+        // Slant answers DELETE on a draft with "Can not cancel a draft order", so drafts offer no cancel.
+        XCTAssertFalse(orderCanRequestCancellation("DRAFT"))
+        XCTAssertFalse(orderCanRequestCancellation("draft"))
+        XCTAssertEqual(orderCancellationBlockedReason("DRAFT"), "Slant doesn’t cancel drafts. A draft costs nothing unless you place it.")
+        // In the detail pane a draft explains it in its caption instead, below the buttons.
+        XCTAssertNil(orderDetailCancelBlockedNote("DRAFT"))
+        XCTAssertTrue(orderDetailDraftCaption.contains("Slant doesn’t cancel drafts"))
+        XCTAssertFalse(orderCancelConfirmAllowed(status: "DRAFT", loaded: true).0)
+        XCTAssertFalse(workbenchCancelAllowed(status: "DRAFT", loaded: true).0)
         XCTAssertTrue(orderKnownStatuses.contains("PROCESSING"))
         XCTAssertFalse(orderCanRequestCancellation("CANCELED"))
         XCTAssertFalse(orderCanRequestCancellation(""))
@@ -84,6 +93,24 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertTrue(orderMatchesSearch(record, query: "canceled"))
         let waiting = Record(values: ["publicId": "SLANT_8", "status": "AWAITING_SHIPMENT"])
         XCTAssertTrue(orderMatchesSearch(waiting, query: "awaiting shipment"))
+    }
+
+    func testOrderConfirmRefusalQuotesSlantsReason() {
+        let refused = APIError.http(status: 400, body: #"{"message":"Can not cancel a draft order"}"#, retryAfter: nil, rateLimitReset: nil)
+        XCTAssertEqual(
+            orderConfirmRefusalMessage(isPay: false, error: refused),
+            "Slant didn’t accept the cancel request. Slant said: “Can not cancel a draft order.”"
+        )
+        let punctuated = APIError.http(status: 422, body: #"{"message":"Card declined!"}"#, retryAfter: nil, rateLimitReset: nil)
+        XCTAssertEqual(orderConfirmRefusalMessage(isPay: true, error: punctuated), "Slant didn’t accept the payment request. Slant said: “Card declined!”")
+        // Other refusals use the usual message as is: not prefixed twice, and keeping advice such as reconnecting.
+        let key = APIError.http(status: 401, body: #"{"message":"Unauthorized"}"#, retryAfter: nil, rateLimitReset: nil)
+        XCTAssertEqual(orderConfirmRefusalMessage(isPay: true, error: key), "Slant rejected the saved key. Reconnect in Settings.")
+        let forbidden = APIError.http(status: 403, body: #"{"message":"Not yours"}"#, retryAfter: nil, rateLimitReset: nil)
+        XCTAssertEqual(orderConfirmRefusalMessage(isPay: false, error: forbidden), "Slant refused this request. Not yours")
+        // A 400 without a readable message falls back to the usual copy.
+        let bare = APIError.http(status: 400, body: "", retryAfter: nil, rateLimitReset: nil)
+        XCTAssertEqual(orderConfirmRefusalMessage(isPay: false, error: bare), "Slant couldn’t accept those details.")
     }
 
     func testCancelActionCopyMatrix() {

@@ -2,8 +2,9 @@ import SwiftUI
 
 /// Every disclosure in the app: the chevron and the label are one full-width button, so clicking the label text (not
 /// only the small triangle) expands it, and VoiceOver hears the label, "button" and the expanded state rather than an
-/// unnamed "disclosure triangle". Applied once at the root of each window scene (`studioDisclosureStyle()`); sheets
-/// inherit it from the view that presents them.
+/// unnamed "disclosure triangle". Applied to each DisclosureGroup (`.studioDisclosureStyle()`), never to a window or
+/// container: List sidebar and library sections are disclosures too, and the style broke their rows and selection.
+/// Disclosures inside grouped Forms keep the native style, which draws them as form rows.
 ///
 /// Labels must stay non-interactive (text, `Label`, `SectionHeading`): a control inside the label would sit inside
 /// this button.
@@ -52,7 +53,7 @@ func disclosureAccessibilityHint(isExpanded: Bool) -> String {
 }
 
 extension View {
-    /// Sets `StudioDisclosureGroupStyle` for every disclosure below, including sheets presented from here.
+    /// Sets `StudioDisclosureGroupStyle` on one DisclosureGroup. Don't apply it to a List, Form or window root.
     func studioDisclosureStyle() -> some View {
         disclosureGroupStyle(StudioDisclosureGroupStyle())
     }

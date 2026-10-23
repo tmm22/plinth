@@ -429,9 +429,15 @@ struct SavedProductsSheet: View {
                     }
                 }
                 .frame(width: 210)
-                // Hugs its label so the arrows sit beside the quantity rather than at the far edge.
-                Stepper("Quantity: \(line.wrappedValue.quantity)", value: line.quantity, in: 1...10000)
-                    .fixedSize()
+                // Text plus a label-less stepper: in a grouped Form a labelled Stepper is drawn as a form row, which put
+                // the arrows at the far edge away from the number.
+                HStack(spacing: 4) {
+                    Text("Quantity: \(line.wrappedValue.quantity)").monospacedDigit()
+                    Stepper("Quantity", value: line.quantity, in: 1...10000)
+                        .labelsHidden()
+                        .accessibilityValue("\(line.wrappedValue.quantity)")
+                }
+                .fixedSize()
                 Spacer(minLength: 0)
                 Button(role: .destructive, action: remove) { Image(systemName: "minus.circle") }
                     .accessibilityLabel("Remove item")

@@ -297,7 +297,7 @@ struct PrintOrientationCard: View {
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
                                     Text("Flat face on bed · Base at Z = 0").font(.callout).foregroundStyle(.secondary)
                                 }.padding(.top, 8)
-                            }
+                            }.studioDisclosureStyle()
                             Text(intent.explanation).font(.callout).foregroundStyle(.secondary)
                             Button(preparing ? "Preparing…" : "Optimise & Save Copy") { prepareCopy(mesh, orientation: best.orientation) }
                                 .buttonStyle(.borderedProminent)
@@ -309,7 +309,7 @@ struct PrintOrientationCard: View {
                         DisclosureGroup("How optimisation works") {
                             Text("Compares standard placements and up to 24 additional face directions without changing shape, dimensions, holes or clearances. Uses your chosen material. Finished strength and tolerances depend on Slant’s production settings; this is not a mechanical simulation.")
                                 .font(.callout).foregroundStyle(.secondary).padding(.top, 8)
-                        }
+                        }.studioDisclosureStyle()
                     } else {
                         ProgressView("Preparing placement options…")
                     }
@@ -318,7 +318,7 @@ struct PrintOrientationCard: View {
                 .padding(.top, 16)
             } label: {
                 SectionHeading(title: "Optimise for purpose", caption: model.printRecipe.map { "Prepared for \($0.intent.purpose.rawValue.lowercased()) · View recipe" } ?? "Choose how this part sits on the print bed for its use")
-            }
+            }.studioDisclosureStyle()
         }
         .task(id: model.id) {
             loaded = false
@@ -410,7 +410,7 @@ struct PrintOrientationCard: View {
                     }
                 }
             }.padding(.top, 8)
-        }
+        }.studioDisclosureStyle()
         .font(.callout)
     }
 
@@ -425,7 +425,7 @@ struct PrintOrientationCard: View {
                     if !recipe.intent.details.isEmpty { Text(recipe.intent.details) }
                     Text("Original: \(recipe.sourceName)")
                 }.font(.callout).foregroundStyle(.secondary).padding(.top, 8)
-            }
+            }.studioDisclosureStyle()
             if let material = recipe.materialID, material != store.filamentID {
                 Text("The material selection has changed since preparation. Placement is preserved; strength depends on the material used.")
                     .font(.callout).foregroundStyle(.secondary)

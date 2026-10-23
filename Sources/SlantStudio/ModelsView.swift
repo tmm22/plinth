@@ -796,7 +796,7 @@ struct ModelsView: View {
                         .accessibilityLabel("Copy ID")
                         Text(file.id).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     }
-                }
+                }.studioDisclosureStyle()
             }
         }
     }
@@ -1824,7 +1824,7 @@ struct CatalogDetailSheet: View {
                         .accessibilityLabel("Copy ID")
                         JSONView(text: prettyJSON(hidingSecrets(record.values))).frame(height: 220)
                     }
-                }
+                }.studioDisclosureStyle()
                 HStack {
                     Spacer()
                     if kind == .materials {

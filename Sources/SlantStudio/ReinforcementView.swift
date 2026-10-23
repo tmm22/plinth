@@ -32,7 +32,7 @@ struct ReinforcementCard: View {
                 }.fixedSize(horizontal: false, vertical: true).padding(.top, 12)
             } label: {
                 SectionHeading(title: "Reinforce this part", caption: model.reinforcement == nil ? "Add ribs, gussets and other features you place and preview" : "Reinforcement copy · View details")
-            }
+            }.studioDisclosureStyle()
         }
         .task(id: expanded) {
             guard expanded, model.supportsPreview, mesh == nil else { return }
@@ -114,7 +114,7 @@ private struct ReinforcementReview: View {
                             Text(String(format: "Model envelope: %.2f × %.2f × %.2f mm", source.maximum.x-source.minimum.x, source.maximum.y-source.minimum.y, source.maximum.z-source.minimum.z))
                                 .font(.caption).foregroundStyle(.secondary)
                         }.padding(.top, 10)
-                    }
+                    }.studioDisclosureStyle()
                     DisclosureGroup("Keep-clear regions (\(settings.protectedRegions.count))") {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Protect space for mating parts, electronics, tools or movement. Neither added nor removed material may enter these regions.")
@@ -130,7 +130,7 @@ private struct ReinforcementReview: View {
                                 settings.protectedRegions.append(ReinforcementBox(offset: (source.maximum-source.minimum)*0.25, size: (source.maximum-source.minimum)*0.5))
                             }.disabled(settings.protectedRegions.count >= 8)
                         }.padding(.top, 10)
-                    }
+                    }.studioDisclosureStyle()
                     HStack {
                         Button("Suggest Position") { suggestPosition() }.disabled(working)
                         Button(working ? "Preparing Preview…" : "Update Preview") { updatePreview() }.disabled(working)

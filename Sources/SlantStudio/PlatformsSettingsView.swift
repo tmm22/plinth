@@ -298,7 +298,7 @@ struct PlatformDetailSheet: View {
                         .accessibilityLabel("Copy ID")
                         JSONView(text: prettyJSON(hidingSecrets(livePlatform.values))).frame(height: 220)
                     }
-                }
+                }.studioDisclosureStyle()
                 // Already the default: the header's Default badge says so, and Done closes the sheet.
                 if platformDetailOffersUseAsDefault(platformID: record.id, defaultPlatformID: store.platformID) {
                     HStack {
@@ -370,7 +370,7 @@ struct PlatformDetailSheet: View {
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            }.studioDisclosureStyle()
             deadWebhooksSection
         }
     }

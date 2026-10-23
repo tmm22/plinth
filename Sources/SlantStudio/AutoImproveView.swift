@@ -93,7 +93,7 @@ struct AutoImproveCard: View {
                 SectionHeading(title: "Auto-improve", caption: run.working
                                ? run.status
                                : autoImproveSummary(intent: intent, hasRecipe: model.printRecipe != nil, improved: model.autoImprovement != nil))
-            }
+            }.studioDisclosureStyle()
         }
         .onDisappear { run.stop() }
     }
@@ -132,14 +132,14 @@ struct AutoImproveCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(manual, id: \.self) { Text($0) }
                 }.font(.callout).foregroundStyle(.secondary).padding(.top, 6)
-            }
+            }.studioDisclosureStyle()
         }
         if !skipped.isEmpty {
             DisclosureGroup("Skipped after checks (\(skipped.count))") {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(skipped.enumerated()), id: \.offset) { Text($0.element) }
                 }.font(.callout).foregroundStyle(.secondary).padding(.top, 6)
-            }
+            }.studioDisclosureStyle()
         }
     }
 

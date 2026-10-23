@@ -76,6 +76,7 @@ Every task follows this process. Scale the number of agents to the size of the t
 ## UI conventions
 
 - User-visible text uses British spelling (Optimise, Colour, Cancelled) and Title Case for buttons and menu items; section headings and disclosure labels stay sentence case. Never change Slant's API values (such as the `CANCELED` status) to match.
+- Give each new DisclosureGroup outside a grouped Form `.studioDisclosureStyle()` so its whole label is clickable. Never apply that style to a window, List or Form: sidebar and list sections are disclosures too, and it breaks their rows and selection.
 - Account setup belongs in the Settings window, developer-only surfaces behind Settings › Advanced › Show developer tools, and seller tasks in the sidebar (Models, Orders, Catalog).
 
 ## Documentation

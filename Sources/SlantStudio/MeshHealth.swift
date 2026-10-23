@@ -244,7 +244,7 @@ struct MeshHealthPanel: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     } label: {
                         label.accessibilityLabel(summary.isClean ? summary.line : "\(summary.line). \(summary.title)")
-                    }
+                    }.studioDisclosureStyle()
                 }
             } else {
                 HStack(spacing: 8) {

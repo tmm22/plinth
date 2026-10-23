@@ -81,13 +81,16 @@ final class WorkbenchSafetyTests: XCTestCase {
         XCTAssertEqual(workbenchCancelAllowed(status: nil, loaded: false).1, "Couldn’t load this order.")
         XCTAssertEqual(workbenchCancelAllowed(status: "DRAFT", loaded: false).1, "Couldn’t load this order.")
 
-        for status in ["DRAFT", "PAID", "QUEUED", "PROCESSING", "PRINTING", "IN_REVIEW", "PAYMENT_ERROR",
-                       "AWAITING_SHIPMENT", "COMPLETED", "draft", "queued"] {
+        for status in ["PAID", "QUEUED", "PROCESSING", "PRINTING", "IN_REVIEW", "PAYMENT_ERROR",
+                       "AWAITING_SHIPMENT", "COMPLETED", "queued"] {
             XCTAssertEqual(workbenchCancelAllowed(status: status, loaded: true).0, true, status)
             XCTAssertNil(workbenchCancelAllowed(status: status, loaded: true).1, status)
         }
 
         XCTAssertEqual(workbenchCancelAllowed(status: "CANCELED", loaded: true).1, "This order was already cancelled.")
+        for status in ["DRAFT", "draft"] {
+            XCTAssertEqual(workbenchCancelAllowed(status: status, loaded: true).0, false, status)
+        }
         XCTAssertEqual(workbenchCancelAllowed(status: "SHIPPED", loaded: true).0, true)
         XCTAssertNil(workbenchCancelAllowed(status: "SHIPPED", loaded: true).1)
         XCTAssertEqual(workbenchCancelAllowed(status: nil, loaded: true).0, false)

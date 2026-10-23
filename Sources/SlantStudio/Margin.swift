@@ -374,7 +374,7 @@ struct ProfitCheckPanel: View {
             // Inputs and results line up in one right-aligned column, like a receipt.
             .labeledContentStyle(.receipt)
             .padding(.top, 6)
-        }
+        }.studioDisclosureStyle()
         .onAppear(perform: loadRatesIfNeeded)
     }
 
@@ -384,12 +384,15 @@ struct ProfitCheckPanel: View {
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         moneyField("Item total paid", text: $itemText)
         moneyField("Shipping charged", text: $shippingText)
-        LabeledContent("Marketplace fees") {
+        LabeledContent {
+            // The menu may shorten a long preset name in a narrow pane; the label never breaks mid-word.
             Picker("Marketplace fees", selection: Binding(get: { preset }, set: { choosePreset($0) })) {
                 ForEach(ProfitFeePreset.allCases) { Text($0.title).tag($0) }
             }
             .labelsHidden()
-            .fixedSize()
+            .frame(maxWidth: 260)
+        } label: {
+            Text("Marketplace fees").fixedSize()
         }
         if preset.hasRates { rateFields }
         Divider()
@@ -442,7 +445,7 @@ struct ProfitCheckPanel: View {
                     }
                 }
                 .padding(.top, 4)
-            }
+            }.studioDisclosureStyle()
             if showsListingFee {
                 LabeledContent("Units sold") {
                     VStack(alignment: .trailing, spacing: 2) {

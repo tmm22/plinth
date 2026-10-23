@@ -520,9 +520,15 @@ struct OrderComposerView: View {
                 )) {
                     Text("3D print").tag("PRINT"); Text("Component").tag("COMPONENT"); Text("Stationery").tag("STATIONERY")
                 }.frame(width: 210)
-                // Hugs its label so the arrows sit beside the quantity rather than at the far edge.
-                Stepper("Quantity: \(item.wrappedValue.quantity)", value: item.quantity, in: 1...10000)
-                    .fixedSize()
+                // Text plus a label-less stepper: in a grouped Form a labelled Stepper is drawn as a form row, which put
+                // the arrows at the far edge away from the number.
+                HStack(spacing: 4) {
+                    Text("Quantity: \(item.wrappedValue.quantity)").monospacedDigit()
+                    Stepper("Quantity", value: item.quantity, in: 1...10000)
+                        .labelsHidden()
+                        .accessibilityValue("\(item.wrappedValue.quantity)")
+                }
+                .fixedSize()
                 Spacer(minLength: 0)
                 Button(role: .destructive) { lines.removeAll { $0.id == item.wrappedValue.id } } label: { Image(systemName: "minus.circle") }
                     .accessibilityLabel("Remove item")
@@ -900,17 +906,18 @@ struct OrdersView: View {
                             }
                         }
                     }
-                    // Flexible widths whose minimums fit the pane's 420 pt minimum, so the table never scrolls
-                    // sideways; the recipient gets the most room, the order number (also in the detail) the least.
-                    .width(min: 120, ideal: 190)
+                    // Flexible widths whose minimums add up to about the pane's 360 pt minimum, so the table scrolls
+                    // sideways only at the narrowest window; the recipient gets the most room, the order number
+                    // (also in the detail) the least, and Created always fits a full "23 Oct 2026".
+                    .width(min: 96, ideal: 160)
                     TableColumn("Status", value: \.status) { (row: OrderTableRow) in
                         Text(row.status).lineLimit(1).help(row.status)
                     }
-                    .width(min: 64, ideal: 118, max: 160)
+                    .width(min: 64, ideal: 112, max: 160)
                     TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
                         Text(row.created.isEmpty ? "—" : row.created).lineLimit(1)
                     }
-                    .width(min: 64, ideal: 88, max: 120)
+                    .width(min: 84, ideal: 96, max: 130)
                     TableColumn("Total", value: \.totalSortKey) { (row: OrderTableRow) in
                         Text(row.total).monospacedDigit().lineLimit(1)
                     }
@@ -918,7 +925,7 @@ struct OrdersView: View {
                     TableColumn("Order number", value: \.number) { (row: OrderTableRow) in
                         Text(row.number).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(row.number)
                     }
-                    .width(min: 60, ideal: 110)
+                    .width(min: 60, ideal: 100)
                 }
                 .contextMenu(forSelectionType: String.self) { ids in
                     if ids.count == 1, let id = ids.first, let record = store.orders.first(where: { $0.id == id }) {
@@ -948,9 +955,10 @@ struct OrdersView: View {
                     }.padding(8)
                 }
             }
-            .frame(minWidth: 420, idealWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 360, idealWidth: 540, maxWidth: .infinity, maxHeight: .infinity)
             detailPane
-                .frame(minWidth: 360, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+                // Wide enough for Cancel, Duplicate and Review & Place Order side by side (they never truncate).
+                .frame(minWidth: 500, idealWidth: 600, maxWidth: .infinity, maxHeight: .infinity)
         }
         // Fills the window even with no order selected; otherwise the split shrinks to its content and centres.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1184,6 +1192,7 @@ struct OrdersView: View {
                                 pendingConfirm = PendingOrderConfirm(method: "DELETE", orderID: selected.id)
                             }
                             .disabled(store.busy)
+                            .fixedSize()
                             .help("Review cancellation")
                         } else if let reason = orderDetailCancelBlockedNote((displayed["status"] as? String) ?? "") {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
@@ -1192,16 +1201,18 @@ struct OrdersView: View {
                         let duplicateBlocked = store.duplicateOrderBlockedReason(orderID: selected.id)
                         Button("Duplicate as New Draft…") { Task { await store.duplicateOrderAsDraft(orderID: selected.id) } }
                             .disabled(duplicateBlocked != nil)
+                            .fixedSize()
                             .help(duplicateBlocked ?? "Open a new draft with this order’s items and delivery details for review")
                         if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
                             Button("Review & Place Order…") { pendingConfirm = PendingOrderConfirm(method: "POST", orderID: selected.id) }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(store.busy)
+                                .fixedSize()
                                 .help("Review and pay")
                         }
                     }
                     if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
-                        Text("Placing charges your saved payment method.").font(.caption).foregroundStyle(.secondary)
+                        Text(orderDetailDraftCaption).font(.caption).foregroundStyle(.secondary)
                     }
                     Divider()
                     OrderSummary(order: displayed)
@@ -1471,7 +1482,9 @@ struct OrderActionConfirmSheet: View {
             var didWrite = false
             var attemptedWrite = false
             var rejected = false
-            let ran = await store.run(isPay ? "Process order" : "Cancel order") {
+            var refusal: String?
+            // A definite refusal is explained here in the review, so it doesn't also raise the window's alert.
+            let ran = await store.run(isPay ? "Process order" : "Cancel order", handlesError: { _ in rejected }) {
                 let preview = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
                 let latest = mergeOrderDraftEnvelope(responseObject(preview))
                 latestOrder = latest
@@ -1493,6 +1506,7 @@ struct OrderActionConfirmSheet: View {
                         attemptedWrite = false
                         writeAttempted = false
                         rejected = true
+                        refusal = orderConfirmRefusalMessage(isPay: isPay, error: error)
                     }
                     throw error
                 }
@@ -1521,7 +1535,7 @@ struct OrderActionConfirmSheet: View {
             } else if attemptedWrite {
                 actionMessage = orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
             } else if rejected {
-                actionMessage = isPay ? "Slant didn’t accept the payment request. Review the order before trying again." : "Slant didn’t accept the cancel request. Review the order before trying again."
+                actionMessage = refusal ?? (isPay ? "Slant didn’t accept the payment request. Review the order before trying again." : "Slant didn’t accept the cancel request. Review the order before trying again.")
             } else {
                 switch outcome {
                 case .priceChanged: actionMessage = "The price changed. Review the new total."
@@ -1535,6 +1549,21 @@ struct OrderActionConfirmSheet: View {
 
 // MARK: - Pure helpers
 
+/// Under a draft's actions: what placing does, and why there's no Cancel.
+let orderDetailDraftCaption = "Placing charges your saved payment method. Slant doesn’t cancel drafts; a draft costs nothing unless you place it."
+/// The review sheet's note after Slant definitely refused the pay or cancel request (nothing was charged or
+/// cancelled): Slant's own words for a rejected request (400/422), otherwise the usual message, which already says
+/// what went wrong and keeps advice such as reconnecting after a 401.
+func orderConfirmRefusalMessage(isPay: Bool, error: Error) -> String {
+    let lead = isPay ? "Slant didn’t accept the payment request." : "Slant didn’t accept the cancel request."
+    if case .http(let status, let body, _, _)? = error as? APIError, status == 400 || status == 422,
+       let message = shortAPIMessage(from: body)?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+        let sentence = message.last.map { ".!?".contains($0) } == true ? message : message + "."
+        return lead + " Slant said: “" + sentence + "”"
+    }
+    let detail = friendlyAPIMessage(error).trimmingCharacters(in: .whitespacesAndNewlines)
+    return detail.isEmpty ? lead + " Review the order before trying again." : detail
+}
 func orderConfirmLoadStateAfterRun(succeeded: Bool, skippedBusy: Bool) -> OrderConfirmLoadState {
     if succeeded { return .loaded }
     if skippedBusy { return .loading }
@@ -1661,7 +1690,8 @@ let orderKnownStatuses: Set<String> = [
 func orderCanRequestCancellation(_ status: String) -> Bool {
     let normalized = status.uppercased()
     guard orderKnownStatuses.contains(normalized) else { return false }
-    return normalized != "CANCELED"
+    // Slant refuses DELETE on drafts ("Can not cancel a draft order", seen 23 Oct 2026), so drafts offer no cancel.
+    return normalized != "CANCELED" && normalized != "DRAFT"
 }
 func orderCancellationIsRefundOnly(_ status: String) -> Bool {
     ["SHIPPED", "DELIVERED"].contains(status.uppercased())
@@ -1670,6 +1700,7 @@ func orderCancellationBlockedReason(_ status: String) -> String? {
     if orderCanRequestCancellation(status) { return nil }
     switch status.uppercased() {
     case "CANCELED": return "This order was already cancelled."
+    case "DRAFT": return "Slant doesn’t cancel drafts. A draft costs nothing unless you place it."
     case "": return "This order can’t be cancelled."
     default: return "This order can’t be cancelled."
     }
@@ -1677,7 +1708,8 @@ func orderCancellationBlockedReason(_ status: String) -> String? {
 /// The note shown in an order's details instead of Cancel…, or nil. Omitted for finished orders (cancelled, shipped,
 /// delivered, complete), whose status heading already says why; kept where it tells the user something.
 func orderDetailCancelBlockedNote(_ status: String) -> String? {
-    let finished: Set<String> = ["CANCELED", "SHIPPED", "DELIVERED", "COMPLETE"]
+    // Drafts say why they have no Cancel in their caption under the buttons (`orderDetailDraftCaption`).
+    let finished: Set<String> = ["CANCELED", "SHIPPED", "DELIVERED", "COMPLETE", "DRAFT"]
     if finished.contains(status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()) { return nil }
     return orderCancellationBlockedReason(status)
 }
@@ -2239,7 +2271,7 @@ struct OrderSummary: View {
             }
             // Keyed by order so amounts typed for one order never carry over to another.
             ProfitCheckPanel(order: order).id(Record(values: order).id)
-            DisclosureGroup("Technical details") { JSONView(text: prettyJSON(hidingSecrets(order))).frame(height: 220) }
+            DisclosureGroup("Technical details") { JSONView(text: prettyJSON(hidingSecrets(order))).frame(height: 220) }.studioDisclosureStyle()
         }
     }
 

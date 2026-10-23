@@ -128,11 +128,12 @@ final class WorkflowTests: XCTestCase {
     }
 
     func testCancellationOnlyOfferedBeforeProduction() {
-        for status in ["DRAFT", "PAID", "QUEUED", "PROCESSING", "PRINTING", "IN_REVIEW", "PAYMENT_ERROR",
+        for status in ["PAID", "QUEUED", "PROCESSING", "PRINTING", "IN_REVIEW", "PAYMENT_ERROR",
                        "AWAITING_SHIPMENT", "POST_PROCESSING", "COMPLETED", "ITEMS_ON_SHELF", "SHIPPED", "DELIVERED"] {
             XCTAssertTrue(orderCanRequestCancellation(status), status)
         }
-        for status in ["CANCELED", "UNKNOWN", ""] {
+        // Slant refuses to cancel drafts.
+        for status in ["DRAFT", "CANCELED", "UNKNOWN", ""] {
             XCTAssertFalse(orderCanRequestCancellation(status), status)
         }
     }

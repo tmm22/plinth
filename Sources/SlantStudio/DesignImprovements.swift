@@ -203,7 +203,7 @@ struct DesignImprovementsCard: View {
                 .padding(.top, 16)
             } label: {
                 SectionHeading(title: "Design improvements", caption: model.designImprovement == nil ? "Square edges · Add a bottom chamfer or rounded corners" : "Edge improvement applied · View details")
-            }
+            }.studioDisclosureStyle()
         }
         .onAppear {
             if let mesh { amount = Double(min(0.5, (mesh.maximum - mesh.minimum).min() / 4)) }

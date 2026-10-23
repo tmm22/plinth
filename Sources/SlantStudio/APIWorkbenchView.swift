@@ -104,7 +104,7 @@ struct EndpointView: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack { SectionHeading(title: endpoint.path == "/files/openScad" ? "OpenSCAD request" : "Request body", caption: "Editable JSON"); Spacer(); Button("Reset") { bodyText = endpoint.bodyTemplate } }
                                 TextEditor(text: $bodyText).font(.system(size: 12, design: .monospaced)).frame(minHeight: 180, idealHeight: 240).padding(7).background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
-                                DisclosureGroup("Fields & schema") { JSONView(text: endpoint.bodySchema).frame(height: 300) }
+                                DisclosureGroup("Fields & schema") { JSONView(text: endpoint.bodySchema).frame(height: 300) }.studioDisclosureStyle()
                             }
                         }
                     }
