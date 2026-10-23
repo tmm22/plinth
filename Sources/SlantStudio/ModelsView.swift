@@ -391,6 +391,10 @@ struct ModelsView: View {
         .frame(maxWidth: 420)
         .padding(40)
         .frame(maxWidth: .infinity, minHeight: 360)
+        // Fill the visible inspector height (less the page padding) so the drop box isn't a band at the top.
+        .containerRelativeFrame(.vertical, alignment: .center) { length, _ in
+            max(360, length - StudioMetrics.pagePadding * 2)
+        }
         .overlay(
             RoundedRectangle(cornerRadius: StudioMetrics.cardRadius)
                 .stroke(targeted ? Color.studioAccent : Color.studioHairline,
@@ -1064,14 +1068,15 @@ struct ImproveForPrintingSection: View {
     }
 }
 
-private func nextStepStatusText(_ step: ModelsNextStep) -> String {
+/// The next-action bar's status line. `actionStatus` covers a missing material, quantity or stock before this.
+func nextStepStatusText(_ step: ModelsNextStep) -> String {
     switch step {
     case .needsSetup: return "Connect your account to upload and estimate."
     case .needsPlatform: return "Choose or create a platform to upload and order."
     case .needsModel: return "Import a model to get started."
     case .uploading: return "Uploading your model…"
     case .needsUpload: return "Upload this model to request an estimate."
-    case .needsEstimate: return "Choose a material and get an estimate."
+    case .needsEstimate: return "Get an estimate for this material and quantity."
     case .estimateStale: return "The configuration has changed. Get a new estimate."
     case .readyForDraft: return "Your estimate is ready. Create an order draft when you’re set."
     }
@@ -1184,17 +1189,33 @@ struct ImportFromURLSheet: View {
 
 // MARK: - Estimate / status helpers
 
+/// The estimate's breakdown under the headline total. Left out on purpose:
+/// - `estimatedPrintTime` and `totalMaterial`: the OpenAPI gives no unit, and live values don't match Model analysis
+///   (6.66 against 402 minutes for the same 3MF), so any unit would be a guess. Model analysis on the same screen shows
+///   the documented print time (minutes) and weight (grams).
+/// - `subtotal` ("before surcharges"): live replies differ from the price per unit even with no surcharges (7.64
+///   against 9.93), so listing it beside the total reads as a contradiction.
+/// Surcharges, which `total` includes, are listed only when one is charged.
 func estimateRows(_ estimate: [String: Any]) -> [(String, String)] {
     var rows: [(String, String)] = []
     if estimate["pricePerUnit"] != nil { rows.append(("Price per unit", money(estimate["pricePerUnit"]))) }
     if let quantity = estimate["quantity"] { rows.append(("Quantity", String(describing: quantity))) }
-    if estimate["subtotal"] != nil { rows.append(("Subtotal", money(estimate["subtotal"]))) }
-    if let material = estimate["totalMaterial"] { rows.append(("Material", String(describing: material))) }
-    if let time = estimate["estimatedPrintTime"] { rows.append(("Print time", "\(String(describing: time)) min")) }
-    if estimate["bodyChargeCost"] != nil { rows.append(("Multi-part charge", money(estimate["bodyChargeCost"]))) }
-    if estimate["oversizeSurcharge"] != nil { rows.append(("Oversize fee", money(estimate["oversizeSurcharge"]))) }
+    if estimateAmountIsCharged(estimate["bodyChargeCost"]) { rows.append(("Multi-part charge", money(estimate["bodyChargeCost"]))) }
+    if estimateAmountIsCharged(estimate["oversizeSurcharge"]) { rows.append(("Oversize fee", money(estimate["oversizeSurcharge"]))) }
     if estimate["total"] != nil { rows.append(("Total", money(estimate["total"]))) }
     return rows
+}
+
+/// True for an amount above zero, and for a present value that can't be read (shown as "—" rather than hidden).
+func estimateAmountIsCharged(_ value: Any?) -> Bool {
+    guard let value, !(value is NSNull) else { return false }
+    let decimal: Decimal?
+    if let number = value as? NSNumber { decimal = number.decimalValue }
+    else if let string = value as? String {
+        decimal = Decimal(string: string.trimmingCharacters(in: .whitespaces), locale: Locale(identifier: "en_US_POSIX"))
+    } else { decimal = nil }
+    guard let decimal else { return true }
+    return decimal > 0
 }
 
 func displayedEstimateRows(_ estimate: [String: Any]) -> [(String, String)] {
@@ -1286,12 +1307,44 @@ func metricName(_ key: String) -> String {
 
 func metricUnit(_ key: String, _ metrics: [String: Any]) -> String {
     if key == "weight" {
-        if let unit = metrics["weightUnit"] as? String, !unit.isEmpty { return unit }
+        if let unit = metrics["weightUnit"] as? String, !unit.isEmpty { return displayUnit(unit) }
     }
-    return (metrics["units"] as? [String: String])?[key]
-        ?? ["x": "mm", "y": "mm", "z": "mm", "weight": "g", "volume": "cm³", "printTimeEstimate": "min",
+    if let unit = (metrics["units"] as? [String: String])?[key], !unit.trimmingCharacters(in: .whitespaces).isEmpty {
+        return displayUnit(unit)
+    }
+    return ["x": "mm", "y": "mm", "z": "mm", "weight": "g", "volume": "cm³", "printTimeEstimate": "min",
             "surfaceArea": "mm²", "supportVolumeEstimate": "cm³"][key]
         ?? ""
+}
+
+/// Slant's `units` write powers as plain digits ("cm3", "mm2"); shows them with superscripts. Others pass through.
+func displayUnit(_ unit: String) -> String {
+    let trimmed = unit.trimmingCharacters(in: .whitespaces)
+    let superscripts: [String: String] = [
+        "mm2": "mm²", "cm2": "cm²", "m2": "m²", "in2": "in²", "mm^2": "mm²", "cm^2": "cm²",
+        "mm3": "mm³", "cm3": "cm³", "m3": "m³", "in3": "in³", "mm^3": "mm³", "cm^3": "cm³",
+    ]
+    return superscripts[trimmed.lowercased()] ?? trimmed
+}
+
+/// True when a `printTimeEstimate` unit means minutes (the OpenAPI's documented unit, used when none is given).
+func isMinutesUnit(_ unit: String) -> Bool {
+    ["min", "mins", "minute", "minutes"].contains(unit.trimmingCharacters(in: .whitespaces).lowercased())
+}
+
+/// Minutes as "45 min" under an hour and "6 h 42 min" (or "2 h") from an hour, rounded to the nearest minute.
+/// Nil for values that aren't a finite, non-negative number.
+func formattedPrintMinutes(_ value: Any?) -> String? {
+    let minutes: Double
+    if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { minutes = number.doubleValue }
+    else if let text = value as? String, let parsed = Double(text.trimmingCharacters(in: .whitespaces)) { minutes = parsed }
+    else { return nil }
+    guard minutes.isFinite, minutes >= 0, minutes < 100_000_000 else { return nil }
+    let total = Int(minutes.rounded())
+    if total == 0 && minutes > 0 { return "Under 1 min" }
+    if total < 60 { return "\(total) min" }
+    let hours = total / 60, rest = total % 60
+    return rest == 0 ? "\(hours) h" : "\(hours) h \(rest) min"
 }
 
 func metricDisplayValue(_ value: Any?) -> String? {
@@ -1311,6 +1364,9 @@ func usableMetricEntries(_ metrics: [String: Any], supportRequired: Bool? = nil)
         }
         guard let display = metricDisplayValue(metrics[key]) else { return nil }
         let unit = metricUnit(key, metrics)
+        if key == "printTimeEstimate", isMinutesUnit(unit), let formatted = formattedPrintMinutes(metrics[key]) {
+            return (key, metricName(key), formatted)
+        }
         let value = unit.isEmpty ? display : "\(display) \(unit)"
         return (key, metricName(key), value)
     }

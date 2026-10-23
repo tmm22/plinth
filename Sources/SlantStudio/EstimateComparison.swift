@@ -283,8 +283,8 @@ func comparisonPacing(rateLimit: RateLimitInfo?, observedAt: Date?, now: Date, r
 
 /// After a 429, when Slant says requests may resume: the reset time, else a numeric Retry-After, else a minute.
 func comparisonRateLimitedUntil(retryAfter: String?, rateLimitReset: String?, now: Date) -> Date {
-    if let raw = rateLimitReset?.trimmingCharacters(in: .whitespaces), let seconds = TimeInterval(raw), seconds > now.timeIntervalSince1970 {
-        return Date(timeIntervalSince1970: min(seconds, now.timeIntervalSince1970 + 3600))
+    if let reset = rateLimitResetDate(rateLimitReset, now: now), reset > now {
+        return min(reset, now.addingTimeInterval(3600))
     }
     if let raw = retryAfter?.trimmingCharacters(in: .whitespaces), let seconds = TimeInterval(raw), seconds > 0 {
         return now.addingTimeInterval(min(seconds, 3600))
@@ -570,9 +570,9 @@ struct EstimateComparisonSheet: View {
     private var planMatchesInputs: Bool { runner.plan == draftPlan }
     private var startTitle: String {
         if planMatchesInputs, !runner.remainingCells.isEmpty, runner.remainingCells.count < draftPlan.cells.count {
-            return "Get remaining estimates"
+            return "Get Remaining Estimates"
         }
-        return "Get estimates"
+        return "Get Estimates"
     }
 
     var body: some View {

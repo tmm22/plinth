@@ -50,6 +50,8 @@ struct StudioBadge: View {
     enum Tone { case neutral, accent, success, warning }
     let text: String
     var tone: Tone = .neutral
+    /// `.increased` on a selected (accent-filled) list row, where tinted text on a tinted capsule loses contrast.
+    @Environment(\.backgroundProminence) private var backgroundProminence
 
     private var color: Color {
         switch tone {
@@ -61,13 +63,19 @@ struct StudioBadge: View {
     }
 
     var body: some View {
+        let onSelection = studioBadgeUsesSelectedStyle(backgroundProminence)
         Text(text)
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(color)
+            .foregroundStyle(onSelection ? Color.white : color)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
-            .background(color.opacity(0.14), in: Capsule())
+            .background(onSelection ? Color.white.opacity(0.22) : color.opacity(0.14), in: Capsule())
     }
+}
+
+/// Badges switch to white text on a translucent white capsule when their row's background is prominent (selected).
+func studioBadgeUsesSelectedStyle(_ prominence: BackgroundProminence) -> Bool {
+    prominence == .increased
 }
 
 /// Square thumbnail used for every list row and catalog card, so items share one silhouette.

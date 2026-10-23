@@ -421,7 +421,7 @@ final class ShellUXTests: XCTestCase {
         // A Pay review or draft in the main window must not lose its account underneath it.
         XCTAssertEqual(accountKeyChangeBlockedReason(busy: true, modalUIShown: false), "Wait for the current request to finish.")
         XCTAssertEqual(accountKeyChangeBlockedReason(busy: false, modalUIShown: true),
-                       "Close the open sheet, alert or dialog in the main window first.")
+                       "Close the open sheet, alert or dialog first.")
         XCTAssertNotNil(accountKeyChangeBlockedReason(busy: true, modalUIShown: true))
         XCTAssertNil(accountKeyChangeBlockedReason(busy: false, modalUIShown: false))
     }

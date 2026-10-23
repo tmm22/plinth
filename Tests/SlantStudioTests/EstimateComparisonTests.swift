@@ -234,8 +234,12 @@ final class EstimateComparisonTests: XCTestCase {
 
     func testRateLimitedUntilPrefersResetThenRetryAfterThenAMinute() {
         let now = Date(timeIntervalSince1970: 1_000)
-        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1030", now: now), Date(timeIntervalSince1970: 1_030))
-        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "900", now: now), now.addingTimeInterval(5), "past reset ignored")
+        // Live Slant sends epoch milliseconds; epoch seconds are tolerated.
+        let live = Date(timeIntervalSince1970: 1_800_000_625.873)
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000685873", now: live).timeIntervalSince(live), 60, accuracy: 0.001)
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000655", now: live).timeIntervalSince(live), 29.127, accuracy: 0.001)
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000565873", now: live), live.addingTimeInterval(5), "past reset ignored")
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "-30", now: live), live.addingTimeInterval(5), "negative reset ignored")
         XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "Wed, 21 Oct 2026 07:28:00 GMT", rateLimitReset: nil, now: now), now.addingTimeInterval(60))
         XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: nil, rateLimitReset: nil, now: now), now.addingTimeInterval(60))
         XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "999999", rateLimitReset: nil, now: now), now.addingTimeInterval(3600), "capped")

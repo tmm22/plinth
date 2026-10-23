@@ -36,6 +36,14 @@ private struct ProminentWhen: ViewModifier {
     }
 }
 
+extension View {
+    /// Grouped-form footers that fit on one line otherwise sit at the trailing edge; keep every footer leading.
+    func settingsFooterLayout() -> some View {
+        frame(maxWidth: .infinity, alignment: .leading)
+            .multilineTextAlignment(.leading)
+    }
+}
+
 /// Both tabs share one size so the window doesn't jump when switching tabs.
 let settingsTabHeight: CGFloat = 620
 
@@ -66,7 +74,7 @@ func developerToolsToggleBlockedReason(busy: Bool, modalUIShown: Bool) -> String
 /// alert or dialog in any window, or while a request runs.
 func accountKeyChangeBlockedReason(busy: Bool, modalUIShown: Bool) -> String? {
     if busy { return "Wait for the current request to finish." }
-    if modalUIShown { return "Close the open sheet, alert or dialog in the main window first." }
+    if modalUIShown { return "Close the open sheet, alert or dialog first." }
     return nil
 }
 
@@ -79,6 +87,9 @@ struct AccountSettingsTab: View {
     @State private var confirmDisconnect = false
     @State private var connectError: String?
     @State private var platforms = PlatformsSettingsState()
+    /// AppKit makes the first text field first responder (with the key selected) when the window opens; a stray
+    /// keystroke would then replace the key. Focus is released on appear so the field is focused only by the user.
+    @FocusState private var keyFieldFocused: Bool
 
     private var prominent: ConnectionProminentAction {
         connectionProminentAction(
@@ -104,6 +115,7 @@ struct AccountSettingsTab: View {
         Form {
             Section {
                 SecureField("API key", text: $key, prompt: Text("sl-…"))
+                    .focused($keyFieldFocused)
                     .onSubmit { saveAndTest() }
                 HStack {
                     Button("Save & Test") { saveAndTest() }
@@ -140,6 +152,7 @@ struct AccountSettingsTab: View {
                 Text("Slant account")
             } footer: {
                 Text("The key is stored in the macOS Keychain on this Mac. Billing is managed on the Slant website.")
+                    .settingsFooterLayout()
             }
 
             PlatformsSettingsSections(state: $platforms, createProminent: prominent == .createPlatform)
@@ -147,6 +160,15 @@ struct AccountSettingsTab: View {
         .formStyle(.grouped)
         .frame(width: 620, height: settingsTabHeight)
         .onAppear { key = store.apiKey }
+        .task {
+            // The window assigns its initial first responder after this view appears, so release it on the next
+            // turns of the run loop too. Only within the first moments after opening, so a deliberate click stays.
+            for delay in [0, 50, 200] as [UInt64] {
+                try? await Task.sleep(nanoseconds: delay * 1_000_000)
+                guard !Task.isCancelled else { return }
+                keyFieldFocused = false
+            }
+        }
         .onChange(of: store.apiKey) { _, new in key = new }
         .modifier(PlatformsSettingsSheets(state: $platforms))
         .confirmationDialog("Disconnect this Mac?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
@@ -257,6 +279,7 @@ struct AdvancedSettingsTab: View {
                 Text("Advanced identifiers")
             } footer: {
                 Text("Choose the default platform in Account. Owner ID is optional and is sent with uploads and order drafts.")
+                    .settingsFooterLayout()
             }
 
             Section {
@@ -278,6 +301,7 @@ struct AdvancedSettingsTab: View {
                 Text("Developer")
             } footer: {
                 Text("Adds the API Workbench and Activity to the sidebar and Go menu. Activity is recorded either way, and every Workbench request goes to Slant’s production API.")
+                    .settingsFooterLayout()
             }
         }
         .formStyle(.grouped)
