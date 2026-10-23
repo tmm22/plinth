@@ -212,14 +212,14 @@ struct EndpointView: View {
             }
             JSONView(text: pending.summary)
             HStack {
-                Button("Go back", role: .cancel) { dismissConfirm() }
+                Button("Go Back", role: .cancel) { dismissConfirm() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
                 Spacer()
                 if isCharge {
                     VStack(alignment: .trailing, spacing: 6) {
                         if previewLoaded || previewFailed, let chargeReason { Text(chargeReason).font(.caption).foregroundStyle(.secondary) }
-                        confirmSendButton(title: "Pay & send to production", prominent: true, destructive: false, enabled: chargeOK && sendEnabled, usesReturn: usesReturn) {
+                        confirmSendButton(title: "Pay & Send to Production", prominent: true, destructive: false, enabled: chargeOK && sendEnabled, usesReturn: usesReturn) {
                             guard let preview = previewOrder, sendUnlocked, !crossSheetUnknown else { return }
                             executeGuardedOrderMutation(pending, preview: preview)
                         }
@@ -227,13 +227,13 @@ struct EndpointView: View {
                 } else if isDeleteOrder {
                     VStack(alignment: .trailing, spacing: 6) {
                         if previewLoaded || previewFailed, let cancelReason { Text(cancelReason).font(.caption).foregroundStyle(.secondary) }
-                        confirmSendButton(title: "Send DELETE request", prominent: false, destructive: true, enabled: cancelOK && sendEnabled, usesReturn: usesReturn) {
+                        confirmSendButton(title: "Send DELETE Request", prominent: false, destructive: true, enabled: cancelOK && sendEnabled, usesReturn: usesReturn) {
                             guard let preview = previewOrder, sendUnlocked, !crossSheetUnknown else { return }
                             executeGuardedOrderMutation(pending, preview: preview)
                         }
                     }
                 } else {
-                    confirmSendButton(title: "Send \(pending.endpoint.method) request", prominent: true, destructive: pending.endpoint.method == "DELETE", enabled: sendEnabled, usesReturn: usesReturn) {
+                    confirmSendButton(title: "Send \(pending.endpoint.method) Request", prominent: true, destructive: pending.endpoint.method == "DELETE", enabled: sendEnabled, usesReturn: usesReturn) {
                         guard sendUnlocked else { return }
                         execute(pending)
                     }
