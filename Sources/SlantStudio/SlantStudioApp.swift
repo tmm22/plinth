@@ -37,8 +37,15 @@ struct SlantStudioApp: App {
                 Button("Export Model…") { store.exportSelectedModelFromMenu() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                     .disabled(!modelFileEnabled)
+                // Opens the listing images sheet; renders are saved to a folder the user picks. Nothing is sent.
+                Button("Export Listing Images…") { store.exportListingImagesFromMenu() }
+                    .disabled(!modelFileEnabled || store.selectedLocal?.supportsMeshPreview != true)
                 // Saves a CSV of the loaded orders shown in the list; no request is made.
                 Button("Export Orders…") { store.exportOrdersFromMenu() }
+                    .disabled(!ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
+                                                       sheetPresented: modalUIShown))
+                // Opens the spending report for the loaded orders; no request is made.
+                Button("Spending Report…") { store.openSpendingReportFromMenu() }
                     .disabled(!ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
                                                        sheetPresented: modalUIShown))
                 // Opens the Import Orders sheet only; drafts are created there after an explicit confirmation.

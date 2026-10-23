@@ -69,6 +69,11 @@ struct StudioView: View {
         .sheet(isPresented: $store.showImportFromURL) { ImportFromURLSheet().environmentObject(store) }
         .sheet(isPresented: $store.showSavedProducts) { SavedProductsSheet().environmentObject(store) }
         .sheet(isPresented: $store.showOrderImport) { OrderImportSheet().environmentObject(store) }
+        // Listing images and the spending report: local only, nothing is sent to Slant.
+        .sheet(isPresented: Binding(get: { store.listingImagesModelID != nil }, set: { if !$0 { store.listingImagesModelID = nil } })) {
+            if let id = store.listingImagesModelID { ListingImagesSheet(modelID: id).environmentObject(store) }
+        }
+        .sheet(isPresented: $store.showSpendingReport) { SpendingReportSheet().environmentObject(store) }
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }

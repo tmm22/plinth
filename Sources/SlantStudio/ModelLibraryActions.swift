@@ -306,6 +306,7 @@ extension StudioStore {
     var isPresentingSheet: Bool {
         showOrderComposer || showPlatformComposer || showSettingsPlatformComposer || showImportFromURL || showSavedProducts
             || showOrderImport
+            || listingImagesModelID != nil || showSpendingReport
             || renameSheetIsShown(renamingModelID: renamingModelID, models: localModels)
     }
 

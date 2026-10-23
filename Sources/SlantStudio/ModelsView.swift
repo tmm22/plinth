@@ -72,6 +72,7 @@ struct ModelsView: View {
                 .frame(minWidth: 220, idealWidth: 250, maxWidth: 320)
             inspector
                 .frame(minWidth: 580)
+                .modifier(ListingNoticeOverlay())  // "Listing details copied" (ListingAssets.swift)
         }
         .searchable(text: $search, prompt: "Search models")
         .toolbar {
@@ -407,6 +408,11 @@ struct ModelsView: View {
     private func localModelMenuItems(_ model: LocalModel) -> some View {
         Button("Rename…") { store.renamingModelID = model.id }
         Button("Export…") { store.exportLocalModel(id: model.id) }
+        // Listing assets (ListingAssets.swift): local renders and clipboard text only; nothing is sent to Slant.
+        if model.supportsMeshPreview {
+            Button("Export Listing Images…") { store.beginExportingListingImages(for: model.id) }
+            Button("Copy Listing Details") { store.copyListingDetails(for: model.id) }
+        }
         // Opens the product editor only; nothing is uploaded or ordered from here.
         Button("Save as Product…") {
             store.openSavedProducts(prefill: savedProductPrefill(for: model, selectedFilamentID: store.filamentID))

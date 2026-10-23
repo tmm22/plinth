@@ -1036,10 +1036,14 @@ struct OrdersView: View {
                     Button("Export Orders…") { store.exportOrdersFromMenu() }
                         .disabled(store.orders.isEmpty)
                         .help("Save the orders in the list as a CSV file")
+                    // Spending report (SpendReport.swift): from the loaded orders only; nothing is sent or saved.
+                    Button("Spending Report…") { store.openSpendingReportFromMenu() }
+                        .disabled(store.orders.isEmpty)
+                        .help("Slant spend per month and top items, from the loaded orders")
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
                 }
-                .help("Saved Products and Export Orders")
+                .help("Saved Products, Export Orders and Spending Report")
             }
         }
         .onChange(of: store.ordersExportRequest) { _, _ in
