@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-struct OrderLine: Identifiable {
+struct OrderLine: Identifiable, Equatable {
     let id = UUID()
     var type = "PRINT"
     var reference = ""
@@ -244,6 +244,9 @@ struct OrderComposerView: View {
         }
         .navigationTitle(orderComposerHeading(sourceOrderNumber: sourceOrderNumber))
         .frame(minWidth: 720, minHeight: 640)
+        // A Create Draft problem note goes once the items or address change; the next Create checks again.
+        .onChange(of: lines) { validation = nil }
+        .onChange(of: delivery) { validation = nil }
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button("Cancel", role: .cancel) { requestClose() }
@@ -861,6 +864,8 @@ struct OrdersView: View {
     @State private var sortOrder = orderTableDefaultSort(serverSortOrder: "desc")
     @State private var tableSortSynced = false
 
+    // From all loaded orders, not just the visible list: a new draft or a just-paid order stays shown even when the
+    // typed search no longer matches it.
     var selected: Record? { store.orders.first { $0.id == selection } }
     var displayedOrder: [String: Any]? {
         guard let selected else { return nil }
@@ -1157,10 +1162,33 @@ struct OrdersView: View {
         draftToDate = store.orderFilter.endDate ?? Date()
     }
 
+    /// Nothing matches: a typed search gets the system's search wording; a status or date filter says which
+    /// filter left the list empty and offers a way back to every order.
+    @ViewBuilder
+    var filteredEmptyView: some View {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty, !store.orderFilter.isActive {
+            ContentUnavailableView.search(text: query)
+        } else {
+            ContentUnavailableView {
+                Label("No matching orders", systemImage: "line.3.horizontal.decrease.circle")
+            } description: {
+                Text(orderFilterEmptyDetail(store.orderFilter, search: query))
+            } actions: {
+                if store.orderFilter.isActive {
+                    Button("Show All Orders") {
+                        Task { await store.applyOrderFilter(OrderFilter(sortOrder: store.orderFilter.sortOrder)) }
+                    }
+                    .disabled(store.busy)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     var tableEmptyOverlay: some View {
         if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.orderSearchActive || store.orderFilter.isActive {
-            ContentUnavailableView.search(text: search.isEmpty ? "filters" : search)
+            filteredEmptyView
         } else if store.orders.isEmpty {
             ContentUnavailableView {
                 Label("No orders yet", systemImage: "shippingbox")
@@ -1232,7 +1260,7 @@ struct OrdersView: View {
             }
         } else if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.orderSearchActive || store.orderFilter.isActive {
             if listRecords.isEmpty {
-                ContentUnavailableView.search(text: search.isEmpty ? "filters" : search)
+                filteredEmptyView
             } else {
                 ContentUnavailableView("Select an order", systemImage: "shippingbox", description: Text("Choose an order from the list to review it."))
             }
@@ -1549,6 +1577,19 @@ struct OrderActionConfirmSheet: View {
 
 // MARK: - Pure helpers
 
+/// Why a filtered orders list is empty, naming the status and/or dates that left nothing.
+func orderFilterEmptyDetail(_ filter: OrderFilter, search: String = "") -> String {
+    let dated = filter.startDate != nil || filter.endDate != nil
+    let base: String
+    switch (filter.status, dated) {
+    case (let status?, true): base = "No orders with the status “\(orderStatusTitle(status))” in the chosen dates"
+    case (let status?, false): base = "No orders with the status “\(orderStatusTitle(status))”"
+    case (nil, true): base = "No orders in the chosen dates"
+    case (nil, false): base = "No orders"
+    }
+    let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+    return query.isEmpty ? base + (filter.isActive ? "." : " match.") : base + " match “\(query)”."
+}
 /// Under a draft's actions: what placing does, and why there's no Cancel.
 let orderDetailDraftCaption = "Placing charges your saved payment method. Slant doesn’t cancel drafts; a draft costs nothing unless you place it."
 /// The review sheet's note after Slant definitely refused the pay or cancel request (nothing was charged or

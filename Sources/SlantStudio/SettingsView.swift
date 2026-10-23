@@ -227,7 +227,7 @@ struct AdvancedSettingsTab: View {
                     Text("Rate-limit details appear after the next request.").foregroundStyle(.secondary)
                 }
                 if let usage = store.usage {
-                    ForEach(usageSummaryRows(usage), id: \.0) { row in
+                    ForEach(usageSummaryRows(usage, hiding: (store.rateLimit?.role ?? "").isEmpty ? [] : ["Role"]), id: \.0) { row in
                         LabeledContent(row.0) { Text(row.1) }
                     }
                 }
@@ -241,7 +241,7 @@ struct AdvancedSettingsTab: View {
                 if let health = store.healthStatus {
                     Text(healthOverallLabel(health)).font(.callout)
                     ForEach(healthServiceRows(health), id: \.name) { row in
-                        LabeledContent(row.name) { Text(row.status) }
+                        LabeledContent(healthServiceDisplayName(row.name)) { Text(row.status) }
                     }
                 }
                 Button("Check Service Status") { Task { await store.loadHealth() } }
@@ -311,7 +311,13 @@ struct AdvancedSettingsTab: View {
 
 // MARK: - Usage and service status
 
-func usageSummaryRows(_ usage: [String: Any]) -> [(String, String)] {
+/// Usage rows for Settings › Advanced. `hiding` drops labels already shown above from the rate-limit headers
+/// (such as Role), so nothing appears twice.
+func usageSummaryRows(_ usage: [String: Any], hiding: Set<String> = []) -> [(String, String)] {
+    let hidden = Set(hiding.map { $0.lowercased() })
+    return usageSummaryAllRows(usage).filter { !hidden.contains($0.0.lowercased()) }
+}
+private func usageSummaryAllRows(_ usage: [String: Any]) -> [(String, String)] {
     var rows: [(String, String)] = []
     if let user = usage["user"] as? [String: Any] {
         rows.append(contentsOf: usageScalarRows(from: user))
@@ -341,6 +347,16 @@ func healthServiceRows(_ health: [String: Any]) -> [(name: String, status: Strin
     return rows
 }
 
+/// Slant's service keys ("ORDER-SERVICE") in sentence case for display ("Order service"); short capitalised words
+/// such as API stay as they are.
+func healthServiceDisplayName(_ key: String) -> String {
+    let words = key.replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
+        .split(separator: " ").map { word -> String in
+            word.count <= 3 && word == word.uppercased() && word.contains(where: \.isLetter) ? String(word) : word.lowercased()
+        }
+    guard let first = words.first else { return key }
+    return ([first.prefix(1).uppercased() + first.dropFirst()] + words.dropFirst()).joined(separator: " ")
+}
 func healthOverallLabel(_ health: [String: Any]) -> String {
     let rows = healthServiceRows(health)
     guard !rows.isEmpty else { return "No service data" }

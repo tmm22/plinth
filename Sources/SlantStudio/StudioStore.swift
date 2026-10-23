@@ -365,10 +365,17 @@ func isSecretLikeUsageKey(_ key: String) -> Bool {
     return lower.contains("secret") || lower.contains("token") || lower.contains("password")
         || lower == "key" || lower.hasSuffix("key") || lower.contains("apikey") || lower.contains("api_key")
 }
+/// Sentence case for an API field name ("totalCurrentUsage" → "Total current usage"); acronyms such as API stay.
 func humanizeUsageLabel(_ key: String) -> String {
     let spaced = key.replacingOccurrences(of: "_", with: " ")
         .replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression)
-    return spaced.prefix(1).uppercased() + spaced.dropFirst()
+        .replacingOccurrences(of: "([A-Z]+)([A-Z][a-z])", with: "$1 $2", options: .regularExpression)
+    let words = spaced.split(separator: " ").enumerated().map { index, word -> String in
+        let text = String(word)
+        if text.count > 1, text == text.uppercased() { return text }
+        return index == 0 ? text.prefix(1).uppercased() + text.dropFirst() : text.lowercased()
+    }
+    return words.joined(separator: " ")
 }
 func usageScalarRows(from object: [String: Any], prefix: String = "") -> [(String, String)] {
     var rows: [(String, String)] = []
@@ -377,13 +384,27 @@ func usageScalarRows(from object: [String: Any], prefix: String = "") -> [(Strin
         if value is NSNull { continue }
         if value is [Any] || value is [String: Any] { continue }
         let label = prefix.isEmpty ? humanizeUsageLabel(key) : "\(prefix) · \(humanizeUsageLabel(key))"
-        rows.append((label, String(describing: value)))
+        let text = String(describing: value)
+        rows.append((label, key.lowercased().contains("percent") && value is NSNumber ? text + "%" : text))
     }
     return rows
 }
 
-/// Prefer /orders/search; fall back to publicId filter when search returns 404.
-func shouldFallbackOrderSearchToPublicId(status: Int) -> Bool { status == 404 }
+/// The order number to look up for a typed search: Slant's IDs are upper case, and a bare number gets the SLANT_
+/// prefix, so "slant_123" and "123" both find SLANT_123.
+func orderSearchPublicID(_ typed: String) -> String {
+    let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty, trimmed.allSatisfy(\.isASCII), trimmed.allSatisfy(\.isNumber) { return "SLANT_" + trimmed }
+    return trimmed.uppercased()
+}
+/// Prefer /orders/search; fall back to the publicId filter when search is missing (404) or answers like an order
+/// lookup. Slant routes /orders/search as /orders/{publicOrderId} (seen 23 Oct 2026): every query, even an exact order
+/// number, gets 400 "Order not found.", the same reply as GET /orders/xyz.
+func shouldFallbackOrderSearchToPublicId(status: Int, body: String = "") -> Bool {
+    if status == 404 { return true }
+    guard status == 400, let message = shortAPIMessage(from: body) else { return false }
+    return message.lowercased().contains("order not found")
+}
 
 func filamentAvailability(_ record: Record) -> Bool? {
     guard let value = record.values["available"], !(value is NSNull) else { return nil }
@@ -616,7 +637,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         settingsOpenRequest += 1
     }
     private func noteRateLimit(from response: APIResponse) {
-        rateLimit = response.rateLimit
+        // Public endpoints such as /health/status send no rate-limit headers; keep the last known allowance.
+        if response.rateLimit.hasValues { rateLimit = response.rateLimit }
+        // A kept allowance whose reset time has passed no longer says anything; drop it rather than show stale counts.
+        else if let reset = rateLimit?.reset, reset <= Date() { rateLimit = nil }
     }
     func saveModels() {
         do {
@@ -1057,8 +1081,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 noteRateLimit(from: response)
                 orders = responseRecords(response)
             } catch let error as APIError {
-                if case .http(let status, _, _, _) = error, shouldFallbackOrderSearchToPublicId(status: status) {
-                    var query = ["publicId": trimmed, "limit": String(listPageSize), "page": "1"]
+                if case .http(let status, let body, _, _) = error, shouldFallbackOrderSearchToPublicId(status: status, body: body) {
+                    var query = ["publicId": orderSearchPublicID(trimmed), "limit": String(listPageSize), "page": "1"]
                     if !platformID.isEmpty { query["platformId"] = platformID }
                     let response = try await client.request("GET", path: "/orders", query: query)
                     noteRateLimit(from: response)

@@ -392,12 +392,12 @@ final class OrderToolsTests: XCTestCase {
     func testSearchHintExplainsLoadedVersusAllOrders() {
         XCTAssertNil(orderSearchHint(typed: "", searchActive: false))
         XCTAssertNil(orderSearchHint(typed: "   ", searchActive: false))
-        // While typing, the box filters the loaded orders and Return searches all of them.
+        // While typing, the box filters the loaded orders and Return asks Slant, which finds order numbers.
         let typing = orderSearchHint(typed: "ada", searchActive: false)
-        XCTAssertEqual(typing, "Showing loaded orders that match. Press Return to search all orders.")
-        // After Return, results come from all orders, with the way back.
+        XCTAssertEqual(typing, "Showing loaded orders that match. Press Return to look up an order number on Slant.")
+        // After Return, results come from Slant, with the way back.
         let searched = orderSearchHint(typed: "ada", searchActive: true)
-        XCTAssertEqual(searched, "Showing results from all orders. Clear the search to return to the list.")
+        XCTAssertEqual(searched, "Showing what Slant found. Clear the search to return to the list.")
         XCTAssertFalse(searched?.contains("Press Return") ?? true)
     }
 

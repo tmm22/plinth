@@ -332,10 +332,22 @@ final class ShellUXTests: XCTestCase {
         XCTAssertNotEqual(endItems["endDate"], orderFilterDateString(withEnd.endDate!))
     }
 
-    func testOrderSearchFallsBackOn404Only() {
+    func testOrderSearchPublicIDNormalisesTypedNumbers() {
+        XCTAssertEqual(orderSearchPublicID("SLANT_1000000000003"), "SLANT_1000000000003")
+        XCTAssertEqual(orderSearchPublicID(" slant_1000000000003 "), "SLANT_1000000000003")
+        XCTAssertEqual(orderSearchPublicID("1000000000003"), "SLANT_1000000000003")
+        XCTAssertEqual(orderSearchPublicID("T-1001"), "T-1001")
+        XCTAssertEqual(orderSearchPublicID("١٢٣"), "١٢٣")
+    }
+
+    func testOrderSearchFallsBackWhenSearchIsMissingOrRoutedAsAnOrderLookup() {
         XCTAssertTrue(shouldFallbackOrderSearchToPublicId(status: 404))
+        // Live Slant answers every /orders/search with the order-lookup refusal.
+        let lookup = #"{"success":false,"error":{"message":"Order not found.","statusCode":400}}"#
+        XCTAssertTrue(shouldFallbackOrderSearchToPublicId(status: 400, body: lookup))
         XCTAssertFalse(shouldFallbackOrderSearchToPublicId(status: 400))
-        XCTAssertFalse(shouldFallbackOrderSearchToPublicId(status: 500))
+        XCTAssertFalse(shouldFallbackOrderSearchToPublicId(status: 400, body: #"{"message":"query is required"}"#))
+        XCTAssertFalse(shouldFallbackOrderSearchToPublicId(status: 500, body: lookup))
     }
 
     func testUploadTypeParameterOmitsSTLIncludesOBJAnd3MF() {
@@ -589,10 +601,33 @@ final class ShellUXTests: XCTestCase {
         ]
         let rows = usageSummaryRows(usage)
         XCTAssertTrue(rows.contains(where: { $0.0 == "Role" && $0.1 == "pro" }))
-        XCTAssertTrue(rows.contains(where: { $0.0 == "Total Current Usage" && $0.1 == "42" }))
+        XCTAssertTrue(rows.contains(where: { $0.0 == "Total current usage" && $0.1 == "42" }))
         XCTAssertTrue(rows.contains(where: { $0.0 == "API keys" && $0.1 == "2" }))
         XCTAssertFalse(rows.contains(where: { $0.1.contains("secret-value") }))
         XCTAssertFalse(rows.contains(where: { $0.1.contains("sl_x") }))
+    }
+
+    func testUsageRowsHideRepeatsAndShowPercentages() {
+        let usage: [String: Any] = [
+            "user": ["role": "free", "activeKeys": 1],
+            "summary": ["overallUsagePercentage": 2, "totalLimit": 100]
+        ]
+        let rows = usageSummaryRows(usage, hiding: ["Role"])
+        XCTAssertFalse(rows.contains(where: { $0.0 == "Role" }))
+        XCTAssertTrue(rows.contains(where: { $0.0 == "Active keys" && $0.1 == "1" }))
+        XCTAssertTrue(rows.contains(where: { $0.0 == "Overall usage percentage" && $0.1 == "2%" }))
+        XCTAssertTrue(rows.contains(where: { $0.0 == "Total limit" && $0.1 == "100" }))
+        XCTAssertTrue(usageSummaryRows(usage).contains(where: { $0.0 == "Role" }))
+        XCTAssertEqual(humanizeUsageLabel("API_keys"), "API keys")
+        XCTAssertEqual(humanizeUsageLabel("totalAPICalls"), "Total API calls")
+    }
+
+    func testHealthServiceDisplayNames() {
+        XCTAssertEqual(healthServiceDisplayName("ORDER-SERVICE"), "Order service")
+        XCTAssertEqual(healthServiceDisplayName("KRAKEN"), "Kraken")
+        XCTAssertEqual(healthServiceDisplayName("files"), "Files")
+        XCTAssertEqual(healthServiceDisplayName("API-GATEWAY"), "API gateway")
+        XCTAssertEqual(healthServiceDisplayName(""), "")
     }
 
     func testHealthServiceRowsIgnoreEnvelopeSuccess() {

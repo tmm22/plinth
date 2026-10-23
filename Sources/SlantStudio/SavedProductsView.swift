@@ -248,7 +248,8 @@ struct SavedProductsSheet: View {
                 productList
             }
         }
-        .frame(minWidth: 680, minHeight: 540)
+        // An ideal width keeps long footnotes from widening the sheet, which left the grouped form centred in it.
+        .frame(minWidth: 680, idealWidth: 720, minHeight: 540)
         .interactiveDismissDisabled(editorHasChanges)
         .onAppear(perform: seedIfNeeded)
         .onDisappear { store.pendingSavedProductDraft = nil }
@@ -391,6 +392,7 @@ struct SavedProductsSheet: View {
                 } footer: {
                     Text("Quantities are per unit sold: 2 units of a product with 3 prints adds 6 prints. Items set to once per order, such as a packing slip, are added once however many units are sold.")
                         .font(.caption).foregroundStyle(.secondary)
+                        .settingsFooterLayout()
                 }
             }
             .formStyle(.grouped)
@@ -676,6 +678,8 @@ struct AddSavedProductPopover: View {
                     Text("Units sold")
                     TextField("Units sold", text: $unitsText)
                         .labelsHidden()
+                        // Hidden labels aren't read by VoiceOver on macOS, so name the field explicitly.
+                        .accessibilityLabel("Units sold")
                         .frame(width: 64)
                     Stepper("Units sold", value: Binding(
                         get: { units ?? 1 },

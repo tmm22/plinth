@@ -404,7 +404,7 @@ struct ProfitCheckPanel: View {
         LabeledContent(title) {
             HStack(spacing: 4) {
                 Text("$").foregroundStyle(.secondary)
-                TextField(title, text: text, prompt: Text("0.00")).labelsHidden().frame(width: 110).multilineTextAlignment(.trailing)
+                TextField(title, text: text, prompt: Text("0.00")).labelsHidden().accessibilityLabel(title).frame(width: 110).multilineTextAlignment(.trailing)
             }
         }
     }
@@ -449,7 +449,7 @@ struct ProfitCheckPanel: View {
             if showsListingFee {
                 LabeledContent("Units sold") {
                     VStack(alignment: .trailing, spacing: 2) {
-                        TextField("Units sold", text: $unitsText).labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
+                        TextField("Units sold", text: $unitsText).labelsHidden().accessibilityLabel("Units sold").frame(width: 80).multilineTextAlignment(.trailing)
                         if parseProfitUnitsSold(unitsText) == nil {
                             Text("Enter a whole number from 1").font(.caption2).foregroundStyle(.orange)
                         }
@@ -473,7 +473,7 @@ struct ProfitCheckPanel: View {
         })
         LabeledContent(title) {
             VStack(alignment: .trailing, spacing: 2) {
-                TextField(title, text: binding).labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
+                TextField(title, text: binding).labelsHidden().accessibilityLabel(title).frame(width: 80).multilineTextAlignment(.trailing)
                 if rateValue(field) == nil {
                     Text(field.isPercent ? "Enter 0–100" : "Enter an amount").font(.caption2).foregroundStyle(.orange)
                 }

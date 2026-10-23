@@ -6,7 +6,7 @@ Verified 18 October 2026 from [official documentation](https://slant3dapi.com/do
 
 - Production base: `https://slant3dapi.com/v2/api`. Bearer API key in `Authorization`, JSON bodies with `Content-Type: application/json`. Do not send bearer credentials to presigned storage URLs.
 - Exception: `POST /slant/webhook` uses `https://slant3dapi.com/v2/slant/webhook`, outside the `/api` prefix (operation-specific server in OpenAPI).
-- Rate limit: **100 requests/minute** per API key. Response headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (epoch **milliseconds**, e.g. `1800000685873` = 60 s after the request, observed 23 Oct 2026; `rateLimitResetDate` also accepts epoch seconds, reads a small number as seconds from now, and ignores negative, unparseable or more-than-a-day-away values), `X-RateLimit-Role`. OpenSCAD: **5 generations/hour**, one in flight. Up to three API keys and five enabled platforms. No public sandbox.
+- Rate limit: **100 requests/minute** per API key. Response headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (epoch **milliseconds**, e.g. `1800000685873` = 60 s after the request, observed 23 Oct 2026; `rateLimitResetDate` also accepts epoch seconds, reads a small number as seconds from now, and ignores negative, unparseable or more-than-a-day-away values), `X-RateLimit-Role`. The public `/health/status` sends none of these, so Studio keeps the last known values whenever a response carries no rate-limit headers. OpenSCAD: **5 generations/hour**, one in flight. Up to three API keys and five enabled platforms. No public sandbox.
 - Most workflows require an owned platform. Drafting does not charge; processing charges and starts production. Key creation/listing (`/apiKey`) is session-only (dashboard).
 
 ## Upload and manufacture
@@ -94,6 +94,7 @@ Secret is the platform `webhookSecret` (trim before use; used exactly as submitt
 
 ## Orders query params (docs)
 
+- `GET /orders/search` is answered like `GET /orders/{publicOrderId}` with the ID `search`: every query, even an exact order number, returns 400 “Order not found.” (seen 23 Oct 2026; `GET /orders/xyz` gives the same reply). `search` and `q` parameters on `GET /orders` are ignored. Studio therefore falls back to `GET /orders?publicId=` (upper-cased, `SLANT_` added to a bare number), which matches exact order numbers only, and the search hint promises only that.
 - `startDate` / `endDate`: ISO 8601. Docs describe endDate as returning orders **up to that point**; file filters phrase endDate as “created **before this date**” (exclusive upper bound). Studio’s guided Orders filter sends the day after the chosen “To” date so the selected day is included.
 - `sortOrder`: `ASC` | `DESC` (invalid sort/limit → 400 naming the parameter).
 - Status filter includes the full enum listed above; a test checks the guided filter offers exactly the bundled `GET /orders` `status` enum.
@@ -152,7 +153,7 @@ Guided = dedicated Models / Orders / Catalog / Settings UI (platforms are manage
 | POST | `/orders/{publicOrderId}` | Place order | Yes | | charge confirm |
 | DELETE | `/orders/{publicOrderId}` | Cancel | Yes | | refund-aware copy |
 | POST | `/orders/batch` | | Yes | | |
-| GET | `/orders/search` | Orders search field (Return) | Yes | | falls back to `GET /orders?publicId=` on 404 |
+| GET | `/orders/search` | Orders search field (Return) | Yes | | falls back to `GET /orders?publicId=` on 404 or 400 “Order not found.” |
 | GET | `/components` | Catalog | Yes | | |
 | GET | `/components/search` | | Yes | | |
 | GET | `/components/categories` | Catalog (component categories) | Yes | | |

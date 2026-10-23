@@ -245,12 +245,13 @@ func orderComposerDiscardMessage(outcomeUnknown: Bool) -> String {
 
 // MARK: - Orders list and detail layout
 
-/// The note under the orders list while searching. Typing filters the loaded orders; Return asks Slant to search all
-/// orders, and clearing the box returns to the normal list. Nil when there's nothing to explain.
+/// The note under the orders list while searching. Typing filters the loaded orders; Return asks Slant, and clearing
+/// the box returns to the normal list. Nil when there's nothing to explain.
 func orderSearchHint(typed: String, searchActive: Bool) -> String? {
-    if searchActive { return "Showing results from all orders. Clear the search to return to the list." }
+    if searchActive { return "Showing what Slant found. Clear the search to return to the list." }
     guard !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-    return "Showing loaded orders that match. Press Return to search all orders."
+    // Slant's search finds order numbers only (see shouldFallbackOrderSearchToPublicId), so don't promise more.
+    return "Showing loaded orders that match. Press Return to look up an order number on Slant."
 }
 
 /// Tracking is shown for orders being made or shipped, and whenever Slant returned tracking details. Drafts, cancelled

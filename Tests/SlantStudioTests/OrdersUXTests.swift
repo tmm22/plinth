@@ -95,6 +95,18 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertTrue(orderMatchesSearch(waiting, query: "awaiting shipment"))
     }
 
+    func testFilteredEmptyListSaysWhichFilterLeftNothing() {
+        XCTAssertEqual(orderFilterEmptyDetail(OrderFilter(status: "CANCELED")), "No orders with the status “Cancelled”.")
+        XCTAssertEqual(orderFilterEmptyDetail(OrderFilter(startDate: Date())), "No orders in the chosen dates.")
+        XCTAssertEqual(orderFilterEmptyDetail(OrderFilter(status: "DRAFT", endDate: Date())),
+                       "No orders with the status “Draft” in the chosen dates.")
+        XCTAssertEqual(orderFilterEmptyDetail(OrderFilter(status: "DRAFT"), search: " ada "),
+                       "No orders with the status “Draft” match “ada”.")
+        XCTAssertEqual(orderFilterEmptyDetail(OrderFilter()), "No orders match.")
+        // Never the system search wording about a search for “filters”.
+        XCTAssertFalse(orderFilterEmptyDetail(OrderFilter(status: "PAID")).contains("filters"))
+    }
+
     func testOrderConfirmRefusalQuotesSlantsReason() {
         let refused = APIError.http(status: 400, body: #"{"message":"Can not cancel a draft order"}"#, retryAfter: nil, rateLimitReset: nil)
         XCTAssertEqual(
