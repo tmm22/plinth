@@ -527,6 +527,21 @@ func openSCADRateLimitedUntil(retryAfter: String?, rateLimitReset: String?, now:
     return now.addingTimeInterval(OpenSCADQuota.window)
 }
 
+/// What Activity records for a failed Slant generation: the HTTP status at most. Slant's error text can quote the
+/// template or the buyer's values, so it is shown only in the sheet.
+func openSCADActivityDetail(for error: Error) -> String {
+    switch error {
+    case APIError.http(let status, _, _, _):
+        return status == 429 ? "Slant’s OpenSCAD limit was reached (HTTP 429)" : "Slant didn’t generate the model (HTTP \(status))"
+    case is URLError:
+        return "Slant couldn’t be reached, or didn’t reply in time"
+    case is CancellationError:
+        return "Stopped"
+    default:
+        return "The generation didn’t complete"
+    }
+}
+
 // MARK: Engines
 
 enum PersonalisationEngine: String, CaseIterable, Identifiable {
@@ -626,19 +641,119 @@ private final class OpenSCADProcessBox: @unchecked Sendable {
     }
 }
 
+/// Local OpenSCAD runs in progress, so quitting Studio stops them and removes their folders: the command line, log
+/// and output can hold the buyer's values. Thread-safe.
+final class OpenSCADRunRegistry: @unchecked Sendable {
+    static let shared = OpenSCADRunRegistry()
+    private let lock = NSLock()
+    private var runs: [UUID: (box: OpenSCADProcessBox, folder: URL)] = [:]
+
+    fileprivate func add(_ box: OpenSCADProcessBox, folder: URL) -> UUID {
+        let id = UUID()
+        lock.withLock { runs[id] = (box, folder) }
+        return id
+    }
+
+    func remove(_ id: UUID) { _ = lock.withLock { runs.removeValue(forKey: id) } }
+
+    var count: Int { lock.withLock { runs.count } }
+
+    /// When the app terminates: stops every run (SIGTERM, then SIGKILL after up to a second) and removes its folder.
+    func stopAll() {
+        let current = lock.withLock { () -> [(box: OpenSCADProcessBox, folder: URL)] in
+            defer { runs = [:] }
+            return Array(runs.values)
+        }
+        guard !current.isEmpty else { return }
+        for run in current where run.box.process.isRunning { run.box.process.terminate() }
+        let deadline = Date().addingTimeInterval(1)
+        while current.contains(where: { $0.box.process.isRunning }), Date() < deadline { usleep(20_000) }
+        for run in current {
+            if run.box.process.isRunning { kill(run.box.process.processIdentifier, SIGKILL) }
+            try? FileManager.default.removeItem(at: run.folder)
+        }
+    }
+}
+
+/// Temporary folders Studio makes for personalisation: a local OpenSCAD run, and the generated STL before it's added
+/// to the library. Each name is the prefix followed by a UUID.
+let personalisationTempFolderPrefixes = ["SlantStudio-OpenSCAD-", "SlantStudio-Personalised-"]
+
+/// A folder that this temporary-folder code made: a known prefix followed by exactly a UUID.
+func isPersonalisationTempFolderName(_ name: String) -> Bool {
+    personalisationTempFolderPrefixes.contains { prefix in
+        name.hasPrefix(prefix) && UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
+    }
+}
+
+/// Leftovers to delete at launch (a crash or force quit skips the usual clean-up, leaving buyer text on disk). Only
+/// Studio's own folders. While another copy of Studio may be running, only folders older than `minimumAge` (longer
+/// than a local run's 5-minute limit) go, so its run in progress is left alone; a folder without a date then stays.
+func stalePersonalisationTempFolderNames(_ entries: [(name: String, created: Date?)], now: Date,
+                                         otherInstanceMayBeRunning: Bool, minimumAge: TimeInterval = 600) -> [String] {
+    entries.filter { entry in
+        guard isPersonalisationTempFolderName(entry.name) else { return false }
+        guard otherInstanceMayBeRunning else { return true }
+        guard let created = entry.created else { return false }
+        return now.timeIntervalSince(created) >= minimumAge
+    }.map(\.name)
+}
+
+/// Launch hook (StudioStore.init): deletes leftover personalisation folders from Studio's temporary folder in the
+/// background, and stops local OpenSCAD runs when the app terminates. Runs once per process.
+@MainActor enum PersonalisationTempCleanup {
+    private static var started = false
+
+    static func startAtLaunch() {
+        guard !started else { return }
+        started = true
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+            OpenSCADRunRegistry.shared.stopAll()
+        }
+        // Without a bundle ID (a development build) Studio can't tell whether another copy is running.
+        let otherInstance: Bool = {
+            guard let bundleID = Bundle.main.bundleIdentifier else { return true }
+            let me = ProcessInfo.processInfo.processIdentifier
+            return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).contains { $0.processIdentifier != me }
+        }()
+        let folder = FileManager.default.temporaryDirectory
+        DispatchQueue.global(qos: .utility).async {
+            let keys: [URLResourceKey] = [.creationDateKey, .contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
+            guard let urls = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys,
+                                                                          options: [.skipsSubdirectoryDescendants]) else { return }
+            var byName: [String: URL] = [:]
+            var entries: [(name: String, created: Date?)] = []
+            for url in urls {
+                let name = url.lastPathComponent
+                guard isPersonalisationTempFolderName(name),
+                      let values = try? url.resourceValues(forKeys: Set(keys)),
+                      values.isDirectory == true, values.isSymbolicLink != true else { continue }
+                byName[name] = url
+                entries.append((name, values.creationDate ?? values.contentModificationDate))
+            }
+            for name in stalePersonalisationTempFolderNames(entries, now: Date(), otherInstanceMayBeRunning: otherInstance) {
+                if let url = byName[name] { try? FileManager.default.removeItem(at: url) }
+            }
+        }
+    }
+}
+
 /// Runs OpenSCAD (no shell) and returns the bytes it writes to `-o`. It is stopped when the task is cancelled, after
 /// `timeout`, or once its output or log grows past their limits. The log goes to a file so a full pipe can't stall it.
 func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAssignment], timeout: TimeInterval = 300,
                         maxOutputBytes: Int = STLMesh.maximumBytes, maxLogBytes: Int = 4_000_000) async throws -> Data {
-    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudio-OpenSCAD-\(UUID().uuidString)")
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(personalisationTempFolderPrefixes[0])\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: folder) }
+    let box = OpenSCADProcessBox()
+    // Registered so quitting Studio stops the run and removes the folder.
+    let registration = OpenSCADRunRegistry.shared.add(box, folder: folder)
+    defer { OpenSCADRunRegistry.shared.remove(registration) }
     let output = folder.appendingPathComponent("model.stl")
     let logURL = folder.appendingPathComponent("log.txt")
     FileManager.default.createFile(atPath: logURL.path, contents: nil)
     let log = try FileHandle(forWritingTo: logURL)
     defer { try? log.close() }
-    let box = OpenSCADProcessBox()
     box.process.executableURL = executable
     box.process.arguments = openSCADArguments(templatePath: templateURL.path, outputPath: output.path, assignments: assignments)
     box.process.currentDirectoryURL = templateURL.deletingLastPathComponent()
@@ -706,7 +821,7 @@ func orderImportPersonalisation(options: String, column: String) -> String {
 }
 
 /// Shown above the Import Orders list when any order carries personalisation.
-let orderImportPersonalisationNote = "Buyers’ personalisation is shown so you can make each model with Personalise from Template: copy it, then paste it there. It stays in this window, isn’t saved and isn’t sent with the drafts, which use each saved product’s model unchanged."
+let orderImportPersonalisationNote = "Buyers’ personalisation is shown so you can make each model with Personalise from Template: copy it, then paste it there. It stays in this window, isn’t saved and isn’t sent with the drafts, which use each saved product’s model unchanged, so these orders start unticked."
 
 /// Every personalisation in the file as lines of “order ID · item: text”, for Copy All (the list is gone once the
 /// sheet closes, and Personalise from Template can't open over it). No names or addresses.
@@ -783,20 +898,27 @@ extension StudioStore {
 
     /// One `POST /files/openScad`, never retried. It counts against the session quota as it is sent, whatever the
     /// outcome; a 429 blocks further generations until Slant's reset. Uses `run`, so it waits for (and blocks) other
-    /// requests, and Activity records only the title and outcome, never the template or values.
+    /// requests. Activity records only the title and `openSCADActivityDetail` (a status code at most), never the
+    /// template, the values or Slant's error text, which may quote them; the sheet shows the full error.
     func generateOpenSCADOnSlant(source: String) async throws -> Data {
         let session = PersonalisationSession.shared
         if let reason = session.quota.blockedReason(now: Date()) { throw StudioError(reason) }
         guard !busy else { throw StudioError("Another request is running. Try again when it finishes.") }
         var bytes: Data?
         var failure: Error?
-        let ran = await run("Generate from template", handlesError: { failure = $0; return true }) {
-            guard session.quota.begin(now: Date()) else {
-                throw StudioError(session.quota.blockedReason(now: Date()) ?? "Slant’s OpenSCAD limit was reached.")
+        // `run` logs what the operation throws, so it gets the redacted form; the sheet gets the original.
+        let ran = await run("Generate from template", handlesError: { _ in true }) {
+            do {
+                guard session.quota.begin(now: Date()) else {
+                    throw StudioError(session.quota.blockedReason(now: Date()) ?? "Slant’s OpenSCAD limit was reached.")
+                }
+                defer { session.quota.finish() }
+                let response = try await client.request("POST", path: "/files/openScad", body: ["scadCode": source])
+                bytes = response.data
+            } catch {
+                failure = error
+                throw StudioError(openSCADActivityDetail(for: error))
             }
-            defer { session.quota.finish() }
-            let response = try await client.request("POST", path: "/files/openScad", body: ["scadCode": source])
-            bytes = response.data
         }
         guard ran else { throw StudioError("Another request is running. Try again when it finishes.") }
         if let failure {
@@ -816,7 +938,9 @@ extension StudioStore {
         let result = await Task.detached(priority: .userInitiated) {
             Result { () -> URL in
                 let data = try personalisedSTLData(stl)
-                let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                // Named for the launch clean-up, which removes it if Studio quits before the defer below.
+                let folder = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("\(personalisationTempFolderPrefixes[1])\(UUID().uuidString)")
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                 let url = folder.appendingPathComponent(fileName)
                 do { try data.write(to: url, options: .atomic) }

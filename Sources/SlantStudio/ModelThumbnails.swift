@@ -165,6 +165,9 @@ func renderMeshRGBA(_ mesh: STLMesh, size: Int, camera: MeshRenderCamera, style:
 
     var depth = [Float](repeating: -.greatestFiniteMagnitude, count: n * n)
     var shade = [Float](repeating: -1, count: n * n)
+    // Also checked every million or so pixel tests, so Stop works inside one large triangle. Only stops early: the
+    // pixels drawn are unchanged.
+    var testsSinceCheck = 0
     for t in 0..<mesh.triangleCount {
         if t % 8192 == 0, isCancelled() { return nil }
         guard let box = footprint(t) else { continue }
@@ -172,6 +175,11 @@ func renderMeshRGBA(_ mesh: STLMesh, size: Int, camera: MeshRenderCamera, style:
         let normalVector = simd_cross(b - a, c - a)
         let intensity = style.ambient + style.diffuse * abs(simd_dot(normalVector / simd_length(normalVector), light))
         for y in minY...maxY {
+            testsSinceCheck += maxX - minX + 1
+            if testsSinceCheck >= 1 << 20 {
+                testsSinceCheck = 0
+                if isCancelled() { return nil }
+            }
             let py = Float(y) + 0.5
             for x in minX...maxX {
                 let px = Float(x) + 0.5
@@ -194,6 +202,7 @@ func renderMeshRGBA(_ mesh: STLMesh, size: Int, camera: MeshRenderCamera, style:
     let sheen = style.sheen
     var rgba = [UInt8](repeating: 0, count: size * size * 4)
     for y in 0..<size {
+        if y % 128 == 127, isCancelled() { return nil }
         for x in 0..<size {
             var colour = SIMD3<Float>(repeating: 0)
             var coverage: Float = 0

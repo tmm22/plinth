@@ -258,7 +258,8 @@ func listingWeight(metrics: [String: Any]) -> String? {
 
 /// Suggested production-partner wording; the seller should edit it to describe their own part in making the item.
 let listingProductionPartnerSuggestion = "Made by: designed by [your shop] and 3D printed to order by our production partner, Slant 3D."
-let listingProductionPartnerNote = "(Suggested wording. Edit it to describe your own role. On Etsy, also add Slant 3D as a production partner in your shop settings and choose it for this listing.)"
+/// Said in the confirmation, not copied, so it can't end up in a listing by mistake.
+let listingProductionPartnerNote = "The “Made by” line is suggested wording: edit it to describe your own role. On Etsy, also add Slant 3D as a production partner in your shop settings and choose it for this listing."
 
 /// Plain text for a listing description, in a fixed order: size, material, weight, then the production-partner suggestion.
 func listingDetailsText(_ facts: ListingDetailsFacts) -> String {
@@ -270,15 +271,30 @@ func listingDetailsText(_ facts: ListingDetailsFacts) -> String {
     if let weight = facts.weight, !weight.isEmpty { lines.append("Weight: \(weight) (printed part, before packaging)") }
     var blocks: [String] = []
     if !lines.isEmpty { blocks.append(lines.joined(separator: "\n")) }
-    blocks.append(listingProductionPartnerSuggestion + "\n" + listingProductionPartnerNote)
+    blocks.append(listingProductionPartnerSuggestion)
     return blocks.joined(separator: "\n\n") + "\n"
 }
 
-/// The brief confirmation after copying, with what the seller should check.
+/// The confirmation after copying, with what the seller should check, then the production-partner note.
 func listingDetailsCopiedMessage(hasSize: Bool, scaleSuspect: Bool) -> String {
-    if !hasSize { return "Listing details copied, without the size: the model couldn’t be read." }
-    if scaleSuspect { return "Listing details copied. Check the size: this model may not be in millimetres." }
-    return "Listing details copied."
+    let base: String
+    if !hasSize { base = "Listing details copied, without the size: the model couldn’t be read." }
+    else if scaleSuspect { base = "Listing details copied. Check the size: this model may not be in millimetres." }
+    else { base = "Listing details copied." }
+    return base + " " + listingProductionPartnerNote
+}
+
+/// The material line's name: print configuration's material belongs to the selected model, so another model's
+/// details leave the material out rather than name one it may not be printed in. Shown as `materialDisplayName`.
+func listingDetailsMaterialName(modelID: UUID, selectedModelID: UUID?, selectedMaterialName: String?) -> String? {
+    guard modelID == selectedModelID, let name = selectedMaterialName?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !name.isEmpty else { return nil }
+    return materialDisplayName(name)
+}
+
+/// Seconds a listing notice stays up: three, plus time to read a longer one (about 15 characters a second), at most 12.
+func listingNoticeDuration(_ text: String) -> TimeInterval {
+    min(12, max(3, Double(text.count) / 15))
 }
 
 // MARK: - Store actions
@@ -294,8 +310,9 @@ func listingDetailsCopiedMessage(hasSize: Bool, scaleSuspect: Bool) -> String {
         generation += 1
         let current = generation
         message = text
+        let seconds = listingNoticeDuration(text)
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             if generation == current { message = nil }
         }
     }
@@ -315,7 +332,8 @@ extension StudioStore {
         guard !notices.copying, let model = localModels.first(where: { $0.id == modelID }) else { return }
         notices.setCopying(true)
         let url = model.url
-        let material = listingSelectedMaterial.map { displayName(for: $0, fallback: "") }
+        let material = listingDetailsMaterialName(modelID: modelID, selectedModelID: selectedLocalID,
+                                                  selectedMaterialName: listingSelectedMaterial.map { displayName(for: $0, fallback: "") })
         let metrics = model.remoteID.flatMap { id in files.first { $0.id == id } }?.metrics ?? [:]
         let weight = metricsAwaitingAnalysis(metrics) ? nil : listingWeight(metrics: metrics)
         Task { @MainActor in
@@ -356,10 +374,12 @@ struct ListingNoticeOverlay: ViewModifier {
             if let message = notices.message {
                 Label(message, systemImage: "checkmark.circle.fill")
                     .font(.callout)
+                    .frame(maxWidth: 480, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(Color.studioHairline))
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.studioHairline))
                     .padding(.bottom, 90)
                     .transition(.opacity)
                     .accessibilityAddTraits(.isStaticText)
@@ -459,7 +479,7 @@ struct ListingImagesSheet: View {
                                     Text("Previously chosen material").tag(materialID)
                                 }
                                 ForEach(indexedRecords(store.filaments), id: \.id) { row in
-                                    Text(displayName(for: row.record, fallback: "Untitled material")).tag(row.record.id)
+                                    Text(materialDisplayName(displayName(for: row.record, fallback: "Untitled material"))).tag(row.record.id)
                                 }
                             }
                             .labelsHidden()
@@ -553,7 +573,8 @@ struct ListingImagesSheet: View {
         job.start(modelURL: model.url, modelName: name, angles: angles, colour: chosenColour ?? listingNeutralColour,
                   background: background, folder: destination) { result in
             guard !result.saved.isEmpty else { return }
-            store.activities.insert(Activity(title: "Export listing images", detail: "\(name): \(result.saved.count) of \(angles.count)", success: true), at: 0)
+            // Counts only: a personalised model's name contains the buyer's text.
+            store.activities.insert(Activity(title: "Export listing images", detail: "Saved \(result.saved.count) of \(angles.count)", success: true), at: 0)
         }
     }
 }
