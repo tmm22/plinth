@@ -72,6 +72,8 @@ struct StudioView: View {
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }
+        // Background order checks (OrderWatch.swift): read-only, never through `store.run`.
+        .onAppear { OrderWatch.shared.attach(store) }
         // Store-driven "open Settings" requests (Connect Account buttons, the platforms redirect). Opening Settings
         // only brings its window forward; nothing in this window changes.
         .onChange(of: store.settingsOpenRequest) { _, _ in openSettings() }
@@ -148,6 +150,7 @@ func sidebarDestinations(showDeveloperTools: Bool) -> [Destination] {
 /// through the app accent colour and the row icons.
 struct StudioSidebar: View {
     @EnvironmentObject var store: StudioStore
+    @ObservedObject private var orderWatch = OrderWatch.shared
 
     private var selection: Binding<Destination?> {
         Binding(
@@ -176,6 +179,8 @@ struct StudioSidebar: View {
 
     private func row(_ item: Destination) -> some View {
         Label(item.rawValue, systemImage: item.icon)
+            // Unseen order changes that need attention or reached the customer (OrderWatch.swift); 0 shows nothing.
+            .badge(item == .orders ? orderWatch.badgeCount : 0)
             .tag(item)
             .help(goMenuShortcut(for: item).map { "\(item.rawValue) (⌘\($0))" } ?? item.rawValue)
     }

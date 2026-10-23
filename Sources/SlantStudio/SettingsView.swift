@@ -282,6 +282,8 @@ struct AdvancedSettingsTab: View {
                     .settingsFooterLayout()
             }
 
+            OrderWatchSettingsSection() // OrderWatch.swift: order checks, notifications, Forget Saved Statuses
+
             Section {
                 Toggle("Show developer tools", isOn: Binding(
                     get: { store.showDeveloperTools },

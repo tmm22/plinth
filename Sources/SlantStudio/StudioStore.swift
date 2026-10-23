@@ -642,6 +642,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         // A kept allowance whose reset time has passed no longer says anything; drop it rather than show stale counts.
         else if let reset = rateLimit?.reset, reset <= Date() { rateLimit = nil }
     }
+    // MARK: Order watch hook (OrderWatch.swift)
+    /// Background order checks report the allowance they used, so the next check and Settings see it.
+    func noteBackgroundRateLimit(from response: APIResponse) { noteRateLimit(from: response) }
+    // MARK: -
     func saveModels() {
         do {
             try FileManager.default.createDirectory(at: Self.supportDirectory, withIntermediateDirectories: true)
