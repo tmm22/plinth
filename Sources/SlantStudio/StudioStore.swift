@@ -534,6 +534,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var showOrderImport = false
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
+    /// Mark Shipped in Your Shop sheet (OrderFollowUp.swift). Counted in `isPresentingSheet`.
+    @Published var showShopFollowUp = false
+    /// Orders ticked "done in shop" in that sheet: order IDs in memory only, for this session.
+    @Published var shopFollowUpDoneIDs: Set<String> = []
     @Published var accountLoaded = false
     @Published var filesLoaded = false
     @Published var ordersLoaded = false

@@ -44,6 +44,9 @@ struct SlantStudioApp: App {
                 // Opens the Import Orders sheet only; drafts are created there after an explicit confirmation.
                 Button("Import Orders…") { store.importOrdersFromMenu() }
                     .disabled(store.orderImportBlockedReason != nil || modalUIShown)
+                // Opens a local list of loaded orders' tracking only; nothing is sent.
+                Button("Mark Shipped in Your Shop…") { store.openShopFollowUpFromMenu() }
+                    .disabled(store.orders.isEmpty || modalUIShown)
                 // Opens the Saved Products sheet only (a local list; nothing is sent).
                 Button("Saved Products…") { store.openSavedProductsFromMenu() }
                     .disabled(modalUIShown)
