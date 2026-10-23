@@ -863,6 +863,8 @@ struct OrdersView: View {
     /// Starts on (and resets to) the server's createdAt sort from Dates & Sort; column clicks re-sort the loaded rows.
     @State private var sortOrder = orderTableDefaultSort(serverSortOrder: "desc")
     @State private var tableSortSynced = false
+    /// Orders the "Since you last looked" banner's Show focused the list on (OrderWatch.swift); nil shows every order.
+    @State private var watchFocus: Set<String>?
 
     // From all loaded orders, not just the visible list: a new draft or a just-paid order stays shown even when the
     // typed search no longer matches it.
@@ -876,6 +878,7 @@ struct OrdersView: View {
         displayedOrder.map { orderCanRequestCancellation(($0["status"] as? String) ?? "") } ?? false
     }
     var listRecords: [Record] {
+        if let focused = orderWatchFocusedRecords(store.orders, focus: watchFocus) { return focused }
         if store.orderSearchActive { return store.orders }
         let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
         return store.orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) }
@@ -901,6 +904,10 @@ struct OrdersView: View {
             } else {
         HSplitView {
             VStack(spacing: 0) {
+                OrderWatchBanner { ids in showWatchedChanges(ids) }
+                if let focused = orderWatchFocusedRecords(store.orders, focus: watchFocus) {
+                    OrderWatchFocusBar(count: focused.count) { watchFocus = nil }
+                }
                 Table(tableRows, selection: $selection, sortOrder: $sortOrder) {
                     TableColumn("Recipient", value: \.recipient) { (row: OrderTableRow) in
                         VStack(alignment: .leading, spacing: 1) {
@@ -1042,6 +1049,12 @@ struct OrdersView: View {
                 .help("Saved Products and Export Orders")
             }
         }
+        // A new search or filter replaces the banner's focus on changed orders.
+        .onChange(of: search) { _, new in
+            if !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { watchFocus = nil }
+        }
+        .onChange(of: store.orderFilter) { _, _ in watchFocus = nil }
+        .onChange(of: store.orderSearchActive) { _, active in if active { watchFocus = nil } }
         .onChange(of: store.ordersExportRequest) { _, _ in
             // File › Export Orders…, which the store only forwards when nothing modal is shown.
             // Search can hide every loaded order; say so rather than doing nothing silently.
@@ -1080,6 +1093,27 @@ struct OrdersView: View {
                 if selection == orderID { detail = order }
             }
             .environmentObject(store)
+        }
+    }
+
+    /// The banner's Show: reloads the newest orders (as the checks read them, so every changed order is on the page),
+    /// clearing any search or filter like Show All Orders, then lists the changed orders. They count as seen only once
+    /// the reload succeeded.
+    func showWatchedChanges(_ ids: Set<String>) {
+        guard !store.busy else { return }
+        Task {
+            await store.applyOrderFilter(OrderFilter())
+            guard store.error == nil else { return }
+            search = ""
+            sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
+            OrderWatch.shared.acknowledge(ids: ids)
+            let present = Set(ids.filter { id in store.orders.contains { $0.id == id } })
+            watchFocus = present.isEmpty ? nil : present
+            if present.count == 1, let id = present.first, selection != id {
+                selection = id
+            } else if let current = selection, present.contains(current) {
+                load(current) // its detail was read before the change
+            }
         }
     }
 
