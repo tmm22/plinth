@@ -305,7 +305,7 @@ extension StudioStore {
     /// Sheets the store itself drives. A rename only counts while its model still exists, so a stale ID can't block menus.
     var isPresentingSheet: Bool {
         showOrderComposer || showPlatformComposer || showSettingsPlatformComposer || showImportFromURL || showSavedProducts
-            || showOrderImport || showShopFollowUp
+            || showOrderImport || showShopFollowUp || batchPayRequest != nil
             || listingImagesModelID != nil || showSpendingReport
             || personalisationTemplate != nil
             || renameSheetIsShown(renamingModelID: renamingModelID, models: localModels)

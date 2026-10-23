@@ -532,6 +532,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var showImportFromURL = false
     /// Import Orders sheet (OrderImport.swift).
     @Published var showOrderImport = false
+    /// Pay Several Drafts sheet (BatchPay.swift), presented by Orders. Counted in `isPresentingSheet`.
+    @Published var batchPayRequest: BatchPayRequest?
     /// Listing assets and spending report sheets (ListingAssets.swift, SpendReport.swift). Counted in `isPresentingSheet`.
     @Published var listingImagesModelID: UUID?
     @Published var showSpendingReport = false
