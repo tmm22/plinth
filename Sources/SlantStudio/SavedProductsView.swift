@@ -429,7 +429,10 @@ struct SavedProductsSheet: View {
                     }
                 }
                 .frame(width: 210)
+                // Hugs its label so the arrows sit beside the quantity rather than at the far edge.
                 Stepper("Quantity: \(line.wrappedValue.quantity)", value: line.quantity, in: 1...10000)
+                    .fixedSize()
+                Spacer(minLength: 0)
                 Button(role: .destructive, action: remove) { Image(systemName: "minus.circle") }
                     .accessibilityLabel("Remove item")
                     .help(canRemove ? "Remove item" : "A product needs at least one item.")
@@ -555,7 +558,7 @@ struct SavedProductsSheet: View {
             Text(loaded ? catalogEmptyMessage(kind) : (catalogsLoading ? "Loading…" : "Not loaded yet."))
                 .font(.callout).foregroundStyle(.secondary)
             if !loaded, !catalogsLoading {
-                Button("Load \(kind.rawValue.lowercased())") { loadCatalogs([kind]) }
+                Button("Load \(kind.rawValue)") { loadCatalogs([kind]) }
                     .disabled(!store.hasKey || store.busy)
             }
         }

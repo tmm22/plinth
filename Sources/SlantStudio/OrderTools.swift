@@ -261,6 +261,56 @@ func orderDetailShowsTracking(status: String, hasTrackingDetails: Bool) -> Bool 
     return !["DRAFT", "CANCELED", "CANCELLED", "PAYMENT_ERROR"].contains(normalized)
 }
 
+/// The charge/cancel review shows up to this many items as a plain list; more scroll in a fixed-height box. A fixed
+/// threshold (not ViewThatFits measuring) keeps the sheet's layout free of measurement cycles, which hung the app
+/// when an accessibility client hit-tested the sheet.
+let orderReviewPlainItemLimit = 4
+
+func orderReviewItemListScrolls(itemCount: Int) -> Bool {
+    itemCount > orderReviewPlainItemLimit
+}
+
+// MARK: - Order item names
+
+/// The uploaded model an order item prints: its top-level or nested `printItem` file ID.
+func orderItemFileID(_ item: [String: Any]) -> String? {
+    for value in [item["publicFileServiceId"], (item["printItem"] as? [String: Any])?["publicFileServiceId"]] {
+        if let id = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty { return id }
+    }
+    return nil
+}
+
+/// Uploaded file ID → model name, for order items whose own name is null. The library name (what the seller sees in
+/// Models) wins over the uploaded file's name; blank names are skipped so the item falls back to its type.
+func orderItemModelNames(localModels: [LocalModel], files: [Record]) -> [String: String] {
+    var names: [String: String] = [:]
+    for model in localModels {
+        guard let id = model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty, names[id] == nil else { continue }
+        let name = model.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { names[id] = name }
+    }
+    for file in files {
+        let id = file.string("publicFileServiceId", "publicId", "id").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, names[id] == nil else { continue }
+        let name = displayName(for: file, fallback: "")
+        if !name.isEmpty { names[id] = name }
+    }
+    return names
+}
+
+/// "2 × Desk Tidy": an order item's quantity and name, as listed in the order detail and the review sheet.
+func orderItemLineText(_ item: [String: Any], modelNames: [String: String] = [:]) -> String {
+    let quantity: String
+    if let whole = orderItemQuantity(item) {
+        quantity = String(whole)
+    } else if let raw = item["quantity"], !(raw is NSNull) {
+        quantity = String(describing: raw)
+    } else {
+        quantity = "1"
+    }
+    return "\(quantity) × \(orderItemDisplayName(item, modelNames: modelNames))"
+}
+
 /// Under the charge review's item list, which scrolls when long: says how many items are flagged for a large quantity,
 /// so a flagged line scrolled out of view isn't missed. Nil for a single item (its flag is in view) or none flagged.
 func orderReviewLargeQuantityNotice(_ items: [[String: Any]]) -> String? {

@@ -520,7 +520,10 @@ struct OrderComposerView: View {
                 )) {
                     Text("3D print").tag("PRINT"); Text("Component").tag("COMPONENT"); Text("Stationery").tag("STATIONERY")
                 }.frame(width: 210)
+                // Hugs its label so the arrows sit beside the quantity rather than at the far edge.
                 Stepper("Quantity: \(item.wrappedValue.quantity)", value: item.quantity, in: 1...10000)
+                    .fixedSize()
+                Spacer(minLength: 0)
                 Button(role: .destructive) { lines.removeAll { $0.id == item.wrappedValue.id } } label: { Image(systemName: "minus.circle") }
                     .accessibilityLabel("Remove item")
                     .help(lines.count < 2 ? "An order needs at least one item." : "Remove item")
@@ -620,10 +623,10 @@ struct OrderComposerView: View {
 
     func loadButtonTitle(_ kind: Destination) -> String {
         switch kind {
-        case .models: return "Load your models"
-        case .materials: return "Load materials"
-        case .components: return "Load components"
-        case .stationery: return "Load stationery"
+        case .models: return "Load Your Models"
+        case .materials: return "Load Materials"
+        case .components: return "Load Components"
+        case .stationery: return "Load Stationery"
         default: return "Load"
         }
     }
@@ -889,28 +892,32 @@ struct OrdersView: View {
                 Table(tableRows, selection: $selection, sortOrder: $sortOrder) {
                     TableColumn("Recipient", value: \.recipient) { (row: OrderTableRow) in
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(row.recipient).lineLimit(1)
+                            Text(row.recipient).lineLimit(1).help(row.recipient)
                             // Lets sellers match a draft to its marketplace order without opening it.
                             if let reference = row.marketplaceReference {
                                 Text(reference).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                     }
+                    // Flexible widths whose minimums fit the pane's 420 pt minimum, so the table never scrolls
+                    // sideways; the recipient gets the most room, the order number (also in the detail) the least.
+                    .width(min: 120, ideal: 190)
                     TableColumn("Status", value: \.status) { (row: OrderTableRow) in
-                        Text(row.status)
+                        Text(row.status).lineLimit(1).help(row.status)
                     }
-                    .width(110)
+                    .width(min: 64, ideal: 96, max: 150)
                     TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
-                        Text(row.created.isEmpty ? "—" : row.created)
+                        Text(row.created.isEmpty ? "—" : row.created).lineLimit(1)
                     }
-                    .width(110)
+                    .width(min: 64, ideal: 88, max: 120)
                     TableColumn("Total", value: \.totalSortKey) { (row: OrderTableRow) in
-                        Text(row.total)
+                        Text(row.total).monospacedDigit().lineLimit(1)
                     }
-                    .width(80)
+                    .width(min: 52, ideal: 68, max: 110)
                     TableColumn("Order number", value: \.number) { (row: OrderTableRow) in
-                        Text(row.number).foregroundStyle(.secondary)
+                        Text(row.number).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(row.number)
                     }
+                    .width(min: 60, ideal: 110)
                 }
                 .contextMenu(forSelectionType: String.self) { ids in
                     if ids.count == 1, let id = ids.first, let record = store.orders.first(where: { $0.id == id }) {
@@ -940,10 +947,12 @@ struct OrdersView: View {
                     }.padding(8)
                 }
             }
-            .frame(minWidth: 420)
+            .frame(minWidth: 420, idealWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
             detailPane
-                .frame(minWidth: 360)
+                .frame(minWidth: 360, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Fills the window even with no order selected; otherwise the split shrinks to its content and centres.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .searchable(text: $search, prompt: "Search orders")
@@ -1308,22 +1317,31 @@ struct OrderActionConfirmSheet: View {
             case .loaded:
                 if let order = fresh {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Status: \(orderStatusTitle(status ?? ""))")
                         if let items = order["items"] as? [[String: Any]], !items.isEmpty {
-                            // A long list scrolls in a bounded box so the totals and buttons below always stay visible.
-                            ViewThatFits(in: .vertical) {
+                            // A long list scrolls in a fixed-height box so the totals and buttons below always stay
+                            // visible. Chosen by item count, never by measuring (ViewThatFits looped forever when
+                            // VoiceOver or automation hit-tested this sheet); a short list hugs its content.
+                            if orderReviewItemListScrolls(itemCount: items.count) {
+                                ScrollView { reviewItemList(items).padding(.trailing, 12) }
+                                    .scrollIndicators(.visible)
+                                    .frame(height: 112)
+                            } else {
                                 reviewItemList(items)
-                                ScrollView { reviewItemList(items) }
                             }
-                            .frame(maxHeight: 120)
                             if isPay, let notice = orderReviewLargeQuantityNotice(items) {
                                 Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                             }
+                            Divider()
                         }
-                        LabeledContent("Printing") { Text("\(money(order["printingCost"])) USD") }
-                        LabeledContent("Delivery") { Text("\(money(order["deliveryCost"])) USD") }
-                        LabeledContent("Total") { Text("\(orderTotalMoney(order)) USD").fontWeight(.semibold) }
-                        LabeledContent("Recipient") { Text(orderRecipientDisplay(order)) }
+                        // A receipt: labels on the left, values in a right-aligned column.
+                        VStack(alignment: .leading, spacing: 6) {
+                            LabeledContent("Status") { Text(orderStatusTitle(status ?? "")) }
+                            LabeledContent("Printing") { Text("\(money(order["printingCost"])) USD").monospacedDigit() }
+                            LabeledContent("Delivery") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
+                            LabeledContent("Total") { Text("\(orderTotalMoney(order)) USD").monospacedDigit().fontWeight(.semibold) }
+                            LabeledContent("Recipient") { Text(orderRecipientDisplay(order)).lineLimit(2) }
+                        }
+                        .labeledContentStyle(.receipt)
                     }.font(.callout).textSelection(.enabled)
                 }
             }
@@ -1335,7 +1353,7 @@ struct OrderActionConfirmSheet: View {
             if writing { Label("Working…", systemImage: "ellipsis").font(.caption).foregroundStyle(.secondary) }
             Spacer(minLength: 0)
             HStack {
-                Button(writeSucceeded ? "Done" : "Go back", role: .cancel) { dismiss() }
+                Button(writeSucceeded ? "Done" : "Go Back", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(writing)
                 Spacer()
@@ -1354,7 +1372,7 @@ struct OrderActionConfirmSheet: View {
                         if loadState == .loaded, !finalActionEnabled, let reason = workbenchChargeAllowed(status: status, loaded: true, order: fresh).1 {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
-                        Button("Pay & send to production") { confirmAction() }
+                        Button("Pay & Send to Production") { confirmAction() }
                             .buttonStyle(.borderedProminent)
                             .disabled(!finalActionEnabled)
                     }
@@ -1382,15 +1400,23 @@ struct OrderActionConfirmSheet: View {
     /// The reviewed items. Large quantities are highlighted as a visual fat-finger check only; the explicit Pay
     /// confirmation is unchanged.
     func reviewItemList(_ items: [[String: Any]]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
+        return VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                let text = "\(item["quantity"].map { String(describing: $0) } ?? "1") × \(orderItemDisplayName(item))"
-                if isPay, orderItemHasLargeQuantity(item) {
-                    Label(text, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange).fontWeight(.semibold)
-                        .accessibilityLabel("Large quantity: \(text)")
-                } else {
-                    Text(text)
+                let text = orderItemLineText(item, modelNames: modelNames)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if isPay, orderItemHasLargeQuantity(item) {
+                        Label(text, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange).fontWeight(.semibold)
+                            .lineLimit(2).truncationMode(.middle).layoutPriority(1)
+                            .accessibilityLabel("Large quantity: \(text)")
+                    } else {
+                        Text(text).lineLimit(2).truncationMode(.middle).layoutPriority(1)
+                    }
+                    Spacer(minLength: 8)
+                    if let material = orderItemMaterialName(item, filaments: store.filaments) {
+                        Text(material).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
             }
         }
@@ -1619,7 +1645,7 @@ func orderMatchesSearch(_ order: Record, query: String) -> Bool {
         orderCity(values)
     ]
     if let items = values["items"] as? [[String: Any]] {
-        fields.append(contentsOf: items.map(orderItemDisplayName))
+        fields.append(contentsOf: items.map { orderItemDisplayName($0) })
     }
     if let reference = orderMarketplaceReference(values) { fields.append(reference.id) }
     return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
@@ -1740,14 +1766,20 @@ func isHTTPSImageURL(_ value: String) -> Bool {
           let host = components.host, !host.isEmpty else { return false }
     return true
 }
-func orderItemDisplayName(_ item: [String: Any]) -> String {
+/// An order item's name. Items Studio drafts carry `name: null`, so a print item's uploaded model is looked up in
+/// `modelNames` (see `orderItemModelNames`) before falling back to the item type. Display only: never sent to Slant.
+func orderItemDisplayName(_ item: [String: Any], modelNames: [String: String] = [:]) -> String {
     if let name = item["name"] as? String, !name.isEmpty { return name }
     if let printItem = item["printItem"] as? [String: Any], let name = printItem["name"] as? String, !name.isEmpty { return name }
     if let component = item["componentItem"] as? [String: Any], let name = component["componentName"] as? String, !name.isEmpty { return name }
     if let name = item["componentName"] as? String, !name.isEmpty { return name }
     if let stationery = item["stationeryItem"] as? [String: Any], let name = stationery["stationeryName"] as? String, !name.isEmpty { return name }
     if let name = item["stationeryName"] as? String, !name.isEmpty { return name }
-    if let type = item["type"] as? String, !type.isEmpty { return type.replacingOccurrences(of: "_", with: " ").capitalized }
+    if let fileID = orderItemFileID(item), let name = modelNames[fileID] { return name }
+    if let type = item["type"] as? String, !type.isEmpty {
+        if type.uppercased() == "PRINT" { return "3D print" }
+        return type.replacingOccurrences(of: "_", with: " ").capitalized
+    }
     return "Item"
 }
 func orderItemMaterialName(_ item: [String: Any], filaments: [Record] = []) -> String? {
@@ -2145,12 +2177,13 @@ struct OrderSummary: View {
         VStack(alignment: .leading, spacing: 14) {
             if let items = order["items"] as? [[String: Any]], !items.isEmpty {
                 let showsItemStatus = orderItemStatusesDiffer(items)
+                let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("\(item["quantity"].map { String(describing: $0) } ?? "1") × \(orderItemDisplayName(item))")
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(orderItemLineText(item, modelNames: modelNames))
                             Spacer()
-                            if item["price"] != nil { Text(money(item["price"])) }
+                            if item["price"] != nil { Text(money(item["price"])).monospacedDigit() }
                         }
                         if let material = orderItemMaterialName(item, filaments: store.filaments) {
                             Text("Material: \(material)").font(.caption).foregroundStyle(.secondary)
@@ -2172,12 +2205,16 @@ struct OrderSummary: View {
                 trackingSection
                 Divider()
             }
-            LabeledContent("Print cost") { Text(money(order["printingCost"])) }
-            LabeledContent("Delivery cost") { Text(money(order["deliveryCost"])) }
-            LabeledContent("Total") { Text(orderTotalMoney(order)).fontWeight(.semibold) }
-            ForEach(Array(orderDetailFacts(order).enumerated()), id: \.offset) { _, fact in
-                LabeledContent(fact.0) { Text(fact.1).textSelection(.enabled).multilineTextAlignment(.trailing) }
+            // A receipt: labels on the left, values in a right-aligned column.
+            VStack(alignment: .leading, spacing: 6) {
+                LabeledContent("Print cost") { Text(money(order["printingCost"])).monospacedDigit() }
+                LabeledContent("Delivery cost") { Text(money(order["deliveryCost"])).monospacedDigit() }
+                LabeledContent("Total") { Text(orderTotalMoney(order)).monospacedDigit().fontWeight(.semibold) }
+                ForEach(Array(orderDetailFacts(order).enumerated()), id: \.offset) { _, fact in
+                    LabeledContent(fact.0) { Text(fact.1).textSelection(.enabled) }
+                }
             }
+            .labeledContentStyle(.receipt)
             let number = orderNumber(order)
             if !number.isEmpty {
                 HStack {
@@ -2232,4 +2269,22 @@ struct OrderSummary: View {
             }
         }
     }
+}
+
+/// Receipt rows for totals: the label on the left and the value in a right-aligned column, so amounts line up
+/// down the right edge. A plain HStack, with no measuring or preferences.
+struct ReceiptLabeledContentStyle: LabeledContentStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            // No layout priority: a fixed-width field (Profit check) keeps its width and a long label wraps instead.
+            configuration.label
+            Spacer(minLength: 12)
+            configuration.content
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+extension LabeledContentStyle where Self == ReceiptLabeledContentStyle {
+    static var receipt: ReceiptLabeledContentStyle { ReceiptLabeledContentStyle() }
 }

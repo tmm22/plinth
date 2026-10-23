@@ -167,7 +167,8 @@ final class OrdersUXTests: XCTestCase {
 
     func testOrderItemHelpersAndTotal() {
         XCTAssertEqual(orderItemDisplayName(["name": "Widget"]), "Widget")
-        XCTAssertEqual(orderItemDisplayName(["type": "PRINT"]), "Print")
+        XCTAssertEqual(orderItemDisplayName(["type": "PRINT"]), "3D print")
+        XCTAssertEqual(orderItemDisplayName(["type": "COMPONENT"]), "Component")
         XCTAssertEqual(orderItemDisplayName(["componentItem": ["componentName": "Bracket"]]), "Bracket")
         XCTAssertEqual(orderItemDisplayName(["stationeryItem": ["stationeryName": "Card"]]), "Card")
         XCTAssertEqual(orderItemDisplayName(["printItem": ["name": "Gadget"]]), "Gadget")
