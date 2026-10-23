@@ -24,14 +24,26 @@ final class ModelsUXTests: XCTestCase {
             "rawNoise": ["nested": true]
         ]
         let rows = estimateRows(estimate)
-        XCTAssertEqual(rows.map(\.0), [
-            "Price per unit", "Quantity", "Subtotal", "Material", "Print time", "Multi-part charge", "Oversize fee", "Total"
-        ])
-        XCTAssertEqual(rows.map(\.1), ["$4.06", "3", "$12.18", "PLA Black", "42 min", "$1.50", "$0.25", "$13.93"])
+        // Print time and material have no documented unit, and the subtotal contradicted the per-unit price live.
+        XCTAssertEqual(rows.map(\.0), ["Price per unit", "Quantity", "Multi-part charge", "Oversize fee", "Total"])
+        XCTAssertEqual(rows.map(\.1), ["$4.06", "3", "$1.50", "$0.25", "$13.93"])
         let displayed = displayedEstimateRows(estimate)
-        XCTAssertFalse(displayed.map(\.0).contains("Total"))
-        XCTAssertFalse(displayed.map(\.0).contains("Quantity"))
-        XCTAssertTrue(displayed.map(\.0).contains("Subtotal"))
+        XCTAssertEqual(displayed.map(\.0), ["Price per unit", "Multi-part charge", "Oversize fee"])
+        XCTAssertFalse(displayed.contains { $0.1.contains("min") })
+    }
+
+    func testEstimateRowsListOnlyChargedSurcharges() {
+        // Live reply shape from 23 Oct 2026: numbers, both surcharges zero.
+        let live: [String: Any] = ["pricePerUnit": 9.93, "quantity": 1, "subtotal": 7.64, "total": 9.93,
+                                   "totalMaterial": 101.88, "estimatedPrintTime": 6.66,
+                                   "bodyChargeCost": 0, "oversizeSurcharge": 0.0]
+        XCTAssertEqual(displayedEstimateRows(live).map(\.0), ["Price per unit"])
+        XCTAssertEqual(displayedEstimateRows(live).map(\.1), ["$9.93"])
+        XCTAssertEqual(displayedEstimateRows(["bodyChargeCost": "2.00", "oversizeSurcharge": NSNull()]).map(\.0), ["Multi-part charge"])
+        XCTAssertTrue(estimateAmountIsCharged("abc"), "an unreadable amount is shown as — rather than hidden")
+        XCTAssertFalse(estimateAmountIsCharged(nil))
+        XCTAssertFalse(estimateAmountIsCharged("0.00"))
+        XCTAssertFalse(estimateAmountIsCharged(-1))
     }
 
     func testEstimateRowsOmitMissingKeys() {

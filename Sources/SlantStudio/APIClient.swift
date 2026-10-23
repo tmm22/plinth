@@ -35,7 +35,29 @@ struct APIResponse {
     }
 }
 
-func rateLimitInfo(from headers: [String: String]) -> RateLimitInfo {
+/// When Slant's `X-RateLimit-Reset` says the allowance refills. Live responses (observed 23 Oct 2026) send epoch
+/// **milliseconds** (`1800000685873` = 08:11:25 UTC, 60 s after the request). Epoch seconds are tolerated too, and a
+/// small number is read as seconds from now. Negative, non-finite or unparseable values, and times more than a day
+/// away (an unknown unit), give nil.
+func rateLimitResetDate(_ raw: String?, now: Date) -> Date? {
+    guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+          let value = Double(text), value.isFinite, value >= 0 else { return nil }
+    let date: Date
+    if value >= 1e11 {
+        date = Date(timeIntervalSince1970: value / 1000)
+    } else if value >= 1e9 {
+        date = Date(timeIntervalSince1970: value)
+    } else {
+        date = now.addingTimeInterval(value)
+    }
+    guard date.timeIntervalSince(now) <= rateLimitResetMaxLead else { return nil }
+    return date
+}
+
+/// The latest reset `rateLimitResetDate` accepts. Slant's limits are per minute (OpenSCAD per hour).
+let rateLimitResetMaxLead: TimeInterval = 24 * 3600
+
+func rateLimitInfo(from headers: [String: String], now: Date = Date()) -> RateLimitInfo {
     func value(_ names: String...) -> String? {
         for name in names {
             if let match = headers.first(where: { $0.key.lowercased() == name.lowercased() })?.value, !match.isEmpty {
@@ -47,12 +69,7 @@ func rateLimitInfo(from headers: [String: String]) -> RateLimitInfo {
     let limit = value("X-RateLimit-Limit").flatMap(Int.init)
     let remaining = value("X-RateLimit-Remaining").flatMap(Int.init)
     let role = value("X-RateLimit-Role")
-    let reset: Date?
-    if let raw = value("X-RateLimit-Reset"), let seconds = TimeInterval(raw) {
-        reset = Date(timeIntervalSince1970: seconds)
-    } else {
-        reset = nil
-    }
+    let reset = rateLimitResetDate(value("X-RateLimit-Reset"), now: now)
     return RateLimitInfo(limit: limit, remaining: remaining, reset: reset, role: role)
 }
 
@@ -134,13 +151,12 @@ enum APIError: LocalizedError {
     }
 }
 
-func rateLimitUserMessage(retryAfter: String?, rateLimitReset: String?) -> String {
+func rateLimitUserMessage(retryAfter: String?, rateLimitReset: String?, now: Date = Date()) -> String {
     if let retryAfter, !retryAfter.isEmpty {
         return "Too many requests. Wait \(retryAfter), then try again."
     }
-    if let rateLimitReset, let seconds = TimeInterval(rateLimitReset) {
-        let delay = max(0, seconds - Date().timeIntervalSince1970)
-        return "Too many requests. \(rateLimitResetWaitCopy(secondsFromNow: delay))"
+    if let reset = rateLimitResetDate(rateLimitReset, now: now), reset > now {
+        return "Too many requests. \(rateLimitResetWaitCopy(secondsFromNow: reset.timeIntervalSince(now)))"
     }
     return "Too many requests. Wait a moment, then try again."
 }
@@ -148,7 +164,7 @@ func rateLimitUserMessage(retryAfter: String?, rateLimitReset: String?) -> Strin
 func rateLimitResetWaitCopy(secondsFromNow delay: TimeInterval) -> String {
     if delay < 90 {
         let seconds = max(1, Int(delay.rounded()))
-        return "Try again in about \(seconds) seconds."
+        return seconds == 1 ? "Try again in about 1 second." : "Try again in about \(seconds) seconds."
     }
     let minutes = max(1, Int((delay / 60).rounded()))
     return "Try again in about \(minutes) minutes."

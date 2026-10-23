@@ -99,6 +99,7 @@ struct PlatformsSettingsSections: View {
             Text("Platforms")
         } footer: {
             Text("A platform groups your uploads and orders. New uploads and order drafts use the default platform.")
+                .settingsFooterLayout()
         }
 
         if store.hasKey {
@@ -118,7 +119,7 @@ struct PlatformsSettingsSections: View {
                         .disabled(store.busy)
                     }
                 }
-                DisclosureGroup("Enable a Platform by ID", isExpanded: $state.showEnableByID) {
+                DisclosureGroup("Enable a platform by ID", isExpanded: $state.showEnableByID) {
                     HStack {
                         TextField("Platform ID", text: $state.enableByID, prompt: Text("ID of a disabled platform"))
                         Button("Look Up…") {
@@ -138,6 +139,7 @@ struct PlatformsSettingsSections: View {
                 Text(store.disabledPlatformsThisSession.isEmpty
                      ? "Disabled platforms don’t appear above. To enable one, look it up by its ID."
                      : "Platforms you disable this session are listed here. To enable another, look it up by its ID.")
+                    .settingsFooterLayout()
             }
         }
     }
@@ -234,6 +236,11 @@ struct PlatformsSettingsSheets: ViewModifier {
 
 // MARK: - Platform details and management
 
+/// The details sheet offers Use as Default only for a platform that isn't already the default.
+func platformDetailOffersUseAsDefault(platformID: String, defaultPlatformID: String) -> Bool {
+    platformID != defaultPlatformID
+}
+
 struct PlatformDetailSheet: View {
     @EnvironmentObject var store: StudioStore
     @Environment(\.dismiss) private var dismiss
@@ -292,15 +299,18 @@ struct PlatformDetailSheet: View {
                         JSONView(text: prettyJSON(hidingSecrets(livePlatform.values))).frame(height: 220)
                     }
                 }
-                HStack {
-                    Spacer()
-                    Button("Use as Default") {
-                        store.platformID = record.id
-                        dismiss()
+                // Already the default: the header's Default badge says so, and Done closes the sheet.
+                if platformDetailOffersUseAsDefault(platformID: record.id, defaultPlatformID: store.platformID) {
+                    HStack {
+                        Spacer()
+                        Button("Use as Default") {
+                            store.platformID = record.id
+                            dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(store.busy)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(store.busy || record.id == store.platformID)
                 }
             }
             .padding(28)

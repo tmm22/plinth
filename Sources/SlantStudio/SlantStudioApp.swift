@@ -11,6 +11,7 @@ struct SlantStudioApp: App {
             StudioView().environmentObject(store)
                 .frame(minWidth: 1080, minHeight: 720)
                 .tint(.studioAccent)
+                .studioDisclosureStyle()
                 .modifier(ExternalModelOpenAttachment(store: store))
         }
         .defaultSize(width: 1360, height: 900)
@@ -74,6 +75,7 @@ struct SlantStudioApp: App {
                 .environmentObject(store)
                 .environmentObject(modalPresentation)
                 .tint(.studioAccent)
+                .studioDisclosureStyle()
         }
     }
 }
