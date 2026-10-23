@@ -1130,6 +1130,10 @@ struct OrdersView: View {
                     Button("Mark Shipped in Your Shop…") { store.openShopFollowUpFromMenu() }
                         .disabled(store.orders.isEmpty)
                         .help("Tracking for loaded orders, to copy into Etsy or Shopify")
+                    // Spending report (SpendReport.swift): from the loaded orders only; nothing is sent or saved.
+                    Button("Spending Report…") { store.openSpendingReportFromMenu() }
+                        .disabled(store.orders.isEmpty)
+                        .help("Slant spend per month and top items, from the loaded orders")
                     // Opens the charge review for the first draft in the list; each review still needs its own Pay.
                     if tableRows.contains(where: { ((orderObject($0.record.values)["status"] as? String) ?? "").uppercased() == "DRAFT" }) {
                         Divider()
@@ -1140,7 +1144,7 @@ struct OrdersView: View {
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
                 }
-                .help("Saved Products, Export Orders and Mark Shipped in Your Shop")
+                .help("Saved Products, Export Orders, Mark Shipped in Your Shop and Spending Report")
             }
         }
         // A new search or filter replaces the banner's focus on changed orders.

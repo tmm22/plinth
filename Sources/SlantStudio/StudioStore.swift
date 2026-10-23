@@ -532,6 +532,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var showImportFromURL = false
     /// Import Orders sheet (OrderImport.swift).
     @Published var showOrderImport = false
+    /// Listing assets and spending report sheets (ListingAssets.swift, SpendReport.swift). Counted in `isPresentingSheet`.
+    @Published var listingImagesModelID: UUID?
+    @Published var showSpendingReport = false
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
     /// Mark Shipped in Your Shop sheet (OrderFollowUp.swift). Counted in `isPresentingSheet`.

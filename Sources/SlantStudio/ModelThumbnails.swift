@@ -52,23 +52,70 @@ func pruneOrphanThumbnails(in directory: URL, keeping ids: Set<UUID>, writtenBef
 /// keeps the cube icon instead of taking minutes. About 870 times the 192 × 192 sample grid.
 let thumbnailRasterBudget = 32_000_000
 
+/// An orthographic camera in preview scene space (STL Z up becomes scene Y up: scene = (x, z, -y)). `eye` points from
+/// the model towards the viewer; `right` and `up` are the image axes. All three are unit length and orthogonal.
+struct MeshRenderCamera: Equatable, Sendable {
+    let eye: SIMD3<Float>
+    let right: SIMD3<Float>
+    let up: SIMD3<Float>
+
+    /// Looks back along `eye`, keeping `upHint` pointing up the image. Nil when `eye` is zero, not finite or parallel
+    /// to `upHint` (looking straight down needs a different hint).
+    init?(eye rawEye: SIMD3<Float>, upHint: SIMD3<Float> = SIMD3<Float>(0, 1, 0)) {
+        let eyeLength = simd_length(rawEye)
+        guard eyeLength > 0, eyeLength.isFinite else { return nil }
+        let eye = simd_normalize(rawEye)
+        let side = simd_cross(-eye, upHint)
+        let sideLength = simd_length(side)
+        guard sideLength > 1e-6, sideLength.isFinite else { return nil }
+        self.eye = eye
+        right = simd_normalize(side)
+        up = simd_cross(right, -eye)
+    }
+
+    /// The preview's default camera at (11, 8, 12), used for library thumbnails.
+    static let thumbnail = MeshRenderCamera(eye: SIMD3<Float>(11, 8, 12))!
+}
+
+/// How a rendered mesh is lit and coloured. Each covered sample is `base × (ambient + diffuse × |n·light|)`, plus a
+/// white `sheen × |n·light|⁴` highlight when `sheen` is above zero; `fill` is the share of the image the mesh spans.
+struct MeshRenderStyle: Sendable {
+    var base: SIMD3<Float>
+    var light: SIMD3<Float>
+    var ambient: Float = 0.38
+    var diffuse: Float = 0.62
+    var sheen: Float = 0
+    var fill: Float = 0.88
+
+    /// Same base colour and light as the preview material; library thumbnails keep exactly this look.
+    static let thumbnail = MeshRenderStyle(base: SIMD3<Float>(0.72, 0.79, 0.84),
+                                           light: simd_normalize(SIMD3<Float>(5, 12, 9) + SIMD3<Float>(11, 8, 12) * 0.5))
+}
+
 /// Software z-buffer rendering of the mesh from the preview's default camera, shaded like the preview.
 /// Pure CPU work, safe on any thread, deterministic (triangles drawn in index order; ties keep the first).
 /// Returns premultiplied RGBA rows, top row first, with a transparent background, or nil when the mesh would need
 /// more than `rasterBudget` pixel tests (checked before drawing anything).
 func renderThumbnailRGBA(_ mesh: STLMesh, size: Int, rasterBudget: Int = thumbnailRasterBudget,
                          isCancelled: () -> Bool = { false }) -> [UInt8]? {
+    renderMeshRGBA(mesh, size: size, camera: .thumbnail, style: .thumbnail, rasterBudget: rasterBudget, isCancelled: isCancelled)
+}
+
+/// Software z-buffer rendering of the mesh from any orthographic camera (thumbnails and listing images).
+/// Same guarantees as `renderThumbnailRGBA`: pure, deterministic, budget checked before drawing, nil when cancelled.
+func renderMeshRGBA(_ mesh: STLMesh, size: Int, camera: MeshRenderCamera, style: MeshRenderStyle,
+                    rasterBudget: Int, isCancelled: () -> Bool = { false }) -> [UInt8]? {
     guard size > 0, mesh.triangleCount > 0 else { return nil }
     let extent = mesh.maximum - mesh.minimum
     guard extent.max() > 0 else { return nil }
     let samples = 2
     let n = size * samples
     let center = (mesh.maximum + mesh.minimum) * 0.5
-    // STL Z is up, as in the preview: scene = (x, z, -y), seen from the preview camera at (11, 8, 12).
-    let eye = simd_normalize(SIMD3<Float>(11, 8, 12))
-    let right = simd_normalize(simd_cross(-eye, SIMD3<Float>(0, 1, 0)))
-    let up = simd_cross(right, -eye)
-    let light = simd_normalize(SIMD3<Float>(5, 12, 9) + SIMD3<Float>(11, 8, 12) * 0.5)
+    // STL Z is up, as in the preview: scene = (x, z, -y).
+    let eye = camera.eye
+    let right = camera.right
+    let up = camera.up
+    let light = style.light
     let v = mesh.vertices
     func scene(_ i: Int) -> SIMD3<Float> {
         let p = SIMD3<Float>(v[i], v[i + 1], v[i + 2]) - center
@@ -83,7 +130,7 @@ func renderThumbnailRGBA(_ mesh: STLMesh, size: Int, rasterBudget: Int = thumbna
     }
     let span = max(high.x - low.x, high.y - low.y)
     guard span > 0, span.isFinite else { return nil }
-    let scale = Float(n) * 0.88 / span
+    let scale = Float(n) * style.fill / span
     let mid = (low + high) * 0.5
     func project(_ s: SIMD3<Float>) -> SIMD3<Float> {
         let q = SIMD2(simd_dot(s, right), simd_dot(s, up)) - mid
@@ -123,7 +170,7 @@ func renderThumbnailRGBA(_ mesh: STLMesh, size: Int, rasterBudget: Int = thumbna
         guard let box = footprint(t) else { continue }
         let (a, b, c, pa, pb, pc, area, minX, maxX, minY, maxY) = box
         let normalVector = simd_cross(b - a, c - a)
-        let intensity = 0.38 + 0.62 * abs(simd_dot(normalVector / simd_length(normalVector), light))
+        let intensity = style.ambient + style.diffuse * abs(simd_dot(normalVector / simd_length(normalVector), light))
         for y in minY...maxY {
             let py = Float(y) + 0.5
             for x in minX...maxX {
@@ -142,8 +189,9 @@ func renderThumbnailRGBA(_ mesh: STLMesh, size: Int, rasterBudget: Int = thumbna
         }
     }
 
-    // Same base colour as the preview material; 2×2 supersampling smooths the silhouette.
-    let base = SIMD3<Float>(0.72, 0.79, 0.84)
+    // 2×2 supersampling smooths the silhouette.
+    let base = style.base
+    let sheen = style.sheen
     var rgba = [UInt8](repeating: 0, count: size * size * 4)
     for y in 0..<size {
         for x in 0..<size {
@@ -152,7 +200,14 @@ func renderThumbnailRGBA(_ mesh: STLMesh, size: Int, rasterBudget: Int = thumbna
             for sy in 0..<samples {
                 for sx in 0..<samples {
                     let s = shade[(y * samples + sy) * n + x * samples + sx]
-                    if s >= 0 { colour += base * s; coverage += 1 }
+                    if s >= 0 {
+                        colour += base * s
+                        if sheen > 0, style.diffuse > 0 {
+                            let lit = max(0, (s - style.ambient) / style.diffuse)
+                            colour += SIMD3<Float>(repeating: sheen * lit * lit * lit * lit)
+                        }
+                        coverage += 1
+                    }
                 }
             }
             let count = Float(samples * samples)
