@@ -75,6 +75,10 @@ struct StudioView: View {
             if let id = store.listingImagesModelID { ListingImagesSheet(modelID: id).environmentObject(store) }
         }
         .sheet(isPresented: $store.showSpendingReport) { SpendingReportSheet().environmentObject(store) }
+        .sheet(isPresented: Binding(get: { store.personalisationTemplate != nil },
+                                    set: { if !$0 { store.personalisationTemplate = nil } })) {
+            PersonalisationSheet().environmentObject(store)
+        }
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }

@@ -535,6 +535,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Listing assets and spending report sheets (ListingAssets.swift, SpendReport.swift). Counted in `isPresentingSheet`.
     @Published var listingImagesModelID: UUID?
     @Published var showSpendingReport = false
+    /// Personalise from Template sheet (Personalisation.swift): the chosen .scad file, in memory only.
+    @Published var personalisationTemplate: PersonalisationTemplateFile?
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
     /// Mark Shipped in Your Shop sheet (OrderFollowUp.swift). Counted in `isPresentingSheet`.

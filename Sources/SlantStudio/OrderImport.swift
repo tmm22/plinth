@@ -233,6 +233,8 @@ enum OrderImportFormat: String, Equatable, CaseIterable {
 enum OrderImportField: String, CaseIterable {
     case orderID, name, email, line1, line2, city, state, zip, country, sku, quantity, itemName, company
     case dateShipped, fulfillmentStatus, cancelledAt, financialStatus
+    /// Etsy's "Variations" and a dedicated personalisation column: shown in the preview only (see Personalisation).
+    case variations, personalisation
 }
 
 struct OrderImportFormatSpec {
@@ -265,7 +267,8 @@ let orderImportFormatSpecs: [OrderImportFormatSpec] = [
             .orderID: ["Order ID"], .name: ["Ship Name"], .line1: ["Ship Address1"], .line2: ["Ship Address2"],
             .city: ["Ship City"], .state: ["Ship State"], .zip: ["Ship Zipcode", "Ship Zip", "Ship Postal Code"],
             .country: ["Ship Country"], .sku: ["SKU"], .quantity: ["Quantity"], .itemName: ["Item Name"],
-            .dateShipped: ["Date Shipped"]
+            .dateShipped: ["Date Shipped"],
+            .variations: ["Variations"], .personalisation: orderImportPersonalisationColumns
         ],
         required: [.orderID, .name, .line1, .city, .zip, .country, .sku, .quantity]
     ),
@@ -275,7 +278,8 @@ let orderImportFormatSpecs: [OrderImportFormatSpec] = [
             .orderID: ["order_id"], .name: ["name", "recipient"], .email: ["email"],
             .line1: ["line1", "address1", "address_line1"], .line2: ["line2", "address2", "address_line2"],
             .city: ["city"], .state: ["state", "province"], .zip: ["zip", "postcode", "postal_code", "zipcode"],
-            .country: ["country"], .sku: ["sku"], .quantity: ["quantity", "qty"]
+            .country: ["country"], .sku: ["sku"], .quantity: ["quantity", "qty"],
+            .personalisation: orderImportPersonalisationColumns
         ],
         required: [.orderID, .name, .line1, .city, .zip, .country, .sku, .quantity]
     )
@@ -324,6 +328,11 @@ struct OrderImportItem: Equatable {
     var quantityText: String
     var itemName: String
     var row: Int
+    /// The buyer's personalisation text (Personalisation.swift), shown in the preview with Copy. Memory only: never
+    /// sent in a draft, saved or logged.
+    var personalisation = ""
+    /// The marketplace's full options text, shown beside the personalisation when it holds other options too.
+    var options = ""
 }
 
 struct OrderImportOrder: Identifiable, Equatable {
@@ -420,7 +429,11 @@ func orderImportOrders(from csv: OrderImportCSV, layout: OrderImportLayout, maxO
         }
         let sku = value(.sku), quantity = value(.quantity), itemName = value(.itemName)
         if !sku.isEmpty || !quantity.isEmpty || !itemName.isEmpty {
-            order.items.append(OrderImportItem(sku: sku, quantityText: quantity, itemName: itemName, row: rowNumber))
+            var item = OrderImportItem(sku: sku, quantityText: quantity, itemName: itemName, row: rowNumber)
+            item.options = orderImportDecodingHTMLEntities(value(.variations))
+            item.personalisation = orderImportPersonalisation(options: item.options,
+                                                              column: orderImportDecodingHTMLEntities(value(.personalisation)))
+            order.items.append(item)
         }
         if order.alreadyHandled == nil {
             order.alreadyHandled = orderImportAlreadyHandledReason(
@@ -1365,6 +1378,9 @@ struct OrderImportSheet: View {
                 Text(coverage).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text("Drafts are created on platform \(platformName).").font(.caption).foregroundStyle(.secondary)
+            if parse.orders.contains(where: { $0.items.contains { !$0.personalisation.isEmpty } }) {
+                OrderImportPersonalisationNotice(list: orderImportPersonalisationList(parse.orders))
+            }
         }
         if parse.orders.contains(where: { $0.email.isEmpty }) {
             VStack(alignment: .leading, spacing: 4) {
@@ -1476,6 +1492,10 @@ struct OrderImportSheet: View {
                 }
                 Text(check.itemsSummary.isEmpty ? "No items" : check.itemsSummary)
                     .font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                // Personalisation (Personalisation.swift): display and Copy only; drafts are built without it.
+                ForEach(Array(order.items.enumerated()).filter { !$0.element.personalisation.isEmpty }, id: \.offset) { _, item in
+                    OrderImportPersonalisationRow(item: item, showsItemName: order.items.count > 1)
+                }
                 if let state { stateLabel(state) }
                 ForEach(check.blockers, id: \.self) { text in
                     Label(text, systemImage: "xmark.octagon.fill").font(.caption).foregroundStyle(.red)
