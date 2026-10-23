@@ -80,6 +80,8 @@ struct ModelsView: View {
                     Button("Import Model…") { store.importModel() }
                     Button("Upload from URL…") { store.showImportFromURL = true }
                         .disabled(store.importFromURLBlockedReason != nil)
+                    // Generates an STL from an OpenSCAD template into the library (Personalisation.swift); never uploads.
+                    Button("Personalise from Template…") { store.chooseAndOpenPersonalisationTemplate() }
                 } label: {
                     Label("Import Model", systemImage: "square.and.arrow.down")
                         .labelStyle(.titleAndIcon)

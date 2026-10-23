@@ -528,6 +528,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var showImportFromURL = false
     /// Import Orders sheet (OrderImport.swift).
     @Published var showOrderImport = false
+    /// Personalise from Template sheet (Personalisation.swift): the chosen .scad file, in memory only.
+    @Published var personalisationTemplate: PersonalisationTemplateFile?
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
     @Published var accountLoaded = false

@@ -30,6 +30,9 @@ struct SlantStudioApp: App {
                     .disabled(modalUIShown)
                 Button("Upload from URL…") { store.importModelFromURLFromMenu() }
                     .disabled(store.importFromURLBlockedReason != nil || modalUIShown)
+                // Opens a .scad template to fill in; generating saves a new library model and never uploads.
+                Button("Personalise from Template…") { store.personaliseFromTemplateFromMenu() }
+                    .disabled(modalUIShown)
                 Divider()
                 // Library file actions only; nothing here uploads, places, pays for or cancels anything.
                 Button("Rename Model…") { store.beginRenamingSelectedModelFromMenu() }

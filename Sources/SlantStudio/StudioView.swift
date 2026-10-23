@@ -69,6 +69,10 @@ struct StudioView: View {
         .sheet(isPresented: $store.showImportFromURL) { ImportFromURLSheet().environmentObject(store) }
         .sheet(isPresented: $store.showSavedProducts) { SavedProductsSheet().environmentObject(store) }
         .sheet(isPresented: $store.showOrderImport) { OrderImportSheet().environmentObject(store) }
+        .sheet(isPresented: Binding(get: { store.personalisationTemplate != nil },
+                                    set: { if !$0 { store.personalisationTemplate = nil } })) {
+            PersonalisationSheet().environmentObject(store)
+        }
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }
