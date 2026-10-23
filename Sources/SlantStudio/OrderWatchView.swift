@@ -24,6 +24,13 @@ struct OrderWatchBanner: View {
                     .lineLimit(2)
                     .help(summary)
                 Spacer(minLength: 8)
+                // Shipped orders have tracking to copy into the shop. Opens the local list only; nothing is sent.
+                if orderWatchChangesIncludeShipped(changes) {
+                    Button("Tracking for Your Shop…") { store.openShopFollowUpFromMenu() }
+                        .buttonStyle(.link)
+                        .disabled(store.orders.isEmpty)
+                        .help(store.orders.isEmpty ? "Load orders first" : "Copy shipped orders’ tracking into Etsy or Shopify")
+                }
                 Button("Show") { onShow(Set(changes.map(\.id))) }
                     .disabled(!store.hasKey || store.busy)
                     .help("Reload the newest orders and list the ones that changed")
@@ -90,7 +97,7 @@ struct OrderWatchSettingsSection: View {
         } header: {
             Text("Order updates")
         } footer: {
-            Text("Every few minutes, Studio reads your newest orders on the default platform and lists status changes in Orders. Only each order’s ID, status and when it was seen are saved on this Mac. Notifications (shipped, delivered, cancelled, in review or a payment problem) show the order number and status, never customer details.")
+            Text("Every few minutes, Studio reads your newest orders on the default platform and lists status changes in Orders. Only each order’s ID, status and when it was seen are saved on this Mac, and they’re forgotten when you change the default platform or disconnect. Notifications (shipped, delivered, cancelled, in review or a payment problem) show the order number and status, never customer details.")
                 .settingsFooterLayout()
         }
         .confirmationDialog("Forget saved order statuses?", isPresented: $confirmForget, titleVisibility: .visible) {

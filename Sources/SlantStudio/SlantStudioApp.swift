@@ -25,6 +25,8 @@ struct SlantStudioApp: App {
                 Button("New Order Draft…") { store.openOrderComposerFromMenu() }
                     .keyboardShortcut("n")
                     .disabled(store.orderDraftBlockedReason != nil || store.busy || modalUIShown)
+                Divider()
+                // Models. Library file actions only; nothing here uploads, places, pays for or cancels anything.
                 Button("Import Model…") { store.importModelFromMenu() }
                     .keyboardShortcut("o")
                     .disabled(modalUIShown)
@@ -33,8 +35,6 @@ struct SlantStudioApp: App {
                 // Opens a .scad template to fill in; generating saves a new library model and never uploads.
                 Button("Personalise from Template…") { store.personaliseFromTemplateFromMenu() }
                     .disabled(modalUIShown)
-                Divider()
-                // Library file actions only; nothing here uploads, places, pays for or cancels anything.
                 Button("Rename Model…") { store.beginRenamingSelectedModelFromMenu() }
                     .disabled(!modelFileEnabled)
                 Button("Export Model…") { store.exportSelectedModelFromMenu() }
@@ -43,20 +43,22 @@ struct SlantStudioApp: App {
                 // Opens the listing images sheet; renders are saved to a folder the user picks. Nothing is sent.
                 Button("Export Listing Images…") { store.exportListingImagesFromMenu() }
                     .disabled(!modelFileEnabled || store.selectedLocal?.supportsMeshPreview != true)
+                Divider()
+                // Orders. None of these sends a request.
+                // Opens the Import Orders sheet only; drafts are created there after an explicit confirmation.
+                Button("Import Orders…") { store.importOrdersFromMenu() }
+                    .disabled(store.orderImportBlockedReason != nil || modalUIShown)
                 // Saves a CSV of the loaded orders shown in the list; no request is made.
                 Button("Export Orders…") { store.exportOrdersFromMenu() }
                     .disabled(!ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
                                                        sheetPresented: modalUIShown))
+                // Opens a local list of loaded orders' tracking only; nothing is sent.
+                Button("Tracking for Your Shop…") { store.openShopFollowUpFromMenu() }
+                    .disabled(store.orders.isEmpty || modalUIShown)
                 // Opens the spending report for the loaded orders; no request is made.
                 Button("Spending Report…") { store.openSpendingReportFromMenu() }
                     .disabled(!ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
                                                        sheetPresented: modalUIShown))
-                // Opens the Import Orders sheet only; drafts are created there after an explicit confirmation.
-                Button("Import Orders…") { store.importOrdersFromMenu() }
-                    .disabled(store.orderImportBlockedReason != nil || modalUIShown)
-                // Opens a local list of loaded orders' tracking only; nothing is sent.
-                Button("Mark Shipped in Your Shop…") { store.openShopFollowUpFromMenu() }
-                    .disabled(store.orders.isEmpty || modalUIShown)
                 // Opens the Saved Products sheet only (a local list; nothing is sent).
                 Button("Saved Products…") { store.openSavedProductsFromMenu() }
                     .disabled(modalUIShown)

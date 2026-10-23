@@ -196,6 +196,8 @@ struct OrderComposerView: View {
     @State private var advancedExpanded = false
     /// Use My Address asks before replacing details already in the form (SellerAddress.swift).
     @State private var confirmUseMyAddress = false
+    /// The country was chosen in the picker (not the Mac-region default), so replacing it needs confirmation too.
+    @State private var countryPicked = false
 
     var hasUnsavedInput: Bool {
         orderComposerHasUnsavedInput(
@@ -277,7 +279,9 @@ struct OrderComposerView: View {
         }
         .confirmationDialog("Replace the delivery details?", isPresented: $confirmUseMyAddress, titleVisibility: .visible) {
             Button("Use My Address") { applyMyAddress() }
+            // Return keeps what's in the form.
             Button("Keep Current Details", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("The name, email and address in this draft are replaced with your saved address.")
         }
@@ -375,7 +379,8 @@ struct OrderComposerView: View {
                     if store.sellerAddress != nil {
                         Button {
                             if let address = store.sellerAddress,
-                               useMyAddressNeedsConfirmation(current: delivery, replacement: deliveryDetails(fromSellerAddress: address)) {
+                               useMyAddressNeedsConfirmation(current: delivery, replacement: deliveryDetails(fromSellerAddress: address),
+                                                             countryPicked: countryPicked) {
                                 confirmUseMyAddress = true
                             } else {
                                 applyMyAddress()
@@ -517,7 +522,10 @@ struct OrderComposerView: View {
         let others = orderOtherCountryChoicesForCurrentLocale
         Picker("Country", selection: Binding(
             get: { picked },
-            set: { delivery = deliveryApplyingCountryPick($0, to: delivery) }
+            set: {
+                delivery = deliveryApplyingCountryPick($0, to: delivery)
+                countryPicked = true // Use My Address then asks before replacing it (SellerAddress.swift)
+            }
         )) {
             Text("Choose a country").tag("")
             Divider()
@@ -756,6 +764,7 @@ struct OrderComposerView: View {
     func applyMyAddress() {
         guard let address = store.sellerAddress else { return }
         delivery = deliveryDetails(fromSellerAddress: address)
+        countryPicked = false
         editingDelivery = true
     }
 
@@ -764,6 +773,7 @@ struct OrderComposerView: View {
     func clearReusedDelivery() {
         locationAddressApplied = false
         delivery = DeliveryDetails()
+        countryPicked = false
         initialDelivery = delivery
         seededDelivery = false
         editingDelivery = true
@@ -915,6 +925,9 @@ struct OrdersView: View {
     @State private var nextReviewAfterDismiss: String?
     /// Needs Attention (OrderFollowUp.swift): a local filter over loaded orders; never a request.
     @State private var needsAttentionOnly = false
+    /// The list's order IDs when the first of a run of charge reviews opened, so Review Next Draft keeps its place
+    /// however the list changes meanwhile (OrderDetailExtras.swift).
+    @State private var reviewListSnapshot: [String] = []
     /// Only the Arrive by column has a customization ID, so this controls its visibility alone.
     @State private var columnCustomization = TableColumnCustomization<OrderTableRow>()
 
@@ -928,6 +941,11 @@ struct OrdersView: View {
     }
     var canCancelSelected: Bool {
         displayedOrder.map { orderCanRequestCancellation(($0["status"] as? String) ?? "") } ?? false
+    }
+    /// Show's focus on changed orders and Needs Attention never apply together: Show turns Needs Attention off, and
+    /// turning it on or off ends the focus, so the focus bar's count and the empty states always match the list.
+    var needsAttentionBinding: Binding<Bool> {
+        Binding(get: { needsAttentionOnly }, set: { needsAttentionOnly = $0; watchFocus = nil })
     }
     var listRecords: [Record] {
         if let focused = orderWatchFocusedRecords(store.orders, focus: watchFocus) { return focused }
@@ -1080,30 +1098,33 @@ struct OrdersView: View {
                 .help(store.orderImportBlockedReason ?? "Create order drafts from an Etsy, Shopify or template CSV file")
             }
             ToolbarItem(placement: .automatic) {
-                // Applies at once: reloads the list from Slant with this status, keeping the dates and sort from Dates & Sort.
-                Picker(selection: Binding(
-                    get: { store.orderFilter.status ?? "" },
-                    set: { applyStatusFilter($0) }
-                )) {
-                    Text("All Statuses").tag("")
-                    Divider()
-                    ForEach(orderStatusFilterOptions, id: \.self) { Text(orderStatusTitle($0)).tag($0) }
+                // Status applies at once: reloads the list from Slant with this status, keeping the dates and sort from
+                // Dates & Sort. Needs attention, in its own section, filters the loaded orders here and never asks Slant
+                // for anything; it shares this menu so the toolbar fits the narrowest window. The icon fills while
+                // either narrows the list.
+                Menu {
+                    Picker("Status", selection: Binding(
+                        get: { store.orderFilter.status ?? "" },
+                        set: { applyStatusFilter($0) }
+                    )) {
+                        Text("All Statuses").tag("")
+                        Divider()
+                        ForEach(orderStatusFilterOptions, id: \.self) { Text(orderStatusTitle($0)).tag($0) }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    .disabled(!store.hasKey || store.busy)
+                    Section {
+                        Toggle("Needs attention (loaded orders)", isOn: needsAttentionBinding)
+                            .disabled(!store.ordersLoaded)
+                    }
                 } label: {
-                    Label("Status", systemImage: "line.3.horizontal.decrease.circle")
+                    Label("Status", systemImage: store.orderFilter.status != nil || needsAttentionOnly
+                          ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                 }
-                .pickerStyle(.menu)
-                .fixedSize()
-                .disabled(!store.hasKey || store.busy)
-                .help("Show orders with this status")
-            }
-            ToolbarItem(placement: .automatic) {
-                // Filters the loaded orders here; it never asks Slant for anything.
-                Toggle(isOn: $needsAttentionOnly) {
-                    Label("Needs Attention", systemImage: "exclamationmark.triangle")
-                }
-                .toggleStyle(.button)
-                .disabled(!store.ordersLoaded)
-                .help("Show only loaded orders that are late, stuck or not yet placed")
+                .help(needsAttentionOnly
+                      ? "Showing loaded orders that need attention. Choose a status, or turn off Needs attention."
+                      : "Show orders with this status, or only loaded orders that are late, stuck or not yet placed")
             }
             ToolbarItem(placement: .automatic) {
                 Button {
@@ -1118,33 +1139,33 @@ struct OrdersView: View {
                 }
             }
             ToolbarItem(placement: .automatic) {
-                // Less frequent tools. Neither sends anything to Slant: Saved Products… opens a local list, and
-                // Export Orders… only saves a CSV, through the same guarded path as File › Export Orders….
+                // Less frequent tools. None sends anything to Slant: Review Drafts One by One… only opens the existing
+                // charge review (each still needs its own Pay), the others open local sheets or save a CSV through
+                // the same guarded paths as the File menu.
                 Menu {
-                    Button("Saved Products…") { store.openSavedProducts() }
-                        .help("Products you sell often, to add to order drafts in one step")
+                    Button("Review Drafts One by One…") { reviewDraftsInOrder() }
+                        .disabled(store.busy || nextDraftForReview(after: nil, in: tableRows.map(\.id)) == nil)
+                        .help("Review each draft in the list in turn, starting at the top. Each is paid only if you press Pay & Send to Production in its own review.")
+                    Divider()
+                    // Lists loaded orders' tracking to copy into Etsy or Shopify; sends nothing.
+                    Button("Tracking for Your Shop…") { store.openShopFollowUpFromMenu() }
+                        .disabled(store.orders.isEmpty)
+                        .help("Tracking for loaded orders, to copy into Etsy or Shopify")
                     Button("Export Orders…") { store.exportOrdersFromMenu() }
                         .disabled(store.orders.isEmpty)
                         .help("Save the orders in the list as a CSV file")
-                    // Lists loaded orders' tracking to copy into Etsy or Shopify; sends nothing.
-                    Button("Mark Shipped in Your Shop…") { store.openShopFollowUpFromMenu() }
-                        .disabled(store.orders.isEmpty)
-                        .help("Tracking for loaded orders, to copy into Etsy or Shopify")
+                    Divider()
                     // Spending report (SpendReport.swift): from the loaded orders only; nothing is sent or saved.
                     Button("Spending Report…") { store.openSpendingReportFromMenu() }
                         .disabled(store.orders.isEmpty)
                         .help("Slant spend per month and top items, from the loaded orders")
-                    // Opens the charge review for the first draft in the list; each review still needs its own Pay.
-                    if tableRows.contains(where: { ((orderObject($0.record.values)["status"] as? String) ?? "").uppercased() == "DRAFT" }) {
-                        Divider()
-                        Button("Review Drafts in Order…") { reviewDraftsInOrder() }
-                            .disabled(store.busy || nextDraftForReview(after: nil) == nil)
-                            .help("Review each draft in the list in turn, starting at the top. Each is paid only if you press Pay & Send to Production in its own review.")
-                    }
+                    Divider()
+                    Button("Saved Products…") { store.openSavedProducts() }
+                        .help("Products you sell often, to add to order drafts in one step")
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
                 }
-                .help("Saved Products, Export Orders, Mark Shipped in Your Shop and Spending Report")
+                .help("More order tools")
             }
         }
         // A new search or filter replaces the banner's focus on changed orders.
@@ -1191,7 +1212,7 @@ struct OrdersView: View {
                     store.orders[index] = record
                 }
                 if selection == orderID { detail = order }
-            }, nextDraft: nextDraftForReview(after:), onReviewNext: { id in
+            }, nextDraft: { nextDraftForReview(after: $0) }, onReviewNext: { id in
                 // Opens only after this review has closed; that review then needs its own Pay press.
                 nextReviewAfterDismiss = id
                 pendingConfirm = nil
@@ -1208,13 +1229,14 @@ struct OrdersView: View {
     }
 
     /// The banner's Show: reloads the newest orders (as the checks read them, so every changed order is on the page),
-    /// clearing any search or filter like Show All Orders, then lists the changed orders. They count as seen only once
-    /// the reload succeeded.
+    /// clearing any search or filter (Needs Attention too) like Show All Orders, then lists the changed orders. They
+    /// count as seen only once the reload actually ran and succeeded: a refused, failed or skipped reload (another
+    /// request running) leaves the banner as it was.
     func showWatchedChanges(_ ids: Set<String>) {
         guard !store.busy else { return }
         Task {
-            await store.applyOrderFilter(OrderFilter())
-            guard store.error == nil else { return }
+            guard await store.applyOrderFilter(OrderFilter()) else { return }
+            needsAttentionOnly = false
             search = ""
             sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
             OrderWatch.shared.acknowledge(ids: ids)
@@ -1230,26 +1252,34 @@ struct OrdersView: View {
 
     // MARK: Order detail extras hooks (OrderDetailExtras.swift)
 
-    /// The next draft in the list's order for Review Next Draft, with a caption naming it.
-    func nextDraftForReview(after currentID: String?) -> (id: String, caption: String)? {
-        guard let id = orderNextDraftToReview(rows: orderDraftReviewRows(tableRows.map(\.record)), after: currentID,
-                                              isLocked: { store.isOutcomeUnknown(orderID: $0) }),
-              let row = tableRows.first(where: { $0.id == id }) else { return nil }
+    /// The next draft for Review Next Draft, with a caption naming it: from the list as it was when this run of reviews
+    /// began (`ids`, by default the snapshot), skipping orders that are no longer drafts or are locked now.
+    func nextDraftForReview(after currentID: String?, in ids: [String]? = nil) -> (id: String, caption: String)? {
+        let rows = orderDraftReviewRows(snapshotIDs: ids ?? reviewListSnapshot, orders: store.orders)
+        guard let id = orderNextDraftToReview(rows: rows, after: currentID, isLocked: { store.isOutcomeUnknown(orderID: $0) }),
+              let record = store.orders.first(where: { $0.id == id }) else { return nil }
+        let row = OrderTableRow(record: record)
         return (id, orderNextDraftCaption(recipient: row.recipient, number: row.number))
     }
-    /// Review Drafts in Order…: opens the existing charge review for the first draft in the list. It never pays.
+    /// Opens the charge review. A review opened from the list or the detail starts a new run (its snapshot of the list);
+    /// Review Next Draft continues the current run's.
+    func presentChargeReview(orderID: String, continuingRun: Bool = false) {
+        if !continuingRun { reviewListSnapshot = tableRows.map(\.id) }
+        pendingConfirm = PendingOrderConfirm(method: "POST", orderID: orderID)
+    }
+    /// Review Drafts One by One…: opens the existing charge review for the first draft in the list. It never pays.
     func reviewDraftsInOrder() {
         guard !store.menuCommandsBlockedByModalUI, !store.busy, pendingConfirm == nil,
-              let next = nextDraftForReview(after: nil) else { return }
+              let next = nextDraftForReview(after: nil, in: tableRows.map(\.id)) else { return }
         selection = next.id
-        pendingConfirm = PendingOrderConfirm(method: "POST", orderID: next.id)
+        presentChargeReview(orderID: next.id)
     }
     func openNextReviewIfRequested() {
         guard let id = nextReviewAfterDismiss else { return }
         nextReviewAfterDismiss = nil
         guard store.orders.contains(where: { $0.id == id }) else { return }
         selection = id
-        pendingConfirm = PendingOrderConfirm(method: "POST", orderID: id)
+        presentChargeReview(orderID: id, continuingRun: true)
     }
     func reprintIfRequested() {
         guard let id = reprintAfterDismiss else { return }
@@ -1421,7 +1451,7 @@ struct OrdersView: View {
                             .fixedSize()
                             .help(duplicateBlocked ?? "Open a new draft with this order’s items and delivery details for review")
                         if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
-                            Button("Review & Place Order…") { pendingConfirm = PendingOrderConfirm(method: "POST", orderID: selected.id) }
+                            Button("Review & Place Order…") { presentChargeReview(orderID: selected.id) }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(store.busy)
                                 .fixedSize()
@@ -2494,9 +2524,10 @@ struct OrderSummary: View {
             if let advisory = orderLabelAddressAdvisory(order) {
                 Label(advisory.line, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout).foregroundStyle(.orange)
-                    .lineLimit(2)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                    .help("Differs in: \(advisory.differences.joined(separator: ", ")). Check with Slant if the label address is wrong.")
+                    .help("Differs from the order’s address in: \(advisory.differences.joined(separator: ", ")).")
             }
             // Orders being made or shipped show tracking above the costs; drafts and cancelled orders skip it.
             if orderDetailShowsTracking(status: status, hasTrackingDetails: !tracking.isEmpty || fulfillmentArriveBy(order) != nil) {

@@ -539,7 +539,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var personalisationTemplate: PersonalisationTemplateFile?
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
-    /// Mark Shipped in Your Shop sheet (OrderFollowUp.swift). Counted in `isPresentingSheet`.
+    /// Tracking for Your Shop sheet (OrderFollowUp.swift). Counted in `isPresentingSheet`.
     @Published var showShopFollowUp = false
     /// Orders ticked "done in shop" in that sheet: order IDs in memory only, for this session.
     @Published var shopFollowUpDoneIDs: Set<String> = []
@@ -1115,11 +1115,14 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             ordersLoaded = true
         }
     }
-    func applyOrderFilter(_ filter: OrderFilter) async {
+    /// True only when the reload ran and succeeded (the order watch's Show acknowledges changes only then).
+    @discardableResult
+    func applyOrderFilter(_ filter: OrderFilter) async -> Bool {
         if let message = orderFilterValidationError(filter) {
             showError(message)
-            return
+            return false
         }
+        var reloaded = false
         _ = await run("Filter orders", retryable: true, retry: .applyOrderFilter) {
             orderFilter = filter
             orderSearchActive = false
@@ -1131,7 +1134,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             orderPage = 1
             ordersHasMore = listHasMorePages(pagination: responsePagination(response), recordCount: records.count, currentPage: 1, pageSize: listPageSize)
             ordersLoaded = true
+            reloaded = true
         }
+        return reloaded
     }
     func loadMoreOrders() async {
         guard canLoadMoreListPages(searchActive: orderSearchActive), ordersHasMore else { return }
