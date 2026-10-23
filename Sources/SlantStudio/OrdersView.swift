@@ -831,9 +831,13 @@ struct OrderTableRow: Identifiable {
     /// Typed sort keys: display strings ("Oct 3", "$100.00") don't sort chronologically or numerically.
     let createdSortKey: Date
     let totalSortKey: Decimal
+    // Order follow-up (OrderFollowUp.swift): arrive-by date, its sort key, and the Needs Attention reason.
+    let arriveBy: String
+    let arriveBySortKey: Date
+    let attention: OrderAttention?
     var id: String { record.id }
 
-    init(record: Record) {
+    init(record: Record, now: Date = Date()) {
         self.record = record
         let order = orderObject(record.values)
         recipient = orderListTitle(order)
@@ -844,6 +848,10 @@ struct OrderTableRow: Identifiable {
         marketplaceReference = orderMarketplaceReferenceLine(order)
         createdSortKey = orderCreatedDate(order) ?? orderMissingDateSortKey
         totalSortKey = orderTotalAmount(order) ?? orderMissingTotalSortKey
+        let arriveByDate = orderArriveByDate(order)
+        arriveBy = arriveByDate.map(orderArriveByLabel) ?? ""
+        arriveBySortKey = arriveByDate ?? orderMissingArriveBySortKey
+        attention = orderAttention(order, now: now)
     }
 }
 
@@ -863,6 +871,10 @@ struct OrdersView: View {
     /// Starts on (and resets to) the server's createdAt sort from Dates & Sort; column clicks re-sort the loaded rows.
     @State private var sortOrder = orderTableDefaultSort(serverSortOrder: "desc")
     @State private var tableSortSynced = false
+    /// Needs Attention (OrderFollowUp.swift): a local filter over loaded orders; never a request.
+    @State private var needsAttentionOnly = false
+    /// Only the Arrive by column has a customization ID, so this controls its visibility alone.
+    @State private var columnCustomization = TableColumnCustomization<OrderTableRow>()
 
     // From all loaded orders, not just the visible list: a new draft or a just-paid order stays shown even when the
     // typed search no longer matches it.
@@ -876,9 +888,10 @@ struct OrdersView: View {
         displayedOrder.map { orderCanRequestCancellation(($0["status"] as? String) ?? "") } ?? false
     }
     var listRecords: [Record] {
-        if store.orderSearchActive { return store.orders }
+        if store.orderSearchActive { return orderAttentionFiltered(store.orders, enabled: needsAttentionOnly, now: Date()) }
         let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
-        return store.orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) }
+        return orderAttentionFiltered(store.orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) },
+                                      enabled: needsAttentionOnly, now: Date())
     }
     var tableRows: [OrderTableRow] {
         orderTableRowsSorted(listRecords.map { OrderTableRow(record: $0) }, using: sortOrder)
@@ -893,6 +906,10 @@ struct OrdersView: View {
         return filter
     }
     var draftFilterValidation: String? { orderFilterValidationError(draftFilterPreview) }
+    var showsArriveByColumn: Bool { store.orders.contains { orderArriveByDate(orderObject($0.values)) != nil } }
+    func syncArriveByColumn() {
+        columnCustomization[visibility: orderArriveByColumnID] = showsArriveByColumn ? .visible : .hidden
+    }
 
     var body: some View {
         Group {
@@ -901,7 +918,7 @@ struct OrdersView: View {
             } else {
         HSplitView {
             VStack(spacing: 0) {
-                Table(tableRows, selection: $selection, sortOrder: $sortOrder) {
+                Table(tableRows, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columnCustomization) {
                     TableColumn("Recipient", value: \.recipient) { (row: OrderTableRow) in
                         VStack(alignment: .leading, spacing: 1) {
                             Text(row.recipient).lineLimit(1).help(row.recipient)
@@ -916,13 +933,23 @@ struct OrdersView: View {
                     // (also in the detail) the least, and Created always fits a full "23 Oct 2026".
                     .width(min: 96, ideal: 160)
                     TableColumn("Status", value: \.status) { (row: OrderTableRow) in
-                        Text(row.status).lineLimit(1).help(row.status)
+                        // With the Needs Attention marker when the order is late or stuck (OrderFollowUp.swift).
+                        OrderStatusCell(status: row.status, attention: row.attention)
                     }
                     .width(min: 64, ideal: 112, max: 160)
                     TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
                         Text(row.created.isEmpty ? "—" : row.created).lineLimit(1)
                     }
                     .width(min: 84, ideal: 96, max: 130)
+                    // Shown only while a loaded order has an arrive-by date (`syncArriveByColumn`), so a column Slant
+                    // leaves blank doesn't take room from the others. Ascending puts the soonest due first, blanks last.
+                    // While shown, the minimums pass the 360 pt pane, so the narrowest window scrolls sideways.
+                    TableColumn("Arrive by", value: \.arriveBySortKey) { (row: OrderTableRow) in
+                        Text(row.arriveBy.isEmpty ? "—" : row.arriveBy).lineLimit(1).help(row.arriveBy)
+                    }
+                    .width(min: 60, ideal: 96, max: 130)
+                    .customizationID(orderArriveByColumnID)
+                    .defaultVisibility(.hidden)
                     TableColumn("Total", value: \.totalSortKey) { (row: OrderTableRow) in
                         Text(row.total).monospacedDigit().lineLimit(1)
                     }
@@ -943,6 +970,13 @@ struct OrdersView: View {
                     if store.ordersLoaded, tableRows.isEmpty {
                         tableEmptyOverlay
                     }
+                }
+                if needsAttentionOnly {
+                    Text(orderAttentionFilterHint(moreOnServer: store.ordersHasMore && !store.orderSearchActive))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
                 }
                 if let hint = orderSearchHint(typed: search, searchActive: store.orderSearchActive) {
                     Text(hint)
@@ -1016,6 +1050,15 @@ struct OrdersView: View {
                 .help("Show orders with this status")
             }
             ToolbarItem(placement: .automatic) {
+                // Filters the loaded orders here; it never asks Slant for anything.
+                Toggle(isOn: $needsAttentionOnly) {
+                    Label("Needs Attention", systemImage: "exclamationmark.triangle")
+                }
+                .toggleStyle(.button)
+                .disabled(!store.ordersLoaded)
+                .help("Show only loaded orders that are late, stuck or not yet placed")
+            }
+            ToolbarItem(placement: .automatic) {
                 Button {
                     syncFilterDraftFromStore()
                     filtersPresented = true
@@ -1036,10 +1079,14 @@ struct OrdersView: View {
                     Button("Export Orders…") { store.exportOrdersFromMenu() }
                         .disabled(store.orders.isEmpty)
                         .help("Save the orders in the list as a CSV file")
+                    // Lists loaded orders' tracking to copy into Etsy or Shopify; sends nothing.
+                    Button("Mark Shipped in Your Shop…") { store.openShopFollowUpFromMenu() }
+                        .disabled(store.orders.isEmpty)
+                        .help("Tracking for loaded orders, to copy into Etsy or Shopify")
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
                 }
-                .help("Saved Products and Export Orders")
+                .help("Saved Products, Export Orders and Mark Shipped in Your Shop")
             }
         }
         .onChange(of: store.ordersExportRequest) { _, _ in
@@ -1070,7 +1117,9 @@ struct OrdersView: View {
                 tableSortSynced = true
                 sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
             }
+            syncArriveByColumn()
         }
+        .onChange(of: showsArriveByColumn) { _, _ in syncArriveByColumn() }
         .sheet(item: $pendingConfirm) { request in
             OrderActionConfirmSheet(method: request.method, orderID: request.orderID) { orderID, order in
                 let record = Record(values: order)
@@ -1167,7 +1216,21 @@ struct OrdersView: View {
     @ViewBuilder
     var filteredEmptyView: some View {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty, !store.orderFilter.isActive {
+        if needsAttentionOnly {
+            ContentUnavailableView {
+                Label("Nothing needs attention", systemImage: "checkmark.circle")
+            } description: {
+                Text(orderAttentionEmptyDetail(filterActive: store.orderFilter.isActive, search: query))
+            } actions: {
+                Button("Show All Orders") {
+                    needsAttentionOnly = false
+                    if store.orderFilter.isActive {
+                        Task { await store.applyOrderFilter(OrderFilter(sortOrder: store.orderFilter.sortOrder)) }
+                    }
+                }
+                .disabled(store.busy && store.orderFilter.isActive)
+            }
+        } else if !query.isEmpty, !store.orderFilter.isActive {
             ContentUnavailableView.search(text: query)
         } else {
             ContentUnavailableView {
@@ -1187,7 +1250,8 @@ struct OrdersView: View {
 
     @ViewBuilder
     var tableEmptyOverlay: some View {
-        if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.orderSearchActive || store.orderFilter.isActive {
+        if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.orderSearchActive || store.orderFilter.isActive
+            || needsAttentionOnly {
             filteredEmptyView
         } else if store.orders.isEmpty {
             ContentUnavailableView {
@@ -1258,7 +1322,8 @@ struct OrdersView: View {
             EmptyState(icon: "shippingbox", title: "Your orders, in one place", detail: "Load recent orders, or create a draft to calculate printing and shipping.") {
                 Button("Load Orders") { Task { await store.refresh() } }.disabled(!store.hasKey || store.busy)
             }
-        } else if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.orderSearchActive || store.orderFilter.isActive {
+        } else if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.orderSearchActive || store.orderFilter.isActive
+                    || needsAttentionOnly {
             if listRecords.isEmpty {
                 filteredEmptyView
             } else {
@@ -1929,7 +1994,8 @@ func stringValue(_ value: Any?) -> String? {
     return String(describing: value)
 }
 func fulfillmentArriveBy(_ order: [String: Any]) -> String? {
-    if let arrive = order["arriveByDate"] as? String, !arrive.isEmpty { return orderDateLabel(arrive) }
+    // Same date as the orders table's Arrive by column (a date-only value isn't shifted a day by the time zone).
+    if let arrive = order["arriveByDate"] as? String, !arrive.isEmpty { return orderTimestamp(arrive).map(orderArriveByLabel) ?? orderDateLabel(arrive) }
     if let fulfillment = order["fulfillment"] as? [String: Any] {
         for key in ["arriveByDate", "arrive_by", "estimatedDelivery", "estimated_delivery"] {
             if let value = fulfillment[key] as? String, !value.isEmpty { return orderDateLabel(value) }
