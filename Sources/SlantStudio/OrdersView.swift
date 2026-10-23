@@ -1693,7 +1693,7 @@ struct OrderActionConfirmSheet: View {
                         Text(text).lineLimit(1).truncationMode(.middle)
                     }
                     if let material = orderItemMaterialName(item, filaments: store.filaments) {
-                        Text("Material: \(material)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text("Material: \(materialDisplayName(material))").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
                 .help(text)
@@ -2502,7 +2502,7 @@ struct OrderSummary: View {
                             if item["price"] != nil { Text(money(item["price"])).monospacedDigit() }
                         }
                         if let material = orderItemMaterialName(item, filaments: store.filaments) {
-                            Text("Material: \(material)").font(.caption).foregroundStyle(.secondary)
+                            Text("Material: \(materialDisplayName(material))").font(.caption).foregroundStyle(.secondary)
                         }
                         if showsItemStatus, let itemStatus = orderItemStatusTitle(item) {
                             Text("Item status: \(itemStatus)").font(.caption).foregroundStyle(.secondary)

@@ -494,13 +494,18 @@ struct ListingImagesSheet: View {
                 } footer: {
                     Text(colourFooter).settingsFooterLayout()
                 }
-                if job.progress != nil || job.summary != nil {
-                    Section("Progress") { statusView }
-                }
             }
             .formStyle(.grouped)
             .disabled(job.running)
             Divider()
+            // Outside the Form, so the progress and result stay in view without scrolling.
+            if job.progress != nil || job.summary != nil {
+                statusView
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 12)
+                Divider()
+            }
             HStack {
                 if job.running {
                     Button("Stop") { job.stop() }

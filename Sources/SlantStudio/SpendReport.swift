@@ -298,6 +298,15 @@ extension StudioStore {
 
 // MARK: - Sheet
 
+/// "the 3 orders", "the 1 order", or "the orders" when none are counted.
+func spendReportOrdersPhrase(_ count: Int) -> String {
+    switch count {
+    case 0: return "the orders"
+    case 1: return "the 1 order"
+    default: return "the \(count) orders"
+    }
+}
+
 struct SpendingReportSheet: View {
     @EnvironmentObject var store: StudioStore
     @Environment(\.dismiss) private var dismiss
@@ -310,7 +319,7 @@ struct SpendingReportSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Spending report").font(.title2.weight(.bold))
-                Text("What Slant charged for the \(report.countedOrders == 1 ? "1 order" : "\(report.countedOrders) orders") loaded in Orders, by month, in USD. Drafts, cancelled orders and payment errors aren’t included. Nothing here is saved.")
+                Text("What Slant charged for \(spendReportOrdersPhrase(report.countedOrders)) loaded in Orders, by month, in USD. Drafts, cancelled orders and payment errors aren’t included. Nothing here is saved.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 ForEach(notes, id: \.self) { note in
@@ -321,12 +330,13 @@ struct SpendingReportSheet: View {
                     Text(exclusions).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(24)
             Divider()
             if report.countedOrders == 0 {
                 ContentUnavailableView("No charged orders loaded", systemImage: "chart.bar",
                                        description: Text("Only drafts, cancelled orders or orders without a date are loaded."))
-                    .frame(maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {

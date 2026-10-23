@@ -378,6 +378,7 @@ struct ShopFollowUpSheet: View {
                 Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop; marks last until you quit Studio. Only loaded orders are listed.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if listed.isEmpty {
                 ContentUnavailableView {
                     Label(groups.doneCount > 0 ? "All orders marked as done" : "No tracking yet", systemImage: "shippingbox")

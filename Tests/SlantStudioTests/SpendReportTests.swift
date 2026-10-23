@@ -176,4 +176,10 @@ final class SpendReportTests: XCTestCase {
         XCTAssertEqual(report, SpendReport())
         XCTAssertTrue(spendReportCSV(report).contains("Total,0,0.00,0"))
     }
+
+    func testOrdersPhrase() {
+        XCTAssertEqual(spendReportOrdersPhrase(0), "the orders")
+        XCTAssertEqual(spendReportOrdersPhrase(1), "the 1 order")
+        XCTAssertEqual(spendReportOrdersPhrase(12), "the 12 orders")
+    }
 }
