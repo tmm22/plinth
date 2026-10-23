@@ -638,6 +638,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         if let data = try? Data(contentsOf: path), let saved = try? JSONDecoder().decode([LocalModel].self, from: data) { localModels = saved }
         savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
         sellerAddress = loadSellerAddress(from: Self.sellerAddressURL)
+        // Personalisation hook (Personalisation.swift): remove leftover OpenSCAD temp folders; stop local runs on quit.
+        PersonalisationTempCleanup.startAtLaunch()
     }
     private func redirectDestinationIfNeeded(from oldValue: Destination) {
         let resolved = resolvedNavigation(requested: destination, previous: oldValue, showDeveloperTools: showDeveloperTools)

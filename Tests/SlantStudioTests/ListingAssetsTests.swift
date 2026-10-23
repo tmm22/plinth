@@ -224,17 +224,16 @@ final class ListingAssetsTests: XCTestCase {
         Weight: about 24 g (0.9 oz) (printed part, before packaging)
 
         \(listingProductionPartnerSuggestion)
-        \(listingProductionPartnerNote)
 
         """)
         let bare = listingDetailsText(ListingDetailsFacts(materialName: "  "))
-        XCTAssertEqual(bare, listingProductionPartnerSuggestion + "\n" + listingProductionPartnerNote + "\n")
+        XCTAssertEqual(bare, listingProductionPartnerSuggestion + "\n")
         XCTAssertTrue(listingProductionPartnerSuggestion.contains("Slant 3D"))
         XCTAssertTrue(listingProductionPartnerSuggestion.contains("[your shop]"), "the seller must edit the suggestion")
     }
 
     func testCopiedMessageNamesWhatToCheck() {
-        XCTAssertEqual(listingDetailsCopiedMessage(hasSize: true, scaleSuspect: false), "Listing details copied.")
+        XCTAssertEqual(listingDetailsCopiedMessage(hasSize: true, scaleSuspect: false), "Listing details copied. " + listingProductionPartnerNote)
         XCTAssertTrue(listingDetailsCopiedMessage(hasSize: true, scaleSuspect: true).contains("millimetres"))
         XCTAssertTrue(listingDetailsCopiedMessage(hasSize: false, scaleSuspect: true).contains("without the size"))
     }

@@ -22,7 +22,14 @@ func personalisationValuesProblem(_ parameters: [ScadParameter], values: [String
     return nil
 }
 
-let personalisationPrivacyNote = "Values you type, such as a buyer’s name, stay in this window and aren’t saved. Generating bakes them into the STL, and the new model’s name includes the text values. Nothing is uploaded: the model is added to your library for the usual upload, estimate and order steps."
+let personalisationPrivacyNote = "Values aren’t kept in Studio, but the new model’s name and STL include them. With Slant’s generator, the template and values are sent to Slant."
+
+/// How long the Personalise sheet waits before checking the Slant quota again: just after the next generation becomes
+/// available, but at least a second and at most 30 seconds, so the button and captions catch up on their own.
+func personalisationQuotaRefreshDelay(nextAvailable: Date?, now: Date) -> TimeInterval {
+    guard let nextAvailable else { return 30 }
+    return min(30, max(1, nextAvailable.timeIntervalSince(now) + 0.5))
+}
 
 /// One item's personalisation in the Import Orders preview, with Copy for pasting into Personalise from Template.
 /// The text stays in the sheet's memory; copying puts it on the clipboard only when the seller asks.
@@ -89,8 +96,12 @@ private struct PersonalisationForm: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject private var session = PersonalisationSession.shared
     @State private var values: [String: String]
-    @State private var engine: PersonalisationEngine
+    @State private var engine: PersonalisationEngine = .slant
     @State private var localExecutable: URL?
+    /// False until OpenSCAD has been looked for once, when the sheet appears (not on every redraw).
+    @State private var lookedForOpenSCAD = false
+    /// The time the quota is judged against, moved on by a timer so a reset re-enables Generate STL.
+    @State private var now = Date()
     @State private var generating = false
     @State private var job: Task<Void, Never>?
     @State private var status: String?
@@ -99,9 +110,15 @@ private struct PersonalisationForm: View {
     init(file: PersonalisationTemplateFile) {
         self.file = file
         _values = State(initialValue: Dictionary(file.template.parameters.map { ($0.name, $0.defaultValue) }, uniquingKeysWith: { a, _ in a }))
-        let executable = installedOpenSCADExecutable()
-        _localExecutable = State(initialValue: executable)
-        _engine = State(initialValue: personalisationDefaultEngine(localAvailable: executable != nil))
+    }
+
+    /// Looks for OpenSCAD in Applications. The first look also picks the default engine; Check Again keeps the choice.
+    private func lookForOpenSCAD() {
+        localExecutable = installedOpenSCADExecutable()
+        if !lookedForOpenSCAD {
+            engine = personalisationDefaultEngine(localAvailable: localExecutable != nil)
+            lookedForOpenSCAD = true
+        }
     }
 
     private var parameters: [ScadParameter] { file.template.parameters }
@@ -138,6 +155,16 @@ private struct PersonalisationForm: View {
         }
         .frame(minWidth: 520, idealWidth: 580, minHeight: 480, idealHeight: 660)
         .interactiveDismissDisabled(generating)
+        .onAppear { if !lookedForOpenSCAD { lookForOpenSCAD() } }
+        .task {
+            while !Task.isCancelled {
+                let delay = personalisationQuotaRefreshDelay(nextAvailable: session.quota.nextAvailable(now: Date()), now: Date())
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                now = Date()
+            }
+        }
+        .onChange(of: session.quota) { now = Date() }
+        .onChange(of: engine) { now = Date() }
         .onDisappear { job?.cancel() }
     }
 
@@ -197,14 +224,16 @@ private struct PersonalisationForm: View {
                 ForEach(PersonalisationEngine.allCases) { option in Text(option.title).tag(option) }
             }
             .pickerStyle(.segmented)
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(engineCaption(now: context.date)).font(.callout).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(engineCaption(now: now)).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let reason = blockedReason(now: now) {
+                    Label(reason, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
-                    if let reason = blockedReason(now: context.date) {
-                        Label(reason, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                }
+                if engine == .local, localExecutable == nil, lookedForOpenSCAD {
+                    Button("Check Again") { lookForOpenSCAD() }
+                        .help("Looks for OpenSCAD in Applications again, after you install it.")
                 }
             }
         } footer: {
@@ -244,7 +273,7 @@ private struct PersonalisationForm: View {
             // No Return shortcut: a Slant generation uses up its hourly allowance, so it always takes a click.
             Button("Generate STL") { generate() }
                 .buttonStyle(.borderedProminent)
-                .disabled(generating || parameters.isEmpty || blockedReason(now: Date()) != nil)
+                .disabled(generating || parameters.isEmpty || blockedReason(now: now) != nil)
         }
         .padding(20)
     }

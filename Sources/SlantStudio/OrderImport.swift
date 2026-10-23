@@ -796,6 +796,7 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
     var groups: [UUID: (product: SavedProduct, units: Int)] = [:]
     var groupOrder: [UUID] = []
     var leftOut = 0
+    var personalisedItemIncluded = false
     if order.items.isEmpty { block("This order has no items.") }
     for item in order.items {
         let sku = item.sku.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -816,6 +817,8 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
                 }
             }
         }
+        // Drafts carry no personalisation: a personalised item (not left out) is drafted as the plain model.
+        if !item.personalisation.isEmpty { personalisedItemIncluded = true }
         guard let units = orderImportQuantity(item.quantityText) else {
             block("Quantity “\(item.quantityText)” for \(label.hasPrefix("item on row") ? "the \(label)" : label) isn’t a whole number from 1 to 10,000.")
             entries.append(.text("? × \(label)"))
@@ -842,6 +845,8 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
     if !order.items.isEmpty, leftOut == order.items.count {
         block("Every item of this order is left out, so there’s nothing to draft.")
     }
+    // A warning, so the order starts unticked; the seller may still tick it deliberately.
+    if personalisedItemIncluded { warn(orderImportPlainModelWarning) }
     var lines: [OrderLine] = []
     var perOrderLineIndex: [String: Int] = [:]
     var groupLineIndices: [UUID: [Int]] = [:]
@@ -955,6 +960,9 @@ func orderImportPerOrderLineKey(_ line: OrderLine) -> String {
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .joined(separator: "\u{1F}")
 }
+
+/// Shown on an order with personalisation: its draft uses the saved product's model, not a personalised one.
+let orderImportPlainModelWarning = "This draft uses the plain model. Make the personalised one first."
 
 let orderImportMissingEmailBlocker = "No email. Fill in “Email for orders without one” to import it."
 
