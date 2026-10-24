@@ -308,10 +308,19 @@ final class BatchPersonaliseTests: XCTestCase {
     func testUploadNamesNeverCarryBuyerText() {
         XCTAssertEqual(batchPersonaliseUploadName(source: .etsy, sourceOrderID: "3456789012", index: 0, count: 1), "Etsy order 3456789012 personalised")
         XCTAssertEqual(batchPersonaliseUploadName(source: .shopify, sourceOrderID: "#1001", index: 1, count: 2), "Shopify order #1001 personalised 2 of 2")
-        XCTAssertEqual(batchPersonaliseUploadName(source: .template, sourceOrderID: "T-1002", index: 0, count: 1), "CSV order T-1002 personalised")
-        for id in ["Sam-Smith", "Sam Smith 1", "Emma 2", "", "../1", String(repeating: "1", count: 31), "Zoë1"] {
+        XCTAssertEqual(batchPersonaliseUploadName(source: .shopify, sourceOrderID: "1001", index: 0, count: 1), "Shopify order 1001 personalised")
+        // Studio's template takes any typed ID, so its uploads are always neutral.
+        for id in ["T-1002", "1002", "#1002"] {
             XCTAssertEqual(batchPersonaliseUploadName(source: .template, sourceOrderID: id, index: 0, count: 1), "Personalised model", id)
         }
+        // Letters (which could spell a name) never go into the name, whatever the source.
+        for id in ["Sam-Smith", "Sam Smith 1", "Emma 2", "", "../1", String(repeating: "1", count: 21), "Zoë1", "EMMA12", "#SH1001", "12-34", "١٢٣"] {
+            for source in OrderImportFormat.allCases {
+                XCTAssertEqual(batchPersonaliseUploadName(source: source, sourceOrderID: id, index: 0, count: 1), "Personalised model", "\(source) \(id)")
+            }
+        }
+        XCTAssertEqual(batchPersonaliseUploadName(source: .etsy, sourceOrderID: "#3456", index: 0, count: 1), "Personalised model",
+                       "Etsy order numbers are digits only")
     }
 
     // MARK: Outcomes

@@ -204,15 +204,41 @@ func unconfirmedDraftAttempts(previous: [UnconfirmedDraftAttempt], attempt: Draf
     }
 }
 
+/// Whether earlier unconfirmed attempts have dropped off the list, which keeps only the most recent
+/// `unconfirmedDraftAttemptLimit`. Set when an unconfirmed attempt pushes one out; like the list, only a confirmed
+/// creation clears it, so the notice and Create Anyway stay required for an attempt that's no longer named (Look for
+/// Draft on Slant can't look for it: its marker went with it).
+func unconfirmedDraftAttemptsOverflowed(previous: [UnconfirmedDraftAttempt], overflowed: Bool,
+                                        attempt: DraftCreateAttempt) -> Bool {
+    switch attempt {
+    case .notSent: return overflowed
+    case .succeeded: return false
+    case .failed(let error):
+        if orderMutationErrorProvesNoEffect(error) { return overflowed }
+        return overflowed || previous.count >= unconfirmedDraftAttemptLimit
+    }
+}
+
 /// Where to look for drafts: the Status menu in the Orders toolbar, set to Draft.
 let draftCreateCheckDraftsPath = "Orders toolbar › Status › Draft"
 
 /// The composer notice while earlier Create Draft attempts are unconfirmed. Names each attempt's recipient and time, so
-/// a composer for a different customer can tell the warning is about someone else's draft.
-func draftCreateUnknownNotice(_ attempts: [UnconfirmedDraftAttempt],
+/// a composer for a different customer can tell the warning is about someone else's draft. `earlierUnlisted`: older
+/// unconfirmed attempts have dropped off the list (`unconfirmedDraftAttemptsOverflowed`).
+func draftCreateUnknownNotice(_ attempts: [UnconfirmedDraftAttempt], earlierUnlisted: Bool = false,
                               time: (Date) -> String = draftAttemptTimeText) -> String {
     func describe(_ attempt: UnconfirmedDraftAttempt) -> String {
         attempt.recipient.isEmpty ? "at \(time(attempt.date))" : "for \(attempt.recipient) at \(time(attempt.date))"
+    }
+    if earlierUnlisted {
+        let list = attempts.map(describe).joined(separator: "; ")
+        let lead: String
+        switch attempts.count {
+        case 0: lead = "Earlier Create Draft attempts didn’t get a reply from Slant"
+        case 1: lead = "More than one Create Draft attempt didn’t get a reply from Slant (the latest: \(list))"
+        default: lead = "More than \(attempts.count) Create Draft attempts didn’t get a reply from Slant (the latest: \(list))"
+        }
+        return "\(lead), so those drafts may exist. Check your drafts (\(draftCreateCheckDraftsPath)) before creating them again."
     }
     guard let last = attempts.last else { return "" }
     if attempts.count == 1 {
@@ -225,9 +251,9 @@ func draftCreateUnknownNotice(_ attempts: [UnconfirmedDraftAttempt],
 }
 
 /// The Create Anyway confirmation's message.
-func draftCreateAnywayMessage(_ attempts: [UnconfirmedDraftAttempt],
+func draftCreateAnywayMessage(_ attempts: [UnconfirmedDraftAttempt], earlierUnlisted: Bool = false,
                               time: (Date) -> String = draftAttemptTimeText) -> String {
-    draftCreateUnknownNotice(attempts, time: time) + (attempts.count > 1
+    draftCreateUnknownNotice(attempts, earlierUnlisted: earlierUnlisted, time: time) + (attempts.count > 1 || earlierUnlisted
         ? " If this is one of those orders, creating it again makes a second draft."
         : " If this is the same order, creating it again makes a second draft.")
 }

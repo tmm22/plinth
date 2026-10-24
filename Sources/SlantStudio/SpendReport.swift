@@ -222,16 +222,19 @@ struct SpendReportPricedLine {
 /// The order's print items with their prices, or nil when the prices can't be trusted for a per-product average.
 /// Slant's item `price` is the price of the whole line (live, 23 Oct 2026: a line of 2 was priced 19.86 where one unit
 /// was 9.93, equal to the order's `printingCost`). So every item must carry a USD price and a whole quantity, and the
-/// prices of all items must add up exactly to the order's `printingCost`. Otherwise the order is left out (and counted)
-/// rather than split by guesswork.
+/// prices of all items must add up to the order's `printingCost`, to the cent. Otherwise the order is left out (and
+/// counted) rather than split by guesswork. Slant's JSON numbers arrive as doubles (9.93 reads as 9.92999…), so each
+/// price and the printing cost are rounded to cents before they are compared.
 func spendReportPricedPrintLines(_ items: [[String: Any]], printingCost: Any?) -> [SpendReportPricedLine]? {
-    guard !items.isEmpty, let printing = estimateAmount(printingCost), printing >= 0 else { return nil }
+    guard !items.isEmpty, let printingAmount = estimateAmount(printingCost), printingAmount >= 0 else { return nil }
+    let printing = roundedToCents(printingAmount)
     var sum: Decimal = 0
     var lines: [SpendReportPricedLine] = []
     for item in items {
         let currency = ((item["currency"] as? String) ?? "").trimmingCharacters(in: .whitespaces).uppercased()
-        guard usdCurrencyCodes.contains(currency), let price = estimateAmount(item["price"]), price >= 0,
+        guard usdCurrencyCodes.contains(currency), let amount = estimateAmount(item["price"]), amount >= 0,
               let units = orderItemQuantity(item), units > 0 else { return nil }
+        let price = roundedToCents(amount)
         sum += price
         if spendReportItemType(item) == "PRINT" { lines.append(SpendReportPricedLine(item: item, units: units, price: price)) }
     }
@@ -733,9 +736,15 @@ func spendReportLoadStopMessage(_ error: Error) -> String {
 
     func start(_ period: SpendReportPeriod, store: StudioStore) {
         guard !running else { return }
+        // Checked before the loaded period is replaced, so pressing Load while busy keeps what's shown.
+        if let reason = spendReportPeriodLoadBlockedReason(hasKey: store.hasKey, connected: store.connected, busy: store.busy, running: running) {
+            message = reason
+            return
+        }
         let interval = spendReportPeriodInterval(period)
+        let previous = load
         load = Load(period: period, interval: interval, platformID: store.platformID.trimmingCharacters(in: .whitespacesAndNewlines))
-        run(store: store)
+        run(store: store, restoringIfNotStarted: previous)
     }
 
     func continueLoading(store: StudioStore) {
@@ -760,7 +769,9 @@ func spendReportLoadStopMessage(_ error: Error) -> String {
         message = "Stopped. Orders already loaded are kept."
     }
 
-    private func run(store: StudioStore) {
+    /// `previous` is the period shown before Load the Whole Period replaced it: put back if the load couldn't start
+    /// (another task took the store first), so nothing loaded is lost to a refused start.
+    private func run(store: StudioStore, restoringIfNotStarted previous: Load? = nil) {
         if let reason = spendReportPeriodLoadBlockedReason(hasKey: store.hasKey, connected: store.connected, busy: store.busy, running: running) {
             message = reason
             return
@@ -781,6 +792,7 @@ func spendReportLoadStopMessage(_ error: Error) -> String {
             guard runGeneration == self.generation else { return }
             self.running = false
             self.task = nil
+            if !started, let previous, self.load?.records.isEmpty != false { self.load = previous }
             self.message = started ? stopMessage : "Wait for the current task to finish."
         }
     }

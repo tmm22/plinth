@@ -296,7 +296,7 @@ struct OrderComposerView: View {
             Button("Don’t Create", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text(draftCreateAnywayMessage(store.unconfirmedDraftCreates))
+            Text(draftCreateAnywayMessage(store.unconfirmedDraftCreates, earlierUnlisted: store.unconfirmedDraftCreatesOverflowed))
         }
         .onAppear(perform: seedIfNeeded)
         // Pasted text goes as soon as the popover closes, however it closed.
@@ -410,7 +410,7 @@ struct OrderComposerView: View {
                     .help("Fill in an address copied from Etsy, Shopify or an email, after you check it")
                     .popover(isPresented: $showAddressPaste, arrowEdge: .bottom) {
                         // The popover asks before replacing details already in the form.
-                        AddressPastePopover(initialText: addressPasteText, needsConfirmation: { pasted in
+                        AddressPastePopover(initialText: addressPasteText, current: delivery, needsConfirmation: { pasted in
                             pastedAddressNeedsConfirmation(current: delivery, replacement: deliveryDetails(applyingPasted: pasted, to: delivery),
                                                            countryPicked: countryPicked)
                         }, onUse: { pasted in
@@ -797,7 +797,8 @@ struct OrderComposerView: View {
     /// Fills the delivery fields from a reviewed (and, if it replaces anything, confirmed) paste and shows them.
     func applyPastedAddress(_ pasted: PastedAddress) {
         delivery = deliveryDetails(applyingPasted: pasted, to: delivery)
-        countryPicked = false
+        // A paste without a country keeps the form's, and whether the seller picked it.
+        if !pastedAddressNamesNoCountry(pasted) { countryPicked = false }
         locationAddressApplied = false
         editingDelivery = true
     }
@@ -903,6 +904,8 @@ struct OrderComposerView: View {
                     store.destination = .orders; dismiss()
                 }
                 if ran {
+                    store.unconfirmedDraftCreatesOverflowed = unconfirmedDraftAttemptsOverflowed(
+                        previous: store.unconfirmedDraftCreates, overflowed: store.unconfirmedDraftCreatesOverflowed, attempt: attempt)
                     store.unconfirmedDraftCreates = unconfirmedDraftAttempts(previous: store.unconfirmedDraftCreates, attempt: attempt,
                                                                              recipient: recipient, date: attemptDate,
                                                                              marker: marker, platformID: sentPlatformID)

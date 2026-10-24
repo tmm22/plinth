@@ -584,7 +584,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// memory only). Every composer shows a notice and asks for "Create Anyway" until a draft creation is confirmed.
     /// See `unconfirmedDraftAttempts(previous:attempt:recipient:date:)`.
     @Published var unconfirmedDraftCreates: [UnconfirmedDraftAttempt] = []
-    var draftCreateOutcomeUnknown: Bool { !unconfirmedDraftCreates.isEmpty }
+    /// Older unconfirmed attempts dropped off that list (it keeps the latest 5): the guard stays on until a confirmed
+    /// creation (`unconfirmedDraftAttemptsOverflowed`).
+    @Published var unconfirmedDraftCreatesOverflowed = false
+    var draftCreateOutcomeUnknown: Bool { !unconfirmedDraftCreates.isEmpty || unconfirmedDraftCreatesOverflowed }
     private(set) var unknownOutcomeContexts: [String: UnknownOutcomeContext] = [:]
     // MARK: Model library actions (see ModelLibraryActions.swift)
     /// Local model whose rename sheet is open; set from the context menu, inspector or Model menu.

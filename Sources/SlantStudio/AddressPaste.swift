@@ -6,7 +6,8 @@ import Foundation
 // block from an email — for review before anything in the form changes. The text and the parsed fields stay in the
 // composer's memory: never saved, logged or sent anywhere. Phone numbers are ignored, an email is taken only when one
 // is written in the text, postcodes are kept exactly as written (never padded), and a country is set only when the
-// text names one Studio recognises; otherwise the country is left for the seller to choose.
+// text names one Studio recognises: an unrecognised one is left for the seller to choose, and when the text names
+// none the form's country is kept (and the review says so).
 
 /// Longest text read: an address block is a few hundred characters, so anything longer is cut here.
 let addressPasteMaxCharacters = 2_000
@@ -28,7 +29,7 @@ struct PastedAddress: Equatable {
     var countryCode = ""
     /// The country as written when it wasn't recognised, so the review can say so.
     var unrecognisedCountry = ""
-    /// Lines Studio couldn't place (such as a company name). Listed in the review so nothing disappears unseen.
+    /// Lines Studio couldn't place (such as text after the country). Listed in the review so nothing disappears unseen.
     var unused: [String] = []
 
     /// Enough to be worth applying: a street, a city or a postcode.
@@ -47,8 +48,9 @@ func addressPastePrefill(_ pasteboardText: String?, holdsFileURL: Bool = false) 
 // MARK: Applying
 
 /// The composer's delivery details with the pasted address in place. The whole address is replaced — the old
-/// apartment or unit never carries over to another building — and the country follows the paste: unselected when
-/// the text names none or an unrecognised one, never assumed. A name or email is replaced only when the paste has one.
+/// apartment or unit never carries over to another building. A country the paste names replaces the form's (an
+/// unrecognised one leaves it unselected, never guessed); when the paste names none, the form's country is kept, and
+/// the review says so. A name or email is replaced only when the paste has one.
 func deliveryDetails(applyingPasted pasted: PastedAddress, to current: DeliveryDetails) -> DeliveryDetails {
     var result = current
     if !pasted.name.isEmpty { result.name = pasted.name }
@@ -58,7 +60,47 @@ func deliveryDetails(applyingPasted pasted: PastedAddress, to current: DeliveryD
     result.city = pasted.city
     result.state = pasted.state
     result.zip = pasted.zip
+    if pastedAddressNamesNoCountry(pasted) { return result }
     return deliveryApplyingCountryPick(pasted.countryCode, to: result)
+}
+
+/// The paste doesn't name a country at all (neither a recognised nor an unrecognised one).
+func pastedAddressNamesNoCountry(_ pasted: PastedAddress) -> Bool {
+    pasted.countryCode.isEmpty && pasted.unrecognisedCountry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+/// What the review shows for the country.
+enum PastedAddressCountryDisplay: Equatable {
+    /// The paste names this country (ISO code).
+    case pasted(String)
+    /// The paste names a country Studio doesn't recognise: the form's country is cleared for the seller to choose.
+    case unrecognised(String)
+    /// The paste names none, so the form keeps this country (ISO code).
+    case keptFromForm(String)
+    /// The paste names none and the form has none.
+    case missing
+}
+
+func pastedAddressCountryDisplay(_ pasted: PastedAddress, current: DeliveryDetails) -> PastedAddressCountryDisplay {
+    if !pasted.countryCode.isEmpty { return .pasted(pasted.countryCode) }
+    if !pastedAddressNamesNoCountry(pasted) { return .unrecognised(pasted.unrecognisedCountry) }
+    let kept = orderCountryPickerValue(current)
+    return kept.isEmpty ? .missing : .keptFromForm(kept)
+}
+
+/// The popover's replace warning: says when the form's name (and email) are kept because the paste has none.
+func pastedAddressReplaceWarning(_ pasted: PastedAddress, current: DeliveryDetails) -> String {
+    let base = "This replaces delivery details already in the form."
+    let hasName = !current.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let hasEmail = !current.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let keepsName = pasted.name.isEmpty && hasName
+    let keepsEmail = pasted.email.isEmpty && hasEmail
+    switch (keepsName, keepsEmail) {
+    case (true, true): return base + " No name or email was found, so the current name and email are kept."
+    case (true, false): return base + " No name was found, so the current name is kept."
+    case (false, true): return base + " No email was found, so the current email is kept."
+    case (false, false): return base
+    }
 }
 
 /// Use These Details never silently replaces what's in the form: it asks first when a field that holds something
@@ -244,14 +286,18 @@ func parsePastedAddress(_ text: String) -> PastedAddress {
     }
 
     // The rest: a name first, then the street, apartment or unit lines, and anything else.
-    if result.name.isEmpty, let first = head.first, !addressPasteHasDigit(first), !addressPasteIsUnit(first), !addressPasteLooksLikeStreet(first) {
+    if result.name.isEmpty, let first = head.first, addressPasteFirstLineIsName(first, following: head.dropFirst()) {
         result.name = first
         head.removeFirst()
     }
+    // "c/o …" and "Attn …" lines lead line 2; they're never the street.
+    var careOf: [String] = []
     var units: [String] = []
     var others: [String] = []
     for item in head {
-        if let split = addressPasteSplittingLeadingUnit(item) {
+        if addressPasteIsCareOf(item) {
+            careOf.append(item)
+        } else if let split = addressPasteSplittingLeadingUnit(item) {
             units.append(split.unit)
             others.append(split.street)
         } else if addressPasteIsUnit(item) {
@@ -261,12 +307,14 @@ func parsePastedAddress(_ text: String) -> PastedAddress {
         }
     }
     let streetIndex = others.firstIndex(where: addressPasteHasDigit) ?? others.firstIndex(where: addressPasteLooksLikeStreet) ?? others.indices.first
-    var extraLines: [String] = []
+    // Line 2: c/o and attention lines, then lines between the name and the street (a company, a house or building
+    // name), then the apartment or unit, then anything after the street.
+    var extraLines = careOf
     if let streetIndex {
         let street = addressPasteSplittingUnit(others[streetIndex])
         result.line1 = street.street
+        extraLines.append(contentsOf: others[..<streetIndex])
         if let unit = street.unit { extraLines.append(unit) }
-        result.unused.append(contentsOf: others[..<streetIndex])
         extraLines.append(contentsOf: units)
         extraLines.append(contentsOf: others[(streetIndex + 1)...])
     } else {
@@ -352,16 +400,42 @@ func addressPasteStrippingLabel(_ line: String) -> (label: AddressPasteLabel?, r
     return (match.label, rawLabel, addressPasteClean(String(line[line.index(after: colon)...])))
 }
 
-/// A phone number on its own line (optionally labelled): at least 7 digits and nothing else but separators.
+/// A phone number on its own line (optionally labelled): at least 7 digits and nothing else but separators. A phone
+/// word without a colon counts too ("Phone (555) 123-4567", "Tel 555 0100", "Mobile 07700 900123"), so the number is
+/// never read as a postcode; "Mobile" needs a phone-length number, because it is also a city ("Mobile, AL 36602").
 func addressPasteIsPhone(_ line: String) -> Bool {
     let stripped = addressPasteStrippingLabel(line)
     if stripped.label == .phone { return true }
-    let value = stripped.value
+    if let worded = addressPastePhoneWordValue(stripped.value) {
+        let digits = worded.value.filter(\.isNumber).count
+        guard addressPasteIsPhoneCharacters(worded.value), digits <= 20 else { return false }
+        return worded.alsoAPlace ? addressPasteIsPhoneNumber(worded.value) : digits >= 3
+    }
+    return addressPasteIsPhoneNumber(stripped.value)
+}
+
+/// Digits and the separators of a phone number, optionally with an extension.
+private func addressPasteIsPhoneCharacters(_ value: String) -> Bool {
+    value.range(of: #"^\+?[\d\s().\-/]+((ext|x)\.?\s*\d+)?$"#, options: [.regularExpression, .caseInsensitive]) != nil
+}
+
+/// A bare phone number: 7 to 20 digits, and not shaped like a postcode written on its own line.
+private func addressPasteIsPhoneNumber(_ value: String) -> Bool {
     // Postcodes shaped like numbers: a US ZIP+4, Japan's or Brazil's, on a line of their own.
     if value.range(of: #"^(\d{5}-\d{4}|\d{3}-\d{4}|\d{5}-\d{3})$"#, options: .regularExpression) != nil { return false }
-    guard value.range(of: #"^\+?[\d\s().\-/]+((ext|x)\.?\s*\d+)?$"#, options: [.regularExpression, .caseInsensitive]) != nil else { return false }
-    let digits = value.filter(\.isNumber).count
-    return (7...20).contains(digits)
+    guard addressPasteIsPhoneCharacters(value) else { return false }
+    return (7...20).contains(value.filter(\.isNumber).count)
+}
+
+/// The text after a leading phone word with no colon ("Tel. 555 0100" → "555 0100"), or nil. `alsoAPlace`: the word
+/// is also a place name (Mobile, Alabama).
+private func addressPastePhoneWordValue(_ line: String) -> (value: String, alsoAPlace: Bool)? {
+    let pattern = #"^(cell phone|mobile phone|telephone|phone|tel|ph|cell|mobile|mob)\b(\s*(number|no\.?))?[\s.#:]*(.+)$"#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+          let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+          let wordRange = Range(match.range(at: 1), in: line), let valueRange = Range(match.range(at: 4), in: line) else { return nil }
+    let word = line[wordRange].lowercased()
+    return (addressPasteClean(String(line[valueRange])), word == "mobile" || word == "mob")
 }
 
 /// Headings such as "Ship to" or "Shipping address:" on a line of their own.
@@ -410,7 +484,29 @@ private let addressPasteStreetWords: Set<String> = [
 func addressPasteLooksLikeStreet(_ line: String) -> Bool {
     let words = line.lowercased().split(separator: " ").map(String.init)
     guard let last = words.last else { return false }
-    return addressPasteStreetWords.contains(last) || line.lowercased().hasPrefix("po box") || line.lowercased().hasPrefix("p.o. box")
+    return addressPasteStreetWords.contains(last) || addressPasteIsPOBox(line)
+}
+
+func addressPasteIsPOBox(_ line: String) -> Bool {
+    line.range(of: #"^p\.?\s?o\.?\s*box\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+}
+
+/// A "c/o …", "Attn …", "Attention …" or "FAO …" line, which belongs in address line 2.
+func addressPasteIsCareOf(_ line: String) -> Bool {
+    line.range(of: #"^(c/o|c\.o\.|care of|attn|attention|fao|f\.a\.o\.)(\b|(?=\s)|:|\.)"#,
+               options: [.regularExpression, .caseInsensitive]) != nil
+}
+
+/// Whether the first remaining line is the recipient's name: no digit, not a unit, c/o or PO box line, and either not
+/// shaped like a street, or followed (past any c/o or attention lines) by a numbered street or a PO box — so
+/// "Damon Hill" above "12 Main St" is a name although it ends in a street word.
+func addressPasteFirstLineIsName(_ first: String, following: ArraySlice<String>) -> Bool {
+    guard !addressPasteHasDigit(first), !addressPasteIsUnit(first), !addressPasteIsCareOf(first),
+          !addressPasteIsPOBox(first) else { return false }
+    guard addressPasteLooksLikeStreet(first) else { return true }
+    guard let next = following.first(where: { !addressPasteIsCareOf($0) }) else { return false }
+    if addressPasteIsPOBox(next) { return true }
+    return addressPasteHasDigit(next) && (!addressPasteIsUnit(next) || addressPasteSplittingLeadingUnit(next) != nil)
 }
 
 /// The lines just before a postcode written on its own line that can be a place: no digits (except a district

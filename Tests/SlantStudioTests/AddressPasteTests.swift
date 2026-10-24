@@ -36,12 +36,12 @@ final class AddressPasteTests: XCTestCase {
         """)
         XCTAssertEqual(parsed.name, "Ada Lovelace")
         XCTAssertEqual(parsed.line1, "12 Main St")
-        XCTAssertEqual(parsed.line2, "")
+        XCTAssertEqual(parsed.line2, "Acme Ltd", "A company between the name and the street goes in line 2")
         XCTAssertEqual(parsed.city, "Springfield")
         XCTAssertEqual(parsed.state, "IL")
         XCTAssertEqual(parsed.zip, "62701")
         XCTAssertEqual(parsed.countryCode, "US")
-        XCTAssertEqual(parsed.unused, ["Acme Ltd"])
+        XCTAssertEqual(parsed.unused, [])
     }
 
     func testFullStateNameAndUSAAlias() {
@@ -361,7 +361,11 @@ final class AddressPasteTests: XCTestCase {
         let replaced = deliveryDetails(applyingPasted: pasted, to: current)
         XCTAssertEqual(replaced.name, "Ada Lovelace")
         XCTAssertEqual(replaced.email, "ada@example.com")
-        XCTAssertEqual(orderCountryPickerValue(replaced), "", "No country in the paste leaves it unselected")
+        XCTAssertEqual(orderCountryPickerValue(replaced), "GB", "No country in the paste keeps the form's")
+        pasted.unrecognisedCountry = "Atlantis"
+        XCTAssertEqual(orderCountryPickerValue(deliveryDetails(applyingPasted: pasted, to: current)), "",
+                       "An unrecognised country leaves it for the seller to choose")
+        pasted.unrecognisedCountry = ""
         pasted.countryCode = "NZ"
         XCTAssertEqual(orderCountryPickerValue(deliveryDetails(applyingPasted: pasted, to: current)), "NZ")
     }
