@@ -1088,6 +1088,7 @@ struct ImproveForPrintingSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeading(title: "Improve for printing", caption: "Optional · Each tool saves a separate copy and keeps your original.")
                 .padding(.top, 4)
+            MeshToolsCard(model: model)
             PrintOrientationCard(model: model)
             AutoImproveCard(model: model)
             ReinforcementCard(model: model)
