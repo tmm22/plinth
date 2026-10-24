@@ -230,6 +230,8 @@ struct SavedProductsSheet: View {
     @State private var confirmDiscardEdit = false
     @State private var saveError: String?
     @State private var catalogsLoading = false
+    /// Check Cost… (ProductCostCheck.swift) shows in place of the list; its results go when it closes.
+    @State private var costCheckProduct: SavedProduct?
 
     var sortedProducts: [SavedProduct] { savedProductsSorted(store.savedProducts) }
     var selectedProduct: SavedProduct? { store.savedProducts.first { $0.id == selection } }
@@ -244,6 +246,8 @@ struct SavedProductsSheet: View {
             if editing != nil {
                 // A field that commits as the editor closes must not reopen it, so writes only land while editing.
                 editor(Binding(get: { editing ?? editingBaseline ?? SavedProduct() }, set: { if editing != nil { editing = $0 } }))
+            } else if let costCheckProduct {
+                ProductCostCheckView(product: costCheckProduct) { self.costCheckProduct = nil }
             } else {
                 productList
             }
@@ -307,6 +311,7 @@ struct SavedProductsSheet: View {
                     if ids.count == 1, let id = ids.first, let product = store.savedProducts.first(where: { $0.id == id }) {
                         Button("Edit…") { beginEditing(product, isNew: false) }
                         Button("Duplicate") { beginEditing(savedProductDuplicate(product, in: store.savedProducts), isNew: true) }
+                        Button("Check Cost…") { costCheckProduct = product }
                         Divider()
                         Button("Delete…", role: .destructive) { pendingDelete = product }
                     }
@@ -327,6 +332,9 @@ struct SavedProductsSheet: View {
                 }
                 .disabled(selectedProduct == nil)
                 .help("Copy the selected product to edit, for example in another colour")
+                Button("Check Cost…") { costCheckProduct = selectedProduct }
+                    .disabled(selectedProduct == nil)
+                    .help("Price the selected product with fresh Slant estimates")
                 Button("Delete…", role: .destructive) { pendingDelete = selectedProduct }
                     .disabled(selectedProduct == nil)
                 Spacer()
