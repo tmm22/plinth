@@ -50,7 +50,7 @@ struct OrderImportPersonalisationRow: View {
                     copied = true
                 }
                 .buttonStyle(.link).font(.caption)
-                .help("Copies the buyer’s personalisation to paste into Personalise from Template. Studio doesn’t save it or send it with the draft.")
+                .help("Copies the buyer’s personalisation to paste into Personalise from Template. Studio doesn’t save it.")
                 .accessibilityLabel("Copy personalisation")
             }
             if orderImportPersonalisationShowsOptions(item) {

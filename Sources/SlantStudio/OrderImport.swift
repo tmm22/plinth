@@ -764,9 +764,21 @@ struct OrderImportCheck {
     var usesFallbackEmail = false
     /// At least one item was matched, or left out, by a Match products choice.
     var usesProductChoice = false
+    /// Parallel to the order's items: the saved product each was drafted with (nil when left out or unmatched).
+    var itemProductIDs: [UUID?] = []
+    /// Parallel to `lines`: the saved product and item each line came from (batch personalisation).
+    var lineSources: [OrderImportLineSource?] = []
+    /// The email and postcode the draft uses, so a personalised draft is built the same way.
+    var draftEmail = ""
+    var draftZIP = ""
 
     var canTick: Bool { blockers.isEmpty }
     var tickedByDefault: Bool { (blockers.isEmpty || waitingForEmail) && warnings.isEmpty }
+}
+
+struct OrderImportLineSource: Equatable {
+    let productID: UUID
+    let savedLineID: UUID
 }
 
 /// Everything the preview says about one order, and the draft body when it can be imported. `padZIP` applies the
@@ -798,7 +810,8 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
     var leftOut = 0
     var personalisedItemIncluded = false
     if order.items.isEmpty { block("This order has no items.") }
-    for item in order.items {
+    check.itemProductIDs = Array(repeating: nil, count: order.items.count)
+    for (itemIndex, item) in order.items.enumerated() {
         let sku = item.sku.trimmingCharacters(in: .whitespacesAndNewlines)
         let label = sku.isEmpty ? (item.itemName.isEmpty ? "item on row \(item.row)" : "“\(item.itemName)”") : sku
         var product = savedProduct(forSKU: sku, in: context.products)
@@ -835,6 +848,7 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
             entries.append(.text("\(units) × \(label)"))
             continue
         }
+        check.itemProductIDs[itemIndex] = product.id
         if groups[product.id] == nil {
             groups[product.id] = (product, 0)
             groupOrder.append(product.id)
@@ -876,6 +890,8 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
             }
             groupLineIndices[id, default: []].append(lines.count)
             lines.append(line)
+            check.lineSources.append(index < group.product.lines.count
+                ? OrderImportLineSource(productID: id, savedLineID: group.product.lines[index].id) : nil)
         }
     }
     check.lines = lines
@@ -941,16 +957,24 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
     if let duplicate = orderImportDuplicateReason(order, ledger: context.ledger, loadedKeys: context.loadedKeys) { warn(duplicate) }
 
     guard check.blockers.isEmpty else { return check }
+    check.draftEmail = email
+    check.draftZIP = zip
     do {
-        check.body = try orderDraftPayload(
-            platformID: context.platformID, ownerID: context.ownerID, email: email, recipientName: order.name,
-            line1: order.line1, line2: order.line2, city: order.city, state: order.state, zip: zip, country: order.countryCode,
-            paymentID: "", metadata: orderImportMetadata(source: order.source, sourceOrderID: order.sourceOrderID),
-            options: [:], lines: check.lines)
+        check.body = try orderImportDraftBody(order, context: context, email: email, zip: zip, lines: check.lines)
     } catch {
         block(error.localizedDescription)
     }
     return check
+}
+
+/// An imported order's `POST /orders` body, built only through `orderDraftPayload`.
+func orderImportDraftBody(_ order: OrderImportOrder, context: OrderImportContext, email: String, zip: String,
+                          lines: [OrderLine]) throws -> [String: Any] {
+    try orderDraftPayload(
+        platformID: context.platformID, ownerID: context.ownerID, email: email, recipientName: order.name,
+        line1: order.line1, line2: order.line2, city: order.city, state: order.state, zip: zip, country: order.countryCode,
+        paymentID: "", metadata: orderImportMetadata(source: order.source, sourceOrderID: order.sourceOrderID),
+        options: [:], lines: lines)
 }
 
 /// Once-per-order lines of different products are the same item (and added once) when their type, reference,
@@ -1077,6 +1101,10 @@ struct OrderImportTally: Equatable {
     var refused = 0
     var unknown = 0
     var notSent = 0
+    /// Batch personalisation: models uploaded, orders whose model couldn't be made, and uploads not confirmed.
+    var modelsUploaded = 0
+    var notPersonalised = 0
+    var uploadsUnconfirmed = 0
 }
 
 /// Activity text for an import: counts only, never names, addresses or order IDs from the file.
@@ -1085,6 +1113,13 @@ func orderImportActivityDetail(_ tally: OrderImportTally) -> String {
     if tally.refused > 0 { parts.append("\(tally.refused) refused") }
     if tally.unknown > 0 { parts.append("\(tally.unknown) not confirmed") }
     if tally.notSent > 0 { parts.append("\(tally.notSent) not sent") }
+    if tally.modelsUploaded > 0 {
+        parts.append(tally.modelsUploaded == 1 ? "1 personalised model uploaded" : "\(tally.modelsUploaded) personalised models uploaded")
+    }
+    if tally.notPersonalised > 0 { parts.append("\(tally.notPersonalised) not personalised") }
+    if tally.uploadsUnconfirmed > 0 {
+        parts.append(tally.uploadsUnconfirmed == 1 ? "1 upload not confirmed" : "\(tally.uploadsUnconfirmed) uploads not confirmed")
+    }
     return parts.joined(separator: " · ")
 }
 
@@ -1095,10 +1130,14 @@ struct OrderImportJob {
     let source: OrderImportFormat
     let sourceOrderID: String
     let body: [String: Any]
+    /// Set when the draft uses personalised models made just before it (BatchPersonalise.swift).
+    var personalisation: BatchPersonaliseJob? = nil
 }
 
 enum OrderImportRowState: Equatable {
     case queued
+    /// Making or uploading the order's personalised models.
+    case preparing(String)
     case sending
     case created(String)
     case refused(String)
@@ -1161,13 +1200,15 @@ enum OrderImportRowState: Equatable {
         var observedRateLimit = store.rateLimit
         var rateLimitedUntil: Date?
         var stopMessage: String?
+        let ownerID = store.ownerID
+        let accountChanged = "Stopped because the account or platform changed. The rest weren’t sent."
 
-        jobLoop: for job in jobs {
-            if stopRequested { stopMessage = "Stopped. The rest weren’t sent."; break }
+        /// Waits as the pacing requires; a reason to stop, or nil. Personalised uploads share it with drafts.
+        func pace() async -> String? {
+            if stopRequested { return "Stopped. The rest weren’t sent." }
             switch orderImportPacing(lastRequestStart: lastStart, rateLimit: observedRateLimit, rateLimitedUntil: rateLimitedUntil, now: Date()) {
             case .stop(let reason):
-                stopMessage = reason
-                break jobLoop
+                return reason
             case .wait(let seconds):
                 if seconds > 0 {
                     waitingUntil = Date().addingTimeInterval(seconds)
@@ -1175,17 +1216,76 @@ enum OrderImportRowState: Equatable {
                     waitingUntil = nil
                 }
             }
-            if stopRequested { stopMessage = "Stopped. The rest weren’t sent."; break }
-            guard store.hasKey, store.apiKey == apiKey, store.platformID == platformID else {
-                stopMessage = "Stopped because the account or platform changed. The rest weren’t sent."
-                break
+            return stopRequested ? "Stopped. The rest weren’t sent." : nil
+        }
+        func accountUnchanged() -> Bool { store.hasKey && store.apiKey == apiKey && store.platformID == platformID }
+
+        jobLoop: for job in jobs {
+            if let reason = await pace() { stopMessage = reason; break }
+            guard accountUnchanged() else { stopMessage = accountChanged; break }
+            var body = job.body
+            if let personalised = job.personalisation {
+                // Make and upload this buyer's models, then build the draft with them. Nothing falls back to the plain model.
+                var step = await batchPersonaliseMakeAndUpload(personalised, client: client, platformID: platformID, ownerID: ownerID,
+                                                               hooks: BatchPersonaliseRunHooks(
+                    status: { [weak self] in self?.states[job.id] = .preparing($0) },
+                    pace: { await pace() },
+                    accountProblem: { accountUnchanged() ? nil : accountChanged },
+                    isStopRequested: { [weak self] in self?.stopRequested ?? true },
+                    uploadSent: { result in
+                        lastStart = Date()
+                        switch result {
+                        case .success(let response):
+                            if case .uploaded = batchPersonaliseUploadOutcome(response: responseObject(response)) { tally.modelsUploaded += 1 }
+                            if response.rateLimit.hasValues {
+                                observedRateLimit = response.rateLimit
+                                store.rateLimit = response.rateLimit
+                            }
+                        case .failure(let error):
+                            if case APIError.http(429, _, let retryAfter, let reset)? = error as? APIError {
+                                rateLimitedUntil = comparisonRateLimitedUntil(retryAfter: retryAfter, rateLimitReset: reset, now: Date())
+                            }
+                        }
+                    }))
+                if case .ready(let fileIDs) = step {
+                    if let lines = batchPersonaliseDraftLines(personalised.plan.baseLines, models: personalised.plan.models, fileIDs: fileIDs),
+                       let built = try? personalised.makeBody(lines) {
+                        body = built
+                    } else {
+                        step = .notMade("Studio couldn’t build the draft with the personalised model, so it wasn’t sent.")
+                    }
+                }
+                switch step {
+                case .ready:
+                    // The uploads used requests too: pace the draft after them.
+                    if let reason = await pace() { states[job.id] = .queued; stopMessage = reason; break jobLoop }
+                    guard accountUnchanged() else { states[job.id] = .queued; stopMessage = accountChanged; break jobLoop }
+                case .notMade(let reason):
+                    states[job.id] = .refused(reason)
+                    tally.notPersonalised += 1
+                    consecutiveRefusals += 1
+                case .refused(let reason, _):
+                    states[job.id] = .refused(reason)
+                    tally.refused += 1
+                    consecutiveRefusals += 1
+                case .unknown(let reason):
+                    states[job.id] = .unknown(reason)
+                    tally.uploadsUnconfirmed += 1
+                case .stopped:
+                    states[job.id] = .queued
+                }
+                if case .stop(let reason) = batchPersonaliseNextStep(after: step, consecutiveRefusals: consecutiveRefusals) {
+                    stopMessage = reason
+                    break jobLoop
+                }
+                guard case .ready = step else { continue }
             }
             states[job.id] = .sending
             lastStart = Date()
             let outcome: OrderImportOutcome
             var failure: Error?
             do {
-                let response = try await client.request("POST", path: "/orders", body: job.body)
+                let response = try await client.request("POST", path: "/orders", body: body)
                 if response.rateLimit.hasValues {
                     observedRateLimit = response.rateLimit
                     store.rateLimit = response.rateLimit
@@ -1229,9 +1329,10 @@ enum OrderImportRowState: Equatable {
         store.progress = ""
         let summary = orderImportActivityDetail(tally)
         message = stopMessage.map { "\($0) \(summary)." } ?? "Done: \(summary)."
-        if tally.created + tally.refused + tally.unknown > 0 {
+        if tally.created + tally.refused + tally.unknown + tally.notPersonalised + tally.uploadsUnconfirmed + tally.modelsUploaded > 0 {
             store.activities.insert(Activity(title: "Import orders", detail: summary,
-                                             success: tally.refused == 0 && tally.unknown == 0 && tally.notSent == 0), at: 0)
+                                             success: tally.refused == 0 && tally.unknown == 0 && tally.notSent == 0
+                                                && tally.notPersonalised == 0 && tally.uploadsUnconfirmed == 0), at: 0)
             store.activities = Array(store.activities.prefix(100))
         }
         lastTally = tally
@@ -1285,6 +1386,8 @@ struct OrderImportSheet: View {
     @State private var confirmCreate = false
     /// Match products choices for this file only: never saved, and cleared with the file.
     @State private var productChoices: [String: OrderImportProductChoice] = [:]
+    /// Personalise with OpenSCAD (BatchPersonaliseView.swift): memory only, reset with the file.
+    @StateObject private var personalise = BatchPersonaliseSession()
 
     private var context: OrderImportContext {
         OrderImportContext(
@@ -1297,14 +1400,30 @@ struct OrderImportSheet: View {
     private func checks(for parse: OrderImportParse) -> [String: OrderImportCheck] {
         let context = context
         var result: [String: OrderImportCheck] = [:]
-        for order in parse.orders { result[order.id] = orderImportCheck(order, context: context, padZIP: paddedZIP.contains(order.id)) }
+        let inputs = personalise.inputs
+        for order in parse.orders {
+            let check = orderImportCheck(order, context: context, padZIP: paddedZIP.contains(order.id))
+            let eligibility = batchPersonaliseEligibility(order, check: check, products: context.products, inputs: inputs)
+            result[order.id] = batchPersonalisedCheck(check, eligibility: eligibility)
+        }
         return result
+    }
+
+    /// Changes a personalisation choice (or re-reads OpenSCAD and the templates). Orders it makes clean are ticked;
+    /// orders it returns to the plain model are unticked.
+    private func updatePersonalisation(_ parse: OrderImportParse, _ change: () -> Void) {
+        guard !runner.running else { return }
+        let before = checks(for: parse)
+        change()
+        let after = checks(for: parse)
+        ticked.subtract(batchPersonaliseNewlyUnticked(before: before, after: after))
+        ticked.formUnion(batchPersonaliseNewlyTicked(before: before, after: after))
     }
 
     private func isSendable(_ id: String, checks: [String: OrderImportCheck]) -> Bool {
         guard let check = checks[id], check.blockers.isEmpty, check.body != nil else { return false }
         switch runner.states[id] {
-        case .created?, .unknown?, .sending?: return false
+        case .created?, .unknown?, .sending?, .preparing?: return false
         default: return true
         }
     }
@@ -1370,6 +1489,7 @@ struct OrderImportSheet: View {
             ticked = []
             paddedZIP = []
             productChoices = [:]
+            personalise.reset()
         }
     }
 
@@ -1406,6 +1526,13 @@ struct OrderImportSheet: View {
         let unmatched = orderImportUnmatchedKeys(parse.orders, products: store.savedProducts)
         if !unmatched.isEmpty {
             matchProducts(unmatched, parse: parse)
+        }
+        let personalisable = batchPersonaliseProducts(parse.orders, checks: checks, products: store.savedProducts)
+        if !personalisable.isEmpty {
+            OrderImportPersonaliseSection(
+                session: personalise, products: personalisable, disabled: runner.running,
+                choose: { id, choice in updatePersonalisation(parse) { personalise.choices[id] = choice } },
+                checkAgain: { updatePersonalisation(parse) { personalise.refresh(products: store.savedProducts) } })
         }
         List(parse.orders) { order in
             row(order, check: checks[order.id] ?? OrderImportCheck())
@@ -1479,7 +1606,7 @@ struct OrderImportSheet: View {
         let state = runner.states[order.id]
         let lockedByRun: Bool = {
             switch state {
-            case .created?, .unknown?, .sending?: return true
+            case .created?, .unknown?, .sending?, .preparing?: return true
             default: return false
             }
         }()
@@ -1531,6 +1658,7 @@ struct OrderImportSheet: View {
     private func stateLabel(_ state: OrderImportRowState) -> some View {
         switch state {
         case .queued: Label("Waiting", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+        case .preparing(let step): Label(step, systemImage: "wand.and.stars").font(.caption).foregroundStyle(.secondary)
         case .sending: Label("Creating draft…", systemImage: "arrow.up.circle").font(.caption).foregroundStyle(.secondary)
         case .created(let id): Label("Draft created: \(id)", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
         case .refused(let reason): Label("Not created: \(reason)", systemImage: "xmark.circle.fill").font(.caption).foregroundStyle(.red)
@@ -1628,6 +1756,7 @@ struct OrderImportSheet: View {
         if chosenCount > 0 {
             text += chosenCount == 1 ? " 1 draft uses your Match products choices." : " \(chosenCount) drafts use your Match products choices."
         }
+        text += batchPersonaliseConfirmText(ids.filter { personalisationJob(for: $0, checks: checks) != nil }.count) ?? ""
         return text
     }
 
@@ -1652,6 +1781,8 @@ struct OrderImportSheet: View {
             runner.reset()
             paddedZIP = []
             productChoices = [:]
+            personalise.reset()
+            personalise.refresh(products: store.savedProducts)
             parsed = parse
             loadError = nil
             fileName = url.lastPathComponent
@@ -1662,6 +1793,7 @@ struct OrderImportSheet: View {
             ticked = []
             paddedZIP = []
             productChoices = [:]
+            personalise.reset()
             fileName = url.lastPathComponent
             loadError = error.localizedDescription
         }
@@ -1681,13 +1813,31 @@ struct OrderImportSheet: View {
         }
     }
 
+    /// The personalised models an order's draft uses, when Personalise with OpenSCAD can make them; else nil.
+    private func personalisationJob(for id: String, checks: [String: OrderImportCheck]) -> BatchPersonaliseJob? {
+        guard let order = parsed?.orders.first(where: { $0.id == id }), let check = checks[id],
+              case .ready(let plan) = batchPersonaliseEligibility(order, check: check, products: store.savedProducts, inputs: personalise.inputs)
+        else { return nil }
+        let context = context
+        return BatchPersonaliseJob(
+            plan: plan,
+            uploadNames: plan.models.indices.map {
+                batchPersonaliseUploadName(source: order.source, sourceOrderID: order.sourceOrderID, index: $0, count: plan.models.count)
+            },
+            makeBody: { lines in
+                try orderImportDraftBody(order, context: context, email: check.draftEmail, zip: check.draftZIP, lines: lines)
+            })
+    }
+
     private func startImport() {
         guard let parsed, !runner.running, store.orderDraftBlockedReason == nil else { return }
         // Rebuilt from the current state, so the bodies sent are exactly what the preview shows.
         let currentChecks = checks(for: parsed)
         let jobs: [OrderImportJob] = parsed.orders.compactMap { order in
             guard ticked.contains(order.id), isSendable(order.id, checks: currentChecks), let body = currentChecks[order.id]?.body else { return nil }
-            return OrderImportJob(id: order.id, source: order.source, sourceOrderID: order.sourceOrderID, body: body)
+            var job = OrderImportJob(id: order.id, source: order.source, sourceOrderID: order.sourceOrderID, body: body)
+            job.personalisation = personalisationJob(for: order.id, checks: currentChecks)
+            return job
         }
         guard !jobs.isEmpty else { return }
         runner.start(jobs, store: store)
