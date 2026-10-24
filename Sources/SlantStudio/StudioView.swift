@@ -85,6 +85,7 @@ struct StudioView: View {
         .sheet(isPresented: $store.showReplicaGenerator, onDismiss: { store.presentPendingPrintReview() }) {
             ReplicaGeneratorSheet().environmentObject(store)
         }
+        .sheet(isPresented: $store.showAccessoryDesigner) { AccessoryDesignerSheet().environmentObject(store) }
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }

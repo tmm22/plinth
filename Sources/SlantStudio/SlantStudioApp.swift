@@ -35,6 +35,9 @@ struct SlantStudioApp: App {
                 // Opens a .scad template to fill in; generating saves a new library model and never uploads.
                 Button("Personalise from Template…") { store.personaliseFromTemplateFromMenu() }
                     .disabled(modalUIShown)
+                // Opens the sheet only; nothing is sent to Claude until Start Design is pressed there.
+                Button("Design an Accessory from a Photo…") { store.openAccessoryDesignerFromMenu() }
+                    .disabled(modalUIShown)
                 // Opens the replica sheet only; the photo is sent from there after an explicit Generate Replica.
                 Button("Generate a Replica from an Image…") { store.generateReplicaFromMenu() }
                     .disabled(modalUIShown)

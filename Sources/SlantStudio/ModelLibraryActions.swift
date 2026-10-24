@@ -308,6 +308,7 @@ extension StudioStore {
             || showOrderImport || showShopFollowUp || batchPayRequest != nil
             || listingImagesModelID != nil || showSpendingReport
             || personalisationTemplate != nil || meshFitRequest != nil || printReviewRequest != nil || showReplicaGenerator
+            || showAccessoryDesigner
             || renameSheetIsShown(renamingModelID: renamingModelID, models: localModels)
     }
 
