@@ -84,6 +84,12 @@ struct StudioView: View {
         }
         // Background order checks (OrderWatch.swift): read-only, never through `store.run`.
         .onAppear { OrderWatch.shared.attach(store) }
+        // Restored at launch by `StudioStore.destination`'s initial value.
+        .onChange(of: store.destination) { _, new in
+            if sidebarDestinations(showDeveloperTools: true).contains(new) {
+                UserDefaults.standard.set(new.rawValue, forKey: lastSidebarDestinationDefaultsKey)
+            }
+        }
         // Store-driven "open Settings" requests (Connect Account buttons, the platforms redirect). Opening Settings
         // only brings its window forward; nothing in this window changes.
         .onChange(of: store.settingsOpenRequest) { _, _ in openSettings() }
@@ -154,6 +160,17 @@ let sidebarDeveloperDestinations: [Destination] = [.api, .activity]
 /// Every destination the sidebar lists, in order. Developer destinations only when developer tools are on.
 func sidebarDestinations(showDeveloperTools: Bool) -> [Destination] {
     sidebarPrimaryDestinations + (showDeveloperTools ? sidebarDeveloperDestinations : [])
+}
+
+/// The sidebar section the main window last showed, restored at launch.
+let lastSidebarDestinationDefaultsKey = "lastSidebarDestination"
+
+/// Where the main window opens: the last sidebar section if the sidebar still lists it (a developer section only while
+/// developer tools are on), otherwise Models.
+func restoredSidebarDestination(saved: String?, showDeveloperTools: Bool) -> Destination {
+    guard let saved, let destination = Destination(rawValue: saved),
+          sidebarDestinations(showDeveloperTools: showDeveloperTools).contains(destination) else { return .models }
+    return destination
 }
 
 /// A standard source-list sidebar: system selection, arrow-key navigation, translucency and sizing. The brand shows

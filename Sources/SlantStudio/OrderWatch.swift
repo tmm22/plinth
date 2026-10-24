@@ -9,9 +9,12 @@ import UserNotifications
 let orderWatchEnabledDefaultsKey = "orderWatchEnabled"
 /// Settings › Advanced › Notify me about order changes (off until turned on, which asks macOS for permission).
 let orderWatchNotifyDefaultsKey = "orderWatchNotify"
+/// Settings › Advanced › Show count on Dock icon (on unless turned off): the sidebar's Orders badge, on the Dock tile.
+let orderWatchDockBadgeDefaultsKey = "orderWatchDockBadge"
 /// Order IDs, statuses and times only, in Application Support/SlantStudio.
 let orderWatchFileName = "order-watch.json"
-/// Time between checks: 15 reads an hour, well inside Slant's 100 a minute.
+/// Time between checks. Each check makes at most two reads (newest created, then most recently updated), so 30 reads
+/// an hour: well inside Slant's 100 a minute, and each read first leaves `orderWatchRateLimitReserve` to the seller.
 let orderWatchInterval: TimeInterval = 4 * 60
 /// The first check after launch, a key change or turning the watch on waits a little, so it never races the launch refresh.
 let orderWatchFirstCheckDelay: TimeInterval = 20
@@ -26,6 +29,11 @@ let orderWatchMaxAge: TimeInterval = 180 * 24 * 3600
 private let orderWatchMaxFileBytes = 4 * 1024 * 1024
 private let orderWatchMaxIDLength = 128
 private let orderWatchMaxStatusLength = 64
+/// Show and a notification click read at most this many changed orders that aren't on the reloaded first page, one
+/// `GET /orders/{id}` each (older orders whose change the updated-first read found).
+let orderWatchShowFetchLimit = 10
+/// The notification `userInfo` key for the Slant order ID, the only thing a notification carries besides its text.
+let orderWatchNotificationOrderIDKey = "orderID"
 
 /// Changes worth a sidebar badge and a notification: the order needs attention, or it reached the customer's door.
 let orderWatchNotableStatuses: Set<String> = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELED", "SHIPPED", "DELIVERED"]
@@ -98,6 +106,82 @@ func orderWatchObservations(_ records: [Record]) -> [OrderWatchObservation] {
         result.append(OrderWatchObservation(id: id, status: status, number: String(orderNumber(order).prefix(40))))
     }
     return result
+}
+
+/// The second read of each check: page 1 of the default platform's orders, most recently updated first, so a change to
+/// an order older than the newest 100 is still seen. Slant's Orders docs list `sortBy=updatedAt`; the live API
+/// answered it with 200 on 24 Oct 2026.
+func orderWatchRecentlyUpdatedQuery(platformID: String) -> [String: String] {
+    var query = orderFilterQueryItems(OrderFilter(), page: 1, limit: listPageSize, platformID: platformID)
+    query["sortBy"] = "updatedAt"
+    query["sortOrder"] = "DESC"
+    return query
+}
+
+enum OrderWatchSortCheck: Equatable {
+    case sorted, notSorted
+    /// Fewer than two rows carry a readable `updatedAt`, so the order can't be judged.
+    case inconclusive
+}
+
+/// Whether a reply to the updated-first read is in fact newest-updated first. One that isn't means Slant ignored the
+/// sort (it then returns the newest created, which the first read already has), so Studio stops asking for it. Rows
+/// without a readable `updatedAt` are skipped; a second of slack allows for rounding.
+func orderWatchUpdatedSortCheck(_ records: [Record]) -> OrderWatchSortCheck {
+    let dates = records.compactMap { record -> Date? in
+        guard let text = orderObject(record.values)["updatedAt"] as? String else { return nil }
+        return orderTimestamp(text)
+    }
+    guard dates.count >= 2 else { return .inconclusive }
+    for (earlier, later) in zip(dates, dates.dropFirst()) where later.timeIntervalSince(earlier) > 1 { return .notSorted }
+    return .sorted
+}
+
+/// A refusal of the updated-first read itself (400 or 422: Slant didn't accept the sort). That read then stops for
+/// the session; the newest-created read carries on as before.
+func orderWatchUpdatedReadRefused(_ error: Error) -> Bool {
+    guard case .http(let status, _, _, _)? = error as? APIError else { return false }
+    return status == 400 || status == 422
+}
+
+/// Both reads of one check as one list: each order once, in the order first seen. Where both returned an order, the
+/// later read's status wins (it is the fresher), so one check never reports an order twice.
+func orderWatchMergedObservations(_ first: [OrderWatchObservation], _ later: [OrderWatchObservation]) -> [OrderWatchObservation] {
+    var result: [OrderWatchObservation] = []
+    var index: [String: Int] = [:]
+    for observation in first + later {
+        if let position = index[observation.id] {
+            result[position] = observation
+        } else {
+            index[observation.id] = result.count
+            result.append(observation)
+        }
+    }
+    return result
+}
+
+/// The orders Show (or a notification click) reads by ID after reloading the first page: those asked for that the
+/// reload didn't bring, in the order given (newest change first), each once, at most `limit`.
+func orderWatchIDsToFetch(wanted: [String], loaded: Set<String>, limit: Int = orderWatchShowFetchLimit) -> [String] {
+    var seen = Set<String>()
+    var result: [String] = []
+    for id in wanted where result.count < limit {
+        guard validOrderWatchID(id), id.trimmingCharacters(in: .whitespacesAndNewlines) == id,
+              !loaded.contains(id), seen.insert(id).inserted else { continue }
+        result.append(id)
+    }
+    return result
+}
+
+/// Whether an order read by ID may join the loaded list of `platformID`'s orders: one that names another platform (an
+/// old notification from before the default platform changed, say) doesn't. Orders that name no platform are kept.
+func orderWatchFetchedOrderFitsPlatform(_ order: [String: Any], platformID: String) -> Bool {
+    let current = platformID.trimmingCharacters(in: .whitespacesAndNewlines)
+    let named = [order["platformId"], (order["customer"] as? [String: Any])?["platformId"]]
+        .compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard !current.isEmpty, !named.isEmpty else { return true }
+    return named.contains(current)
 }
 
 /// Whether a change is listed under "Since you last looked". Placing a draft is the seller's own action, so
@@ -233,6 +317,12 @@ func orderWatchSummaryGroups(_ changes: [OrderWatchChange]) -> [(status: String,
     }
 }
 
+/// The Dock tile's badge: the sidebar's Orders count, or nothing when that is zero or the seller turned it off.
+func orderWatchDockBadgeLabel(count: Int, showOnDock: Bool) -> String? {
+    guard showOnDock, count > 0 else { return nil }
+    return String(count)
+}
+
 /// "2 shipped · 1 payment problem · 1 printing".
 func orderWatchSummaryText(_ changes: [OrderWatchChange]) -> String {
     orderWatchSummaryGroups(changes).map { "\($0.count) \(orderStatusTitle($0.status).lowercased())" }.joined(separator: " · ")
@@ -255,6 +345,21 @@ struct OrderWatchNotificationText: Equatable {
     var identifier: String
     var title: String
     var body: String
+    /// The Slant order ID a click opens, sent as the notification's only `userInfo`; nil for the summary (opens Orders).
+    var orderID: String? = nil
+}
+
+/// The order a clicked notification names, or nil (just open Orders) when its `userInfo` has no plausible order ID.
+func orderWatchNotificationOrderID(_ userInfo: [AnyHashable: Any]) -> String? {
+    guard let id = userInfo[orderWatchNotificationOrderIDKey] as? String, validOrderWatchID(id),
+          id.trimmingCharacters(in: .whitespacesAndNewlines) == id else { return nil }
+    return id
+}
+
+/// A notification click's request to select an order, taken once by the Orders screen (`consumeSelection`).
+struct OrderWatchSelectionRequest: Equatable {
+    let orderID: String
+    let token = UUID()
 }
 
 private func orderWatchNotificationPhrase(_ status: String) -> String {
@@ -283,7 +388,8 @@ func orderWatchNotificationTexts(_ transitions: [OrderWatchTransition]) -> [Orde
         return OrderWatchNotificationText(
             identifier: "order-watch-\(transition.id)",
             title: "Order \(number) \(orderWatchNotificationPhrase(transition.to))",
-            body: "\(orderStatusTitle(transition.from)) → \(orderStatusTitle(transition.to))"
+            body: "\(orderStatusTitle(transition.from)) → \(orderStatusTitle(transition.to))",
+            orderID: transition.id
         )
     }
 }
@@ -409,22 +515,40 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
 
 // MARK: - The watcher
 
-/// Checks the newest orders on the default platform every few minutes while the app is open, and remembers each
-/// order's status so changes can be listed in Orders, badged in the sidebar and, if asked for, notified.
-/// Read-only: one GET /orders per check through the shared client, never `store.run` (it never sets `busy`), never the
-/// unknown-outcome lock, never retried before the next scheduled check, and it never replaces `store.orders`.
+private struct PendingNotificationOpen {
+    let orderID: String?
+}
+
+/// Checks the newest and the most recently updated orders on the default platform every few minutes while the app is
+/// open, and remembers each order's status so changes can be listed in Orders, badged in the sidebar and on the Dock
+/// and, if asked for, notified.
+/// Read-only: at most two GET /orders per check through the shared client, never `store.run` (it never sets `busy`),
+/// never the unknown-outcome lock, never retried before the next scheduled check, and it never replaces `store.orders`.
 @MainActor final class OrderWatch: ObservableObject {
     static let shared = OrderWatch()
 
-    @Published private(set) var snapshot = OrderWatchSnapshot()
+    @Published private(set) var snapshot = OrderWatchSnapshot() {
+        didSet { updateDockBadge() }
+    }
     @Published var enabled: Bool = UserDefaults.standard.object(forKey: orderWatchEnabledDefaultsKey) as? Bool ?? true {
         didSet {
             guard enabled != oldValue else { return }
             UserDefaults.standard.set(enabled, forKey: orderWatchEnabledDefaultsKey)
             generation += 1
             if enabled { startLoop() } else { loop?.cancel(); loop = nil }
+            updateDockBadge()
         }
     }
+    /// Settings › Advanced › Show count on Dock icon.
+    @Published var dockBadge: Bool = UserDefaults.standard.object(forKey: orderWatchDockBadgeDefaultsKey) as? Bool ?? true {
+        didSet {
+            guard dockBadge != oldValue else { return }
+            UserDefaults.standard.set(dockBadge, forKey: orderWatchDockBadgeDefaultsKey)
+            updateDockBadge()
+        }
+    }
+    /// A clicked notification's order for the Orders screen to select (see `openFromNotification`).
+    @Published private(set) var selectionRequest: OrderWatchSelectionRequest?
     @Published private(set) var notify: Bool = UserDefaults.standard.bool(forKey: orderWatchNotifyDefaultsKey) {
         didSet { UserDefaults.standard.set(notify, forKey: orderWatchNotifyDefaultsKey) }
     }
@@ -446,6 +570,11 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
     /// never the platform), so they are forgotten when it changes.
     private var watchedPlatformID: String?
     private var accountObservers: Set<AnyCancellable> = []
+    /// False once Slant refused `sortBy=updatedAt` or answered it unsorted; the second read then stops for the session.
+    private var updatedReadAvailable = true
+    /// A clicked notification waiting until no sheet, alert or request is shown: the order to select (nil: just Orders).
+    private var pendingOpen: PendingNotificationOpen?
+    private var openDrainScheduled = false
 
     var unseenChanges: [OrderWatchChange] { enabled ? orderWatchUnseenChanges(snapshot) : [] }
     var badgeCount: Int { orderWatchBadgeCount(unseenChanges) }
@@ -467,6 +596,8 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
             if notify { refreshNotificationPermission() }
         }
         if enabled { startLoop() }
+        updateDockBadge()
+        scheduleOpenDrain()
     }
 
     private func startLoop() {
@@ -524,45 +655,86 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
         if let paused = pausedAccount, paused != token || now.timeIntervalSince(pausedAt ?? now) >= orderWatchAccountPause {
             pausedAccount = nil
         }
-        let conditions = OrderWatchConditions(
-            enabled: enabled, hasKey: store.hasKey, hasPlatform: !store.platformID.isEmpty, busy: store.busy,
-            modalUIShown: store.menuCommandsBlockedByModalUI, inFlight: inFlight, accountPaused: pausedAccount == token,
-            rateLimit: store.rateLimit, rateLimitAlreadyWaitedFor: rateLimitWaitedFor, backoffUntil: backoffUntil, now: now
-        )
-        if let skip = orderWatchSkipReason(conditions) {
+        if let skip = orderWatchSkipReason(conditions(store, token: token, now: now)) {
             if skip == .rateLimited(until: nil) { rateLimitWaitedFor = store.rateLimit }
             return orderWatchNextDelay(after: skip, now: now)
         }
         rateLimitWaitedFor = nil
         backoffUntil = nil
         let runGeneration = generation
-        let query = orderFilterQueryItems(OrderFilter(), page: 1, limit: listPageSize, platformID: store.platformID)
+        let platformID = store.platformID
         let client = store.client
         inFlight = true
         defer { inFlight = false }
+        // A key or platform change, Forget or turning the watch off while a read was in flight discards it.
+        func stillCurrent() -> Bool { runGeneration == generation && enabled && accountToken(store) == token }
+        // 1. The newest created orders, as before.
+        let newest: [OrderWatchObservation]
         do {
-            let response = try await client.request("GET", path: "/orders", query: query)
-            // A key or platform change, Forget or turning the watch off while this was in flight discards it.
-            guard runGeneration == generation, enabled, accountToken(store) == token else { return orderWatchRecheckDelay }
-            // Only figures at least as new as Studio's: this reply may land after a newer one to the seller's request.
-            if orderWatchShouldApplyRateLimit(current: store.rateLimit, incoming: response.rateLimit, now: Date()) {
-                store.noteBackgroundRateLimit(from: response)
-            }
-            failureLogged = false
-            record(orderWatchObservations(responseRecords(response)), now: Date())
+            let response = try await client.request("GET", path: "/orders",
+                                                    query: orderFilterQueryItems(OrderFilter(), page: 1, limit: listPageSize, platformID: platformID))
+            guard stillCurrent() else { return orderWatchRecheckDelay }
+            applyRateLimit(from: response, to: store)
+            newest = orderWatchObservations(responseRecords(response))
         } catch {
-            guard runGeneration == generation, enabled, accountToken(store) == token else { return orderWatchRecheckDelay }
-            let effect = orderWatchFailureEffect(error, now: Date())
-            backoffUntil = effect.backoffUntil
-            if effect.pauseAccount { pausedAccount = token; pausedAt = Date() }
-            // One Activity line per run of failures (no order details), so a long outage doesn't fill Activity.
-            if !failureLogged {
-                failureLogged = true
-                store.activities.insert(Activity(title: "Check orders for changes", detail: activityDetail(for: error), success: false), at: 0)
-                store.activities = Array(store.activities.prefix(100))
+            guard stillCurrent() else { return orderWatchRecheckDelay }
+            noteFailure(error, store: store, token: token)
+            return orderWatchInterval
+        }
+        // 2. The most recently updated, so older orders' changes are seen too. Only when every condition for a check
+        // still holds after the first read (no request started, nothing modal opened, the allowance is still there);
+        // otherwise this check keeps the first read alone.
+        var observations = newest
+        var updatedReadFailed = false
+        if updatedReadAvailable, orderWatchSkipReason(conditions(store, token: token, now: Date(), countInFlight: false)) == nil {
+            do {
+                let response = try await client.request("GET", path: "/orders", query: orderWatchRecentlyUpdatedQuery(platformID: platformID))
+                guard stillCurrent() else { return orderWatchRecheckDelay }
+                applyRateLimit(from: response, to: store)
+                let records = responseRecords(response)
+                // A reply that ignored the sort is still a true list of statuses, so it is used once; the read stops.
+                if orderWatchUpdatedSortCheck(records) == .notSorted { updatedReadAvailable = false }
+                observations = orderWatchMergedObservations(newest, orderWatchObservations(records))
+            } catch {
+                guard stillCurrent() else { return orderWatchRecheckDelay }
+                if orderWatchUpdatedReadRefused(error) {
+                    updatedReadAvailable = false
+                } else {
+                    updatedReadFailed = true
+                    noteFailure(error, store: store, token: token)
+                }
             }
         }
+        if !updatedReadFailed { failureLogged = false }
+        record(observations, now: Date())
         return orderWatchInterval
+    }
+
+    private func conditions(_ store: StudioStore, token: String, now: Date, countInFlight: Bool = true) -> OrderWatchConditions {
+        OrderWatchConditions(
+            enabled: enabled, hasKey: store.hasKey, hasPlatform: !store.platformID.isEmpty, busy: store.busy,
+            modalUIShown: store.menuCommandsBlockedByModalUI, inFlight: countInFlight && inFlight, accountPaused: pausedAccount == token,
+            rateLimit: store.rateLimit, rateLimitAlreadyWaitedFor: rateLimitWaitedFor, backoffUntil: backoffUntil, now: now
+        )
+    }
+
+    /// Only figures at least as new as Studio's: a reply may land after a newer one to the seller's own request.
+    private func applyRateLimit(from response: APIResponse, to store: StudioStore) {
+        if orderWatchShouldApplyRateLimit(current: store.rateLimit, incoming: response.rateLimit, now: Date()) {
+            store.noteBackgroundRateLimit(from: response)
+        }
+    }
+
+    private func noteFailure(_ error: Error, store: StudioStore, token: String) {
+        let effect = orderWatchFailureEffect(error, now: Date())
+        backoffUntil = effect.backoffUntil
+        if effect.pauseAccount { pausedAccount = token; pausedAt = Date() }
+        // One Activity line per run of failures (no order details), so a long outage doesn't fill Activity.
+        if !failureLogged {
+            failureLogged = true
+            store.activities.insert(Activity(title: "Check orders for changes", detail: activityDetail(for: error), success: false), at: 0)
+            store.activities = Array(store.activities.prefix(100))
+        }
     }
 
     private func record(_ observations: [OrderWatchObservation], now: Date) {
@@ -591,6 +763,18 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
         generation += 1
         snapshot = OrderWatchSnapshot()
         try? FileManager.default.removeItem(at: fileURL)
+        // A waiting notification click named an order of the platform (or account) just forgotten.
+        pendingOpen = nil
+        selectionRequest = nil
+    }
+
+    // MARK: Dock
+
+    private func updateDockBadge() {
+        // Tests and other hosts without an application object have no Dock tile.
+        guard let app = NSApp else { return }
+        let label = orderWatchDockBadgeLabel(count: badgeCount, showOnDock: dockBadge)
+        if app.dockTile.badgeLabel != label { app.dockTile.badgeLabel = label }
     }
 
     // MARK: Notifications
@@ -624,15 +808,104 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
             let content = UNMutableNotificationContent()
             content.title = text.title
             content.body = text.body
+            // The order ID only, so a click can open the order; never a name, address or amount.
+            if let id = text.orderID { content.userInfo = [orderWatchNotificationOrderIDKey: id] }
             center.add(UNNotificationRequest(identifier: text.identifier, content: content, trigger: nil))
         }
     }
 
-    /// Clicking a notification opens Orders, unless a sheet, alert or dialog is up (then the app is only brought forward).
-    fileprivate func openOrdersFromNotification() {
+    // MARK: Opening from a notification
+
+    /// A click on a notification raises the main window at once, then opens Orders and selects the order it names. While
+    /// a sheet, alert or dialog is shown in any window, or a request is running, only the window is raised: the click
+    /// waits and is applied once they have closed, so it never replaces a review behind it. A later click replaces it.
+    func openFromNotification(orderID: String?) {
         NSApp.activate()
-        guard let store, !store.menuCommandsBlockedByModalUI else { return }
+        ExternalModelOpenQueue.shared.revealMainWindow()
+        pendingOpen = PendingNotificationOpen(orderID: orderID)
+        scheduleOpenDrain()
+    }
+
+    /// The Orders screen takes a selection request once; false when another has replaced it (or it was taken).
+    func consumeSelection(_ request: OrderWatchSelectionRequest) -> Bool {
+        guard selectionRequest == request else { return false }
+        selectionRequest = nil
+        return true
+    }
+
+    private func scheduleOpenDrain() {
+        guard pendingOpen != nil, !openDrainScheduled else { return }
+        openDrainScheduled = true
+        Task { @MainActor in
+            // Like Finder opens: a sheet closing while another opens is not mistaken for an idle window.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            openDrainScheduled = false
+            drainPendingOpen()
+        }
+    }
+
+    private func drainPendingOpen() {
+        // Before a window (and so the store) exists, `attach` drains it.
+        guard let pending = pendingOpen, let store else { return }
+        guard externalOpenCanImport(storeSheetPresented: store.isPresentingSheet, appModalUIPresented: appIsPresentingModalUI(),
+                                    errorShown: store.error != nil, busy: store.busy) else {
+            scheduleOpenDrain()
+            return
+        }
+        pendingOpen = nil
         store.destination = .orders
+        guard let id = pending.orderID, store.hasKey else { return }
+        if store.orders.contains(where: { $0.id == id }) {
+            requestSelection(id)
+            return
+        }
+        // Not loaded: reload the newest orders like Show, reading this one by ID if it isn't among them.
+        let runGeneration = generation
+        Task { [weak self] in
+            guard await store.reloadOrdersIncludingWatched([id]), let self, runGeneration == self.generation,
+                  store.orders.contains(where: { $0.id == id }) else { return }
+            self.requestSelection(id)
+        }
+    }
+
+    /// Selects the order in Orders; its change counts as seen, as after Show.
+    private func requestSelection(_ id: String) {
+        selectionRequest = OrderWatchSelectionRequest(orderID: id)
+        acknowledge(ids: [id])
+    }
+}
+
+// MARK: - Show and notification reloads
+
+extension StudioStore {
+    /// The banner's Show and a notification click: reloads the newest orders like Show All Orders (clearing any search
+    /// and filter), then reads, one at a time, up to `orderWatchShowFetchLimit` of `ids` that aren't on that page
+    /// (`GET /orders/{id}`, read-only) and adds them to the loaded orders. The updated-first check finds changes to
+    /// orders older than the newest 100, so they aren't always on the reloaded page. An order Slant says doesn't exist
+    /// (404) is skipped; any other failure stops the reads and is shown as usual. True when the reload succeeded.
+    func reloadOrdersIncludingWatched(_ ids: [String]) async -> Bool {
+        guard await applyOrderFilter(OrderFilter()) else { return false }
+        let missing = orderWatchIDsToFetch(wanted: ids, loaded: Set(orders.map(\.id)))
+        guard !missing.isEmpty else { return true }
+        _ = await run(missing.count == 1 ? "Get changed order" : "Get changed orders") {
+            for id in missing {
+                let response: APIResponse
+                do {
+                    response = try await client.request("GET", path: "/orders/\(encodedSegment(id))")
+                } catch APIError.http(404, _, _, _) {
+                    continue
+                }
+                noteBackgroundRateLimit(from: response)
+                let order = mergeOrderDraftEnvelope(responseObject(response))
+                let record = Record(values: order)
+                // Only the order asked for, once, and only if it is on the platform listed (this holds `busy`, so no
+                // reload can add it meanwhile).
+                guard record.id == id, !orders.contains(where: { $0.id == id }),
+                      orderWatchFetchedOrderFitsPlatform(orderObject(order), platformID: platformID) else { continue }
+                orders.append(record)
+            }
+        }
+        return true
     }
 }
 
@@ -646,7 +919,10 @@ final class OrderWatchNotificationDelegate: NSObject, UNUserNotificationCenterDe
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        Task { @MainActor in OrderWatch.shared.openOrdersFromNotification() }
+        // Only a click on the notification itself opens anything.
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { completionHandler(); return }
+        let orderID = orderWatchNotificationOrderID(response.notification.request.content.userInfo)
+        Task { @MainActor in OrderWatch.shared.openFromNotification(orderID: orderID) }
         completionHandler()
     }
 }

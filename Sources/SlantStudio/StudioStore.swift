@@ -456,7 +456,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
 }
 
 @MainActor final class StudioStore: ObservableObject {
-    @Published var destination: Destination = .models {
+    /// Opens on the last sidebar section (StudioView.swift saves it).
+    @Published var destination: Destination = restoredSidebarDestination(
+        saved: UserDefaults.standard.string(forKey: lastSidebarDestinationDefaultsKey),
+        showDeveloperTools: UserDefaults.standard.bool(forKey: showDeveloperToolsDefaultsKey)) {
         didSet { redirectDestinationIfNeeded(from: oldValue) }
     }
     @Published var catalogKind: Destination = .materials {
@@ -1423,7 +1426,7 @@ struct PlatformDraft {
         guard !name.isEmpty else { throw StudioError("Enter a platform name.") }
         guard name.count <= 100 else { throw StudioError("Platform names can be at most 100 characters.") }
         guard description.count <= 500 else { throw StudioError("Descriptions can be at most 500 characters.") }
-        guard Self.isWebURL(url, schemes: ["https"]) else { throw StudioError("Enter an https:// application address.") }
+        guard Self.isWebURL(url, schemes: ["https"]) else { throw StudioError("Enter your shop’s https:// address, such as https://www.etsy.com/shop/YourShopName.") }
         var body: [String: Any] = ["name": name, "url": url]
         if !description.isEmpty {
             body["description"] = description
