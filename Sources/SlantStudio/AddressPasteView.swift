@@ -129,7 +129,7 @@ struct AddressPastePopover: View {
             Text("“\(text)” isn’t recognised. Choose the country in the form.").foregroundStyle(.orange)
         case .keptFromForm(let code):
             if let warning = pastedAddressKeptCountryWarning(parsed, keptCode: code) {
-                Text(warning).foregroundStyle(.orange)
+                Text(warning).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("\(Locale.current.localizedString(forRegionCode: code) ?? code) (kept from the form)")
             }
