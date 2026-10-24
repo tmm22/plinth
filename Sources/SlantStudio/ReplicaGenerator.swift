@@ -5,8 +5,10 @@ import simd
 //
 // One photo goes to the seller's chosen 3D service (Meshy or Tripo3D, ImageTo3D.swift), which makes a mesh. Studio
 // then works on this Mac only, in a fixed order: read the file, (optionally) stand it upright, scale it to the real
-// size the seller typed (neither service knows it), repair, simplify to Reinforce's 20,000-triangle limit when larger,
-// fit the size again if repair removed fragments, then check it. One library copy, "<name> (replica)", is saved.
+// size the seller typed (neither service knows it), repair, simplify when above the purpose's ceiling (Reinforce's
+// 20,000-triangle limit for a functional part, 200,000 for a display piece), fit the size again if repair removed
+// fragments, then check it. The seller sees the result, chooses which way is up, and only then is one library copy,
+// "<name> (replica)", saved. The paid model stays in memory, so processing it again is free.
 //
 // Rules this file keeps:
 //   - The generation is sent once and never retried. Stop never interrupts a request that may spend credits: it takes
@@ -22,8 +24,17 @@ import simd
 let replicaTempFolderPrefix = "SlantStudio-Replica-"
 /// The smallest real size accepted: smaller replicas lose almost all detail on an FDM printer.
 let replicaMinimumSizeMM = 5.0
-/// The triangle budget asked of the service and kept after simplifying (Reinforce and Auto-improve's limit).
+/// The triangle budget asked of the service for a functional part, and kept after simplifying (Reinforce and
+/// Auto-improve's limit).
 let replicaTriangleTarget = imageTo3DDefaultTriangleTarget
+/// The triangle budget asked of the service for a display piece, where detail matters more than the tools'
+/// 20,000-triangle limit. Within both services' documented ranges (Meshy 100–300,000; Tripo 500–1,500,000).
+let replicaDisplayTriangleTarget = 150_000
+/// A display piece is simplified only above this, well below the 500,000-triangle import limit.
+let replicaDisplayTriangleCeiling = 200_000
+/// "Checks found no problems" needs overhangs (faces down more steeply than 45° from vertical) on at most this
+/// share of the surface: more usually needs supports or another orientation.
+let replicaOverhangShareLimit = 0.02
 /// Repair or simplify may remove loose fragments and change the size; beyond this share Studio fits the size again.
 let replicaResizeTolerance = 0.001
 
@@ -90,7 +101,15 @@ enum ReplicaPurpose: String, CaseIterable, Identifiable, Sendable {
     /// A display piece starts the library's print intent as decorative; a functional part needs the seller's load
     /// direction, so it's left for them to set.
     var partIntent: PartIntent? { self == .display ? PartIntent(purpose: .decorative) : nil }
+
+    /// Triangles asked of the service: more detail for a display piece; Reinforce's limit for a functional part.
+    var requestedTriangles: Int { self == .display ? replicaDisplayTriangleTarget : replicaTriangleTarget }
+    /// Studio simplifies only above this, down to it.
+    var triangleCeiling: Int { self == .display ? replicaDisplayTriangleCeiling : replicaTriangleTarget }
 }
+
+/// Shown under Purpose for a functional part.
+let replicaFunctionalPartWarning = "A model made from one photo isn’t dimensionally accurate: only the size you type is measured, and holes, slots and other sizes are the service’s guess. For a part that must fit something, use Design an Accessory from a Photo… (in the Import menu and the File menu) instead."
 
 /// What the seller typed, checked: used for processing and the review hand-off. Memory only.
 struct ReplicaInputs: Equatable, Sendable {
@@ -107,12 +126,11 @@ func replicaInputs(name: String, axis: ReplicaSizeAxis, sizeText: String, purpos
 
 /// The library name's suffix.
 let replicaNameSuffix = " (replica)"
-let replicaUprightNameSuffix = " (replica, upright)"
 
 /// Why the name can't be used, or nil. Room is left for the suffix within the library's name limit.
 func replicaNameProblem(_ name: String) -> String? {
     if let problem = modelNameProblem(name) { return problem }
-    let limit = maximumModelNameLength - replicaUprightNameSuffix.count
+    let limit = maximumModelNameLength - replicaNameSuffix.count
     if name.trimmingCharacters(in: .whitespacesAndNewlines).count > limit { return "Names can be at most \(limit) characters here." }
     if name.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "."))).isEmpty {
         return "Enter a name with letters or numbers."
@@ -121,19 +139,20 @@ func replicaNameProblem(_ name: String) -> String? {
 }
 
 /// "Dragon (replica)": trimmed, without leading full stops (which would hide the temporary file).
-func replicaCopyName(_ name: String, upright: Bool = false) -> String {
+func replicaCopyName(_ name: String) -> String {
     var base = name.trimmingCharacters(in: .whitespacesAndNewlines)
     while base.hasPrefix(".") { base.removeFirst() }
     base = base.trimmingCharacters(in: .whitespacesAndNewlines)
     if base.isEmpty { base = "Model" }
-    return base + (upright ? replicaUprightNameSuffix : replicaNameSuffix)
+    return base + replicaNameSuffix
 }
 
-/// What the service is asked for. Mesh only, STL, 20,000 triangles. The origin option is kept for Meshy (free) and
-/// left off for Tripo, where it makes the conversion cost 10 credits instead of 5: Studio places the model itself.
-func replicaGenerationOptions(for service: ImageTo3DService) -> ImageTo3DOptions {
+/// What the service is asked for. Mesh only, STL, the purpose's triangle budget. The origin option is kept for Meshy
+/// (free) and left off for Tripo, where it makes the conversion cost 10 credits instead of 5: Studio places the
+/// model itself.
+func replicaGenerationOptions(for service: ImageTo3DService, purpose: ReplicaPurpose) -> ImageTo3DOptions {
     var options = ImageTo3DOptions()
-    options.targetTriangles = replicaTriangleTarget
+    options.targetTriangles = purpose.requestedTriangles
     options.format = .stl
     options.originAtBottom = service == .meshy
     return options
@@ -150,9 +169,10 @@ private struct ReplicaOfflineTransport: ImageTo3DTransport {
 }
 
 /// The published price of a replica with `service`, before anything is sent. No key is read.
-func replicaCostEstimate(service: ImageTo3DService, tripoRegion: TripoRegion = .international) -> ImageTo3DCostEstimate {
+func replicaCostEstimate(service: ImageTo3DService, purpose: ReplicaPurpose = .functional,
+                         tripoRegion: TripoRegion = .international) -> ImageTo3DCostEstimate {
     makeImageTo3DProvider(service, key: "", tripoRegion: tripoRegion, transport: ReplicaOfflineTransport())
-        .estimatedCost(for: replicaGenerationOptions(for: service))
+        .estimatedCost(for: replicaGenerationOptions(for: service, purpose: purpose))
 }
 
 /// What still stops Generate Replica, in the order the sheet shows them. Empty when it can start.
@@ -304,6 +324,20 @@ func replicaResumeAction(for stop: ImageTo3DStop) -> ReplicaResumeAction? {
     }
 }
 
+/// What carrying on after `stop` with `action` sends. Keep Waiting never makes the model again, but a Tripo model
+/// still needs its paid conversion to STL when that hasn't been sent yet.
+func replicaResumeNote(_ stop: ImageTo3DStop, action: ReplicaResumeAction) -> String {
+    if action == .tryConversionAgain {
+        let credits = stop.service == .tripo ? tripoConvertBasicCredits : meshyConvertCredits
+        return "\(action.title) sends the conversion once, which costs about \(credits) \(stop.service.title) \(credits == 1 ? "credit" : "credits"). The model itself isn’t made again."
+    }
+    let conversionPending = stop.service == .tripo && stop.resumePoint.map { $0.conversionTaskID == nil && $0.sourceKind != .conversion } == true
+    if conversionPending {
+        return "\(action.title) carries on with the same task, so the model isn’t made again. Once it’s finished, Studio sends its conversion to STL once, which costs about \(tripoConvertBasicCredits) \(stop.service.title) credits."
+    }
+    return "\(action.title) carries on with the same task. Nothing new is made or charged."
+}
+
 /// One extra sentence for the stop message: whether credits may have gone.
 func replicaCreditsNote(_ stop: ImageTo3DStop) -> String? {
     guard stop.creditsMayHaveBeenSpent else { return "No credits were spent." }
@@ -313,24 +347,67 @@ func replicaCreditsNote(_ stop: ImageTo3DStop) -> String? {
     }
 }
 
-/// Generating again after anything that may have spent credits (or after a model was already made in this sheet)
-/// asks first.
-func replicaGenerateNeedsConfirmation(lastStop: ImageTo3DStop?, modelAlreadyMade: Bool) -> Bool {
-    modelAlreadyMade || (lastStop?.creditsMayHaveBeenSpent ?? false)
+/// Generating asks first after anything that may have spent credits: in this sheet (a stop, or a model already
+/// made) or in any sheet this session (`ImageTo3DConnection.hasUnconfirmedRequests`).
+func replicaGenerateNeedsConfirmation(lastStop: ImageTo3DStop?, modelAlreadyMade: Bool, earlierUnconfirmed: Bool) -> Bool {
+    modelAlreadyMade || earlierUnconfirmed || (lastStop?.creditsMayHaveBeenSpent ?? false)
 }
 
-func replicaGenerateAgainMessage(lastStop: ImageTo3DStop?, estimate: ImageTo3DCostEstimate) -> String {
+/// The notice for paid requests this session whose outcome is unconfirmed, newest first; nil when there are none.
+/// `excluding` is the record of the stop this sheet is already explaining.
+func replicaUnconfirmedNotice(_ requests: [ImageTo3DUnconfirmedRequest], overflowed: Bool, excluding: UUID? = nil,
+                              timeText: (Date) -> String = { $0.formatted(date: .omitted, time: .shortened) }) -> String? {
+    let listed = requests.filter { $0.id != excluding }
+    guard !listed.isEmpty || overflowed else { return nil }
+    let labels = listed.reversed().map { imageTo3DUnconfirmedLabel($0, timeText: timeText) }
+    let list = labels.isEmpty ? "earlier requests" : ListFormatter.localizedString(byJoining: labels)
+    let more = overflowed && !labels.isEmpty ? " and older ones" : ""
+    let services = Set(listed.map(\.service))
+    let dashboard = services.count == 1 ? "\(services.first!.title)’s dashboard" : "each service’s dashboard"
+    return "Studio couldn’t confirm what happened to \(list)\(more) this session. They may have spent credits, and a finished model may be waiting there: check \(dashboard) before generating again."
+}
+
+func replicaGenerateAgainMessage(lastStop: ImageTo3DStop?, modelAlreadyMade: Bool, earlierNotice: String?,
+                                 estimate: ImageTo3DCostEstimate) -> String {
+    var parts: [String] = []
     // The earlier request may have gone to the other service if the seller switched in Settings since.
-    let service = (lastStop?.service ?? estimate.service).title
-    let earlier: String
-    if lastStop == nil {
-        earlier = "The model from your earlier request is still here: Process Again uses it without sending anything."
-    } else if let task = lastStop?.taskID {
-        earlier = "\(service) may already be making or have made a model from the earlier request (task \(task)). Check \(service)’s dashboard first."
-    } else {
-        earlier = "\(service) may already have charged for the earlier request. Check \(service)’s dashboard first."
+    if let lastStop, lastStop.creditsMayHaveBeenSpent {
+        let service = lastStop.service.title
+        if let task = lastStop.taskID {
+            parts.append("\(service) may already be making or have made a model from the earlier request (task \(task)). Check \(service)’s dashboard first.")
+        } else {
+            parts.append("\(service) may already have charged for the earlier request. Check \(service)’s dashboard first.")
+        }
+    } else if modelAlreadyMade {
+        parts.append("The model from your earlier request is still here: Process Again uses it without sending anything.")
     }
-    return "\(earlier) Generating again sends a new request: \(estimate.summary)"
+    if let earlierNotice { parts.append(earlierNotice) }
+    parts.append("Generating again sends a new request: \(estimate.summary)")
+    return parts.joined(separator: " ")
+}
+
+/// What Close asks before it closes, or nil when it can close at once: a paid model that isn't saved, or a stop that
+/// may have spent credits (once closed, Studio can't carry on with that task).
+struct ReplicaCloseWarning: Equatable {
+    let title: String
+    let message: String
+    let confirmTitle: String
+}
+
+func replicaCloseWarning(hasUnsavedModel: Bool, lastStop: ImageTo3DStop?, service: ImageTo3DService?) -> ReplicaCloseWarning? {
+    if hasUnsavedModel {
+        let name = service?.title ?? "the service"
+        return ReplicaCloseWarning(title: "Close without saving the replica?",
+                                   message: "The model \(name) made isn’t in your library, and Studio doesn’t keep it. Getting it back means generating, and paying for, it again.",
+                                   confirmTitle: "Close Without Saving")
+    }
+    guard let lastStop, lastStop.creditsMayHaveBeenSpent else { return nil }
+    let name = lastStop.service.title
+    let task = lastStop.taskID.map { " for task \($0)" } ?? ""
+    let resume = replicaResumeAction(for: lastStop).map { " Once this closes, Studio can’t \($0.title) for it." } ?? ""
+    return ReplicaCloseWarning(title: "Close while \(name) may have charged?",
+                               message: "\(name) may have charged for this request, and may still finish the model.\(resume) Check \(name)’s dashboard\(task). Studio remembers this request until you quit, and asks before generating again.",
+                               confirmTitle: "Close")
 }
 
 // MARK: Processing on this Mac
@@ -373,6 +450,8 @@ struct ReplicaProcessed: Sendable {
     let originalTriangles: Int
     let health: MeshHealthReport
     let wallThickness: WallThicknessReport?
+    /// Downward faces steeper than 45° from vertical, as placed (`overhangShare`, PrintReview.swift).
+    let overhang: OverhangShare
     /// What Studio changed, one line each, in order.
     let changes: [String]
     let steps: [ReplicaProcessingStep]
@@ -419,36 +498,51 @@ func replicaScaledToSize(_ mesh: STLMesh, size: ReplicaSize) throws -> STLMesh {
     return try replicaPlacedOnBed(STLMesh.parse(data))
 }
 
+/// The downloaded file read as the format its content shows (`imageTo3DDetectedFormat`), whatever its link said.
+func replicaReadModel(_ data: Data) throws -> STLMesh {
+    guard let format = imageTo3DDetectedFormat(data) else {
+        throw ReplicaProcessingError.unreadable("the file isn’t an STL or 3MF model.")
+    }
+    do {
+        return try parsePreviewModel(data, format: format == .stl ? .stl : .threeMF).mesh
+    } catch {
+        throw ReplicaProcessingError.unreadable(error.localizedDescription)
+    }
+}
+
 /// The whole local pipeline, in order: read → (turn upright) → scale → repair → simplify when above `triangleTarget`
 /// → fit the size again if it drifted → check. Pure and deterministic; throws `MeshToolError.cancelled` when stopped.
 /// Repair or simplify failing (other than cancellation) is noted and the run carries on with the mesh it had: the
 /// final check reports honestly what's left. Reading and scaling failures stop the run.
-func processReplicaModel(_ data: Data, format: ImageTo3DOutputFormat, size: ReplicaSize, upAxis: ReplicaUpAxis = .z,
-                         triangleTarget: Int = replicaTriangleTarget,
+func processReplicaModel(_ data: Data, size: ReplicaSize, upAxis: ReplicaUpAxis = .z,
+                         triangleTarget: Int = replicaTriangleTarget, wallThicknessSamples: Int = wallThicknessMaximumSamples,
+                         progress: MeshToolProgress = { _, _ in }, isCancelled: () -> Bool = { false }) throws -> ReplicaProcessed {
+    progress(0, "Reading the model…")
+    let mesh = try replicaReadModel(data)
+    return try processReplicaModel(mesh: mesh, size: size, upAxis: upAxis, triangleTarget: triangleTarget,
+                                   wallThicknessSamples: wallThicknessSamples, progress: progress, isCancelled: isCancelled)
+}
+
+/// The same pipeline from a model already read (the sheet keeps the paid model read once, so Process Again is free).
+func processReplicaModel(mesh: STLMesh, size: ReplicaSize, upAxis: ReplicaUpAxis = .z,
+                         triangleTarget: Int = replicaTriangleTarget, wallThicknessSamples: Int = wallThicknessMaximumSamples,
                          progress: MeshToolProgress = { _, _ in }, isCancelled: () -> Bool = { false }) throws -> ReplicaProcessed {
     try withoutActuallyEscaping(progress) { progress in
-        try replicaProcess(data, format: format, size: size, upAxis: upAxis, triangleTarget: triangleTarget,
-                           progress: progress, isCancelled: isCancelled)
+        try replicaProcess(mesh, size: size, upAxis: upAxis, triangleTarget: triangleTarget,
+                           wallThicknessSamples: wallThicknessSamples, progress: progress, isCancelled: isCancelled)
     }
 }
 
-private func replicaProcess(_ data: Data, format: ImageTo3DOutputFormat, size: ReplicaSize, upAxis: ReplicaUpAxis,
-                            triangleTarget: Int, progress: @escaping MeshToolProgress, isCancelled: () -> Bool) throws -> ReplicaProcessed {
+private func replicaProcess(_ input: STLMesh, size: ReplicaSize, upAxis: ReplicaUpAxis, triangleTarget: Int,
+                            wallThicknessSamples: Int, progress: @escaping MeshToolProgress,
+                            isCancelled: () -> Bool) throws -> ReplicaProcessed {
     func checkCancelled() throws { if isCancelled() { throw MeshToolError.cancelled } }
     func within(_ low: Double, _ high: Double) -> MeshToolProgress {
         { fraction, stage in progress(low + (high - low) * min(max(fraction, 0), 1), stage) }
     }
-    var steps: [ReplicaProcessingStep] = []
+    var steps: [ReplicaProcessingStep] = [.read]
     var changes: [String] = []
-
-    progress(0, "Reading the model…")
-    var mesh: STLMesh
-    do {
-        mesh = try parsePreviewModel(data, format: format == .stl ? .stl : .threeMF).mesh
-    } catch {
-        throw ReplicaProcessingError.unreadable(error.localizedDescription)
-    }
-    steps.append(.read)
+    var mesh = input
     let originalTriangles = mesh.triangleCount
     try checkCancelled()
 
@@ -509,8 +603,10 @@ private func replicaProcess(_ data: Data, format: ImageTo3DOutputFormat, size: R
 
     progress(0.8, "Checking the replica…")
     guard let health = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { throw MeshToolError.cancelled }
-    let wall = analyzeWallThickness(mesh, progress: { within(0.82, 0.98)($0, "Measuring wall thickness…") }, isCancelled: isCancelled)
+    let wall = analyzeWallThickness(mesh, maximumSamples: wallThicknessSamples,
+                                    progress: { within(0.82, 0.98)($0, "Measuring wall thickness…") }, isCancelled: isCancelled)
     try checkCancelled()
+    let overhang = overhangShare(mesh)
     steps.append(.check)
 
     let stl = mesh.binarySTL()
@@ -522,7 +618,7 @@ private func replicaProcess(_ data: Data, format: ImageTo3DOutputFormat, size: R
     }
     progress(1, "Done")
     return ReplicaProcessed(mesh: readBack, stlData: stl, size: size, upAxis: upAxis, originalTriangles: originalTriangles,
-                            health: health, wallThickness: wall, changes: changes, steps: steps)
+                            health: health, wallThickness: wall, overhang: overhang, changes: changes, steps: steps)
 }
 
 /// The finished summary: size, triangles, Studio's checks. What changed is listed separately (`changes`).
@@ -536,20 +632,26 @@ func replicaSummaryLines(_ processed: ReplicaProcessed) -> [String] {
         lines.append("\(triangles.formatted()) triangles (the service sent \(processed.originalTriangles.formatted())).")
     }
     if triangles > meshToolsReinforceTriangleLimit {
-        lines.append("Above \(meshToolsReinforceTriangleLimit.formatted()) triangles, so Reinforce and Auto-improve won’t take it until it’s simplified.")
+        lines.append("Reinforce and Auto-improve need \(meshToolsReinforceTriangleLimit.formatted()) triangles or fewer. To use them, make a lighter copy with Simplify & Save Copy in Improve for printing › Repair and simplify.")
     }
     lines.append(meshRepairOutcomeLine(processed.health))
     if let wall = processed.wallThickness {
         lines.append(wallThicknessSummary(wall).line + ".")
     }
+    lines.append(printReviewOverhangLine(processed.overhang))
     return lines
 }
 
-/// Whether Studio's own checks found nothing: a sound mesh and no thin walls or small features. Only then may the
-/// sheet say "checks found no problems".
+/// Whether Studio's own checks found nothing: a sound mesh, no thin walls or small features, and overhangs on at
+/// most `replicaOverhangShareLimit` of the surface. Only then may the sheet say `replicaNoProblemsLine`.
 func replicaChecksFoundNoProblems(_ processed: ReplicaProcessed) -> Bool {
-    meshHealthIsSound(processed.health) && (processed.wallThickness.map { wallThicknessSummary($0).isClear } ?? false)
+    meshHealthIsSound(processed.health)
+        && (processed.wallThickness.map { wallThicknessSummary($0).isClear } ?? false)
+        && processed.overhang.fraction <= replicaOverhangShareLimit
 }
+
+/// What "no problems" covers, so it isn't read as more than was checked.
+let replicaNoProblemsLine = "Studio’s checks found no problems: the mesh is closed, no walls are thinner than 2 mm, no small features were found, and at most \(Int(replicaOverhangShareLimit * 100))% of the surface overhangs more than 45°. Strength and fit aren’t checked."
 
 /// Source details for the copy: where it came from, display-only. The date isn't recorded.
 func replicaSourceDetails(service: ImageTo3DService) -> ModelSourceDetails {

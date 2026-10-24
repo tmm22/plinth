@@ -243,6 +243,28 @@ final class ImageTo3DTests: XCTestCase {
         let refusal = tripoError(status: 200, body: Data(#"{"code":2008,"message":"Content policy violation"}"#.utf8), retryAfter: nil, secrets: [])
         XCTAssertEqual(refusal, .http(service: .tripo, status: 400, code: 2008, message: "Content policy violation"))
         XCTAssertFalse(imageTo3DCreateOutcomeUnknown(refusal))
+
+        // Tripo's codes never turn a 5xx, 408, 409 or redirect into a definite refusal: a create stays unknown.
+        for status in [500, 502, 503, 408, 409, 302] {
+            for code in [2010, 2000, 1007, 1000, 2008] {
+                let error = tripoError(status: status, body: Data(#"{"code":\#(code),"message":"m"}"#.utf8), retryAfter: "5", secrets: [])
+                XCTAssertEqual(error, .http(service: .tripo, status: status, code: code, message: "m"), "\(status) \(code)")
+                XCTAssertTrue(imageTo3DCreateOutcomeUnknown(error), "\(status) \(code)")
+            }
+        }
+        XCTAssertEqual(tripoError(status: 429, body: Data(#"{"code":2010}"#.utf8), retryAfter: nil, secrets: []),
+                       .paymentRequired(service: .tripo, message: ""), "a plain 4xx still reads Tripo's code")
+    }
+
+    func testTripoUnknownCreateIsNotTakenForARefusal() async {
+        // A 503 whose body carries Tripo's "not enough credits" code may still have created the task.
+        let transport = ScriptedTransport([
+            .reply(200, #"{"code":0,"data":{"file_token":"file_1"}}"#, [:]),
+            .reply(503, #"{"code":2010,"message":"Not enough credit"}"#, [:])
+        ])
+        let result = await TripoClient(apiKey: "tsk_secretkey1", transport: transport)
+            .createGeneration(image: jpeg, options: ImageTo3DOptions())
+        guard case .unknown(nil, .http(_, 503, 2010, _)) = result else { return XCTFail("\(result)") }
     }
 
     func testTripoRequestBodies() {
@@ -653,6 +675,20 @@ final class ImageTo3DTests: XCTestCase {
                                                      makeFolder: { try self.makeFolder() })
         guard case .success(let model) = result else { return XCTFail("\(result)") }
         XCTAssertEqual(model.conversionTaskID, "task_conv")
+        XCTAssertTrue(transport.posts.isEmpty)
+    }
+
+    func testAPaidModelWithoutALinkCanBeFetchedAgain() async {
+        // A finished conversion with an unusual link is accepted; one with none stops with a resume point, never a create.
+        let transport = ScriptedTransport([
+            .reply(200, #"{"code":0,"data":{"task_id":"task_conv","status":"success","output":{}}}"#, [:])
+        ])
+        let point = ImageTo3DResumePoint(sourceTaskID: "task_gen", sourceKind: .generation, conversionTaskID: "task_conv")
+        let result = await resumeImageTo3DGeneration(provider: TripoClient(apiKey: "tsk_secretkey1", transport: transport), from: point,
+                                                     options: ImageTo3DOptions(), sleep: { _ in }, makeFolder: { try self.makeFolder() })
+        guard case .failure(let stop) = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(stop.reason, .downloadFailed)
+        XCTAssertEqual(stop.resumePoint, point)
         XCTAssertTrue(transport.posts.isEmpty)
     }
 

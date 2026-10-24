@@ -22,9 +22,9 @@ extension ImageTo3DService {
     var settingsPlanNote: String {
         switch self {
         case .meshy:
-            return "Meshy’s API needs a paid plan: free accounts can’t make API keys. A model costs about \(meshyImageTo3DMeshOnlyCredits) credits (mesh only), Repair Printability about \(meshyRepairPrintabilityCredits + meshyConvertCredits) with its conversion, and Analyze Printability is free. Meshy deletes models made through the API after 3 days."
+            return "Meshy’s API needs a paid plan: free accounts can’t make API keys. A model costs about \(meshyImageTo3DMeshOnlyCredits) credits (mesh only), and Check Printability with Meshy is free. Meshy deletes models made through the API after 3 days."
         case .tripo:
-            return "Tripo’s API is paid for with credits (1 credit = US$0.01); there’s no free API plan. A model costs about \(tripoImageToModelCredits + tripoConvertAdvancedCredits) credits, including its conversion to STL or 3MF. Keys work only on the Tripo site they were made on."
+            return "Tripo’s API is paid for with credits (1 credit = US$0.01); there’s no free API plan. A replica costs about \(tripoImageToModelCredits + tripoConvertBasicCredits) credits, including its conversion to STL. Keys work only on the Tripo site they were made on."
         }
     }
 

@@ -772,6 +772,39 @@ func makeImageTo3DProvider(_ service: ImageTo3DService, key: String, tripoRegion
     }
 }
 
+// MARK: Unconfirmed paid requests
+
+/// A paid request (a generation or conversion) whose outcome Studio couldn't confirm: its create may have gone
+/// through (timeout, 5xx, 408/409, an unreadable reply, the sheet closed mid-request), or its task was left running or
+/// undelivered. Memory only, kept for the whole app session so that generating again in any sheet asks first.
+struct ImageTo3DUnconfirmedRequest: Equatable, Sendable, Identifiable {
+    let id: UUID
+    let service: ImageTo3DService
+    /// The generation (or repair) task, when known: how a later success confirms it.
+    let sourceTaskID: String?
+    /// The latest task Studio knows of, for the dashboard.
+    let taskID: String?
+    let time: Date
+}
+
+/// The most records kept; older ones drop off, and `unconfirmedRequestsOverflowed` keeps the guard.
+let imageTo3DUnconfirmedRequestLimit = 10
+
+/// Whether a stop leaves a paid request unaccounted for: credits may have gone and no model was delivered. A task
+/// the service ended (failed, banned, expired) made nothing to duplicate, so it isn't kept.
+func imageTo3DStopIsUnconfirmed(_ stop: ImageTo3DStop) -> Bool {
+    guard stop.creditsMayHaveBeenSpent else { return false }
+    if case .taskEnded = stop.reason { return false }
+    return true
+}
+
+/// "Meshy at 14:32 (task t1)".
+func imageTo3DUnconfirmedLabel(_ request: ImageTo3DUnconfirmedRequest,
+                               timeText: (Date) -> String = { $0.formatted(date: .omitted, time: .shortened) }) -> String {
+    let task = request.taskID.map { " (task \($0))" } ?? ""
+    return "\(request.service.title) at \(timeText(request.time))\(task)"
+}
+
 // MARK: Connection state
 
 extension ImageTo3DService {
@@ -811,6 +844,37 @@ extension ImageTo3DService {
     var busy: Bool { activeWork > 0 }
     func beginWork() { activeWork += 1 }
     func endWork() { activeWork = max(0, activeWork - 1) }
+
+    /// Paid requests this session whose outcome is unconfirmed, oldest first. Memory only: never saved, and kept
+    /// through key and service changes until quit.
+    @Published private(set) var unconfirmedRequests: [ImageTo3DUnconfirmedRequest] = []
+    /// Set once a record dropped off the list, so the guard stays for the rest of the session.
+    @Published private(set) var unconfirmedRequestsOverflowed = false
+
+    var hasUnconfirmedRequests: Bool { !unconfirmedRequests.isEmpty || unconfirmedRequestsOverflowed }
+
+    /// Records `stop` when it leaves a paid request unaccounted for (`imageTo3DStopIsUnconfirmed`); a later stop of the
+    /// same task replaces its earlier record. Returns the record's ID, or nil when nothing was recorded.
+    @discardableResult
+    func rememberUnconfirmed(_ stop: ImageTo3DStop, at time: Date = Date()) -> UUID? {
+        guard imageTo3DStopIsUnconfirmed(stop) else { return nil }
+        let source = stop.resumePoint?.sourceTaskID ?? stop.taskID
+        if let source {
+            unconfirmedRequests.removeAll { $0.service == stop.service && $0.sourceTaskID == source }
+        }
+        let record = ImageTo3DUnconfirmedRequest(id: UUID(), service: stop.service, sourceTaskID: source, taskID: stop.taskID, time: time)
+        unconfirmedRequests.append(record)
+        if unconfirmedRequests.count > imageTo3DUnconfirmedRequestLimit {
+            unconfirmedRequests.removeFirst(unconfirmedRequests.count - imageTo3DUnconfirmedRequestLimit)
+            unconfirmedRequestsOverflowed = true
+        }
+        return record.id
+    }
+
+    /// A model from this task arrived, so its earlier stops are accounted for.
+    func confirmDelivered(service: ImageTo3DService, sourceTaskID: String) {
+        unconfirmedRequests.removeAll { $0.service == service && $0.sourceTaskID == sourceTaskID }
+    }
 
     func hasKey(_ service: ImageTo3DService) -> Bool { savedKeys.contains(service) }
     /// Whether the seller agreed to send photos to `service` (Settings › Design Tools › Photo sharing).
@@ -886,6 +950,15 @@ protocol ImageTo3DProvider: Sendable {
 struct ImageTo3DModelLink: Equatable, Sendable {
     let url: URL
     let format: ImageTo3DOutputFormat
+}
+
+/// What a downloaded model really is, from its content rather than its link: a ZIP package is 3MF, anything else is
+/// read as STL. Nil for a glTF binary (GLB) or an empty file. The caller still parses it before trusting it.
+func imageTo3DDetectedFormat(_ data: Data) -> ImageTo3DOutputFormat? {
+    guard !data.isEmpty else { return nil }
+    if data.starts(with: [0x50, 0x4B, 0x03, 0x04]) { return .threeMF }
+    if data.starts(with: Array("glTF".utf8)) { return nil }
+    return .stl
 }
 
 /// The printable link in `urls` for `preferred`, else the other printable format.
@@ -1172,7 +1245,8 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
     let lastID = conversionID ?? point.sourceTaskID
     let downloadPoint = ImageTo3DResumePoint(sourceTaskID: point.sourceTaskID, sourceKind: point.sourceKind, conversionTaskID: conversionID)
     guard let link = provider.modelLink(in: finished, kind: finishedKind, preferred: options.format) else {
-        return stop(.downloadFailed, .downloading, lastID, "\(service.title) didn’t return an STL or 3MF link.", resume: nil)
+        // The model is made (and paid for): reading the finished task again may return the link, and sends no create.
+        return stop(.downloadFailed, .downloading, lastID, "\(service.title) didn’t return an STL or 3MF link.", resume: downloadPoint)
     }
     if Task.isCancelled { return stop(.cancelled, .downloading, lastID, "", resume: downloadPoint) }
     progress(ImageTo3DProgress(stage: .downloading, taskID: lastID, state: .succeeded, percent: nil))
