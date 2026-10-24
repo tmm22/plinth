@@ -13,10 +13,10 @@ import Foundation
 //     task shape. Studio uses it for two to four photos.
 //   - Options sent (docs.meshy.ai/api/image-to-3d, /multi-image-to-3d): `should_remesh: false` (Meshy: "For the
 //     highest-quality 3D model, set it to false"; `topology` and `target_polycount` only apply when remeshing, so they
-//     aren't sent — the triangle count is whatever Meshy generates, undocumented, and Studio simplifies on the Mac);
-//     `image_enhancement` (default true, "optimize the input images", which can change details) only when the seller
-//     ticks it; `geometry_resolution` `4k` (single image) or `2k` (multi-image accepts only `2k`) for Higher detail,
-//     +5 credits; `symmetry_mode` is deprecated and never sent.
+//     aren't sent — the triangle count is whatever Meshy generates, undocumented; `decimation_mode` too applies only
+//     when remeshing, so nothing caps it, and a model over 128 MB is a final stop); `image_enhancement: false` always
+//     (default true, "optimize the input images", which can change details); `geometry_resolution: 2k` for Higher
+//     detail, +5 credits (4k, single image only, isn't used); `symmetry_mode` is deprecated and never sent.
 //   - Analyze Printability (free): `POST /openapi/v1/print/analyze` from a finished task (the docs list Image to 3D and
 //     Multi-Image to 3D), read `GET /openapi/v1/print/analyze/{id}`; `printability` holds the verdict and counts.
 //   - Repair Printability (10 credits): `POST /openapi/v1/print/repair`, read `GET /openapi/v1/print/repair/{id}`.
@@ -39,25 +39,25 @@ let meshyConvertCredits = 1
 /// The model asked for, pinned so the published price (20 credits, mesh only) stays right.
 let meshyAIModel = "meshy-7.1"
 let meshyAPIHost = "api.meshy.ai"
-/// Higher detail's `geometry_resolution`: 4k ("for the most surface detail") with one photo; Multi-Image to 3D accepts
-/// only 2k. Both cost the same surcharge.
-let meshySingleImageHigherDetailResolution = "4k"
-let meshyMultiImageHigherDetailResolution = "2k"
+/// Higher detail's `geometry_resolution`, for one photo or several: 2k (Multi-Image to 3D accepts only 2k). 4k costs the
+/// same but would make a still larger model whose size Meshy doesn't document, so Studio never asks for it.
+let meshyHigherDetailResolution = "2k"
 /// The size range Analyze and Repair Printability accept for `intended_print_longest_side_mm`.
 let meshyAnalyzeMaxSideMM = 1...1000.0
 
 /// The options both generation endpoints share: meshy-7.1, mesh only, not remeshed (Meshy keeps the detail it
-/// generates; Studio simplifies on the Mac), photo enhancement only when asked for, only the printable format, and
+/// generates; Studio simplifies on the Mac), no photo enhancement (Meshy would redraw the photos), only the printable
+/// format, and
 /// `auto_size` with `origin_at: bottom` when the seller wants the base at the origin.
-private func meshyGenerationBody(options: ImageTo3DOptions, higherDetailResolution: String) -> [String: Any] {
+private func meshyGenerationBody(options: ImageTo3DOptions) -> [String: Any] {
     var body: [String: Any] = [
         "ai_model": meshyAIModel,
         "should_texture": false,
         "should_remesh": false,
-        "image_enhancement": options.enhancePhoto,
+        "image_enhancement": false,
         "target_formats": [options.format.rawValue]
     ]
-    if options.higherDetail { body["geometry_resolution"] = higherDetailResolution }
+    if options.higherDetail { body["geometry_resolution"] = meshyHigherDetailResolution }
     if options.originAtBottom {
         body["auto_size"] = true
         body["origin_at"] = "bottom"
@@ -67,14 +67,14 @@ private func meshyGenerationBody(options: ImageTo3DOptions, higherDetailResoluti
 
 /// The JSON body for an Image to 3D create (one photo).
 func meshyImageTo3DBody(imageDataURI: String, options: ImageTo3DOptions) -> [String: Any] {
-    var body = meshyGenerationBody(options: options, higherDetailResolution: meshySingleImageHigherDetailResolution)
+    var body = meshyGenerationBody(options: options)
     body["image_url"] = imageDataURI
     return body
 }
 
 /// The JSON body for a Multi-Image to 3D create: the data URIs in order, front first.
 func meshyMultiImageTo3DBody(imageDataURIs: [String], options: ImageTo3DOptions) -> [String: Any] {
-    var body = meshyGenerationBody(options: options, higherDetailResolution: meshyMultiImageHigherDetailResolution)
+    var body = meshyGenerationBody(options: options)
     body["image_urls"] = imageDataURIs
     return body
 }

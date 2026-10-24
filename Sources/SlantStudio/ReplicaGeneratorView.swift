@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 // The Generate a Replica from an Image sheet (ReplicaGenerator.swift holds the pure pipeline and rules). Opened from
 // Models › Import and File; never from a shortcut. Everything typed or chosen here, the photos (a front view and up to
 // three more) and the downloaded model live in this sheet's memory and go when it closes; closing cancels running
-// work. Only Meshy's photo touch-up choice is remembered (a plain preference). Paid requests whose outcome is
+// work. Nothing chosen here is remembered. Paid requests whose outcome is
 // unconfirmed are remembered for the session in `ImageTo3DConnection` (service, task and time only).
 
 extension StudioStore {
@@ -71,6 +71,8 @@ struct GeneratedReplicaFile {
     @Published private(set) var processingFraction = 0.0
     @Published private(set) var processingStage = ""
     @Published private(set) var processingProblem: String?
+    /// False when processing failed in a way Process Again can only repeat (a model too detailed to simplify enough).
+    @Published private(set) var processAgainCanHelp = true
     @Published private(set) var processed: ReplicaProcessed?
     @Published private(set) var preview: NSImage?
     @Published private(set) var savedModelIDs: [UUID] = []
@@ -111,11 +113,10 @@ struct GeneratedReplicaFile {
 
     /// Sends the photos once. One photo goes to the single-image endpoint, two to four to the multi-view one.
     func start(provider: ImageTo3DProvider, views: [ImageTo3DViewImage], inputs: ReplicaInputs, higherDetail: Bool = false,
-               enhancePhoto: Bool = false, host: ReplicaLibraryHost) {
+               host: ReplicaLibraryHost) {
         guard !isRunning, imageTo3DViewsProblem(views) == nil else { return }
         self.provider = provider
-        let options = replicaGenerationOptions(for: provider.service, purpose: inputs.purpose, higherDetail: higherDetail,
-                                               enhancePhoto: enhancePhoto)
+        let options = replicaGenerationOptions(for: provider.service, purpose: inputs.purpose, higherDetail: higherDetail)
         self.options = options
         estimate = provider.estimatedCost(for: options, photoCount: views.count)
         requestedViews = imageTo3DOrderedViews(views).map(\.view)
@@ -203,6 +204,11 @@ struct GeneratedReplicaFile {
             }
             stopping = false
             switch read {
+            case .failure(ReplicaProcessingError.modelTooLarge):
+                // Final: reading it again would fail the same way, so there's no resume point.
+                stopped(ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: model.service,
+                                      taskID: model.conversionTaskID ?? model.sourceTaskID, detail: "", requestKind: model.sourceKind),
+                        host: host)
             case .failure(let error):
                 let detail = (error as? ReplicaProcessingError)?.errorDescription ?? "Studio couldn’t read the downloaded file."
                 stopped(ImageTo3DStop(reason: .downloadFailed, stage: .downloading, service: model.service,
@@ -277,6 +283,7 @@ struct GeneratedReplicaFile {
         processingStage = "Reading the model…"
         processed = nil
         preview = nil
+        processAgainCanHelp = true
         let mesh = generated.mesh, samples = wallThicknessSamples, ceiling = inputs.purpose.triangleCeiling
         let report: @Sendable (Double, String) -> Void = { [weak self] fraction, stage in
             DispatchQueue.main.async {
@@ -314,13 +321,15 @@ struct GeneratedReplicaFile {
         case .success:
             failProcessing(MeshToolError.cancelled.localizedDescription)
         case .failure(let error):
-            failProcessing(stopped || (error as? MeshToolError) == .cancelled
-                           ? MeshToolError.cancelled.localizedDescription : error.localizedDescription)
+            let cancelled = stopped || (error as? MeshToolError) == .cancelled
+            failProcessing(cancelled ? MeshToolError.cancelled.localizedDescription : error.localizedDescription,
+                           processAgainCanHelp: cancelled || replicaProcessingFailureAllowsProcessAgain(error))
         }
     }
 
-    private func failProcessing(_ message: String) {
+    private func failProcessing(_ message: String, processAgainCanHelp: Bool = true) {
         processingProblem = message
+        self.processAgainCanHelp = processAgainCanHelp
         phase = .processingFailed
     }
 
@@ -406,6 +415,10 @@ struct ReplicaPhotoSlot {
     var name: String?
     var problem: String?
     var preparing = false
+
+    /// A photo that couldn't be prepared: the slot shows why and holds no photo, so a failed Replace… never leaves the
+    /// old photo to be sent.
+    static func failed(_ problem: String) -> ReplicaPhotoSlot { ReplicaPhotoSlot(problem: problem) }
 }
 
 struct ReplicaGeneratorSheet: View {
@@ -416,8 +429,6 @@ struct ReplicaGeneratorSheet: View {
     @State private var slots: [ImageTo3DPhotoView: ReplicaPhotoSlot] = [:]
     @State private var photoJobs: [ImageTo3DPhotoView: Task<Void, Never>] = [:]
     @State private var dropTarget: ImageTo3DPhotoView?
-    /// Remembered: holds no customer data, and costs nothing.
-    @AppStorage(replicaMeshyPhotoEnhancementDefaultsKey) private var enhancePhoto = false
     /// Never remembered: it costs more every time.
     @State private var higherDetail = false
     /// What the cost shown covered when Generate was pressed; the send goes ahead only if nothing changed since.
@@ -444,8 +455,8 @@ struct ReplicaGeneratorSheet: View {
                             tripoRegion: connection.tripoRegion)
     }
     private var currentPlan: ReplicaRequestPlan {
-        ReplicaRequestPlan(service: service, views: views.map(\.view), higherDetail: higherDetail,
-                           enhancePhoto: service == .meshy && enhancePhoto, credits: estimate.credits)
+        ReplicaRequestPlan(service: service, views: views.map(\.view),
+                           higherDetail: higherDetail && replicaHigherDetailAvailable(for: purpose), credits: estimate.credits)
     }
     private var inputs: ReplicaInputs? { replicaInputs(name: name, axis: axis, sizeText: sizeText, purpose: purpose) }
     private var blockedReasons: [String] {
@@ -486,6 +497,10 @@ struct ReplicaGeneratorSheet: View {
         .frame(minWidth: 560, idealWidth: 620, minHeight: 520, idealHeight: 720)
         .interactiveDismissDisabled(session.isRunning || currentCloseWarning != nil)
         .imageSharingConsent($consentRequest)
+        .onChange(of: purpose) { _, newPurpose in
+            // A functional part is simplified to 20,000 triangles: higher detail would be paid for and lost.
+            if !replicaHigherDetailAvailable(for: newPurpose) { higherDetail = false }
+        }
         .onDisappear {
             for job in photoJobs.values { job.cancel() }
             photoJobs = [:]
@@ -498,8 +513,11 @@ struct ReplicaGeneratorSheet: View {
 
     private var photoSection: some View {
         Section {
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(ImageTo3DPhotoView.allCases) { view in photoSlot(view) }
+            // A fixed 2 × 2 grid: two 230 pt cells and 12 pt between them is 472 pt, inside a grouped form's row
+            // in the 560 pt minimum-width sheet (about 500 pt after the form's margins).
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) { photoSlot(.front); photoSlot(.left) }
+                HStack(alignment: .top, spacing: 12) { photoSlot(.back); photoSlot(.right) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(ImageTo3DPhotoView.allCases.filter { slots[$0]?.problem != nil }) { view in
@@ -508,6 +526,7 @@ struct ReplicaGeneratorSheet: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(replicaPhotoAdvice)
+                Text(replicaPhotoSideAdvice)
                 Text(replicaPhotoDistanceAdvice)
             }
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -519,10 +538,11 @@ struct ReplicaGeneratorSheet: View {
         }
     }
 
-    /// One labelled slot: drop a photo on it, or Choose…; Remove clears it.
+    /// One labelled slot, 230 pt wide: an 88 pt drop area beside its label and buttons. Choose… or drop a photo;
+    /// Remove clears it.
     private func photoSlot(_ view: ImageTo3DPhotoView) -> some View {
         let slot = slots[view] ?? ReplicaPhotoSlot()
-        return VStack(alignment: .leading, spacing: 4) {
+        return HStack(alignment: .top, spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(dropTarget == view ? Color.accentColor : Color.secondary.opacity(0.4),
@@ -533,11 +553,11 @@ struct ReplicaGeneratorSheet: View {
                 } else if slot.preparing {
                     ProgressView().controlSize(.small)
                 } else {
-                    Text(view == .front ? "Drop the front photo here" : "Drop a photo here")
+                    Text("Drop a photo here")
                         .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(6)
                 }
             }
-            .frame(width: 104, height: 104)
+            .frame(width: 88, height: 88)
             .dropDestination(for: URL.self) { urls, _ in
                 guard !inputsLocked, let url = urls.first(where: \.isFileURL) else { return false }
                 choosePhoto(url, for: view)
@@ -545,23 +565,30 @@ struct ReplicaGeneratorSheet: View {
             } isTargeted: { targeted in
                 if targeted { dropTarget = view } else if dropTarget == view { dropTarget = nil }
             }
-            Text(view == .front ? "\(view.title) (required)" : "\(view.title) (optional)")
-                .font(.caption.weight(view == .front ? .semibold : .regular))
-            if let name = slot.name {
-                Text(name).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).frame(width: 104, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(replicaPhotoSlotLabel(view))
+                    .font(.caption.weight(view == .front ? .semibold : .regular))
+                    .help(replicaPhotoSlotHelp(view) ?? "")
+                if let name = slot.name {
+                    Text(name).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                HStack(spacing: 6) {
+                    Button(slot.image == nil ? "Choose…" : "Replace…") { pickPhoto(for: view) }
+                        .controlSize(.small)
+                        .disabled(inputsLocked || slot.preparing)
+                        .accessibilityLabel(slot.image == nil ? "Choose \(view.title.lowercased()) photo" : "Replace \(view.title.lowercased()) photo")
+                    if slot.image != nil || slot.problem != nil {
+                        Button("Remove") { removePhoto(view) }
+                            .controlSize(.small)
+                            .disabled(inputsLocked)
+                            .accessibilityLabel("Remove \(view.title.lowercased()) photo")
+                    }
+                }
             }
-            Button(slot.image == nil ? "Choose…" : "Replace…") { pickPhoto(for: view) }
-                .controlSize(.small)
-                .disabled(inputsLocked || slot.preparing)
-                .accessibilityLabel(slot.image == nil ? "Choose \(view.title.lowercased()) photo" : "Replace \(view.title.lowercased()) photo")
-            if slot.image != nil || slot.problem != nil {
-                Button("Remove") { removePhoto(view) }
-                    .controlSize(.small)
-                    .disabled(inputsLocked)
-                    .accessibilityLabel("Remove \(view.title.lowercased()) photo")
-            }
+            .frame(width: 132, alignment: .leading)
         }
-        .frame(width: 112, alignment: .leading)
+        .frame(width: 230, alignment: .leading)
+        .help(replicaPhotoSlotHelp(view) ?? "")
     }
 
     private var detailsSection: some View {
@@ -611,17 +638,9 @@ struct ReplicaGeneratorSheet: View {
                     Text(connection.hasKey(service) ? "Key saved" : "No key").foregroundStyle(.secondary)
                 }
             }
-            if service == .meshy {
-                Toggle("Let Meshy touch up the photos", isOn: $enhancePhoto)
-                    .disabled(inputsLocked)
-                if enhancePhoto {
-                    Text(replicaPhotoEnhancementNote).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
             Toggle("Higher detail", isOn: $higherDetail)
-                .disabled(inputsLocked)
-            Text(replicaHigherDetailNote(service: service, photoCount: max(1, views.count)))
+                .disabled(inputsLocked || !replicaHigherDetailAvailable(for: purpose))
+            Text(replicaHigherDetailAvailable(for: purpose) ? replicaHigherDetailNote(service: service) : replicaHigherDetailFunctionalNote)
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(replicaCostLine(estimate, photoCount: views.count)).font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -679,8 +698,10 @@ struct ReplicaGeneratorSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Label(session.processingProblem ?? "The replica wasn’t processed.", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                    Text("The model the service made is still here. Change the details above if needed, then Process Again. Nothing is sent or charged.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if session.processAgainCanHelp {
+                        Text("The model the service made is still here. Change the details above if needed, then Process Again. Nothing is sent or charged.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             case .processed, .saved:
                 if let processed = session.processed { resultView(processed) }
@@ -832,7 +853,7 @@ struct ReplicaGeneratorSheet: View {
                 if session.generated != nil { processAgainButton }
                 generateButton
             case .processingFailed:
-                processAgainButton
+                if session.processAgainCanHelp { processAgainButton }
                 generateButton
             case .processed:
                 if inputs != session.lastInputs { processAgainButton }
@@ -880,6 +901,8 @@ struct ReplicaGeneratorSheet: View {
         Binding(get: { closeWarning != nil }, set: { if !$0 { closeWarning = nil } })
     }
 
+    private var generateButtonTitle: String { replicaGenerateButtonTitle(firstRequest: session.phase == .ready) }
+
     private var processAgainButton: some View {
         Button("Process Again") { if let inputs { session.process(inputs: inputs, upAxis: session.lastUpAxis) } }
             .disabled(inputs == nil)
@@ -887,9 +910,11 @@ struct ReplicaGeneratorSheet: View {
     }
 
     /// Never the default button and no shortcut: it spends the seller's credits.
+    /// The estimated credits stay visible beside it, not only in its help.
     @ViewBuilder
     private var generateButton: some View {
-        let button = Button(session.phase == .ready ? "Generate Replica" : "Generate Again…") { requestGenerate() }
+        Text(replicaFooterCostLabel(estimate)).font(.callout).foregroundStyle(.secondary).fixedSize()
+        let button = Button(generateButtonTitle) { requestGenerate() }
             .disabled(!blockedReasons.isEmpty || session.isRunning)
             .help("Sends the \(views.count > 1 ? "photos" : "photo") to \(service.title) once. \(estimate.summary)")
         if session.phase == .processed {
@@ -903,9 +928,7 @@ struct ReplicaGeneratorSheet: View {
 
     private func pickPhoto(for view: ImageTo3DPhotoView) {
         let panel = NSOpenPanel()
-        panel.message = view == .front
-            ? "Choose a photo of the object’s front, on a plain background."
-            : "Choose a photo of the object’s \(view.title.lowercased()), with the same lighting as the front photo."
+        panel.message = replicaPhotoPickerMessage(view)
         panel.allowedContentTypes = [.jpeg, .png, .heic]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -937,20 +960,17 @@ struct ReplicaGeneratorSheet: View {
             }.value
             guard !Task.isCancelled else { return }
             photoJobs[view] = nil
-            var updated = slots[view] ?? ReplicaPhotoSlot()
-            updated.preparing = false
             switch result {
             case .success(let prepared):
                 let image = ImageTo3DImage(data: prepared.data, mediaType: prepared.mediaType.rawValue)
                 if let problem = imageTo3DImageProblem(image) {
-                    updated.problem = problem
+                    slots[view] = .failed(problem)
                 } else {
-                    updated = ReplicaPhotoSlot(image: image, preview: NSImage(data: prepared.data), name: url.lastPathComponent)
+                    slots[view] = ReplicaPhotoSlot(image: image, preview: NSImage(data: prepared.data), name: url.lastPathComponent)
                 }
             case .failure(let error):
-                updated.problem = error.localizedDescription
+                slots[view] = .failed(error.localizedDescription)
             }
-            slots[view] = updated
         }
         photoJobs[view] = job
     }
@@ -1002,7 +1022,7 @@ struct ReplicaGeneratorSheet: View {
     private func start(_ plan: ReplicaRequestPlan) {
         guard blockedReasons.isEmpty, !session.isRunning, let inputs else { return }
         guard currentPlan == plan else {
-            startProblem = "The photos or options changed after the cost was shown, so nothing was sent. Check the cost, then choose Generate Replica again."
+            startProblem = replicaPlanChangedMessage(buttonTitle: generateButtonTitle)
             return
         }
         let provider: ImageTo3DProvider
@@ -1010,8 +1030,7 @@ struct ReplicaGeneratorSheet: View {
             startProblem = imageTo3DRedacted((error as? ImageTo3DError)?.userMessage ?? error.localizedDescription)
             return
         }
-        session.start(provider: provider, views: views, inputs: inputs, higherDetail: plan.higherDetail,
-                      enhancePhoto: plan.enhancePhoto, host: store)
+        session.start(provider: provider, views: views, inputs: inputs, higherDetail: plan.higherDetail, host: store)
     }
 
     private func close() {

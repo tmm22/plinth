@@ -216,7 +216,8 @@ func simplifyMesh(_ mesh: STLMesh, options: MeshSimplifyOptions = MeshSimplifyOp
 
     progress(0.1, "Ranking edges…")
     var heap = CollapseHeap()
-    heap.items.reserveCapacity(edges.count * 2)
+    // Room for the edges plus the pushes after collapses, so the heap doesn't reallocate at its largest.
+    heap.items.reserveCapacity(edges.count * 3)
     for (n, key) in edges.enumerated() {
         if n % 8192 == 0, isCancelled() { throw MeshToolError.cancelled }
         let u = Int32(key >> 32), v = Int32(key & 0xFFFF_FFFF)

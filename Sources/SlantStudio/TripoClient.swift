@@ -188,7 +188,7 @@ func tripoUploadError(_ error: ImageTo3DError, which: String, count: Int) -> Ima
         return error
     case .http(_, 401, _, _):
         return error
-    case .http, .downloadRefused:
+    case .http, .downloadRefused, .modelTooLarge:
         return .invalidInput("\(error.userMessage) \(nothing)")
     case .transport(let message):
         return .invalidInput("Studio couldn’t reach Tripo: \(message) \(nothing)")

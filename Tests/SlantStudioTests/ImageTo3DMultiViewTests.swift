@@ -6,6 +6,7 @@ private final class MultiViewTransport: ImageTo3DTransport, @unchecked Sendable 
     private let lock = NSLock()
     private var replies: [(Int, String)]
     private var sent: [URLRequest] = []
+    var downloadError: Error?
 
     init(_ replies: [(Int, String)]) { self.replies = replies }
 
@@ -22,6 +23,7 @@ private final class MultiViewTransport: ImageTo3DTransport, @unchecked Sendable 
     }
 
     func download(_ url: URL, into folder: URL, fileName: String, maxBytes: Int64) async throws -> URL {
+        if let downloadError { throw downloadError }
         let file = folder.appendingPathComponent(fileName)
         try Data("solid test\nendsolid test\n".utf8).write(to: file)
         return file
@@ -88,16 +90,16 @@ final class ImageTo3DMultiViewTests: XCTestCase {
         XCTAssertEqual(plain["should_remesh"] as? Bool, false, "Meshy: leaving it off gives the highest-quality model")
         XCTAssertNil(plain["topology"])
         XCTAssertNil(plain["target_polycount"])
-        XCTAssertEqual(plain["image_enhancement"] as? Bool, false, "Meshy redraws the photo unless told not to")
+        XCTAssertEqual(plain["image_enhancement"] as? Bool, false, "Meshy redraws the photo unless told not to; never sent true")
         XCTAssertNil(plain["geometry_resolution"])
         XCTAssertNil(plain["symmetry_mode"], "deprecated")
         XCTAssertEqual(plain["should_texture"] as? Bool, false)
         XCTAssertEqual(plain["ai_model"] as? String, "meshy-7.1")
         XCTAssertNil(plain["image_urls"])
 
-        let extras = meshyImageTo3DBody(imageDataURI: "x", options: ImageTo3DOptions(higherDetail: true, enhancePhoto: true))
-        XCTAssertEqual(extras["image_enhancement"] as? Bool, true)
-        XCTAssertEqual(extras["geometry_resolution"] as? String, "4k", "one photo: the most surface detail")
+        let extras = meshyImageTo3DBody(imageDataURI: "x", options: ImageTo3DOptions(higherDetail: true))
+        XCTAssertEqual(extras["image_enhancement"] as? Bool, false)
+        XCTAssertEqual(extras["geometry_resolution"] as? String, "2k", "never 4k: the same price, and a larger model of undocumented size")
 
         let multi = meshyMultiImageTo3DBody(imageDataURIs: ["data:image/png;base64,AQ==", "data:image/jpeg;base64,Ag=="],
                                             options: ImageTo3DOptions(higherDetail: true))
@@ -125,7 +127,7 @@ final class ImageTo3DMultiViewTests: XCTestCase {
             (200, #"{"id":"m1","status":"SUCCEEDED","progress":100,"model_urls":{"stl":"https://assets.meshy.ai/m1/model.stl?Expires=1"}}"#)
         ])
         let result = await runImageTo3DGeneration(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport),
-                                                  views: views([.right, .front, .back]), options: ImageTo3DOptions(enhancePhoto: true),
+                                                  views: views([.right, .front, .back]), options: ImageTo3DOptions(),
                                                   sleep: { _ in }, makeFolder: { try self.makeFolder() })
         guard case .success(let model) = result else { return XCTFail("\(result)") }
         XCTAssertEqual(model.sourceKind, .multiImageGeneration)
@@ -134,7 +136,7 @@ final class ImageTo3DMultiViewTests: XCTestCase {
         let sent = body(transport.requests[0])
         XCTAssertEqual(sent["image_urls"] as? [String], [meshyImageDataURI(png), meshyImageDataURI(jpeg), meshyImageDataURI(jpeg)])
         XCTAssertTrue((sent["image_urls"] as? [String])?.first?.hasPrefix("data:image/png;base64,") == true, "the PNG keeps its media type")
-        XCTAssertEqual(sent["image_enhancement"] as? Bool, true)
+        XCTAssertEqual(sent["image_enhancement"] as? Bool, false)
     }
 
     func testKeepWaitingOnAMultiImageTaskReadsItsOwnEndpoint() async {
@@ -225,8 +227,7 @@ final class ImageTo3DMultiViewTests: XCTestCase {
         let detailed = tripoImageToModelBody(fileToken: "f", options: ImageTo3DOptions(targetTriangles: 100_000, higherDetail: true))
         XCTAssertEqual(detailed["face_limit"] as? Int, 100_000)
         XCTAssertEqual(detailed["geometry_quality"] as? String, "detailed")
-        XCTAssertNil(tripoImageToModelBody(fileToken: "f", options: ImageTo3DOptions(enhancePhoto: true))["image_enhancement"],
-                     "Meshy's touch-up never reaches Tripo")
+        XCTAssertNil(tripoImageToModelBody(fileToken: "f", options: ImageTo3DOptions())["image_enhancement"])
         let multiview = tripoMultiviewToModelBody(fileTokens: [(.front, "a"), (.back, "b")], options: ImageTo3DOptions())
         XCTAssertEqual(multiview["inputs"] as? [[String: String]], [["front": "a"], ["back": "b"]])
         XCTAssertNil(tripoConvertBody(taskID: "t", options: ImageTo3DOptions(originAtBottom: false))["face_limit"],
@@ -304,7 +305,6 @@ final class ImageTo3DMultiViewTests: XCTestCase {
         XCTAssertEqual(meshyDetail.credits, 25)
         XCTAssertEqual(meshyDetail.summary,
                        "About 25 Meshy credits (Multi-Image to 3D, mesh only 20 + 5 for higher detail). Approximate: Meshy’s prices may have changed.")
-        XCTAssertEqual(meshy.estimatedCost(for: ImageTo3DOptions(enhancePhoto: true)).credits, 20, "the touch-up is free")
 
         let tripo = TripoClient(apiKey: "tsk_testkey123", transport: transport)
         let plain = ImageTo3DOptions(originAtBottom: false)
@@ -317,21 +317,57 @@ final class ImageTo3DMultiViewTests: XCTestCase {
         XCTAssertEqual(tripoDetail.breakdown, "multiview to model 20 + 20 for higher detail, conversion to STL 5")
         XCTAssertEqual(tripo.estimatedCost(for: ImageTo3DOptions(higherDetail: true)).credits, 50)
 
-        XCTAssertEqual(replicaCostEstimate(service: .meshy, photoCount: 3, higherDetail: true).credits, 25)
-        XCTAssertEqual(replicaCostEstimate(service: .tripo, photoCount: 2, higherDetail: true).credits, 45)
+        XCTAssertEqual(replicaCostEstimate(service: .meshy, purpose: .display, photoCount: 3, higherDetail: true).credits, 25)
+        XCTAssertEqual(replicaCostEstimate(service: .tripo, purpose: .display, photoCount: 2, higherDetail: true).credits, 45)
+        XCTAssertEqual(replicaCostEstimate(service: .tripo, purpose: .functional, photoCount: 2, higherDetail: true).credits, 25,
+                       "a functional part never pays for detail it would lose")
         XCTAssertEqual(replicaCostEstimate(service: .tripo, photoCount: 2).credits, 25)
         XCTAssertTrue(replicaCostLine(replicaCostEstimate(service: .meshy, photoCount: 2), photoCount: 2).hasSuffix("Extra photos don’t change the price."))
         XCTAssertFalse(replicaCostLine(replicaCostEstimate(service: .meshy), photoCount: 1).contains("Extra photos"))
     }
 
-    func testReplicaOptionsKeepTheTouchUpMeshyOnly() {
-        let meshy = replicaGenerationOptions(for: .meshy, purpose: .display, higherDetail: true, enhancePhoto: true)
-        XCTAssertTrue(meshy.higherDetail)
-        XCTAssertTrue(meshy.enhancePhoto)
-        let tripo = replicaGenerationOptions(for: .tripo, purpose: .display, higherDetail: false, enhancePhoto: true)
-        XCTAssertFalse(tripo.enhancePhoto, "never sent to Tripo")
-        XCTAssertFalse(tripo.higherDetail)
-        XCTAssertFalse(replicaGenerationOptions(for: .meshy, purpose: .functional).enhancePhoto, "off unless ticked")
-        XCTAssertFalse(replicaGenerationOptions(for: .meshy, purpose: .functional).higherDetail, "off unless ticked")
+    func testHigherDetailOnlyForADisplayPiece() {
+        XCTAssertTrue(replicaGenerationOptions(for: .meshy, purpose: .display, higherDetail: true).higherDetail)
+        XCTAssertFalse(replicaGenerationOptions(for: .tripo, purpose: .display).higherDetail, "off unless ticked")
+        XCTAssertFalse(replicaGenerationOptions(for: .meshy, purpose: .functional, higherDetail: true).higherDetail,
+                       "a functional part is simplified to 20,000 triangles, so the detail would be lost")
+        XCTAssertTrue(replicaHigherDetailAvailable(for: .display))
+        XCTAssertFalse(replicaHigherDetailAvailable(for: .functional))
+        XCTAssertEqual(replicaHigherDetailFunctionalNote, "Functional parts are simplified to 20,000 triangles, so higher detail would be lost.")
+        XCTAssertTrue(replicaHigherDetailNote(service: .meshy).contains("Ultra 2K"))
+        XCTAssertTrue(replicaHigherDetailNote(service: .meshy).contains("Studio keeps up to 200,000 triangles"))
+        XCTAssertTrue(replicaHigherDetailNote(service: .tripo).contains("20 more credits"))
+    }
+
+    func testAModelTooLargeToDownloadIsAFinalStop() async {
+        let transport = MultiViewTransport([
+            (202, #"{"result":"m1"}"#),
+            (200, #"{"id":"m1","status":"SUCCEEDED","progress":100,"model_urls":{"stl":"https://assets.meshy.ai/m1/model.stl"}}"#)
+        ])
+        transport.downloadError = ImageTo3DError.modelTooLarge
+        let result = await runImageTo3DGeneration(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport),
+                                                  views: views([.front, .back]), options: ImageTo3DOptions(higherDetail: true),
+                                                  sleep: { _ in }, makeFolder: { try self.makeFolder() })
+        guard case .failure(let stop) = result else { return XCTFail() }
+        XCTAssertEqual(stop.reason, .modelTooLarge)
+        XCTAssertNil(stop.resumePoint, "downloading it again can't work")
+        XCTAssertNil(replicaResumeAction(for: stop), "no Try Download Again")
+        XCTAssertTrue(stop.creditsMayHaveBeenSpent)
+        XCTAssertFalse(imageTo3DStopIsUnconfirmed(stop), "a known outcome, explained in the sheet")
+        for phrase in ["too detailed for Studio", "over 128 MB", "credits for it were spent", "Meshy’s dashboard",
+                       "Meshy keeps it for 3 days", "without Higher detail"] {
+            XCTAssertTrue(stop.userMessage.contains(phrase), "\(phrase): \(stop.userMessage)")
+        }
+        XCTAssertEqual(stop.activityDetail, "Meshy: downloading, model too large, task m1")
+        XCTAssertFalse(imageTo3DCreateOutcomeUnknown(ImageTo3DError.modelTooLarge))
+    }
+
+    func testAConversionIsNotLabelledMultiImage() {
+        let conversion = ImageTo3DUnconfirmedRequest(id: UUID(), service: .tripo, sourceTaskID: "gen", taskID: "conv",
+                                                     time: Date(timeIntervalSince1970: 0), sourceKind: .multiImageGeneration)
+        XCTAssertEqual(imageTo3DUnconfirmedLabel(conversion, timeText: { _ in "09:00" }), "Tripo at 09:00 (task conv)")
+        let generation = ImageTo3DUnconfirmedRequest(id: UUID(), service: .tripo, sourceTaskID: "gen", taskID: "gen",
+                                                     time: Date(timeIntervalSince1970: 0), sourceKind: .multiImageGeneration)
+        XCTAssertEqual(imageTo3DUnconfirmedLabel(generation, timeText: { _ in "09:00" }), "Tripo at 09:00 (multi-image task gen)")
     }
 }

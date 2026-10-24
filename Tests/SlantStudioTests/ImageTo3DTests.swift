@@ -696,7 +696,7 @@ final class ImageTo3DTests: XCTestCase {
             .reply(202, #"{"result":"t1"}"#, [:]),
             .reply(200, #"{"id":"t1","status":"SUCCEEDED","model_urls":{"stl":"https://assets.meshy.ai/m.stl"}}"#, [:])
         ])
-        transport.downloadError = ImageTo3DError.downloadRefused(imageTo3DTooLargeMessage)
+        transport.downloadError = ImageTo3DError.downloadRefused("The model link has expired or was removed (HTTP 403).")
         var made: URL?
         let result = await runImageTo3DGeneration(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), image: jpeg,
                                                   options: ImageTo3DOptions(), sleep: { _ in },
@@ -704,7 +704,7 @@ final class ImageTo3DTests: XCTestCase {
         guard case .failure(let stop) = result else { return XCTFail() }
         XCTAssertEqual(stop.reason, .downloadFailed)
         XCTAssertEqual(stop.resumePoint, ImageTo3DResumePoint(sourceTaskID: "t1", sourceKind: .generation, conversionTaskID: nil))
-        XCTAssertTrue(stop.userMessage.contains("128 MB"))
+        XCTAssertTrue(stop.userMessage.contains("expired"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: made?.path ?? "/"))
     }
 

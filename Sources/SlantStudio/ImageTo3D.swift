@@ -167,11 +167,9 @@ struct ImageTo3DOptions: Equatable, Sendable {
     /// detail it generates and ignores this.
     var targetTriangles: Int = imageTo3DDefaultTriangleTarget
     var format: ImageTo3DOutputFormat = .stl
-    /// Paid higher-detail geometry: Meshy's Ultra `geometry_resolution` (+5 credits), Tripo's `geometry_quality:
+    /// Paid higher-detail geometry: Meshy's Ultra `geometry_resolution` 2k (+5 credits), Tripo's `geometry_quality:
     /// detailed` (+20 credits). Off unless the seller ticks it for this replica.
     var higherDetail = false
-    /// Meshy only: let Meshy's `image_enhancement` redraw the photos first (details can change). Off unless ticked.
-    var enhancePhoto = false
     /// Put the model's origin at the centre of its base (Meshy `auto_size` + `origin_at: bottom`; Tripo's conversion
     /// `pivot_to_center_bottom`, which makes it an "advanced" conversion at 10 credits rather than 5).
     ///
@@ -294,8 +292,10 @@ enum ImageTo3DError: LocalizedError, Equatable, Sendable {
     case transport(String)
     case invalidResponse(String)
     case responseTooLarge
-    /// A model link or download Studio won't follow (not https, credentials in the link, too large, wrong redirect).
+    /// A model link or download Studio won't follow (not https, credentials in the link, wrong redirect).
     case downloadRefused(String)
+    /// The finished model is larger than `imageTo3DMaxDownloadBytes`: downloading it again can't work.
+    case modelTooLarge
 
     var errorDescription: String? { userMessage }
 
@@ -332,6 +332,8 @@ enum ImageTo3DError: LocalizedError, Equatable, Sendable {
             return "The service’s reply was larger than Studio reads, so it was ignored."
         case .downloadRefused(let message):
             return message
+        case .modelTooLarge:
+            return imageTo3DTooLargeMessage
         }
     }
 
@@ -347,6 +349,7 @@ enum ImageTo3DError: LocalizedError, Equatable, Sendable {
         case .invalidResponse: return "Unreadable reply"
         case .responseTooLarge: return "Reply too large"
         case .downloadRefused: return "Download refused"
+        case .modelTooLarge: return "Model too large"
         }
     }
 }
@@ -360,7 +363,7 @@ func imageTo3DCreateOutcomeUnknown(_ error: Error) -> Bool {
         return status == 408 || status == 409 || status >= 500 || (300...399).contains(status)
     case .transport?, .invalidResponse?, .responseTooLarge?:
         return true
-    case .notConfigured?, .invalidInput?, .rateLimited?, .paymentRequired?, .downloadRefused?:
+    case .notConfigured?, .invalidInput?, .rateLimited?, .paymentRequired?, .downloadRefused?, .modelTooLarge?:
         return false
     case nil:
         return true
@@ -698,7 +701,7 @@ private final class ImageTo3DBoundedDownload: NSObject, URLSessionDataDelegate, 
             return
         }
         guard imageTo3DDownloadLengthAllowed(http.expectedContentLength, cap: maxBytes) else {
-            fail(ImageTo3DError.downloadRefused(imageTo3DTooLargeMessage), task: dataTask)
+            fail(ImageTo3DError.modelTooLarge, task: dataTask)
             completionHandler(.cancel)
             return
         }
@@ -712,7 +715,7 @@ private final class ImageTo3DBoundedDownload: NSObject, URLSessionDataDelegate, 
         let handle = self.handle
         lock.unlock()
         if over {
-            fail(ImageTo3DError.downloadRefused(imageTo3DTooLargeMessage), task: dataTask)
+            fail(ImageTo3DError.modelTooLarge, task: dataTask)
             return
         }
         do { try handle?.write(contentsOf: data) } catch {
@@ -850,6 +853,8 @@ let imageTo3DUnconfirmedRequestLimit = 10
 func imageTo3DStopIsUnconfirmed(_ stop: ImageTo3DStop) -> Bool {
     guard stop.creditsMayHaveBeenSpent else { return false }
     if case .taskEnded = stop.reason { return false }
+    // A model too large for Studio is a known outcome: paid for, on the service's dashboard, and explained.
+    if stop.reason == .modelTooLarge { return false }
     return true
 }
 
@@ -857,8 +862,10 @@ func imageTo3DStopIsUnconfirmed(_ stop: ImageTo3DStop) -> Bool {
 /// Meshy lists apart from its single-image tasks.
 func imageTo3DUnconfirmedLabel(_ request: ImageTo3DUnconfirmedRequest,
                                timeText: (Date) -> String = { $0.formatted(date: .omitted, time: .shortened) }) -> String {
-    let kind = request.sourceKind == .multiImageGeneration ? "multi-image task" : "task"
-    let task = request.taskID.map { " (\(kind) \($0))" } ?? (request.sourceKind == .multiImageGeneration ? " (multi-image)" : "")
+    // The latest task may be the generation's conversion, which isn't a multi-image task.
+    let multi = request.sourceKind == .multiImageGeneration && (request.taskID == nil || request.taskID == request.sourceTaskID)
+    let kind = multi ? "multi-image task" : "task"
+    let task = request.taskID.map { " (\(kind) \($0))" } ?? (multi ? " (multi-image)" : "")
     return "\(request.service.title) at \(timeText(request.time))\(task)"
 }
 
@@ -1114,6 +1121,8 @@ enum ImageTo3DStopReason: Equatable, Sendable {
     case statusUnreadable
     /// The model was made but couldn't be downloaded.
     case downloadFailed
+    /// The model was made (and paid for) but is larger than Studio downloads or reads, so trying again can't work.
+    case modelTooLarge
     /// The seller stopped the run. Anything already created keeps running at the service.
     case cancelled
 }
@@ -1157,6 +1166,10 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
             return "Studio couldn’t read the task’s progress.\(detailText)\(dashboard)"
         case .downloadFailed:
             return "\(service.title) made the model, but Studio couldn’t download it.\(detailText)"
+        case .modelTooLarge:
+            let kept = service == .meshy ? " (Meshy keeps it for 3 days)" : ""
+            let task = taskID.map { ", task \($0)" } ?? ""
+            return "\(service.title)’s model was too detailed for Studio (over 128 MB, or more than \(replicaMaximumModelTriangles.formatted()) triangles), so it wasn’t used. The credits for it were spent, and the model stays on \(service.title)’s dashboard\(kept)\(task). Generating again without Higher detail may help."
         case .cancelled:
             return taskID == nil ? "Stopped before anything was sent." : "Stopped. \(service.title) may still finish the task and charge for it."
         }
@@ -1177,6 +1190,7 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
         case .timedOut: return "timed out"
         case .statusUnreadable: return "status unreadable"
         case .downloadFailed: return "download failed"
+        case .modelTooLarge: return "model too large"
         case .cancelled: return "cancelled"
         }
     }
@@ -1371,6 +1385,8 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
     } catch {
         try? FileManager.default.removeItem(at: folder)
         if error is CancellationError { return stop(.cancelled, .downloading, lastID, "", resume: downloadPoint) }
+        // Too large is final: downloading it again would only be refused again.
+        if (error as? ImageTo3DError) == .modelTooLarge { return stop(.modelTooLarge, .downloading, lastID, "", resume: nil) }
         return stop(.downloadFailed, .downloading, lastID, (error as? ImageTo3DError)?.userMessage ?? "", resume: downloadPoint)
     }
 }

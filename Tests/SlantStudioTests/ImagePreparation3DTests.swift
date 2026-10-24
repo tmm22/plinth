@@ -99,7 +99,12 @@ final class ImagePreparation3DTests: XCTestCase {
     }
 
     func testOpaquePNGAndPhotosBecomeDetailedJPEGs() throws {
-        let opaque = try prepareImageForSharing(data: image(width: 600, height: 400, type: .png), profile: .imageTo3D)
+        // The premise: this PNG really carries an alpha channel, all of it opaque.
+        let opaqueData = image(width: 600, height: 400, type: .png)
+        let decoded = CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithData(opaqueData as CFData, nil)!, 0, nil)!
+        XCTAssertFalse([CGImageAlphaInfo.none, .noneSkipFirst, .noneSkipLast].contains(decoded.alphaInfo), "has an alpha channel")
+        XCTAssertEqual(alpha(opaqueData, x: 0, y: 0), 255)
+        let opaque = try prepareImageForSharing(data: opaqueData, profile: .imageTo3D)
         XCTAssertEqual(opaque.mediaType, .jpeg, "an alpha channel with nothing transparent isn't worth a PNG")
         let photo = try prepareImageForSharing(data: image(width: 4032, height: 3024, type: .jpeg), profile: .imageTo3D)
         XCTAssertEqual(photo.mediaType, .jpeg)
@@ -143,8 +148,9 @@ final class PNGChunkStripTests: XCTestCase {
     func testOnlyImageChunksAreKept() {
         let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         let png = signature + chunk("IHDR", Array(repeating: 1, count: 13)) + chunk("eXIf", Array("secret".utf8))
-            + chunk("tEXt", Array("Comment\u{0}customer".utf8)) + chunk("IDAT", [1, 2, 3]) + chunk("tIME", [1, 2, 3, 4, 5, 6, 7])
-            + chunk("IEND", [])
+            + chunk("tEXt", Array("Comment\u{0}customer".utf8)) + chunk("zTXt", Array("Author\u{0}\u{0}x".utf8))
+            + chunk("IDAT", [1, 2, 3]) + chunk("iTXt", Array("Description\u{0}\u{0}\u{0}\u{0}\u{0}address".utf8))
+            + chunk("tIME", [1, 2, 3, 4, 5, 6, 7]) + chunk("IEND", [])
         let stripped = pngKeepingOnlyImageChunks(Data(png))
         XCTAssertEqual(stripped, Data(signature + chunk("IHDR", Array(repeating: 1, count: 13)) + chunk("IDAT", [1, 2, 3]) + chunk("IEND", [])))
         XCTAssertNil(pngKeepingOnlyImageChunks(Data(signature + chunk("IHDR", [1]).dropLast(3))), "truncated")

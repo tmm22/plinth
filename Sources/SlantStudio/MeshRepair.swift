@@ -133,6 +133,22 @@ func meshTriangleIsZeroArea(_ a: SIMD3<Double>, _ b: SIMD3<Double>, _ c: SIMD3<D
 }
 
 /// Undirected edge key with the direction in the lowest bit: 0 when the edge runs from the lower id to the higher.
+/// A triangle's corners as a sort key that ignores rotation: (smallest id, the other two in order), and whether the
+/// smaller of those two comes next in its winding. Collision-free for any Int32 ids, and ordered exactly as the ids are.
+struct MeshTriangleCornerKey: Comparable, Hashable, Sendable {
+    let high: UInt64
+    let low: UInt32
+
+    static func < (l: Self, r: Self) -> Bool { l.high != r.high ? l.high < r.high : l.low < r.low }
+}
+
+func meshTriangleCornerKey(_ t: SIMD3<Int32>) -> (key: MeshTriangleCornerKey, forward: Bool) {
+    // Rotate so the smallest id comes first; the order of the other two gives the winding.
+    let s: SIMD3<Int32> = t.x <= t.y && t.x <= t.z ? t : (t.y <= t.z ? SIMD3(t.y, t.z, t.x) : SIMD3(t.z, t.x, t.y))
+    let a = UInt64(UInt32(s.x)), b = UInt64(UInt32(min(s.y, s.z)))
+    return (MeshTriangleCornerKey(high: a << 32 | b, low: UInt32(max(s.y, s.z))), s.y < s.z)
+}
+
 @inline(__always) func meshDirectedEdgeKey(_ p: Int32, _ q: Int32) -> UInt64 {
     let low = UInt64(UInt32(min(p, q))), high = UInt64(UInt32(max(p, q)))
     return (low << 33) | (high << 1) | (p < q ? 0 : 1)
@@ -391,15 +407,12 @@ private struct RepairWork {
     /// Triangles over the same three vertices: same-way repeats keep the first; a pair facing opposite ways is an
     /// internal double wall (two solids touching face to face), so both go.
     mutating func removeDuplicates(_ summary: inout MeshRepairSummary) throws {
-        var keyed: [(key: UInt64, forward: Bool, face: Int32)] = []
+        var keyed: [(key: MeshTriangleCornerKey, forward: Bool, face: Int32)] = []
         keyed.reserveCapacity(triangles.count)
         for f in triangles.indices where alive[f] {
             try check(f)
-            let t = triangles[f]
-            // Rotate so the smallest id comes first; the order of the other two gives the winding.
-            let s: SIMD3<Int32> = t.x <= t.y && t.x <= t.z ? t : (t.y <= t.z ? SIMD3(t.y, t.z, t.x) : SIMD3(t.z, t.x, t.y))
-            let a = UInt64(UInt32(s.x)), b = UInt64(UInt32(min(s.y, s.z))), c = UInt64(UInt32(max(s.y, s.z)))
-            keyed.append(((a << 42) | (b << 21) | c, s.y < s.z, Int32(f)))
+            let corner = meshTriangleCornerKey(triangles[f])
+            keyed.append((corner.key, corner.forward, Int32(f)))
         }
         keyed.sort { $0.key != $1.key ? $0.key < $1.key : $0.face < $1.face }
         var i = 0

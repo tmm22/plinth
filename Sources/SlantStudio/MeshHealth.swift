@@ -84,8 +84,8 @@ func analyzeMeshHealth(_ mesh: STLMesh, isCancelled: () -> Bool = { false }) -> 
     var edges: [UInt64] = []
     edges.reserveCapacity(count * 3)
     func addEdge(_ p: Int32, _ q: Int32) {
-        let low = UInt64(min(p, q)), high = UInt64(max(p, q))
-        edges.append(((low << 22) | high) << 1 | (p < q ? 0 : 1))
+        // 32 bits per vertex (`meshDirectedEdgeKey`): the same order as before, without overflowing above 2²² vertices.
+        edges.append(meshDirectedEdgeKey(p, q))
     }
     var degenerate = 0
     var volume = 0.0
