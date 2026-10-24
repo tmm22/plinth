@@ -170,9 +170,12 @@ How you work
 sizes only from the typed measurements. If a size you need isn't measured, ask with ask_seller rather than guess, \
 unless a sensible default is clearly fine; then say what you assumed.
 - Call render_scad with the complete OpenSCAD file. Studio renders it with OpenSCAD on the seller's Mac and replies \
-with facts it measured itself (size, mesh check, wall thickness, flat contact with the bed, build-volume fit, OpenSCAD \
-messages) and pictures from the three-quarter, front, side and top views. Look at them critically and fix what is \
-wrong.
+with facts it measured itself (size, mesh check, wall thickness, overhangs and their heights, flat contact with the \
+bed, build-volume fit, the fit sizes your code echoed, OpenSCAD messages) and pictures from the three-quarter, front, \
+side and top views. Look at them critically and fix what is wrong.
+- If a size that must fit was only estimated, ask the seller with ask_seller to measure it with calipers rather than \
+adding the estimate's ±3 mm on each side. If they skip, use the estimate with generous clearance and say so.
+- If the part carries weight (a hook, bracket, shelf or mount) and the seller hasn't said how much, ask about the load.
 - You have at most 4 renders and 10 replies, so plan the design before the first render and make each render count.
 - When the latest render is right, call finish_design. Studio accepts finish_design only right after a render that is \
 one closed solid within the 220 mm build volume.
@@ -187,19 +190,32 @@ Group them with /* [Section] */ comments and put derived values in a /* [Hidden]
 so the seller can adjust the design later in Studio's Personalise from Template.
 - $fn between 32 and 96 for curves. Keep each render well under a minute: avoid minkowski() on complex shapes, long \
 hull() chains and deep recursion.
-- No include, use, import() or surface(); everything in one file. Studio refuses those, and any text that looks like a \
-file path.
+- Report every size that has to fit with echo and its name, such as `echo("slot_width", slot_width);`: slot and gap \
+widths, hole diameters, inner lengths and depths. Studio shows them to the seller beside the typed measurements and \
+sends them back with the facts.
+- No include, use, import(), surface(), dxf_ modules or file = arguments; everything in one file. Studio refuses \
+those, and any text that looks like a file path.
 
 Designing for FDM printing (assume about 2 perimeters of 0.45 mm, low infill, 0.2 mm layers, no supports)
-- Load-bearing walls at least 2.0 mm and never under 1.0 mm anywhere; prefer multiples of 0.45 mm (1.8, 2.25, 2.7).
-- Overhangs at most 45° from vertical; chamfer rather than leave flat ceilings; teardrop-shaped horizontal holes; \
-bridges under 5 mm.
-- A flat base with a generous footprint, and a 0.5 mm chamfer on the bottom edge against elephant's foot.
+- Load-bearing walls at least 2.0 mm: use 2.25 or 2.7 mm (multiples of the 0.45 mm line) wherever the part carries \
+load, 1.8 mm only where it carries none, and never under 1.0 mm anywhere.
+- Overhangs at most 45° from vertical; chamfer rather than leave flat ceilings; bridges under 5 mm. Studio reports \
+any steeper downward faces and their heights: fix them.
+- Holes: vertical holes print about 0.2 mm small, so add 0.2–0.4 mm to their diameter. Screw clearance holes: M3 \
+3.4 mm, M4 4.5 mm. Make horizontal holes teardrop-shaped, point up.
+- A flat base with a generous footprint, and a 0.5 mm chamfer on the bottom edge against elephant's foot. Round the \
+corners of large footprints (radius 3 mm or more) against warping.
 - Fillet or chamfer inside corners where load concentrates, such as the roots of arms, hooks and clips.
 - Orient the part so its main loads run along the layers (in XY) rather than pulling layers apart.
-- Pins and posts at least 3–5 mm across; embossed or engraved detail about 1 mm.
-- Fits: add 0.2–0.3 mm clearance per side for a printed fit, plus each measurement's uncertainty (calipers ±0.2 mm, \
-ruler ±1 mm, estimate ±3 mm). Make estimated dimensions easy to change.
+- Pins and posts at least 3–5 mm across.
+- Detail finer than about 0.9 mm disappears. Text at least 5 mm high and 0.8–1 mm deep (raised or cut in), on side \
+walls rather than the bottom face.
+- Clips and snap fits must flex within a layer (bending in XY, not across layers), be at least 5 times as long as \
+they are thick, and taper towards the tip. Recommend PETG in the notes for parts that must flex.
+- Fits: add 0.2–0.3 mm clearance per side for a printed fit, plus the measurement's uncertainty (calipers ±0.2 mm, \
+ruler ±1 mm). Make fit-critical dimensions easy to change.
+- For production, keep the height and the amount of material low where the design allows: a lower, lighter part \
+prints faster and costs less.
 - PLA softens around 55–60 °C: for a car or anything near heat, recommend PETG in the notes.
 
 Honesty
@@ -219,7 +235,7 @@ enum AccessoryToolName {
 let accessoryTools: [AnthropicTool] = [
     AnthropicTool(
         name: AccessoryToolName.render,
-        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. Studio replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, flat contact with the bed, build-volume fit, Customizer values found, OpenSCAD messages) and four pictures. Code using include, use, import() or surface(), or text that looks like a file path, is refused without rendering.",
+        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. Studio replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures. Code using include, use, import(), surface(), dxf_ modules or a file = argument, or text that looks like a file path, is refused without rendering.",
         inputSchema: [
             "type": "object",
             "properties": ["code": ["type": "string", "description": "The complete OpenSCAD file, at most 64 KB."]],
@@ -357,6 +373,12 @@ struct AccessoryRenderFacts: Equatable, Sendable {
     var footprintMM2: Double
     /// Nil when the measurement was skipped (not a closed solid).
     var wallThickness: WallThicknessSummary?
+    /// Downward faces steeper than 45° from vertical (`overhangShare`, the same rule as Review for Printing).
+    var overhang = OverhangShare(overhangAreaMM2: 0, surfaceAreaMM2: 0)
+    /// Where those faces are; nil when there are none.
+    var overhangLocation: AccessoryOverhangLocation?
+    /// Sizes the code reported with `echo` as ones that must fit.
+    var fitSizes: [AccessoryFitSize] = []
     var customizerValues: [String]
     var openSCADMessages: [String]
 
@@ -365,6 +387,126 @@ struct AccessoryRenderFacts: Equatable, Sendable {
     }
     var fitsBuildVolume: Bool { sizeMM.max() <= slantBuildVolumeMM }
     var sitsOnBed: Bool { abs(lowestZ) <= 0.01 }
+    /// Enough overhang to need supports or a redesign: at least `accessoryOverhangNotableShare` of the surface.
+    var hasNotableOverhangs: Bool { overhang.overhangAreaMM2 > 0 && overhang.fraction >= accessoryOverhangNotableShare }
+}
+
+// MARK: Overhangs
+
+/// Share of the surface above which overhangs are reported to the seller as needing supports or a redesign. Below it
+/// (a few small curved edges, say) they are still listed for Claude.
+let accessoryOverhangNotableShare = 0.01
+
+/// One 1 mm height band of overhanging faces, by the band's lower edge in the model's own Z.
+struct AccessoryOverhangBand: Equatable, Sendable {
+    let bottomZ: Int
+    let areaMM2: Double
+}
+
+/// Where the faces `overhangShare` counts are: their full Z range and the 1 mm bands with the most overhanging area
+/// (at most 3, largest first), in the model's own coordinates so Claude can find them in its code.
+struct AccessoryOverhangLocation: Equatable, Sendable {
+    let lowestZ: Float
+    let highestZ: Float
+    let mainBands: [AccessoryOverhangBand]
+}
+
+/// The location of the overhangs, by the same face rule as `overhangShare` (PrintReview.swift): a face whose normal
+/// points down more steeply than 45° from vertical, except faces lying flat on the bed. Nil when there are none.
+/// Deterministic: triangles in index order, ties broken by height.
+func accessoryOverhangLocation(_ mesh: STLMesh) -> AccessoryOverhangLocation? {
+    let v = mesh.vertices
+    let floor = Double(mesh.minimum.z) + 0.0001
+    var low = Double.infinity, high = -Double.infinity
+    var bands: [Int: Double] = [:]
+    var i = 0
+    while i + 8 < v.count {
+        let a = SIMD3<Double>(Double(v[i]), Double(v[i + 1]), Double(v[i + 2]))
+        let b = SIMD3<Double>(Double(v[i + 3]), Double(v[i + 4]), Double(v[i + 5]))
+        let c = SIMD3<Double>(Double(v[i + 6]), Double(v[i + 7]), Double(v[i + 8]))
+        i += 9
+        let cross = simd_cross(b - a, c - a)
+        let length = simd_length(cross)
+        guard length > 0, length.isFinite else { continue }
+        let nz = cross.z / length
+        let onBed = max(a.z, b.z, c.z) <= floor && nz <= -0.999999
+        guard !onBed, nz < -printReviewOverhangCosine else { continue }
+        low = min(low, a.z, b.z, c.z)
+        high = max(high, a.z, b.z, c.z)
+        let centre = (a.z + b.z + c.z) / 3
+        guard centre.isFinite, abs(centre) < 1e6 else { continue }
+        bands[Int(centre.rounded(.down)), default: 0] += length / 2
+    }
+    guard low <= high else { return nil }
+    let main = bands.map { AccessoryOverhangBand(bottomZ: $0.key, areaMM2: $0.value) }
+        .sorted { $0.areaMM2 != $1.areaMM2 ? $0.areaMM2 > $1.areaMM2 : $0.bottomZ < $1.bottomZ }
+        .prefix(3)
+    return AccessoryOverhangLocation(lowestZ: Float(low), highestZ: Float(high), mainBands: Array(main))
+}
+
+/// One line about overhangs, for Claude and the seller, such as "Overhangs: 4% of the surface (120 mm²) faces down
+/// more steeply than 45° from vertical, between Z = 12.0 and 30.5 mm; most at Z 12–13 mm (80 mm²)."
+func accessoryOverhangLine(_ share: OverhangShare, location: AccessoryOverhangLocation?) -> String {
+    guard share.overhangAreaMM2 > 0, let location else {
+        return "Overhangs: no downward faces steeper than 45° from vertical."
+    }
+    var line = "Overhangs: \(percentLabel(share.fraction)) of the surface (\(Int(share.overhangAreaMM2.rounded()).formatted()) mm²) faces down more steeply than 45° from vertical"
+    line += location.highestZ - location.lowestZ < 0.05
+        ? ", at Z = \(accessoryOneDecimal(location.lowestZ)) mm"
+        : ", between Z = \(accessoryOneDecimal(location.lowestZ)) and \(accessoryOneDecimal(location.highestZ)) mm"
+    if !location.mainBands.isEmpty {
+        let bands = location.mainBands.map { "Z \($0.bottomZ)–\($0.bottomZ + 1) mm (\(Int($0.areaMM2.rounded()).formatted()) mm²)" }
+        line += "; most at " + bands.joined(separator: ", ")
+    }
+    return line + "."
+}
+
+// MARK: Fit sizes
+
+/// A size the design reported with `echo("name", value)` (or `echo(name = value)`) as one that must fit.
+struct AccessoryFitSize: Equatable, Sendable {
+    let name: String
+    let millimetres: Double
+}
+
+let accessoryMaximumFitSizes = 20
+
+private let accessoryNumberPattern = #"([-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?)"#
+
+/// The fit sizes in OpenSCAD's log: `ECHO: "slot_width", 9.9` or `ECHO: slot_width = 9.9`, one name and one number per
+/// line, in order, the first of each name only, at most `accessoryMaximumFitSizes`. Other echoes are ignored.
+func accessoryFitSizes(_ log: String) -> [AccessoryFitSize] {
+    var result: [AccessoryFitSize] = []
+    var seen: Set<String> = []
+    for raw in log.split(whereSeparator: \.isNewline) {
+        guard let fit = accessoryFitSize(fromLogLine: String(raw)), seen.insert(fit.name).inserted else { continue }
+        result.append(fit)
+        if result.count == accessoryMaximumFitSizes { break }
+    }
+    return result
+}
+
+/// One log line as a fit size, or nil.
+func accessoryFitSize(fromLogLine raw: String) -> AccessoryFitSize? {
+    let line = raw.trimmingCharacters(in: .whitespaces)
+    guard line.hasPrefix("ECHO:") else { return nil }
+    let patterns = [#"^ECHO:\s*"([A-Za-z0-9_ .\-]{1,60})"\s*,\s*"# + accessoryNumberPattern + #"\s*$"#,
+                    #"^ECHO:\s*([A-Za-z_$][A-Za-z0-9_$]{0,59})\s*=\s*"# + accessoryNumberPattern + #"\s*$"#]
+    for pattern in patterns {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              let nameRange = Range(match.range(at: 1), in: line), let valueRange = Range(match.range(at: 2), in: line),
+              let value = Double(line[valueRange]), value.isFinite else { continue }
+        let name = line[nameRange].trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return nil }
+        return AccessoryFitSize(name: name, millimetres: value)
+    }
+    return nil
+}
+
+/// "slot_width 9.9 mm", as listed for Claude and the seller.
+func accessoryFitSizeText(_ fit: AccessoryFitSize) -> String {
+    "\(fit.name) \(accessoryMillimetresText(fit.millimetres))"
 }
 
 /// Why Studio won't accept this render as a finished design; empty when it will.
@@ -413,6 +555,15 @@ func accessoryRenderFactsText(_ facts: AccessoryRenderFacts, renderNumber: Int, 
     } else {
         lines.append("Wall thickness: not measured, because the model isn’t one closed solid.")
     }
+    lines.append(accessoryOverhangLine(facts.overhang, location: facts.overhangLocation))
+    if facts.hasNotableOverhangs {
+        lines.append("  - These need supports, which Slant may not add. Chamfer them to 45° or less, make horizontal holes teardrop-shaped, or turn the part so they face up.")
+    }
+    if facts.fitSizes.isEmpty {
+        lines.append("Fit sizes echoed by the code: none. echo(\"name\", value) every size that must fit (slot widths, hole diameters, inner lengths) so Studio can show them beside the seller’s measurements.")
+    } else {
+        lines.append("Fit sizes echoed by the code: \(facts.fitSizes.map(accessoryFitSizeText).joined(separator: ", ")). Check each against the seller’s measurement plus clearance.")
+    }
     if facts.customizerValues.isEmpty {
         lines.append("Customizer values found: none. Put each dimension in a top-level variable set to a literal, before the first module.")
     } else {
@@ -436,13 +587,14 @@ func accessoryRenderFactsText(_ facts: AccessoryRenderFacts, renderNumber: Int, 
 }
 
 /// The messages worth passing on from OpenSCAD's log (errors, warnings, echoes, traces), at most 12 lines of 300
-/// characters, with the temporary folder's path removed so only "design.scad" is named.
+/// characters, with the temporary folder's path removed so only "design.scad" is named. Echoes read as fit sizes
+/// (`accessoryFitSizes`) are reported there instead.
 func accessoryOpenSCADMessages(_ log: String) -> [String] {
     let prefixes = ["ERROR", "WARNING", "ECHO", "TRACE", "DEPRECATED"]
     var result: [String] = []
     for raw in log.split(whereSeparator: \.isNewline) {
         let line = raw.trimmingCharacters(in: .whitespaces)
-        guard prefixes.contains(where: { line.uppercased().hasPrefix($0) }) else { continue }
+        guard prefixes.contains(where: { line.uppercased().hasPrefix($0) }), accessoryFitSize(fromLogLine: line) == nil else { continue }
         var cleaned = line.replacingOccurrences(of: #"[^\s,"'()]*/design\.scad"#, with: "design.scad", options: .regularExpression)
         cleaned = cleaned.replacingOccurrences(of: #"/(private/)?(var|tmp|Users)/[^\s,"']*"#, with: "[path]", options: .regularExpression)
         if cleaned.count > 300 { cleaned = String(cleaned.prefix(300)) + "…" }
@@ -460,6 +612,8 @@ func accessoryOpenSCADFailureText(_ error: OpenSCADRunError, messages: [String])
         text = "OpenSCAD didn’t finish within \(Int(seconds)) seconds, so Studio stopped it. Lower $fn, and avoid minkowski() on complex shapes, long hull() chains and deep recursion."
     case .outputTooLarge:
         text = "OpenSCAD’s output grew past Studio’s 128 MB limit, so Studio stopped it. Lower $fn and simplify the shape."
+    case .tooMuchMemory:
+        text = "OpenSCAD used too much memory, so Studio stopped it. Lower $fn, and avoid minkowski() on complex shapes, long hull() chains and deep recursion."
     case .failed(let status, _):
         text = "OpenSCAD couldn’t render the code (exit code \(status))."
     case .noOutput:
@@ -492,9 +646,17 @@ enum AccessoryRenderOutcome: Sendable {
     case failed(String)
 }
 
+/// How much work one render's analysis may do. Tests use smaller values; the app uses the defaults.
+struct AccessoryAnalysisBudget: Equatable, Sendable {
+    var wallThicknessSamples = wallThicknessMaximumSamples
+    var pictureSize = accessoryRenderPixelSize
+    var rasterBudget = accessoryRenderRasterBudget
+}
+
 /// Parses OpenSCAD's STL and measures it, then renders the pictures. Pure CPU work, deterministic (the same bytes
 /// give the same STL, facts and pictures). Nil when cancelled; throws when the STL can't be used.
-func analyseAccessoryRender(stl data: Data, code: String, openSCADMessages: [String],
+func analyseAccessoryRender(stl data: Data, code: String, openSCADMessages: [String], fitSizes: [AccessoryFitSize] = [],
+                            budget: AccessoryAnalysisBudget = AccessoryAnalysisBudget(),
                             isCancelled: () -> Bool = { false }) throws -> AccessoryRender? {
     guard !data.isEmpty else { throw StudioError("OpenSCAD wrote an empty file; the top-level object may be empty.") }
     let mesh: STLMesh
@@ -508,10 +670,12 @@ func analyseAccessoryRender(stl data: Data, code: String, openSCADMessages: [Str
     var facts = AccessoryRenderFacts(sizeMM: extent, lowestZ: mesh.minimum.z, triangles: mesh.triangleCount, health: health,
                                      contactAreaMM2: mesh.bottomContactAreaMM2(),
                                      footprintMM2: Double(extent.x) * Double(extent.y), wallThickness: nil,
+                                     overhang: overhangShare(mesh), overhangLocation: accessoryOverhangLocation(mesh),
+                                     fitSizes: fitSizes,
                                      customizerValues: scadTemplateParameters(code).parameters.map(\.name),
                                      openSCADMessages: openSCADMessages)
     if facts.isOneClosedSolid {
-        guard let report = analyzeWallThickness(mesh, isCancelled: isCancelled) else { return nil }
+        guard let report = analyzeWallThickness(mesh, maximumSamples: budget.wallThicknessSamples, isCancelled: isCancelled) else { return nil }
         facts.wallThickness = wallThicknessSummary(report, origin: mesh.minimum)
     }
     var images: [AccessoryRenderImage] = []
@@ -519,12 +683,12 @@ func analyseAccessoryRender(stl data: Data, code: String, openSCADMessages: [Str
         if isCancelled() { return nil }
         let camera = listingCamera(angle)
         let style = listingRenderStyle(colour: listingNeutralColour, camera: camera)
-        guard let rgba = renderMeshRGBA(mesh, size: accessoryRenderPixelSize, camera: camera, style: style,
-                                        rasterBudget: accessoryRenderRasterBudget, isCancelled: isCancelled) else {
+        guard let rgba = renderMeshRGBA(mesh, size: budget.pictureSize, camera: camera, style: style,
+                                        rasterBudget: budget.rasterBudget, isCancelled: isCancelled) else {
             if isCancelled() { return nil }
             continue
         }
-        if let image = prepareRenderedImage(rgba: rgba, width: accessoryRenderPixelSize, height: accessoryRenderPixelSize,
+        if let image = prepareRenderedImage(rgba: rgba, width: budget.pictureSize, height: budget.pictureSize,
                                             format: .jpeg(quality: 0.85, background: SIMD3(1, 1, 1))) {
             images.append(AccessoryRenderImage(title: accessoryRenderViewCaption(angle), image: image))
         }
@@ -557,7 +721,8 @@ private final class AccessoryCancelFlag: @unchecked Sendable {
 
 /// Renders code with the local OpenSCAD in an empty temporary folder (removed afterwards), then measures and pictures
 /// the result off the main actor. Throws only `CancellationError`; every other failure is a `.failed` outcome.
-func renderAccessoryDesign(code: String, executable: URL, timeout: TimeInterval = accessoryOpenSCADTimeout) async throws -> AccessoryRenderOutcome {
+func renderAccessoryDesign(code: String, executable: URL, timeout: TimeInterval = accessoryOpenSCADTimeout,
+                           budget: AccessoryAnalysisBudget = AccessoryAnalysisBudget()) async throws -> AccessoryRenderOutcome {
     if let problem = scadSafetyProblem(code) { return .failed(problem) }
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(accessoryTempFolderPrefix)\(UUID().uuidString)")
     let scad = folder.appendingPathComponent("design.scad")
@@ -585,9 +750,13 @@ func renderAccessoryDesign(code: String, executable: URL, timeout: TimeInterval 
     }
     try Task.checkCancellation()
     let messages = accessoryOpenSCADMessages(capture.log)
+    let fitSizes = accessoryFitSizes(capture.log)
     let flag = AccessoryCancelFlag()
     let work = Task.detached(priority: .userInitiated) { () -> Result<AccessoryRender?, Error> in
-        Result { try analyseAccessoryRender(stl: data, code: code, openSCADMessages: messages, isCancelled: { flag.isCancelled }) }
+        Result {
+            try analyseAccessoryRender(stl: data, code: code, openSCADMessages: messages, fitSizes: fitSizes, budget: budget,
+                                       isCancelled: { flag.isCancelled })
+        }
     }
     let result = await withTaskCancellationHandler { await work.value } onCancel: { flag.cancel() }
     try Task.checkCancellation()
@@ -871,8 +1040,10 @@ func accessoryRenderLine(_ render: AccessoryRender, number: Int) -> String {
                 halt(anthropicRefusalMessage(reply.stopDetails))
                 return
             }
-            if reply.stopReason == .maxTokens {
-                halt("Claude’s reply was cut off before it finished, so Studio set it aside. Try Again sends the same request.")
+            // Only a reply that ended normally may join the history: one cut off for any reason can end in a
+            // half-written tool call or an unsigned thinking block, which the next request would be refused for.
+            guard reply.canJoinHistory else {
+                halt(accessorySetAsideText(reply.stopReason))
                 return
             }
             guard !reply.historyContent.isEmpty else {
@@ -978,6 +1149,20 @@ func accessoryRenderLine(_ render: AccessoryRender, number: Int) -> String {
             addResult(use.errorResult, for: use.id)
             return .next
         }
+    }
+}
+
+/// Why a reply that can't join the history (`AnthropicMessage.canJoinHistory`) was set aside, for the seller.
+func accessorySetAsideText(_ stopReason: AnthropicStopReason?) -> String {
+    switch stopReason {
+    case .maxTokens?:
+        return "Claude’s reply was cut off before it finished, so Studio set it aside. Try Again sends the same request."
+    case .other("model_context_window_exceeded")?:
+        return "Claude’s reply was cut off because the conversation reached the model’s length limit, so Studio set it aside. Start Over with fewer or smaller photos or a shorter brief; Try Again would most likely stop the same way."
+    case .other(let raw)?:
+        return "Claude’s reply ended before it finished (\(accessoryClipped(raw, 60))), so Studio set it aside. Try Again sends the same request."
+    default:
+        return "Claude’s reply ended before it finished, so Studio set it aside. Try Again sends the same request."
     }
 }
 

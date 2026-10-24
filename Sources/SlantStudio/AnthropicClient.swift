@@ -1037,11 +1037,12 @@ final class AnthropicClient: @unchecked Sendable {
     }
 
     /// The URLRequest for `request`. Exposed for tests.
-    func urlRequest(for request: AnthropicRequest) throws -> URLRequest {
+    /// `maxBodyBytes` is Anthropic's limit; tests pass a smaller one.
+    func urlRequest(for request: AnthropicRequest, maxBodyBytes: Int = anthropicMaxRequestBytes) throws -> URLRequest {
         if let problem = request.problem { throw AnthropicError.notSent("Not sent: \(problem)") }
         guard anthropicKeyProblem(apiKey) == nil else { throw AnthropicError.missingKey }
         let body = request.json.encoded
-        guard body.count <= anthropicMaxRequestBytes else {
+        guard body.count <= maxBodyBytes else {
             throw AnthropicError.notSent("Not sent: the request is larger than Anthropic accepts. Use a smaller photo or fewer pictures.")
         }
         var urlRequest = URLRequest(url: anthropicMessagesURL)

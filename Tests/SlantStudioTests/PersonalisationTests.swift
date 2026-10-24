@@ -368,6 +368,33 @@ final class PersonalisationTests: XCTestCase {
         }
     }
 
+    func testLocalRunStopsAboveItsMemoryLimit() async throws {
+        let slow = try script("exec sleep 30\n")
+        let template = FileManager.default.temporaryDirectory.appendingPathComponent("t.scad")
+        let started = Date()
+        do {
+            // Any process uses more than 1 KB, so a 1 KB limit stops it at the first check.
+            _ = try await runOpenSCADProcess(executable: slow, templateURL: template, assignments: [], timeout: 20,
+                                             maxMemoryBytes: 1_024, memoryCheckInterval: 0.1)
+            XCTFail("should stop")
+        } catch let error as OpenSCADRunError {
+            XCTAssertEqual(error, .tooMuchMemory)
+            XCTAssertEqual(error.localizedDescription.hasPrefix("OpenSCAD used too much memory"), true)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        XCTAssertNotNil(processMemoryBytes(ProcessInfo.processInfo.processIdentifier))
+        XCTAssertLessThanOrEqual(openSCADMemoryLimitBytes, 2 * 1024 * 1024 * 1024)
+        XCTAssertLessThanOrEqual(openSCADMemoryLimitBytes, ProcessInfo.processInfo.physicalMemory / 4)
+        // The default limit leaves an ordinary run alone.
+        let quick = try script("exec sleep 0.15\n")
+        do {
+            _ = try await runOpenSCADProcess(executable: quick, templateURL: template, assignments: [], timeout: 20, memoryCheckInterval: 0.1)
+            XCTFail("writes no model")
+        } catch let error as OpenSCADRunError {
+            XCTAssertEqual(error, .noOutput(nil))
+        }
+    }
+
     func testLocalRunStopsWhenCancelled() async throws {
         let slow = try script("exec sleep 30\n")
         let template = FileManager.default.temporaryDirectory.appendingPathComponent("t.scad")

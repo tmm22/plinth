@@ -21,8 +21,13 @@ private func boxSTL(_ low: SIMD3<Float> = .zero, _ high: SIMD3<Float> = SIMD3(20
     try STLMesh.validated(boxTriangles(low, high)).stlCopyData()
 }
 
-private func render(_ stl: Data, code: String = "width = 20; // [10:1:40] Width\ncube([width, 30, 10]);") throws -> AccessoryRender {
-    try XCTUnwrap(analyseAccessoryRender(stl: stl, code: code, openSCADMessages: []))
+/// Enough work to check what the analysis reports, far less than the app's (a 20,000-sample wall check and four
+/// 512 px pictures per render), so the loop tests stay fast.
+private let testBudget = AccessoryAnalysisBudget(wallThicknessSamples: 400, pictureSize: 48, rasterBudget: 400_000)
+
+private func render(_ stl: Data, code: String = "width = 20; // [10:1:40] Width\ncube([width, 30, 10]);",
+                    fitSizes: [AccessoryFitSize] = []) throws -> AccessoryRender {
+    try XCTUnwrap(analyseAccessoryRender(stl: stl, code: code, openSCADMessages: [], fitSizes: fitSizes, budget: testBudget))
 }
 
 private func reply(_ blocks: [AnthropicOutputBlock], stop: AnthropicStopReason?, details: AnthropicStopDetails? = nil) -> AnthropicMessage {
@@ -176,6 +181,7 @@ final class AccessoryDesignerTests: XCTestCase {
         }
         XCTAssertTrue(accessorySystemPrompt.contains("2.0 mm"))
         XCTAssertTrue(accessorySystemPrompt.contains("Never call a design strong"))
+        XCTAssertFalse(accessorySystemPrompt.contains("prefer multiples of 0.45 mm (1.8, 2.25, 2.7)"), "1.8 mm isn't preferred for load")
     }
 
     func testCostForecastGrowsWithReplies() {
@@ -236,7 +242,7 @@ final class AccessoryDesignerTests: XCTestCase {
     func testUnusableOutputThrowsAndCancellationReturnsNil() throws {
         XCTAssertThrowsError(try analyseAccessoryRender(stl: Data(), code: goodCode, openSCADMessages: []))
         XCTAssertThrowsError(try analyseAccessoryRender(stl: Data("solid x\nfacet\n".utf8), code: goodCode, openSCADMessages: []))
-        XCTAssertNil(try analyseAccessoryRender(stl: try boxSTL(), code: goodCode, openSCADMessages: [], isCancelled: { true }))
+        XCTAssertNil(try analyseAccessoryRender(stl: try boxSTL(), code: goodCode, openSCADMessages: [], budget: testBudget, isCancelled: { true }))
     }
 
     func testRenderToolResultCarriesFactsThenCaptionedPictures() throws {
@@ -264,7 +270,9 @@ final class AccessoryDesignerTests: XCTestCase {
         Rendering Polygon Mesh using CGAL...
         """
         let messages = accessoryOpenSCADMessages(log)
-        XCTAssertEqual(messages.count, 3)
+        // The echoed size is a fit size, reported on its own line rather than among the messages.
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(accessoryFitSizes(log), [AccessoryFitSize(name: "angle", millimetres: 60)])
         XCTAssertTrue(messages[0].hasSuffix("in file design.scad, line 4"))
         XCTAssertFalse(messages.joined().contains("/var/"))
         XCTAssertEqual(accessoryOpenSCADMessages(String(repeating: "WARNING: x\n", count: 30)).count, 12)
@@ -290,6 +298,7 @@ final class AccessoryDesignerTests: XCTestCase {
               shift
             done
             echo "WARNING: Ignoring unknown variable in file $PWD/design.scad, line 1" >&2
+            echo 'ECHO: "slot_width", 9.9' >&2
             cat > "$out" <<'STL'
             solid t
             facet normal 0 0 -1
@@ -338,18 +347,19 @@ final class AccessoryDesignerTests: XCTestCase {
         let fake = try fakeOpenSCAD(failing: false)
         defer { try? FileManager.default.removeItem(at: fake.folder) }
         let before = accessoryTempFolders()
-        let outcome = try await renderAccessoryDesign(code: goodCode, executable: fake.executable, timeout: 30)
+        let outcome = try await renderAccessoryDesign(code: goodCode, executable: fake.executable, timeout: 30, budget: testBudget)
         guard case .rendered(let result) = outcome else { return XCTFail("Expected a render, got \(outcome)") }
         XCTAssertTrue(result.isAcceptable)
         XCTAssertEqual(result.facts.triangles, 4)
         XCTAssertEqual(result.facts.openSCADMessages, ["WARNING: Ignoring unknown variable in file design.scad, line 1"])
+        XCTAssertEqual(result.facts.fitSizes, [AccessoryFitSize(name: "slot_width", millimetres: 9.9)])
         XCTAssertEqual(accessoryTempFolders(), before, "The render's temporary folder is removed")
     }
 
     func testRenderFailureCarriesOpenSCADsMessage() async throws {
         let fake = try fakeOpenSCAD(failing: true)
         defer { try? FileManager.default.removeItem(at: fake.folder) }
-        let outcome = try await renderAccessoryDesign(code: goodCode, executable: fake.executable, timeout: 30)
+        let outcome = try await renderAccessoryDesign(code: goodCode, executable: fake.executable, timeout: 30, budget: testBudget)
         guard case .failed(let text) = outcome else { return XCTFail("Expected a failure") }
         XCTAssertTrue(text.contains("exit code 1"))
         XCTAssertTrue(text.contains("ERROR: Parser error in file design.scad, line 3"))
@@ -606,5 +616,114 @@ final class AccessoryDesignerTests: XCTestCase {
         XCTAssertFalse(isError)
         XCTAssertEqual(note, "The seller says: Make the lip taller")
         XCTAssertEqual(run.phase, .finished, "The earlier render is still the latest acceptable one")
+    }
+    // MARK: Round 6 fixes
+
+    func testRepliesThatCantJoinTheHistoryAreSetAside() async throws {
+        // A reply cut off by the context window (or any reason but end_turn, tool_use, stop_sequence or pause_turn)
+        // may hold a half-written tool call: it is set aside, never run and never added to the history.
+        for stop: AnthropicStopReason? in [.other("model_context_window_exceeded"), .other("something_new"), nil, .maxTokens] {
+            let cut = AnthropicToolUse(id: "t1", name: "render_scad", input: ["code": .string(goodCode)], rawInputJSON: "{}", inputProblem: nil)
+            let message = reply([AnthropicOutputBlock(content: .toolUse(cut), raw: ["type": "tool_use", "id": "t1", "name": "render_scad", "input": ["code": .string(goodCode)]])], stop: stop)
+            XCTAssertFalse(message.canJoinHistory)
+            let stub = StubClaude([.success(message)])
+            let counter = RenderCounter()
+            let run = makeRun(stub, counter: counter) { .failed("unused") }
+            run.start(firstTurn: .user(text: "brief"))
+            await settle(run)
+            XCTAssertEqual(counter.count, 0, "\(String(describing: stop))")
+            XCTAssertEqual(run.messages.count, 1, "The cut-off reply isn't kept")
+            XCTAssertTrue(run.canTryAgain)
+            XCTAssertEqual(run.totalReplies, 1, "It is still counted and costed")
+            guard case .stopped(let reason) = run.phase else { return XCTFail("Expected a stop") }
+            XCTAssertEqual(reason, accessorySetAsideText(stop))
+        }
+        XCTAssertTrue(accessorySetAsideText(.other("model_context_window_exceeded")).contains("Start Over"))
+        XCTAssertTrue(accessorySetAsideText(.maxTokens).contains("Try Again"))
+        XCTAssertTrue(accessorySetAsideText(.other("x")).contains("(x)"))
+    }
+
+    func testOverhangsAreMeasuredAndLocated() throws {
+        // A 10 mm cube on the bed and a 10 × 10 × 5 mm block floating at Z = 5: its 100 mm² underside overhangs.
+        let mesh = try STLMesh.validated(boxTriangles(.zero, SIMD3(10, 10, 10)) + boxTriangles(SIMD3(20, 0, 5), SIMD3(30, 10, 10)))
+        let result = try render(try mesh.stlCopyData())
+        XCTAssertEqual(result.facts.overhang, overhangShare(mesh), "Studio's shared overhang rule")
+        XCTAssertEqual(result.facts.overhang.overhangAreaMM2, 100, accuracy: 0.001)
+        XCTAssertEqual(result.facts.overhang.fraction, 0.1, accuracy: 0.0001)
+        XCTAssertTrue(result.facts.hasNotableOverhangs)
+        let location = try XCTUnwrap(result.facts.overhangLocation)
+        XCTAssertEqual(location.lowestZ, 5)
+        XCTAssertEqual(location.highestZ, 5)
+        XCTAssertEqual(location.mainBands, [AccessoryOverhangBand(bottomZ: 5, areaMM2: 100)])
+        let text = accessoryRenderFactsText(result.facts, renderNumber: 1, maxRenders: 4)
+        XCTAssertTrue(text.contains("Overhangs: 10% of the surface (100 mm²) faces down more steeply than 45° from vertical, at Z = 5.0 mm; most at Z 5–6 mm (100 mm²)."), text)
+        XCTAssertTrue(text.contains("These need supports"))
+        XCTAssertTrue(accessoryStudioCheckLines(result.facts).contains { $0.hasPrefix("Overhangs: 10% of the surface") && $0.contains("at 5 mm up") })
+        // A box on the bed has none: its underside is on the bed.
+        let box = try render(try boxSTL())
+        XCTAssertNil(box.facts.overhangLocation)
+        XCTAssertFalse(box.facts.hasNotableOverhangs)
+        XCTAssertTrue(accessoryRenderFactsText(box.facts, renderNumber: 1, maxRenders: 4).contains("Overhangs: no downward faces steeper than 45° from vertical."))
+        XCTAssertTrue(accessoryStudioCheckLines(box.facts).contains("Overhangs: none steeper than 45° from vertical"))
+        XCTAssertEqual(accessoryOverhangLocation(mesh), accessoryOverhangLocation(mesh))
+    }
+
+    func testOverhangBandsAreLargestFirstAndCapped() throws {
+        // Floating blocks at Z = 2, 4, 6 and 8 with undersides of 4, 16, 16 and 1 mm².
+        let blocks = boxTriangles(.zero, SIMD3(40, 40, 1))
+            + boxTriangles(SIMD3(0, 0, 2), SIMD3(2, 2, 3)) + boxTriangles(SIMD3(5, 0, 4), SIMD3(9, 4, 5))
+            + boxTriangles(SIMD3(10, 0, 6), SIMD3(14, 4, 7)) + boxTriangles(SIMD3(20, 0, 8), SIMD3(21, 1, 9))
+        let location = try XCTUnwrap(accessoryOverhangLocation(try STLMesh.validated(blocks)))
+        XCTAssertEqual(location.lowestZ, 2)
+        XCTAssertEqual(location.highestZ, 8)
+        XCTAssertEqual(location.mainBands.map(\.bottomZ), [4, 6, 2], "Largest first, ties by height, at most 3")
+    }
+
+    func testFitSizesAreReadFromEchoes() {
+        let log = """
+        ECHO: "slot_width", 9.9
+        ECHO: hole_d = 3.4
+        ECHO: "slot_width", 12
+        ECHO: "note", "text"
+        ECHO: "pair", [1, 2]
+        ECHO: "tiny", 1e-1
+        WARNING: something
+        ECHO: "bad name/../x", 4
+        """
+        XCTAssertEqual(accessoryFitSizes(log), [AccessoryFitSize(name: "slot_width", millimetres: 9.9),
+                                                AccessoryFitSize(name: "hole_d", millimetres: 3.4),
+                                                AccessoryFitSize(name: "tiny", millimetres: 0.1)])
+        let many = (0..<40).map { "ECHO: \"s\($0)\", \($0)" }.joined(separator: "\n")
+        XCTAssertEqual(accessoryFitSizes(many).count, accessoryMaximumFitSizes)
+        XCTAssertEqual(accessoryOpenSCADMessages(log).filter { $0.hasPrefix("ECHO") }.count, 3, "Only echoes that aren't fit sizes stay messages")
+        XCTAssertEqual(accessoryFitSizeText(AccessoryFitSize(name: "slot_width", millimetres: 9.9)), "slot_width 9.9 mm")
+    }
+
+    func testFitSizesAreFedBackAndShownBesideTheMeasurements() throws {
+        let fits = [AccessoryFitSize(name: "slot_width", millimetres: 9.9)]
+        let result = try render(try boxSTL(), fitSizes: fits)
+        XCTAssertEqual(result.facts.fitSizes, fits)
+        XCTAssertTrue(accessoryRenderFactsText(result.facts, renderNumber: 1, maxRenders: 4).contains("Fit sizes echoed by the code: slot_width 9.9 mm."))
+        let none = try render(try boxSTL())
+        XCTAssertTrue(accessoryRenderFactsText(none.facts, renderNumber: 1, maxRenders: 4).contains("Fit sizes echoed by the code: none. echo(\"name\", value)"))
+        XCTAssertEqual(accessoryFitSizeLines(fits), ["slot_width 9.9 mm"])
+        XCTAssertTrue(accessoryFitSizeLines([])[0].contains("didn’t report"))
+        let rows = [AccessoryMeasurement(label: "Phone thickness", millimetres: "9.5", method: .calipers), AccessoryMeasurement(),
+                    AccessoryMeasurement(label: "Width", millimetres: "75", method: .estimate)]
+        XCTAssertEqual(accessoryTypedMeasurementLines(rows), ["Phone thickness: 9.5 mm (calipers)", "Width: 75 mm (estimate)"])
+    }
+
+    func testPromptCarriesTheRound6PrintingRules() {
+        for phrase in ["2.25 or 2.7 mm", "1.8 mm only where it carries none", "never under 1.0 mm", "add 0.2–0.4 mm",
+                       "M3 3.4 mm, M4 4.5 mm", "teardrop", "measure it with calipers", "0.9 mm", "at least 5 mm high",
+                       "0.8–1 mm deep", "side walls rather than the bottom face", "at least 5 times as long", "taper",
+                       "PETG", "radius 3 mm or more", "keep the height and the amount of material low", "ask about the load",
+                       "echo(\"slot_width\", slot_width);", "Never call a design strong", "dxf_"] {
+            XCTAssertTrue(accessorySystemPrompt.contains(phrase), phrase)
+        }
+    }
+
+    func testRenderOutcomeForTooMuchMemory() {
+        XCTAssertTrue(accessoryOpenSCADFailureText(.tooMuchMemory, messages: []).contains("too much memory"))
     }
 }

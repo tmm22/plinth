@@ -611,7 +611,7 @@ func personalisedSTLData(_ data: Data) throws -> Data {
 // MARK: Local OpenSCAD
 
 enum OpenSCADRunError: LocalizedError, Equatable {
-    case timedOut(TimeInterval), outputTooLarge, failed(status: Int32, summary: String?), noOutput(String?), cancelled
+    case timedOut(TimeInterval), outputTooLarge, tooMuchMemory, failed(status: Int32, summary: String?), noOutput(String?), cancelled
 
     var errorDescription: String? {
         switch self {
@@ -619,6 +619,8 @@ enum OpenSCADRunError: LocalizedError, Equatable {
             return "OpenSCAD didn’t finish within \(Int(seconds / 60)) minutes, so Studio stopped it."
         case .outputTooLarge:
             return "OpenSCAD’s output grew past Studio’s 128 MB limit, so Studio stopped it."
+        case .tooMuchMemory:
+            return "OpenSCAD used too much memory, so Studio stopped it before it slowed down your Mac."
         case .failed(let status, let summary):
             return "OpenSCAD couldn’t generate the model (exit code \(status))." + (summary.map { " \($0)" } ?? "")
         case .noOutput(let summary):
@@ -761,10 +763,27 @@ final class OpenSCADLogCapture: @unchecked Sendable {
     func store(_ value: String) { lock.withLock { text = value } }
 }
 
+/// The most memory a local OpenSCAD run may use: 2 GB, or a quarter of this Mac's memory when that is less. CGAL
+/// renders of complex code can otherwise grow until the whole Mac swaps.
+let openSCADMemoryLimitBytes: UInt64 = min(2 * 1024 * 1024 * 1024, ProcessInfo.processInfo.physicalMemory / 4)
+
+/// How much memory a running process uses now (the larger of its resident size and its footprint, which also counts
+/// compressed memory), or nil when it can't be read (it has exited, say).
+func processMemoryBytes(_ pid: pid_t) -> UInt64? {
+    var info = rusage_info_v2()
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V2, $0) }
+    }
+    guard result == 0 else { return nil }
+    return max(info.ri_resident_size, info.ri_phys_footprint)
+}
+
 /// Runs OpenSCAD (no shell) and returns the bytes it writes to `-o`. It is stopped when the task is cancelled, after
-/// `timeout`, or once its output or log grows past their limits. The log goes to a file so a full pipe can't stall it.
+/// `timeout`, once its output or log grows past their limits, or when its memory (checked every `memoryCheckInterval`)
+/// passes `maxMemoryBytes`. The log goes to a file so a full pipe can't stall it.
 func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAssignment], timeout: TimeInterval = 300,
                         maxOutputBytes: Int = STLMesh.maximumBytes, maxLogBytes: Int = 4_000_000,
+                        maxMemoryBytes: UInt64 = openSCADMemoryLimitBytes, memoryCheckInterval: TimeInterval = 0.5,
                         logCapture: OpenSCADLogCapture? = nil) async throws -> Data {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(personalisationTempFolderPrefixes[0])\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -802,11 +821,17 @@ func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAss
     try Task.checkCancellation()
     try box.process.run()
     let started = Date()
+    let pid = box.process.processIdentifier
+    var lastMemoryCheck = Date.distantPast
     try await withTaskCancellationHandler {
         while !box.exited {
             if Task.isCancelled { box.stop(); throw OpenSCADRunError.cancelled }
             if Date().timeIntervalSince(started) > timeout { box.stop(); throw OpenSCADRunError.timedOut(timeout) }
             if fileSize(output) > maxOutputBytes || fileSize(logURL) > maxLogBytes { box.stop(); throw OpenSCADRunError.outputTooLarge }
+            if Date().timeIntervalSince(lastMemoryCheck) >= memoryCheckInterval {
+                lastMemoryCheck = Date()
+                if !box.exited, let used = processMemoryBytes(pid), used > maxMemoryBytes { box.stop(); throw OpenSCADRunError.tooMuchMemory }
+            }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
     } onCancel: {
