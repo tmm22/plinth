@@ -206,6 +206,13 @@ struct ShopFollowUpEntry: Identifiable, Equatable {
     let trackingNumbers: [String]
     let status: String
     let created: Date?
+    /// Shopify drafts (ShopifyOrderMatching.swift): `metadata.sourceShop` and `metadata.sourceItems`, when recorded.
+    var sourceShop: String? = nil
+    var sourceItems: [ShopifySourceItem]? = nil
+    /// The recipient's full name and postcode, for Send Tracking's same-order check on orders imported without their
+    /// store. Memory only: never saved, exported or logged.
+    var recipientName = ""
+    var postcode = ""
 
     var isImported: Bool { marketplaceID != nil }
     var isShopify: Bool { (source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "shopify" }
@@ -234,7 +241,9 @@ func shopFollowUpEntry(_ record: Record) -> ShopFollowUpEntry? {
     return ShopFollowUpEntry(
         id: record.id, slantOrderNumber: orderNumber(order), marketplaceID: reference?.id, source: reference?.source,
         recipientFirstName: orderRecipientFirstName(order), provider: (provider?.isEmpty ?? true) ? nil : provider,
-        trackingNumbers: numbers, status: (order["status"] as? String) ?? "", created: orderCreatedDate(order))
+        trackingNumbers: numbers, status: (order["status"] as? String) ?? "", created: orderCreatedDate(order),
+        sourceShop: orderShopifySourceShop(order), sourceItems: orderShopifySourceItems(order),
+        recipientName: orderRecipientName(order), postcode: orderShippingPostcode(order))
 }
 
 struct ShopFollowUpGroups: Equatable {
@@ -367,8 +376,8 @@ struct ShopFollowUpSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showDone = false
     @State private var exportError: String?
-    /// Send Tracking to Shopify… (ShopifyTracking.swift), with the orders fixed when it opens.
-    @State private var shopifySend: [ShopifyTrackingCandidate]?
+    /// Send Tracking to Shopify… (ShopifyTracking.swift), with the store and orders fixed when it opens.
+    @State private var shopifySend: ShopifyTrackingSession?
     @ObservedObject private var shopify = ShopifyConnection.shared
 
     var body: some View {
@@ -412,7 +421,10 @@ struct ShopFollowUpSheet: View {
                       : "Order name, tracking number and company for a Shopify bulk-fulfilment app")
                 if shopify.isConfigured {
                     let candidates = shopifyTrackingCandidates(listed, done: store.shopFollowUpDoneIDs)
-                    Button("Send Tracking to Shopify…") { shopifySend = candidates }
+                    Button("Send Tracking to Shopify…") {
+                        guard let shop = shopify.shop, !candidates.isEmpty else { return }
+                        shopifySend = ShopifyTrackingSession(shop: shop, candidates: candidates)
+                    }
                         .disabled(candidates.isEmpty || shopify.busy)
                         .help(candidates.isEmpty
                               ? "No imported Shopify orders with tracking are waiting"
@@ -437,8 +449,8 @@ struct ShopFollowUpSheet: View {
         }
         .padding(20)
         .frame(minWidth: 620, idealWidth: 700, minHeight: 440, idealHeight: 560)
-        .sheet(isPresented: Binding(get: { shopifySend != nil }, set: { if !$0 { shopifySend = nil } })) {
-            ShopifyTrackingSheet(candidates: shopifySend ?? []).environmentObject(store)
+        .sheet(item: $shopifySend) { session in
+            ShopifyTrackingSheet(shop: session.shop, candidates: session.candidates).environmentObject(store)
         }
     }
 

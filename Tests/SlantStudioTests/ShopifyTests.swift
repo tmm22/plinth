@@ -341,37 +341,53 @@ final class ShopifyTests: XCTestCase {
         [
             "id": "gid://shopify/FulfillmentOrder/\(id)", "status": fulfillable ? "OPEN" : "CLOSED",
             "supportedActions": fulfillable ? [["action": "CREATE_FULFILLMENT"], ["action": "HOLD"]] : [["action": "CANCEL_FULFILLMENT_ORDER"]],
-            "lineItems": ["nodes": [["remainingQuantity": 2, "lineItem": ["name": "Vase"]], ["remainingQuantity": 0, "lineItem": ["name": "Done"]]]]
+            "lineItems": ["pageInfo": ["hasNextPage": false], "nodes": [
+                ["id": "gid://shopify/FulfillmentOrderLineItem/\(id)1", "remainingQuantity": 2,
+                 "lineItem": ["id": "gid://shopify/LineItem/71", "sku": "VASE", "name": "Vase"]],
+                ["id": "gid://shopify/FulfillmentOrderLineItem/\(id)2", "remainingQuantity": 0,
+                 "lineItem": ["id": "gid://shopify/LineItem/72", "sku": "DONE", "name": "Done"]]
+            ]]
         ]
     }
 
+    private let vase = [ShopifySourceItem(key: .sku("VASE"), quantity: 2)]
+
+    private func check(_ data: [String: Any]) -> ShopifyFulfilmentCheck {
+        shopifyFulfilmentCheck(data, trackingNumbers: ["1Z9"], sourceItems: vase, identity: nil)
+    }
+
     func testFulfilmentCheck() {
-        XCTAssertEqual(shopifyFulfilmentCheck(checkData(fulfillmentOrders: [fulfillmentOrder(5)]), trackingNumbers: ["1Z9"]),
-                       .ready(fulfillmentOrderID: "gid://shopify/FulfillmentOrder/5", items: ["2 × Vase"]))
-        XCTAssertEqual(shopifyFulfilmentCheck(checkData(existing: ["1z9"], fulfillmentOrders: [fulfillmentOrder(5)]), trackingNumbers: ["1Z9"]),
-                       .alreadyHasTracking)
-        XCTAssertEqual(shopifyFulfilmentCheck(checkData(status: "FULFILLED", fulfillmentOrders: [fulfillmentOrder(5, fulfillable: false)]), trackingNumbers: ["1Z9"]),
-                       .alreadyFulfilled)
-        XCTAssertEqual(shopifyFulfilmentCheck(checkData(cancelled: "2026-10-01T00:00:00Z", fulfillmentOrders: [fulfillmentOrder(5)]), trackingNumbers: ["1Z9"]),
-                       .cancelled)
-        XCTAssertEqual(shopifyFulfilmentCheck(checkData(fulfillmentOrders: [fulfillmentOrder(5), fulfillmentOrder(6)]), trackingNumbers: ["1Z9"]),
-                       .severalLocations)
-        if case .unavailable = shopifyFulfilmentCheck(checkData(status: "ON_HOLD", fulfillmentOrders: [fulfillmentOrder(5, fulfillable: false)]), trackingNumbers: ["1Z9"]) {} else {
+        XCTAssertEqual(check(checkData(fulfillmentOrders: [fulfillmentOrder(5)])),
+                       .ready(ShopifyFulfilmentPlan(fulfillmentOrderID: "gid://shopify/FulfillmentOrder/5",
+                                                    lines: [ShopifyFulfilmentLine(id: "gid://shopify/FulfillmentOrderLineItem/51", quantity: 2)],
+                                                    items: ["2 × Vase"], remaining: [], matchedByAddress: false)))
+        XCTAssertEqual(check(checkData(existing: ["1z9"], fulfillmentOrders: [fulfillmentOrder(5)])), .alreadyHasTracking)
+        XCTAssertEqual(check(checkData(status: "FULFILLED", fulfillmentOrders: [fulfillmentOrder(5, fulfillable: false)])), .alreadyFulfilled)
+        XCTAssertEqual(check(checkData(cancelled: "2026-10-01T00:00:00Z", fulfillmentOrders: [fulfillmentOrder(5)])), .cancelled)
+        XCTAssertEqual(check(checkData(fulfillmentOrders: [fulfillmentOrder(5), fulfillmentOrder(6)])), .severalLocations)
+        if case .unavailable = check(checkData(status: "ON_HOLD", fulfillmentOrders: [fulfillmentOrder(5, fulfillable: false)])) {} else {
             XCTFail("an order on hold isn't ready")
         }
-        XCTAssertEqual(shopifyFulfilmentCheck(["order": NSNull()], trackingNumbers: ["1Z9"]), .notFound)
+        XCTAssertEqual(check(["order": NSNull()]), .notFound)
     }
 
     func testFulfillmentInputPayload() {
-        let one = shopifyFulfillmentInput(fulfillmentOrderID: "gid://shopify/FulfillmentOrder/5", trackingNumbers: [" 1Z9 "], company: "UPS", notifyCustomer: false)
+        let plan = ShopifyFulfilmentPlan(fulfillmentOrderID: "gid://shopify/FulfillmentOrder/5",
+                                         lines: [ShopifyFulfilmentLine(id: "gid://shopify/FulfillmentOrderLineItem/51", quantity: 2)],
+                                         items: [], remaining: [], matchedByAddress: false)
+        let one = shopifyFulfillmentInput(plan, trackingNumbers: [" 1Z9 "], company: "UPS", notifyCustomer: false)
         XCTAssertEqual(one["notifyCustomer"] as? Bool, false)
-        XCTAssertEqual((one["lineItemsByFulfillmentOrder"] as? [[String: Any]])?.first?["fulfillmentOrderId"] as? String, "gid://shopify/FulfillmentOrder/5")
-        XCTAssertNil((one["lineItemsByFulfillmentOrder"] as? [[String: Any]])?.first?["fulfillmentOrderLineItems"], "every remaining item")
+        let group = (one["lineItemsByFulfillmentOrder"] as? [[String: Any]])?.first
+        XCTAssertEqual(group?["fulfillmentOrderId"] as? String, "gid://shopify/FulfillmentOrder/5")
+        let lines = group?["fulfillmentOrderLineItems"] as? [[String: Any]]
+        XCTAssertEqual(lines?.count, 1, "only the draft's items, never every remaining item")
+        XCTAssertEqual(lines?.first?["id"] as? String, "gid://shopify/FulfillmentOrderLineItem/51")
+        XCTAssertEqual(lines?.first?["quantity"] as? Int, 2)
         let tracking = one["trackingInfo"] as? [String: Any]
         XCTAssertEqual(tracking?["number"] as? String, "1Z9")
         XCTAssertEqual(tracking?["company"] as? String, "UPS")
         XCTAssertNil(tracking?["url"])
-        let several = shopifyFulfillmentInput(fulfillmentOrderID: "f", trackingNumbers: ["A", "B", ""], company: "", notifyCustomer: true)
+        let several = shopifyFulfillmentInput(plan, trackingNumbers: ["A", "B", ""], company: "", notifyCustomer: true)
         XCTAssertEqual((several["trackingInfo"] as? [String: Any])?["numbers"] as? [String], ["A", "B"])
         XCTAssertNil((several["trackingInfo"] as? [String: Any])?["company"])
         XCTAssertEqual(several["notifyCustomer"] as? Bool, true)

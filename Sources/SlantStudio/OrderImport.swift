@@ -340,6 +340,8 @@ struct OrderImportItem: Equatable {
     var personalisation = ""
     /// The marketplace's full options text, shown beside the personalisation when it holds other options too.
     var options = ""
+    /// Fetch from Shopify: the line item's numeric ID, recorded in the draft's `sourceItems` (ShopifyOrderMatching.swift).
+    var sourceLineItemID = ""
 }
 
 struct OrderImportOrder: Identifiable, Equatable {
@@ -371,6 +373,8 @@ struct OrderImportOrder: Identifiable, Equatable {
     var decodedEntities = false
     /// The sale columns of each row that has them (ImportedSaleAmounts.swift). Memory only.
     var saleRows: [OrderImportSaleRow] = []
+    /// Fetch from Shopify: the store's myshopify.com address, recorded as `metadata.sourceShop`. Empty for files.
+    var sourceShop = ""
 }
 
 struct OrderImportParse: Equatable {
@@ -569,9 +573,13 @@ func orderImportPaddedUSZIP(_ zip: String) -> String? {
 }
 
 /// The metadata each imported draft carries, so later imports can recognise it. Two of Slant's ten fields, plus the
-/// draft marker (`studioDraftId`, DraftConfirmation.swift) on the body actually sent.
-func orderImportMetadata(source: OrderImportFormat, sourceOrderID: String, draftMarker: String? = nil) -> [String: Any] {
-    let metadata: [String: Any] = ["source": source.rawValue, "sourceOrderId": sourceOrderID.trimmingCharacters(in: .whitespacesAndNewlines)]
+/// draft marker (`studioDraftId`, DraftConfirmation.swift) on the body actually sent. Shopify drafts may also carry
+/// `sourceShop` and `sourceItems` (ShopifyOrderMatching.swift), so Send Tracking fulfils only what Slant made.
+func orderImportMetadata(source: OrderImportFormat, sourceOrderID: String, draftMarker: String? = nil,
+                         sourceShop: String? = nil, sourceItems: String? = nil) -> [String: Any] {
+    var metadata: [String: Any] = ["source": source.rawValue, "sourceOrderId": sourceOrderID.trimmingCharacters(in: .whitespacesAndNewlines)]
+    if let sourceShop, !sourceShop.isEmpty { metadata["sourceShop"] = sourceShop }
+    if let sourceItems, !sourceItems.isEmpty { metadata["sourceItems"] = sourceItems }
     guard let draftMarker else { return metadata }
     return orderMetadataAddingDraftMarker(metadata, marker: draftMarker)
 }
@@ -997,20 +1005,23 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
     check.draftZIP = zip
     do {
         check.body = try orderImportDraftBody(order, context: context, email: email, zip: zip, lines: check.lines,
-                                              draftMarker: draftMarker)
+                                              draftMarker: draftMarker, itemProductIDs: check.itemProductIDs)
     } catch {
         block(error.localizedDescription)
     }
     return check
 }
 
-/// An imported order's `POST /orders` body, built only through `orderDraftPayload`.
+/// An imported order's `POST /orders` body, built only through `orderDraftPayload`. `itemProductIDs` (parallel to the
+/// order's items) keeps items with no product (left out under Match products) out of a Shopify draft's `sourceItems`.
 func orderImportDraftBody(_ order: OrderImportOrder, context: OrderImportContext, email: String, zip: String,
-                          lines: [OrderLine], draftMarker: String? = nil) throws -> [String: Any] {
+                          lines: [OrderLine], draftMarker: String? = nil, itemProductIDs: [UUID?]? = nil) throws -> [String: Any] {
     try orderDraftPayload(
         platformID: context.platformID, ownerID: context.ownerID, email: email, recipientName: order.name,
         line1: order.line1, line2: order.line2, city: order.city, state: order.state, zip: zip, country: order.countryCode,
-        paymentID: "", metadata: orderImportMetadata(source: order.source, sourceOrderID: order.sourceOrderID, draftMarker: draftMarker),
+        paymentID: "", metadata: orderImportMetadata(source: order.source, sourceOrderID: order.sourceOrderID, draftMarker: draftMarker,
+                                                     sourceShop: order.sourceShop,
+                                                     sourceItems: shopifyDraftSourceItems(order, itemProductIDs: itemProductIDs)),
         options: [:], lines: lines)
 }
 
@@ -1440,6 +1451,9 @@ struct OrderImportSheet: View {
     @State private var importCheckMessage: String?
     /// Personalise with OpenSCAD (BatchPersonaliseView.swift): memory only, reset with the file.
     @StateObject private var personalise = BatchPersonaliseSession()
+    /// Fetch from Shopify (ShopifyImport.swift) is running: Choose File… and Create wait for it.
+    @State private var shopifyFetching = false
+    @ObservedObject private var shopify = ShopifyConnection.shared
 
     private var context: OrderImportContext {
         OrderImportContext(
@@ -1491,12 +1505,15 @@ struct OrderImportSheet: View {
                 Text("Import Orders").font(.title2.bold())
                 Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Studio’s template. Each item must match a saved product by SKU, or one you choose under Match products. Drafts aren’t charged: afterwards you review and pay each draft one at a time in Orders.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let hint = shopifyImportIntroHint(shop: shopify.shop) {
+                    Text(hint).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
             HStack {
-                Button("Choose File…") { chooseFile() }.disabled(runner.running)
+                Button("Choose File…") { chooseFile() }.disabled(runner.running || shopifyFetching)
                 // ShopifyImport.swift: shown only once Shopify is connected in Settings.
-                ShopifyImportFetchButton(disabled: runner.running, onLoaded: { apply($0, label: $1) },
-                                         onError: { loadError = $0 })
+                ShopifyImportFetchButton(disabled: runner.running || confirmCreate, fetching: $shopifyFetching,
+                                         onLoaded: { apply($0, label: $1) }, onError: { loadError = $0 })
                 Button("Save Template…") { saveTemplate() }
                 if let fileName {
                     Text(fileName).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -1512,7 +1529,7 @@ struct OrderImportSheet: View {
                 ContentUnavailableView {
                     Label("No file chosen", systemImage: "doc.text")
                 } description: {
-                    Text(orderImportEmptyHint)
+                    Text(shopifyImportEmptyHint(connected: shopify.isConfigured))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -1768,7 +1785,7 @@ struct OrderImportSheet: View {
                 // No default-action shortcut: creating drafts always takes a click and the confirmation.
                 Button(createButtonTitle(count) + "…") { confirmCreate = true }
                     .buttonStyle(.borderedProminent)
-                    .disabled(count == 0 || runner.running || store.busy || store.orderDraftBlockedReason != nil)
+                    .disabled(count == 0 || runner.running || store.busy || store.orderDraftBlockedReason != nil || shopifyFetching)
             }
         }
     }
@@ -1858,7 +1875,7 @@ struct OrderImportSheet: View {
     }
 
     private func load(_ url: URL) {
-        guard !runner.running else { return }
+        guard !runner.running, !shopifyFetching else { return }
         do {
             if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > orderImportMaxFileBytes {
                 throw StudioError("This file is larger than \(orderImportMaxFileBytes / (1024 * 1024)) MB. Import at most \(orderImportMaxOrders) orders at a time.")
@@ -1876,8 +1893,10 @@ struct OrderImportSheet: View {
     }
 
     /// Shows a parsed file, or orders fetched from Shopify (ShopifyImport.swift), with fresh results and choices.
-    private func apply(_ parse: OrderImportParse, label: String) {
-        guard !runner.running else { return }
+    /// Refused (false) while a batch runs or its confirmation is shown, so the list under review never changes.
+    @discardableResult
+    private func apply(_ parse: OrderImportParse, label: String) -> Bool {
+        guard !runner.running, !confirmCreate else { return false }
         runner.reset()
         paddedZIP = []
         productChoices = [:]
@@ -1888,6 +1907,7 @@ struct OrderImportSheet: View {
         fileName = label
         let initial = checks(for: parse)
         ticked = Set(parse.orders.map(\.id).filter { initial[$0]?.tickedByDefault == true })
+        return true
     }
 
     private func saveTemplate() {
@@ -1917,12 +1937,12 @@ struct OrderImportSheet: View {
             },
             makeBody: { lines in
                 try orderImportDraftBody(order, context: context, email: check.draftEmail, zip: check.draftZIP, lines: lines,
-                                         draftMarker: draftMarker)
+                                         draftMarker: draftMarker, itemProductIDs: check.itemProductIDs)
             })
     }
 
     private func startImport() {
-        guard let parsed, !runner.running, store.orderDraftBlockedReason == nil else { return }
+        guard let parsed, !runner.running, !shopifyFetching, store.orderDraftBlockedReason == nil else { return }
         // Rebuilt from the current state, so the bodies sent are exactly what the preview shows.
         let currentChecks = checks(for: parsed)
         let context = context

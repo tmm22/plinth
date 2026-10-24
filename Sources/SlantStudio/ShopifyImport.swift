@@ -1,20 +1,23 @@
 import SwiftUI
 
-// MARK: - Import Orders › From Shopify…
+// MARK: - Import Orders › Fetch from Shopify
 //
 // Fetches the store's paid, unfulfilled orders (read-only, bounded, throttle-aware) and turns them into the same
 // `OrderImportParse` a Shopify CSV export gives, so the Import Orders sheet's checks, Match products, confirmation and
 // paced draft runner apply unchanged. `sourceOrderID` is the order's name ("#1001"), as the CSV's Name column, so the
-// session ledger and the loaded-orders metadata check catch an order imported either way. Like the CSV path, the
-// names, emails and addresses stay in the sheet's memory: never on disk, in preferences, logs or Activity.
+// session ledger and the loaded-orders metadata check catch an order imported either way; the store itself
+// (`sourceShop`) and each line item's ID go into the draft's metadata too (ShopifyOrderMatching.swift). The order's
+// subtotal, shipping, taxes and total (shop money) fill the same sale rows the CSV's columns do, for the Profit check.
+// Like the CSV path, the names, emails, addresses and amounts stay in the sheet's memory: never on disk, in
+// preferences, logs or Activity.
 
 let shopifyImportMaxOrders = 250
 let shopifyImportDays = 60
-/// Orders per page. With 30 line items each, a page's requested cost stays near half of Shopify's 1,000-point cap.
+/// Orders per page. With 30 line items each, a page's requested cost stays well under Shopify's 1,000-point cap.
 let shopifyImportPageSize = 8
 let shopifyImportLineItemsPerOrder = 30
 /// The estimated cost of one page, for waiting out the throttle before asking.
-let shopifyImportPageCost: Double = 520
+let shopifyImportPageCost: Double = 620
 
 /// Shopify search syntax for the import: paid, unfulfilled, open orders created on or after `since` (UTC day). The
 /// `read_orders` scope only reaches the last 60 days anyway.
@@ -34,9 +37,15 @@ query StudioImportOrders($first: Int!, $after: String, $query: String!) {
     nodes {
       name email createdAt cancelledAt displayFinancialStatus displayFulfillmentStatus
       shippingAddress { name firstName lastName company address1 address2 city province provinceCode zip countryCodeV2 }
+      subtotalPriceSet { shopMoney { amount currencyCode } }
+      totalShippingPriceSet { shopMoney { amount currencyCode } }
+      totalTaxSet { shopMoney { amount currencyCode } }
+      totalDiscountsSet { shopMoney { amount currencyCode } }
+      totalPriceSet { shopMoney { amount currencyCode } }
+      totalRefundedSet { shopMoney { amount currencyCode } }
       lineItems(first: \(shopifyImportLineItemsPerOrder)) {
         pageInfo { hasNextPage }
-        nodes { name sku quantity currentQuantity customAttributes { key value } }
+        nodes { id name sku quantity currentQuantity customAttributes { key value } }
       }
     }
   }
@@ -97,6 +106,37 @@ func shopifyLineItemPersonalisation(options: String) -> String {
     return named.isEmpty ? options : named
 }
 
+/// The order's amounts in the shop's own currency (`shopMoney`), as the CSV export's Subtotal, Shipping, Taxes,
+/// Discount Amount, Total and Refunded Amount columns, so `importedSaleAmounts` reads them by the same rules (USD
+/// only). Nil when Shopify sent none. Amounts in different currencies leave the currency blank, so nothing is used.
+func shopifyImportSaleRow(_ node: [String: Any]) -> OrderImportSaleRow? {
+    var currencies = Set<String>()
+    func amount(_ key: String) -> String {
+        guard let money = (node[key] as? [String: Any])?["shopMoney"] as? [String: Any] else { return "" }
+        let currency = shopifyText(money["currencyCode"]).uppercased()
+        let text: String
+        if let value = money["amount"] as? String {
+            text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if let number = money["amount"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            text = number.stringValue
+        } else {
+            return ""
+        }
+        if !text.isEmpty { currencies.insert(currency) }
+        return text
+    }
+    var row = OrderImportSaleRow()
+    row.subtotal = amount("subtotalPriceSet")
+    row.shipping = amount("totalShippingPriceSet")
+    row.taxes = amount("totalTaxSet")
+    row.discount = amount("totalDiscountsSet")
+    row.total = amount("totalPriceSet")
+    row.refunded = amount("totalRefundedSet")
+    guard !currencies.isEmpty else { return nil }
+    row.currency = currencies.count == 1 ? (currencies.first ?? "") : ""
+    return row
+}
+
 /// One order as Import Orders sees it, or the reason it was left out. `nextRow` numbers its items (the sheet's
 /// "item on row N" label for an item with neither SKU nor name).
 func shopifyImportOrder(_ node: [String: Any], nextRow: inout Int) -> (order: OrderImportOrder?, leftOut: String?) {
@@ -135,8 +175,10 @@ func shopifyImportOrder(_ node: [String: Any], nextRow: inout Int) -> (order: Or
         var entry = OrderImportItem(sku: shopifyText(item["sku"]), quantityText: String(units), itemName: shopifyText(item["name"]), row: row)
         entry.options = shopifyLineItemOptions(item["customAttributes"])
         entry.personalisation = shopifyLineItemPersonalisation(options: entry.options)
+        entry.sourceLineItemID = shopifyNumericID(shopifyText(item["id"]), type: "LineItem") ?? ""
         order.items.append(entry)
     }
+    if let sale = shopifyImportSaleRow(node) { order.saleRows = [sale] }
     order.alreadyHandled = orderImportAlreadyHandledReason(
         format: .shopify, dateShipped: "", fulfillmentStatus: shopifyText(node["displayFulfillmentStatus"]),
         cancelledAt: shopifyText(node["cancelledAt"]), financialStatus: shopifyText(node["displayFinancialStatus"]))
@@ -153,13 +195,15 @@ func shopifyImportParse(_ nodes: [[String: Any]], shop: String, truncated: Bool)
     for node in nodes {
         let result = shopifyImportOrder(node, nextRow: &nextRow)
         if let reason = result.leftOut { notices.append(reason) }
-        guard let order = result.order, seen.insert(order.sourceOrderID).inserted else { continue }
+        guard var order = result.order, seen.insert(order.sourceOrderID).inserted else { continue }
+        order.sourceShop = shop
         orders.append(order)
     }
     guard !orders.isEmpty else {
         throw StudioError("Shopify has no paid, unfulfilled orders from the last \(shopifyImportDays) days for \(shop).")
     }
     notices.insert("Fetched from \(shop): paid, unfulfilled orders from the last \(shopifyImportDays) days, oldest first.", at: 0)
+    if let missing = shopifyMissingCustomerDataNotice(orders) { notices.insert(missing, at: 1) }
     if truncated {
         notices.append("Shopify has more matching orders than the \(shopifyImportMaxOrders) Studio fetches at once. Import these, or use a CSV export for the rest.")
     }
@@ -204,13 +248,36 @@ extension ShopifyConnection {
 
 // MARK: - The sheet's button
 
-/// "From Shopify…" beside Choose File…, shown once Shopify is connected in Settings. Fetching is read-only and can
-/// be stopped; closing the sheet stops it too, and nothing fetched is kept.
+/// The Import Orders intro's extra line once Shopify is connected, or nil.
+func shopifyImportIntroHint(shop: String?) -> String? {
+    guard let shop else { return nil }
+    return "Or use Fetch from Shopify to read paid, unfulfilled orders straight from \(shop)."
+}
+
+/// The empty state's hint, naming Fetch from Shopify once Shopify is connected.
+func shopifyImportEmptyHint(connected: Bool) -> String {
+    connected
+        ? "Choose a CSV file, or Fetch from Shopify, to check orders here. Nothing is sent to Slant until you confirm."
+        : orderImportEmptyHint
+}
+
+/// Activity's line for a fetch, counts only. `used` is false when the result wasn't shown (a batch or its
+/// confirmation had started meanwhile, or the connection changed).
+func shopifyImportFetchActivityDetail(count: Int, used: Bool) -> String {
+    let orders = count == 1 ? "1 order" : "\(count) orders"
+    return used ? orders : "\(orders), not used"
+}
+
+/// "Fetch from Shopify" beside Choose File…, shown once Shopify is connected in Settings. It starts at once (no
+/// ellipsis): fetching is read-only and can be stopped; closing the sheet stops it too, and nothing fetched is kept.
 struct ShopifyImportFetchButton: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject private var connection = ShopifyConnection.shared
     let disabled: Bool
-    let onLoaded: (OrderImportParse, String) -> Void
+    /// True while a fetch runs, so the sheet holds Choose File… and Create.
+    @Binding var fetching: Bool
+    /// Shows the result; false when the sheet refused it.
+    let onLoaded: (OrderImportParse, String) -> Bool
     let onError: (String) -> Void
     @State private var task: Task<Void, Never>?
     @State private var fetched = 0
@@ -230,7 +297,7 @@ struct ShopifyImportFetchButton: View {
                     Button("Stop") { stop() }
                 }
             } else {
-                Button("From Shopify…") { fetch() }
+                Button("Fetch from Shopify") { fetch() }
                     .disabled(disabled || connection.busy)
                     .help("Fetch paid, unfulfilled orders from \(connection.shop ?? "your store") (last \(shopifyImportDays) days, up to \(shopifyImportMaxOrders)). Nothing is sent to Slant until you confirm.")
             }
@@ -240,16 +307,21 @@ struct ShopifyImportFetchButton: View {
     private func fetch() {
         guard task == nil, !disabled, !connection.busy, let shop = connection.shop else { return }
         fetched = 0
+        fetching = true
         task = Task { @MainActor in
-            // A stopped fetch has already cleared `task`, which may by now hold a newer fetch.
-            defer { if !Task.isCancelled { task = nil } }
+            // A stopped fetch has already cleared `task` (and `fetching`), which may by now belong to a newer fetch.
+            defer { if !Task.isCancelled { task = nil; fetching = false } }
             do {
                 let parse = try await connection.fetchImportOrders { count in fetched = count }
                 guard !Task.isCancelled else { return }
-                onLoaded(parse, "Shopify · \(shop)")
+                // Settings can't change the store during a fetch (it's busy), but never show another store's orders.
+                let used = connection.shop == shop && onLoaded(parse, "Shopify · \(shop)")
+                if !used, connection.shop != shop {
+                    onError("The Shopify connection changed while orders were being fetched, so they weren’t used. Fetch again.")
+                }
                 store.activities.insert(Activity(title: "Fetch Shopify orders",
-                                                 detail: parse.orders.count == 1 ? "1 order" : "\(parse.orders.count) orders",
-                                                 success: true), at: 0)
+                                                 detail: shopifyImportFetchActivityDetail(count: parse.orders.count, used: used),
+                                                 success: used), at: 0)
             } catch is CancellationError {
                 return
             } catch {
@@ -264,5 +336,6 @@ struct ShopifyImportFetchButton: View {
     private func stop() {
         task?.cancel()
         task = nil
+        fetching = false
     }
 }
