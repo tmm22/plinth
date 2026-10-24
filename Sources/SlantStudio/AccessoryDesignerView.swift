@@ -98,7 +98,16 @@ struct AccessoryDesignerSheet: View {
         send: { request, progress in try await AnthropicConnection.shared.send(request, onProgress: progress) })
     /// The idea waiting for Replace / Keep Current Details.
     @State private var pendingIdea: AccessoryIdea?
-    @State private var ideaNotice: String?
+    /// The idea Use This Idea chose. It stays chosen while the seller edits What to make, and goes when What to make
+    /// is cleared or the idea leaves the list.
+    @State private var chosenIdea: AccessoryIdea?
+    /// Change Idea opens the full list again while an idea is chosen.
+    @State private var showAllIdeas = false
+    /// "N of the idea's measurements weren't added", shown only while the rows and ideas are as they were.
+    @State private var ideaNotice: AccessoryIdeaNotice?
+    /// Asks the form to scroll to Measurements (bumped by Use This Idea).
+    @State private var scrollToMeasurements = 0
+    @FocusState private var focusedSize: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -138,7 +147,9 @@ struct AccessoryDesignerSheet: View {
         }
         .confirmationDialog(closeConfirmation?.title ?? "Close this window?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button("Discard", role: .destructive) { close() }
+            // Return keeps working.
             Button("Keep Working", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text(closeConfirmation?.message ?? "Studio doesn’t keep the photos or anything you haven’t saved.")
         }
@@ -168,7 +179,8 @@ struct AccessoryDesignerSheet: View {
     }
 
     private func close() {
-        if suggestions.isWorking { suggestions.closeWhileWorking(log: logSuggestion) }
+        // Its one Activity line is written when the request ends, with the reply's cost if one still arrives.
+        if suggestions.isWorking { suggestions.closeWhileWorking() }
         if let run, run.isWorking {
             // The round's own entry can't be written once the sheet has gone, so record what was spent now.
             store.activities.insert(Activity(title: "Design an accessory", detail: "Closed while working · "
@@ -182,6 +194,22 @@ struct AccessoryDesignerSheet: View {
     // MARK: Brief
 
     private var briefForm: some View {
+        ScrollViewReader { proxy in
+            briefFormContent
+                .onChange(of: scrollToMeasurements) {
+                    withAnimation { proxy.scrollTo(accessoryMeasurementsSectionID, anchor: .top) }
+                }
+        }
+        .onChange(of: brief.description) { _, description in
+            // Clearing What to make lets go of the chosen idea.
+            if description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { chosenIdea = nil }
+        }
+        .onChange(of: suggestions.ideas.map(\.id)) {
+            chosenIdea = accessoryChosenIdeaAfterUpdate(chosenIdea, ideas: suggestions.ideas)
+        }
+    }
+
+    private var briefFormContent: some View {
         Form {
             Section {
                 photoStrip
@@ -216,6 +244,7 @@ struct AccessoryDesignerSheet: View {
                     .disabled(brief.measurements.count >= accessoryMaximumMeasurements)
             } header: {
                 Text("Measurements")
+                    .id(accessoryMeasurementsSectionID)
             } footer: {
                 Text("A photo has no scale, so Claude takes every size from these. Say how you measured: Claude adds more clearance for a rough measurement.")
                     .settingsFooterLayout()
@@ -243,7 +272,7 @@ struct AccessoryDesignerSheet: View {
             Button("Keep Current Details", role: .cancel) { pendingIdea = nil }
                 .keyboardShortcut(.defaultAction)
         } message: { _ in
-            Text("What to make becomes this idea’s description and its measurements are added. Measurements you typed are kept; empty rows are removed.")
+            Text(accessoryIdeaReplaceMessage)
         }
     }
 
@@ -263,7 +292,7 @@ struct AccessoryDesignerSheet: View {
 
     private var suggestBlockedReason: String? {
         accessorySuggestBlockedReason(photoCount: photos.count, preparingPhotos: preparingPhotos, claudeConfigured: anthropic.isConfigured,
-                                      suggesting: suggestions.isWorking, designStarted: run != nil, hintLength: objectHint.count,
+                                      suggesting: suggestions.isWorking, designStarted: run != nil, hint: objectHint,
                                       ideaCount: suggestions.ideas.count, mode: suggestMode)
     }
 
@@ -271,7 +300,7 @@ struct AccessoryDesignerSheet: View {
         switch suggestMode {
         case .first: return "Claude looks at your photos and suggests accessories to sell. One request, billed to your Anthropic account."
         case .again where !suggestions.ideas.isEmpty:
-            return "Replaces these ideas with new ones for your current photos and your answer to What is it? One request, billed again."
+            return "Replaces these ideas with new ones for your current photos and your answer to What is it? One request, billed again. The idea you chose stays in What to make."
         case .again: return "Sends a new request. It is billed again."
         case .more: return "Asks for ideas other than these and adds them to the list. One request, billed again."
         }
@@ -303,12 +332,25 @@ struct AccessoryDesignerSheet: View {
                 if let identification = suggestions.identification {
                     identificationView(identification)
                 }
-                ForEach(suggestions.ideas) { idea in
-                    ideaCard(idea)
+                if let chosen = chosenIdea, !showAllIdeas {
+                    // Once an idea is chosen the list folds away to it; Change Idea opens it again and sends nothing.
+                    ideaCard(chosen)
+                    HStack {
+                        Button("Change Idea") { showAllIdeas = true }
+                            .help("Shows all the ideas again. Nothing is sent.")
+                        Spacer()
+                    }
+                } else {
+                    ForEach(suggestions.ideas) { idea in
+                        ideaCard(idea)
+                    }
                 }
             }
-            if let ideaNotice {
-                Label(ideaNotice, systemImage: "info.circle").foregroundStyle(.secondary).font(.callout)
+            if let chosen = chosenIdea, let nowMeasure = accessoryNowMeasureText(brief, idea: chosen) {
+                Label(nowMeasure, systemImage: "ruler").font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
+            if let notice = ideaNotice?.text(brief: brief, ideaIDs: suggestions.ideas.map(\.id)) {
+                Label(notice, systemImage: "info.circle").foregroundStyle(.secondary).font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } header: {
@@ -322,16 +364,12 @@ struct AccessoryDesignerSheet: View {
     @ViewBuilder
     private var suggestControls: some View {
         if let progress = suggestions.progress {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text(progress).foregroundStyle(.secondary).lineLimit(1)
-                    Spacer()
-                    Button("Stop") { suggestions.stop() }
-                        .help("Stops the request. Anthropic may bill the part Claude has already written.")
-                }
-                Text("Stopping may still be billed for the part Claude has already written.")
-                    .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                ProgressView().controlSize(.small)
+                Text(progress).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+                Button("Stop") { suggestions.stop() }
+                    .help("Stops the request. Anthropic may bill the part Claude has already written.")
             }
         } else {
             VStack(alignment: .leading, spacing: 4) {
@@ -365,10 +403,11 @@ struct AccessoryDesignerSheet: View {
                 HStack(spacing: 6) {
                     Text("Or it could be:").font(.caption).foregroundStyle(.secondary)
                     ForEach(Array(identification.alternatives.enumerated()), id: \.offset) { _, alternative in
-                        Button(alternative) { objectHint = alternative }
+                        Button(accessoryAlternativeButtonTitle(alternative)) { objectHint = alternative }
                             .controlSize(.small)
                             .lineLimit(1)
-                            .help("Puts this in What is it? Nothing is sent.")
+                            .help("Puts “\(alternative)” in What is it? Nothing is sent.")
+                            .accessibilityLabel("Use \(alternative) as What is it?")
                     }
                 }
             }
@@ -381,16 +420,17 @@ struct AccessoryDesignerSheet: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(idea.title).font(.headline).fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                if accessoryIdeaIsInUse(idea, brief: brief) {
-                    Label("In use", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
+                if let useLabel = accessoryIdeaUseLabel(idea, chosen: chosenIdea, brief: brief) {
+                    Label(useLabel, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
                 } else {
                     Button("Use This Idea") { useIdea(idea) }
                         .help("Fills in what to make and the measurements to take. Nothing is sent.")
+                        .accessibilityLabel("Use This Idea: \(idea.title)")
                 }
             }
             Text(idea.description).fixedSize(horizontal: false, vertical: true)
             if !idea.whoWantsIt.isEmpty {
-                Text("Who wants it: \(idea.whoWantsIt)").font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("Who wants it: \(idea.whoWantsIt)").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text(accessoryIdeaFitText(idea.fit)).font(.caption)
                 .foregroundStyle(idea.fit == .tight ? Color.orange : Color.secondary)
@@ -422,22 +462,29 @@ struct AccessoryDesignerSheet: View {
     }
 
     private func useIdea(_ idea: AccessoryIdea) {
-        if accessoryIdeaNeedsConfirmation(brief, idea: idea) { pendingIdea = idea } else { applyIdea(idea) }
+        if accessoryIdeaNeedsConfirmation(brief, idea: idea, previousIdea: chosenIdea) { pendingIdea = idea } else { applyIdea(idea) }
     }
 
     private func applyIdea(_ idea: AccessoryIdea) {
         let leftOut = accessoryIdeaMeasurementsLeftOut(brief, idea: idea)
         brief = accessoryBriefApplyingIdea(brief, idea: idea)
+        chosenIdea = idea
+        showAllIdeas = false
         startProblem = nil
         ideaNotice = leftOut == 0 ? nil
-            : "\(leftOut == 1 ? "1 of the idea’s measurements wasn’t" : "\(leftOut) of the idea’s measurements weren’t") added: use at most \(accessoryMaximumMeasurements)."
+            : AccessoryIdeaNotice(leftOut: leftOut, measurements: brief.measurements, ideaIDs: suggestions.ideas.map(\.id))
+        // Take the seller to the sizes still to measure.
+        scrollToMeasurements += 1
+        let firstEmpty = brief.measurements.first { $0.millimetres.trimmingCharacters(in: .whitespaces).isEmpty && !$0.label.isEmpty }?.id
+        DispatchQueue.main.async { focusedSize = firstEmpty }
     }
 
-    /// The idea the design starts from, while "What to make" is still its description.
+    /// The chosen idea's context for the design, kept after the seller edits What to make (they refined the idea; their
+    /// text is what goes as what to make).
     private var designIdeaContext: AccessoryDesignIdeaContext? {
-        guard let idea = suggestions.ideas.first(where: { accessoryIdeaIsInUse($0, brief: brief) }) else { return nil }
+        guard let idea = chosenIdea else { return nil }
         return AccessoryDesignIdeaContext(objectHint: objectHint, identification: ideasStaleReason == nil ? suggestions.identification : nil,
-                                          idea: idea)
+                                          idea: idea, descriptionEdited: !accessoryIdeaIsInUse(idea, brief: brief))
     }
 
     @ViewBuilder
@@ -481,7 +528,7 @@ struct AccessoryDesignerSheet: View {
         return VStack(alignment: .leading, spacing: 2) {
             measurementFields(row, caption: caption)
             if let caption {
-                Text("How to measure: \(caption)").font(.caption).foregroundStyle(.secondary)
+                Text(caption).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -496,6 +543,7 @@ struct AccessoryDesignerSheet: View {
             TextField("Millimetres", text: row.millimetres, prompt: Text("mm"))
                 .labelsHidden()
                 .accessibilityLabel("Size in millimetres")
+                .focused($focusedSize, equals: row.wrappedValue.id)
                 .frame(width: 80)
             Picker("How measured", selection: row.method) {
                 ForEach(AccessoryMeasurementMethod.allCases) { method in Text(method.title).tag(method) }

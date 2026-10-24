@@ -73,6 +73,8 @@ enum AccessoryMeasurementMethod: String, CaseIterable, Identifiable, Sendable {
 struct AccessoryMeasurementGuidance: Equatable, Sendable {
     var label: String
     var how: String
+    /// The tool the idea suggested.
+    var method: AccessoryMeasurementMethod = .calipers
 }
 
 struct AccessoryMeasurement: Identifiable, Equatable, Sendable {
@@ -81,6 +83,9 @@ struct AccessoryMeasurement: Identifiable, Equatable, Sendable {
     var millimetres = ""
     var method: AccessoryMeasurementMethod = .calipers
     var guidance: AccessoryMeasurementGuidance?
+    /// Added by Use This Idea (not typed by the seller). Such a row is removed when another idea is used, unless the
+    /// seller has typed a size into it or renamed it.
+    var addedByIdea = false
 
     var isBlank: Bool {
         label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
