@@ -307,7 +307,7 @@ extension StudioStore {
         showOrderComposer || showPlatformComposer || showSettingsPlatformComposer || showImportFromURL || showSavedProducts
             || showOrderImport || showShopFollowUp || batchPayRequest != nil
             || listingImagesModelID != nil || showSpendingReport
-            || personalisationTemplate != nil || meshFitRequest != nil
+            || personalisationTemplate != nil || meshFitRequest != nil || printReviewRequest != nil
             || renameSheetIsShown(renamingModelID: renamingModelID, models: localModels)
     }
 

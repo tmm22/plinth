@@ -733,24 +733,17 @@ func imageTo3DKeyPrefixAdvice(_ value: String, service: ImageTo3DService) -> Str
     return nil
 }
 
-/// One Keychain item per service (`meshy-api-key`, `tripo-api-key`), apart from the Slant, Shopify and Claude items.
+/// One Keychain item per service (`meshy-api-key`, `tripo-api-key`), apart from the Slant, Shopify and Claude items,
+/// through the shared `AIServiceKeychainItem`.
 enum ImageTo3DKeychainStore {
-    private static let keychainService = "SlantStudio"
-    private static func query(_ service: ImageTo3DService) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: keychainService, kSecAttrAccount as String: service.keychainAccount]
+    private static func item(_ service: ImageTo3DService) -> AIServiceKeychainItem {
+        service == .meshy ? .meshy : .tripo
     }
 
     /// The saved key, or nil when none is saved.
     static func load(_ service: ImageTo3DService) throws -> String? {
-        var attributes = query(service)
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(attributes as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw APIError.keychain(status) }
-        guard let data = result as? Data, let value = String(data: data, encoding: .utf8), !value.isEmpty else {
+        guard let value = try item(service).load() else { return nil }
+        guard !value.isEmpty else {
             throw StudioError("The saved \(service.title) key couldn’t be read. Remove it in Settings and add it again.")
         }
         return value
@@ -759,19 +752,11 @@ enum ImageTo3DKeychainStore {
     static func save(_ key: String, for service: ImageTo3DService) throws {
         let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { try delete(service); return }
-        let values: [String: Any] = [kSecValueData as String: Data(normalized.utf8)]
-        var status = SecItemUpdate(query(service) as CFDictionary, values as CFDictionary)
-        if status == errSecItemNotFound {
-            var attributes = query(service).merging(values) { _, new in new }
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(attributes as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw APIError.keychain(status) }
+        try item(service).save(normalized)
     }
 
     static func delete(_ service: ImageTo3DService) throws {
-        let status = SecItemDelete(query(service) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw APIError.keychain(status) }
+        try item(service).delete()
     }
 }
 
@@ -789,15 +774,19 @@ func makeImageTo3DProvider(_ service: ImageTo3DService, key: String, tripoRegion
 
 // MARK: Connection state
 
+extension ImageTo3DService {
+    /// The same service in the shared photo-sharing consent.
+    var sharingService: ImageSharingService { self == .meshy ? .meshy : .tripo }
+}
+
 /// The app-wide 3D generation settings. Preferences hold only the chosen service, which services have a key saved
-/// (so Settings can say so without reading the Keychain) and the one-time photo consent per service; keys are read
-/// from the Keychain only when a request is about to be made. No image, prompt or customer data is stored.
+/// (so Settings can say so without reading the Keychain); keys are read from the Keychain only when a request is about
+/// to be made. The one-time photo consent lives in `ImageSharingConsentStore`. No image, prompt or customer data is stored.
 @MainActor final class ImageTo3DConnection: ObservableObject {
     static let shared = ImageTo3DConnection()
     static let serviceDefaultsKey = "imageTo3DService"
     static let savedKeysDefaultsKey = "imageTo3DSavedKeyServices"
     static let tripoRegionDefaultsKey = "imageTo3DTripoRegion"
-    static func consentDefaultsKey(_ service: ImageTo3DService) -> String { "imageTo3DPhotoConsent.\(service.rawValue)" }
 
     @Published var selectedService: ImageTo3DService {
         didSet { defaults.set(selectedService.rawValue, forKey: Self.serviceDefaultsKey) }
@@ -807,7 +796,6 @@ func makeImageTo3DProvider(_ service: ImageTo3DService, key: String, tripoRegion
         didSet { defaults.set(tripoRegion.rawValue, forKey: Self.tripoRegionDefaultsKey) }
     }
     @Published private(set) var savedKeys: Set<ImageTo3DService>
-    @Published private(set) var photoConsent: Set<ImageTo3DService>
     /// Generations, repairs or key tests running now. Keys can't be replaced or removed meanwhile.
     @Published private(set) var activeWork = 0
 
@@ -818,7 +806,6 @@ func makeImageTo3DProvider(_ service: ImageTo3DService, key: String, tripoRegion
         selectedService = defaults.string(forKey: Self.serviceDefaultsKey).flatMap(ImageTo3DService.init(rawValue:)) ?? .meshy
         tripoRegion = defaults.string(forKey: Self.tripoRegionDefaultsKey).flatMap(TripoRegion.init(rawValue:)) ?? .international
         savedKeys = Set((defaults.stringArray(forKey: Self.savedKeysDefaultsKey) ?? []).compactMap(ImageTo3DService.init(rawValue:)))
-        photoConsent = Set(ImageTo3DService.allCases.filter { defaults.bool(forKey: Self.consentDefaultsKey($0)) })
     }
 
     var busy: Bool { activeWork > 0 }
@@ -826,12 +813,9 @@ func makeImageTo3DProvider(_ service: ImageTo3DService, key: String, tripoRegion
     func endWork() { activeWork = max(0, activeWork - 1) }
 
     func hasKey(_ service: ImageTo3DService) -> Bool { savedKeys.contains(service) }
-    func hasPhotoConsent(_ service: ImageTo3DService) -> Bool { photoConsent.contains(service) }
-
-    /// Records (or withdraws) the seller's one-time agreement to send photos to `service`.
-    func setPhotoConsent(_ granted: Bool, for service: ImageTo3DService) {
-        defaults.set(granted, forKey: Self.consentDefaultsKey(service))
-        if granted { photoConsent.insert(service) } else { photoConsent.remove(service) }
+    /// Whether the seller agreed to send photos to `service` (Settings › Account › Photo sharing).
+    func hasPhotoConsent(_ service: ImageTo3DService) -> Bool {
+        ImageSharingConsentStore.shared.hasConsented(service.sharingService)
     }
 
     /// Why a key can't be saved or removed now, or nil.

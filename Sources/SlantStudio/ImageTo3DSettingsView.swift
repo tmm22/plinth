@@ -104,19 +104,11 @@ struct ImageTo3DSettingsSection: View {
                 Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if connection.hasPhotoConsent(service) {
-                HStack {
-                    Text("You agreed to send photos to \(service.title).").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Withdraw Agreement") { connection.setPhotoConsent(false, for: service) }
-                        .controlSize(.small)
-                }
-            }
         } header: {
             Text("3D generation (optional)")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Generate a Replica from an Image sends a photo to the service you choose here, after you agree to it once.")
+                Text("Generate a Replica from an Image sends a photo to the service you choose here, after you agree to it once (Photo sharing, below).")
                 Text(service.settingsPlanNote)
                 Text(service.settingsLicenceNote)
                 Text(imageTo3DSettingsResponsibilityNote)

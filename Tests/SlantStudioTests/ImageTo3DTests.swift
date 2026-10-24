@@ -367,15 +367,11 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertEqual(connection.tripoRegion, .international)
         connection.selectedService = .tripo
         connection.tripoRegion = .chinaMainland
-        connection.setPhotoConsent(true, for: .tripo)
-        XCTAssertTrue(connection.hasPhotoConsent(.tripo))
-        XCTAssertFalse(connection.hasPhotoConsent(.meshy))
         let reloaded = ImageTo3DConnection(defaults: defaults)
         XCTAssertEqual(reloaded.selectedService, .tripo)
         XCTAssertEqual(reloaded.tripoRegion, .chinaMainland)
-        XCTAssertTrue(reloaded.hasPhotoConsent(.tripo))
-        reloaded.setPhotoConsent(false, for: .tripo)
-        XCTAssertFalse(ImageTo3DConnection(defaults: defaults).hasPhotoConsent(.tripo))
+        XCTAssertEqual(ImageTo3DService.meshy.sharingService, .meshy)
+        XCTAssertEqual(ImageTo3DService.tripo.sharingService, .tripo)
 
         XCTAssertNil(reloaded.keyChangeBlockedReason)
         reloaded.beginWork()
@@ -383,7 +379,7 @@ final class ImageTo3DTests: XCTestCase {
         reloaded.endWork(); reloaded.endWork()
         XCTAssertEqual(reloaded.activeWork, 0)
         XCTAssertTrue(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("imageTo3D") }.allSatisfy {
-            ["imageTo3DService", "imageTo3DTripoRegion", "imageTo3DPhotoConsent.tripo", "imageTo3DSavedKeyServices"].contains($0)
+            ["imageTo3DService", "imageTo3DTripoRegion", "imageTo3DSavedKeyServices"].contains($0)
         })
     }
 
