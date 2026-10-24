@@ -435,7 +435,8 @@ private func addressPastePhoneWordValue(_ line: String) -> (value: String, alsoA
           let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
           let wordRange = Range(match.range(at: 1), in: line), let valueRange = Range(match.range(at: 4), in: line) else { return nil }
     let word = line[wordRange].lowercased()
-    return (addressPasteClean(String(line[valueRange])), word == "mobile" || word == "mob")
+    // "Mobile" is also a city and "PH 301" a penthouse unit: those need a phone-length number.
+    return (addressPasteClean(String(line[valueRange])), word == "mobile" || word == "mob" || word == "ph")
 }
 
 /// Headings such as "Ship to" or "Shipping address:" on a line of their own.
@@ -504,10 +505,24 @@ func addressPasteFirstLineIsName(_ first: String, following: ArraySlice<String>)
     guard !addressPasteHasDigit(first), !addressPasteIsUnit(first), !addressPasteIsCareOf(first),
           !addressPasteIsPOBox(first) else { return false }
     guard addressPasteLooksLikeStreet(first) else { return true }
+    // "Rose Court" or "Kings Place" above the street is a building, not a buyer.
+    if addressPasteEndsInBuildingWord(first) { return false }
     guard let next = following.first(where: { !addressPasteIsCareOf($0) }) else { return false }
     if addressPasteIsPOBox(next) { return true }
     return addressPasteHasDigit(next) && (!addressPasteIsUnit(next) || addressPasteSplittingLeadingUnit(next) != nil)
 }
+
+/// A line ending in a word that names a building more often than a surname ("Rose Court", "Victoria Gardens").
+func addressPasteEndsInBuildingWord(_ line: String) -> Bool {
+    let words = line.lowercased().split(whereSeparator: { !$0.isLetter })
+    guard let last = words.last else { return false }
+    return addressPasteBuildingWords.contains(String(last))
+}
+
+let addressPasteBuildingWords: Set<String> = [
+    "court", "place", "gardens", "mews", "square", "house", "cottage", "cottages", "lodge", "farm", "manor", "barn",
+    "villa", "mansions", "buildings", "apartments", "tower", "towers"
+]
 
 /// The lines just before a postcode written on its own line that can be a place: no digits (except a district
 /// number such as "Dublin 2"), not a unit line, and never the first line (usually the name). At most two.

@@ -305,7 +305,7 @@ func orderImportSaleAmountsNotice(_ orders: [OrderImportOrder]) -> String? {
     }
     var parts: [String] = []
     if usd > 0 {
-        parts.append("What buyers paid is kept in memory until you quit, to fill in each new draft’s Profit check. It isn’t saved or sent to Slant.")
+        parts.append("What buyers paid is kept in memory until you quit, disconnect or change your API key, to fill in each new draft’s Profit check. It isn’t saved or sent to Slant.")
     }
     if !other.isEmpty {
         let codes = other.sorted().prefix(3).joined(separator: ", ")

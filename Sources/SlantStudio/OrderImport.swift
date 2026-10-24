@@ -1651,9 +1651,10 @@ struct OrderImportSheet: View {
         let personalisable = batchPersonaliseProducts(parse.orders, checks: checks, products: store.savedProducts)
         if !personalisable.isEmpty {
             let undecided = personalisable.filter { personalise.choices[$0.product.id] == nil }.count
-            let needsInput = personalise.openSCAD != nil && undecided > 0 && !(matchOpen && !unmatched.isEmpty)
+            // Opt-in: Don't Personalise is a valid choice, so the section never opens by itself; its title says how
+            // many products are chosen.
             DisclosureGroup(isExpanded: Binding(
-                get: { orderImportSectionExpanded(userChoice: personaliseExpanded, needsInput: needsInput) },
+                get: { orderImportSectionExpanded(userChoice: personaliseExpanded, needsInput: false) },
                 set: { personaliseExpanded = $0 })) {
                 OrderImportPersonaliseSection(
                     session: personalise, products: personalisable, disabled: runner.running,

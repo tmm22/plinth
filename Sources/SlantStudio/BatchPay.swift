@@ -144,7 +144,12 @@ func batchPayGrandTotal(_ orders: [[String: Any]]) -> Decimal? {
 /// Two drafts for the same marketplace order share this key (source in lower case and the order ID); nil without one.
 func batchPayMarketplaceKey(_ order: [String: Any]) -> String? {
     guard let reference = orderMarketplaceReference(order) else { return nil }
-    return (reference.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() + "|" + reference.id
+    let metadata = order["metadata"] as? [String: Any] ?? [:]
+    // Another store's order with the same name, or a deliberate split (different items), isn't a duplicate.
+    let shop = ((metadata["sourceShop"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let items = (metadata["sourceItems"] as? String) ?? ""
+    return [(reference.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), reference.id, shop, items]
+        .joined(separator: "|")
 }
 
 /// Marketplace keys of loaded orders that were already placed (anything past a draft except a cancellation or a
@@ -185,6 +190,13 @@ let batchPayUnconfirmedCreateNotice = "A draft created this session wasn’t con
 
 // MARK: After paying
 
+/// After a 2xx: whether the lock stays because the charge may still happen (Slant still shows a draft, or returned
+/// no readable status). A placed order, a payment problem or a cancellation is a definite outcome.
+func batchPayAcceptedOutcomeStaysLocked(_ order: [String: Any]?) -> Bool {
+    let status = ((order?["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return status.isEmpty || status == "DRAFT"
+}
+
 /// Whether a 2xx payment reply really placed the order, from the order Slant returned (the refresh, else the reply).
 /// Only a status past DRAFT that isn't a cancellation or a payment problem counts as placed; anything else stops the
 /// batch. Nil (no readable order) is unclear: it may have been placed, so it is never offered again either.
@@ -192,7 +204,7 @@ func batchPayOutcomeAfterSuccess(_ order: [String: Any]?) -> BatchPayOutcome {
     let raw = ((order?["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     switch raw {
     case "": return .unclear
-    case "DRAFT": return .notPlaced("Slant accepted the request but still shows it as a draft.")
+    case "DRAFT": return .notPlaced("Slant accepted the request but still shows it as a draft, so it may still be charged. Reload it before paying it again.")
     case "PAYMENT_ERROR": return .notPlaced("Slant reported a payment problem. Check the payment method on your Slant account.")
     case "CANCELED", "CANCELLED": return .notPlaced("Slant shows it as cancelled.")
     default: return .placed
@@ -485,7 +497,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             let order = loaded[id]
             let reason = batchPayExclusionReason(orderID: id, order: order, loadFailure: failures[id],
                                                  locked: store.isOutcomeUnknown(orderID: id))
-            let alreadyPaid = placedIDs.contains(id) ? "It was paid in this batch." : nil
+            let alreadyPaid = placedIDs.contains(id) ? "It was sent for payment in this batch." : nil
             return BatchPayReviewedDraft(id: id, order: order, exclusion: alreadyPaid ?? reason)
         }
         let duplicates = batchPayDuplicateExclusions(
@@ -630,8 +642,13 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             let order = mergeOrderDraftEnvelope(responseObject(refreshed))
             if orderBelongs(order, to: id) { completed = order }
         }
-        // The batch goes on only when the order Slant returned is actually placed.
-        return (batchPayOutcomeAfterSuccess(completed), completed, nil)
+        // The batch goes on only when the order Slant returned is actually placed. Accepted but still a draft (or no
+        // readable status) means the charge may still happen: keep the lock until a reload shows the outcome.
+        let outcome = batchPayOutcomeAfterSuccess(completed)
+        if batchPayAcceptedOutcomeStaysLocked(completed) {
+            store.markOutcomeUnknown(orderID: id, action: .pay, reviewedStatus: latest["status"] as? String)
+        }
+        return (outcome, completed, nil)
     }
 
     // MARK: After the run

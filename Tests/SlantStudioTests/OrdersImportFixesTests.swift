@@ -178,6 +178,8 @@ final class OrdersImportFixesTests: XCTestCase {
         XCTAssertFalse(addressPasteIsPhone("Tel Aviv 6100000"))
         XCTAssertFalse(addressPasteIsPhone("Telford TF1 1AA"))
         XCTAssertFalse(addressPasteIsPhone("Phoenix AZ 85001"))
+        XCTAssertFalse(addressPasteIsPhone("PH 301"), "A penthouse unit, not a phone line")
+        XCTAssertTrue(addressPasteIsPhone("Ph 555 123 4567"))
 
         let parsed = parsePastedAddress("Ada Lovelace\n12 Main St\nSpringfield IL 62701\nUnited States\nPhone (555) 123-4567")
         XCTAssertEqual(parsed.zip, "62701", "the number is never read as a postcode")

@@ -150,7 +150,7 @@ final class DraftConfirmationTests: XCTestCase {
         let unmarked = UnconfirmedDraftAttempt(recipient: "Alan", date: date)
         let mixed = draftCreateCheckOutcome(attempts: [ada, unmarked], result: result, time: time)
         XCTAssertFalse(mixed.allConfirmed)
-        XCTAssertTrue(mixed.message.contains("had no room for Studio’s reference"))
+        XCTAssertTrue(mixed.message.contains("went without Studio’s reference"))
         XCTAssertFalse(mixed.message.contains("marker"), "No internal jargon")
 
         var empty = DraftMarkerSearchResult()

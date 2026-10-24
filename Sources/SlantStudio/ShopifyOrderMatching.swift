@@ -60,9 +60,10 @@ func shopifySourceItems(_ items: [OrderImportItem]) -> [ShopifySourceItem]? {
             key = .lineItem(item.sourceLineItemID)
         } else if !sku.isEmpty {
             key = .sku(sku)
-        } else if !name.isEmpty {
-            key = .name(name)
         } else {
+            // Never keyed by name: a per-buyer variant title ("Necklace - Sarah") could carry the buyer's text into
+            // Slant's metadata. Such orders have no recorded items, so their tracking is added in Shopify by hand.
+            _ = name
             return nil
         }
         if let index = result.firstIndex(where: { shopifySourceKeysMatch($0.key, key) }) {

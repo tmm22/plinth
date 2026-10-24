@@ -226,7 +226,7 @@ final class BatchPayTests: XCTestCase {
             Record(values: ["id": "Y", "status": "CANCELED", "metadata": etsy]),
             Record(values: ["id": "Z", "status": "DRAFT", "metadata": etsy])
         ])
-        XCTAssertEqual(placed, ["etsy|2718"])
+        XCTAssertEqual(placed, ["etsy|2718||"])
         let withPlaced = batchPayDuplicateExclusions([(id: "A", order: a), (id: "C", order: c)], placedKeys: placed)
         XCTAssertEqual(Set(withPlaced.keys), ["C"])
         XCTAssertTrue(withPlaced["C"]?.contains("already placed") == true)
@@ -244,5 +244,30 @@ final class BatchPayTests: XCTestCase {
         XCTAssertNil(batchPayLossNotice([gain, nil]))
         XCTAssertEqual(batchPayLossNotice([loss, gain]), "1 order would lose money by its estimate. Check it below.")
         XCTAssertTrue(batchPayLossNotice([loss, loss])?.hasPrefix("2 orders") == true)
+    }
+
+    func testAcceptedButStillDraftKeepsTheLock() {
+        XCTAssertTrue(batchPayAcceptedOutcomeStaysLocked(["status": "DRAFT"]))
+        XCTAssertTrue(batchPayAcceptedOutcomeStaysLocked(nil))
+        XCTAssertFalse(batchPayAcceptedOutcomeStaysLocked(["status": "QUEUED"]))
+        XCTAssertFalse(batchPayAcceptedOutcomeStaysLocked(["status": "PAYMENT_ERROR"]))
+    }
+
+    func testSplitsAndOtherStoresAreNotDuplicates() {
+        func draft(_ shop: String, _ items: String) -> [String: Any] {
+            ["status": "DRAFT", "metadata": ["source": "shopify", "sourceOrderId": "#1001", "sourceShop": shop, "sourceItems": items]]
+        }
+        let reasons = batchPayDuplicateExclusions([
+            (id: "A", order: draft("a.myshopify.com", "[{\"lineItem\":\"1\",\"quantity\":1}]")),
+            (id: "B", order: draft("a.myshopify.com", "[{\"lineItem\":\"2\",\"quantity\":1}]")),
+            (id: "C", order: draft("b.myshopify.com", "[{\"lineItem\":\"1\",\"quantity\":1}]")),
+            (id: "D", order: draft("a.myshopify.com", "[{\"lineItem\":\"1\",\"quantity\":1}]"))
+        ], placedKeys: [])
+        XCTAssertEqual(Set(reasons.keys), ["D"])
+    }
+
+    func testBuildingNamesAreNotTheRecipient() {
+        XCTAssertFalse(addressPasteFirstLineIsName("Rose Court", following: ["12 High Street"]))
+        XCTAssertTrue(addressPasteFirstLineIsName("Damon Hill", following: ["12 Main St"]))
     }
 }
