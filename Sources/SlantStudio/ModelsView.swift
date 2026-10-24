@@ -179,6 +179,8 @@ struct ModelsView: View {
                     .tag(LibrarySelection.local(model.id))
                     .accessibilityLabel("\(nameWithDetail(model.name, nameDetails[model.id])), \(model.remoteID == nil ? "Ready to upload" : "Uploaded")")
                     .contextMenu { localModelMenuItems(model) }
+                    // Drag out to Finder or another app: a named copy of the file, never the library file (ModelDragExport.swift).
+                    .onDrag { ModelDragExport.itemProvider(for: model) }
                 }
             }
             Section("Uploaded to Slant") {
@@ -266,6 +268,10 @@ struct ModelsView: View {
                         previewBlock
                         if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
                             MeshHealthPanel(model: local, mesh: loaded.mesh, objectCount: loaded.objectCount)
+                            if !loaded.sourceDetails.isEmpty {
+                                // 3MF designer and licence; advisory only (ModelSourceDetails.swift).
+                                ModelSourceDetailsPanel(details: loaded.sourceDetails, edited: modelIsEditedCopy(local))
+                            }
                         }
                         scaleNoticeBlock
                         printConfigurationCard.id("print-configuration")
@@ -300,8 +306,10 @@ struct ModelsView: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            urls.forEach { store.importModel($0) }
-            return !urls.isEmpty
+            // A model dragged out of this library is already in it, so it isn't imported again.
+            let imports = modelDropURLsToImport(urls, supportDirectory: StudioStore.supportDirectory)
+            imports.forEach { store.importModel($0) }
+            return !imports.isEmpty
         } isTargeted: { targeted = $0 }
     }
 
@@ -1048,6 +1056,7 @@ struct LoadedPreviewMesh {
     var format: ModelFileFormat = .stl
     var objectCount = 1
     var inexactFaces = 0
+    var sourceDetails = ModelSourceDetails()
 
     init(url: URL, mesh: STLMesh) { self.url = url; self.mesh = mesh }
     init(url: URL, model: PreviewModel) {
@@ -1056,6 +1065,7 @@ struct LoadedPreviewMesh {
         format = model.format
         objectCount = model.objectCount
         inexactFaces = model.inexactFaces
+        sourceDetails = model.sourceDetails
     }
 }
 
