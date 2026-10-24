@@ -681,9 +681,9 @@ final class OpenSCADRunRegistry: @unchecked Sendable {
     }
 }
 
-/// Temporary folders Studio makes for personalisation: a local OpenSCAD run, and the generated STL before it's added
-/// to the library. Each name is the prefix followed by a UUID.
-let personalisationTempFolderPrefixes = ["SlantStudio-OpenSCAD-", "SlantStudio-Personalised-"]
+/// Temporary folders Studio makes for personalisation (a local OpenSCAD run, and the generated STL before it's added
+/// to the library) and for Repair and simplify's copies on their way in. Each name is the prefix followed by a UUID.
+let personalisationTempFolderPrefixes = ["SlantStudio-OpenSCAD-", "SlantStudio-Personalised-", meshToolsTempFolderPrefix]
 
 /// A folder that this temporary-folder code made: a known prefix followed by exactly a UUID.
 func isPersonalisationTempFolderName(_ name: String) -> Bool {
