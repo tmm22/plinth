@@ -265,7 +265,8 @@ private struct ReinforcementReview: View {
                 let suffix = parts.count > 1 ? "\(settings.kind.fileSuffix)-\(index + 1)" : settings.kind.fileSuffix
                 let url = folder.appendingPathComponent("\(name)-\(suffix).stl")
                 try part.binarySTL().write(to: url, options: .atomic)
-                imported = store.importModel(url, improvement: model.designImprovement, intent: designEditIntent(model), reinforcement: record) && imported
+                imported = store.importModel(url, improvement: model.designImprovement, intent: designEditIntent(model), reinforcement: record,
+                                             sourceDetails: model.sourceDetails) && imported
             }
             if imported { dismiss() }
         } catch { store.showError(error.localizedDescription) }

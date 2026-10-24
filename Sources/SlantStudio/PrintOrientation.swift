@@ -458,7 +458,8 @@ struct PrintOrientationCard: View {
             }.value
             switch result {
             case .success(let url):
-                store.importModel(url, recipe: recipe, improvement: model.designImprovement, reinforcement: model.reinforcement)
+                store.importModel(url, recipe: recipe, improvement: model.designImprovement, reinforcement: model.reinforcement,
+                                  sourceDetails: model.sourceDetails)
                 try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
             case .failure(let error): store.showError(error.localizedDescription)
             }

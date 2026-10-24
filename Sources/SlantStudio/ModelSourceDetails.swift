@@ -1,7 +1,8 @@
 import SwiftUI
 
 // Who made a 3MF model and on what terms, from its model-level metadata. Display-only and advisory: nothing here is
-// saved, sent to Slant or used to block anything.
+// sent to Slant or used to block anything. The only thing saved is a copy of these four lines on an STL copy made from
+// such a model (`LocalModel.sourceDetails` in models.json), so its licence still shows once the 3MF's own metadata is gone.
 //
 // Names read (case-insensitive, unprefixed):
 // - 3MF Core Specification §3.4.1, Table 3-1: Designer, Copyright, LicenseTerms.
@@ -11,11 +12,31 @@ import SwiftUI
 // PrusaSlicer writes the core names. Printables and Thingiverse serve the designer's own file, so whatever their
 // exporter wrote is what is shown.
 
-struct ModelSourceDetails: Equatable, Sendable {
+struct ModelSourceDetails: Equatable, Sendable, Codable {
     var designer: String?
     var licence: String?
     var source: String?
     var copyright: String?
+
+    init(designer: String? = nil, licence: String? = nil, source: String? = nil, copyright: String? = nil) {
+        self.designer = designer
+        self.licence = licence
+        self.source = source
+        self.copyright = copyright
+    }
+
+    private enum CodingKeys: String, CodingKey { case designer, licence, source, copyright }
+
+    /// Lenient: never throws, so a damaged entry can't stop models.json loading. Anything that isn't a string is
+    /// dropped, and each value is made one safe line again (without undoing XML escaping a second time).
+    init(from decoder: Decoder) {
+        let container = try? decoder.container(keyedBy: CodingKeys.self)
+        func field(_ key: CodingKeys) -> String? {
+            (try? container?.decodeIfPresent(String.self, forKey: key))
+                .flatMap { sanitisedMetadataValue($0, unescapingXML: false) }
+        }
+        self.init(designer: field(.designer), licence: field(.licence), source: field(.source), copyright: field(.copyright))
+    }
 
     var isEmpty: Bool { designer == nil && licence == nil && source == nil && copyright == nil }
 
@@ -49,11 +70,12 @@ func modelSourceDetails(fromMetadata entries: [(name: String, value: String)]) -
     return details
 }
 
-/// One line of plain text: one extra level of XML escaping undone, control, line-break and bidirectional-override
-/// characters replaced by spaces, whitespace collapsed, and cut to `limit` characters. Nil when nothing is left.
-func sanitisedMetadataValue(_ raw: String, limit: Int = modelSourceFieldLimit) -> String? {
+/// One line of plain text: one extra level of XML escaping undone (unless `unescapingXML` is false, for text that was
+/// already cleaned), control, line-break and bidirectional-override characters replaced by spaces, whitespace
+/// collapsed, and cut to `limit` characters. Nil when nothing is left.
+func sanitisedMetadataValue(_ raw: String, limit: Int = modelSourceFieldLimit, unescapingXML: Bool = true) -> String? {
     var text = raw
-    if text.contains("&") {
+    if unescapingXML, text.contains("&") {
         // &amp; last, so "&amp;lt;" becomes "&lt;" rather than "<".
         for (entity, character) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&apos;", "'"), ("&#39;", "'"), ("&amp;", "&")] {
             text = text.replacingOccurrences(of: entity, with: character)
@@ -121,6 +143,18 @@ func modelLicenceAdvisory(_ details: ModelSourceDetails, edited: Bool) -> String
     return modelLicenceAdvisoryText
 }
 
+/// The details to show and check for a library model: the file's own (a 3MF's metadata) when it has any, otherwise
+/// those carried over from the model an STL copy was made from.
+func modelSourceDetailsToShow(stored: ModelSourceDetails?, fromFile: ModelSourceDetails) -> ModelSourceDetails {
+    fromFile.isEmpty ? (stored ?? ModelSourceDetails()) : fromFile
+}
+
+/// What a new STL copy saves: the details of the model it was made from, or nil when there are none.
+func sourceDetailsForCopy(of model: LocalModel, fromFile: ModelSourceDetails = ModelSourceDetails()) -> ModelSourceDetails? {
+    let details = modelSourceDetailsToShow(stored: model.sourceDetails, fromFile: fromFile)
+    return details.isEmpty ? nil : details
+}
+
 /// True for a library copy one of the Improve for printing tools changed.
 func modelIsEditedCopy(_ model: LocalModel) -> Bool {
     model.printRecipe != nil || model.designImprovement != nil || model.reinforcement != nil || model.autoImprovement != nil
@@ -133,6 +167,8 @@ func modelIsEditedCopy(_ model: LocalModel) -> Bool {
 struct ModelSourceDetailsPanel: View {
     let details: ModelSourceDetails
     let edited: Bool
+    /// True when the details came from the model this copy was made from, not from this file.
+    var inherited = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -156,7 +192,8 @@ struct ModelSourceDetailsPanel: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("From the file’s own details, as its creator or exporter wrote them.")
+            Text(inherited ? "From the original file’s details, as its creator or exporter wrote them. This copy keeps them for reference."
+                           : "From the file’s own details, as its creator or exporter wrote them.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 4)

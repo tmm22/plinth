@@ -268,9 +268,11 @@ struct ModelsView: View {
                         previewBlock
                         if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
                             MeshHealthPanel(model: local, mesh: loaded.mesh, objectCount: loaded.objectCount)
-                            if !loaded.sourceDetails.isEmpty {
-                                // 3MF designer and licence; advisory only (ModelSourceDetails.swift).
-                                ModelSourceDetailsPanel(details: loaded.sourceDetails, edited: modelIsEditedCopy(local))
+                            let details = modelSourceDetailsToShow(stored: local.sourceDetails, fromFile: loaded.sourceDetails)
+                            if !details.isEmpty {
+                                // 3MF designer and licence, or those an STL copy carried over; advisory only (ModelSourceDetails.swift).
+                                ModelSourceDetailsPanel(details: details, edited: modelIsEditedCopy(local),
+                                                        inherited: loaded.sourceDetails.isEmpty)
                             }
                         }
                         scaleNoticeBlock
@@ -536,7 +538,8 @@ struct ModelsView: View {
                         guard !savingSTLCopy else { return }
                         savingSTLCopy = true
                         Task {
-                            await store.saveSTLCopy(of: local.id, mesh: loaded.mesh, inexactFaces: loaded.inexactFaces)
+                            await store.saveSTLCopy(of: local.id, mesh: loaded.mesh, inexactFaces: loaded.inexactFaces,
+                                                    sourceDetails: loaded.sourceDetails)
                             savingSTLCopy = false
                         }
                     }
@@ -579,13 +582,13 @@ struct ModelsView: View {
                             .font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if warning.suggestions.count == 1, let suggestion = warning.suggestions.first {
-                            Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor) }
+                            Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor, fileDetails: loaded.sourceDetails) }
                                 .buttonStyle(.bordered)
                                 .disabled(savingScaledCopy || store.busy)
                         } else {
                             Menu("Save Scaled Copy") {
                                 ForEach(warning.suggestions) { suggestion in
-                                    Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor) }
+                                    Button(suggestion.title) { saveScaledCopy(local, mesh: loaded.mesh, factor: suggestion.factor, fileDetails: loaded.sourceDetails) }
                                 }
                             }
                             .fixedSize()
@@ -979,11 +982,12 @@ struct ModelsView: View {
         }
     }
 
-    private func saveScaledCopy(_ model: LocalModel, mesh: STLMesh, factor: Double) {
+    private func saveScaledCopy(_ model: LocalModel, mesh: STLMesh, factor: Double, fileDetails: ModelSourceDetails) {
         guard canSaveScaledCopy(model), !savingScaledCopy else { return }
         savingScaledCopy = true
         let name = scaledCopyName(URL(fileURLWithPath: model.name).lastPathComponent, factor: factor)
         let intent = model.partIntent
+        let details = sourceDetailsForCopy(of: model, fromFile: fileDetails)
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { () -> URL in
@@ -998,7 +1002,7 @@ struct ModelsView: View {
             }.value
             switch result {
             case .success(let url):
-                store.importModel(url, intent: intent)
+                store.importModel(url, intent: intent, sourceDetails: details)
                 try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
             case .failure(let error):
                 store.showError(error.localizedDescription)

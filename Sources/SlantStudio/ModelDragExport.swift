@@ -4,17 +4,21 @@ import UniformTypeIdentifiers
 // Dragging a library model out to Finder or another app. The drag never offers the library file itself: Finder could
 // move it (⌘-drag) or the Dock's Trash could take it. Each drag offers a fresh copy, named after the model, in its own
 // temporary folder (on APFS the copy is a clone, so it is instant and takes no extra space). The library is untouched.
+// The folders go when Studio quits (this session's), at launch (leftovers from a crash or force quit) and, while it
+// runs, once they are a day old, so an app that reads a dropped file some time later still finds it.
 
 enum ModelDragExport {
     static let folderPrefix = "SlantStudio-Drag-"
-    /// Folders from earlier drags are removed once they are this old; receivers copy the file when it is dropped.
-    static let staleAge: TimeInterval = 10 * 60
+    /// Folders from earlier drags are removed once they are this old. Most receivers copy the file when it is dropped,
+    /// but some (a mail draft, an upload form) read it later.
+    static let staleAge: TimeInterval = 24 * 60 * 60
 
     /// The drag payload for a local model: a file URL to a named copy, or an empty provider (nothing to drop) when the
     /// library file is missing or couldn't be copied.
     static func itemProvider(for model: LocalModel, temporaryDirectory: URL = FileManager.default.temporaryDirectory) -> NSItemProvider {
         removeStaleFolders(in: temporaryDirectory)
         guard let copy = try? makeCopy(of: model.url, name: model.name, in: temporaryDirectory) else { return NSItemProvider() }
+        DragFolderRegistry.shared.add(copy.deletingLastPathComponent())
         let provider = NSItemProvider(object: copy as NSURL)
         provider.suggestedName = copy.deletingPathExtension().lastPathComponent
         return provider
@@ -44,15 +48,74 @@ enum ModelDragExport {
         return relative.hasPrefix(folderPrefix) && relative.contains("/")
     }
 
-    /// Removes drag folders older than `staleAge`. Only folders with this prefix directly in the temporary folder.
+    /// A folder this code made: the prefix followed by exactly a UUID.
+    static func isDragFolderName(_ name: String) -> Bool {
+        name.hasPrefix(folderPrefix) && UUID(uuidString: String(name.dropFirst(folderPrefix.count))) != nil
+    }
+
+    /// Drag folders to delete. With `minimumAge` nil every one goes (launch, when no other copy of Studio is running);
+    /// otherwise only those at least that old, and a folder without a date stays.
+    static func staleFolderNames(_ entries: [(name: String, created: Date?)], now: Date, minimumAge: TimeInterval?) -> [String] {
+        entries.filter { entry in
+            guard isDragFolderName(entry.name) else { return false }
+            guard let minimumAge else { return true }
+            guard let created = entry.created else { return false }
+            return now.timeIntervalSince(created) >= minimumAge
+        }.map(\.name)
+    }
+
+    /// Removes drag folders older than `staleAge`, between drags.
     static func removeStaleFolders(in temporaryDirectory: URL, now: Date = Date()) {
+        removeFolders(in: temporaryDirectory, now: now, minimumAge: staleAge)
+    }
+
+    /// Launch clean-up (from `PersonalisationTempCleanup`): leftovers a crash or force quit skipped. While another copy
+    /// of Studio may be running, its recent drags are left alone; a drag this session already made is always kept.
+    static func removeLeftoverFolders(in temporaryDirectory: URL, otherInstanceMayBeRunning: Bool, now: Date = Date()) {
+        removeFolders(in: temporaryDirectory, now: now, minimumAge: otherInstanceMayBeRunning ? staleAge : nil,
+                      keeping: DragFolderRegistry.shared.names)
+    }
+
+    /// Only real folders (never a symbolic link) directly in the temporary folder, named by `isDragFolderName`.
+    private static func removeFolders(in temporaryDirectory: URL, now: Date, minimumAge: TimeInterval?, keeping: Set<String> = []) {
         let manager = FileManager.default
-        guard let entries = try? manager.contentsOfDirectory(at: temporaryDirectory, includingPropertiesForKeys: [.creationDateKey],
-                                                             options: [.skipsHiddenFiles]) else { return }
-        for entry in entries where entry.lastPathComponent.hasPrefix(folderPrefix) {
-            guard let created = try? entry.resourceValues(forKeys: [.creationDateKey]).creationDate,
-                  now.timeIntervalSince(created) > staleAge else { continue }
-            try? manager.removeItem(at: entry)
+        let keys: [URLResourceKey] = [.creationDateKey, .contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
+        guard let urls = try? manager.contentsOfDirectory(at: temporaryDirectory, includingPropertiesForKeys: keys,
+                                                          options: [.skipsSubdirectoryDescendants]) else { return }
+        var byName: [String: URL] = [:]
+        var entries: [(name: String, created: Date?)] = []
+        for url in urls {
+            let name = url.lastPathComponent
+            guard isDragFolderName(name), !keeping.contains(name), let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            byName[name] = url
+            entries.append((name, values.creationDate ?? values.contentModificationDate))
+        }
+        for name in staleFolderNames(entries, now: now, minimumAge: minimumAge) {
+            if let url = byName[name] { try? manager.removeItem(at: url) }
+        }
+    }
+}
+
+/// Drag folders this run of Studio made, removed when it quits. Thread-safe.
+final class DragFolderRegistry: @unchecked Sendable {
+    static let shared = DragFolderRegistry()
+    private let lock = NSLock()
+    private var folders: [URL] = []
+
+    func add(_ folder: URL) { lock.withLock { folders.append(folder) } }
+
+    var count: Int { lock.withLock { folders.count } }
+    var names: Set<String> { lock.withLock { Set(folders.map(\.lastPathComponent)) } }
+
+    /// When the app terminates: deletes each folder still there.
+    func removeAll() {
+        let current = lock.withLock { () -> [URL] in
+            defer { folders = [] }
+            return folders
+        }
+        for folder in current where ModelDragExport.isDragFolderName(folder.lastPathComponent) {
+            try? FileManager.default.removeItem(at: folder)
         }
     }
 }

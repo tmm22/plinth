@@ -176,7 +176,7 @@ struct AutoImproveCard: View {
                     let recipe = model.printRecipe ?? PreparedPrintRecipe(sourceID: model.id, sourceName: model.name, intent: intent,
                                                                            orientation: result.orientation, materialID: materialID, created: Date())
                     store.importModel(url, recipe: recipe, improvement: model.designImprovement, intent: intent,
-                                      reinforcement: model.reinforcement, autoImprovement: record)
+                                      reinforcement: model.reinforcement, autoImprovement: record, sourceDetails: model.sourceDetails)
                 case .failure(let error):
                     store.showError(error.localizedDescription)
                 }

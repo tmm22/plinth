@@ -208,7 +208,8 @@ extension STLMesh {
 extension StudioStore {
     /// Adds a separate binary STL of an OBJ or 3MF model's previewed geometry, so the STL-only tools can use it.
     /// The original stays in the library unchanged and is still what an upload of that model sends.
-    func saveSTLCopy(of modelID: UUID, mesh: STLMesh, inexactFaces: Int) async {
+    /// `sourceDetails` are the previewed file's own (a 3MF's designer and licence); the copy keeps them.
+    func saveSTLCopy(of modelID: UUID, mesh: STLMesh, inexactFaces: Int, sourceDetails: ModelSourceDetails = ModelSourceDetails()) async {
         guard let model = localModels.first(where: { $0.id == modelID }), !model.supportsPreview, model.supportsMeshPreview,
               let format = ModelFileFormat(url: model.url) else { return }
         if let reason = stlCopyBlockedReason(format: format, inexactFaces: inexactFaces) {
@@ -229,7 +230,7 @@ extension StudioStore {
         }.value
         switch result {
         case .success(let url):
-            if importModel(url, intent: model.partIntent) {
+            if importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: sourceDetails)) {
                 activities.insert(Activity(title: "Save STL copy", detail: model.name, success: true), at: 0)
             }
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
