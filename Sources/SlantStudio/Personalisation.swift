@@ -304,12 +304,15 @@ func scadTemplateParameters(_ source: String) -> ScadTemplate {
         }
         var trailing = parts.lineComment.map { $0.trimmingCharacters(in: .whitespaces) }
         var trailingDescription: String?
-        // `// [0:0.05:1] Fit clearance per side (mm)`: a constraint, then a description (the form Design an Accessory
-        // asks Claude to write). The bracket is used only when it reads as a constraint on its own.
-        if let text = trailing, text.hasPrefix("["), let close = text.firstIndex(of: "]") {
+        // `// [0:0.05:1] Fit clearance per side (mm)`: a number range, then a description (the form Design an Accessory
+        // asks Claude to write). Only for a number whose bracket is a numeric range and whose whole comment isn't a
+        // constraint already; every other comment (string notes such as `[optional] Second line`, drop-downs) is read
+        // as before.
+        if kind == .number, let text = trailing, text.hasPrefix("["), scadConstraint(text, kind: kind) == nil,
+           let close = text.firstIndex(of: "]") {
             let bracket = String(text[...close])
             let rest = text[text.index(after: close)...].trimmingCharacters(in: .whitespaces)
-            if !rest.isEmpty, scadConstraint(bracket, kind: kind) != nil {
+            if !rest.isEmpty, case .range? = scadConstraint(bracket, kind: kind) {
                 trailing = bracket
                 trailingDescription = String(rest.prefix(300))
             }

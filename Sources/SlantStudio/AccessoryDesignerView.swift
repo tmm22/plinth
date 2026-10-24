@@ -94,7 +94,26 @@ func accessoryFitTestCheckLines(_ piece: AccessoryFitTestPiece) -> [String] {
 let accessoryFitTestChecksCaption = "Studio checks only the piece’s size, volume and the fit sizes its code reports, not that its shape matches the part’s fit region."
 
 /// Shown with a passing fit-test piece. It never promises a fit.
-let accessoryFitTestPrintAdvice = "Print this first and check it against the real object; Order a Sample to Me… in Models can print it. Save Template… too: if the piece is tight or loose, change Fit clearance in Personalise from Template, or tell Claude by how much while this window is open."
+/// It names the design's own clearance values (`accessoryClearanceValueNames`, by their Customizer description where
+/// they have one), or asks for one when there are none.
+func accessoryFitTestPrintAdvice(code: String) -> String {
+    let start = "Print this first and check it against the real object; Order a Sample to Me… in Models can print it."
+    let parameters = scadTemplateParameters(code).parameters
+    let labels = accessoryClearanceValueNames(code).map { name -> String in
+        let description = parameters.first { $0.name == name }?.description?.split(whereSeparator: \.isNewline).joined(separator: " ")
+        return "“\(description ?? name)”"
+    }
+    guard !labels.isEmpty else {
+        return start + " If the piece is tight or loose, tell Claude by how much while this window is open, or ask it to add a Fit clearance value."
+    }
+    let named = labels.count == 1 ? labels[0] : labels.dropLast().joined(separator: ", ") + " or " + labels[labels.count - 1]
+    return start + " Save Template… too: if the piece is tight or loose, change \(named) in Personalise from Template, or tell Claude by how much while this window is open."
+}
+
+/// Under the fit-test piece's name: where the name comes from.
+func accessoryFitTestNameCaption(libraryName: String) -> String {
+    "Saves as “\(accessoryFitTestLibraryName(libraryName: libraryName))”, from the library name below."
+}
 
 /// After Save Fit Test to Library.
 let accessoryFitTestSavedText = "Saved. In Models, Order a Sample to Me… prints it."
@@ -809,6 +828,8 @@ private struct AccessoryDesignRunView: View {
     @State private var libraryName = ""
     @State private var savedRenderIDs: Set<UUID> = []
     @State private var saveStatus: String?
+    /// Shown inside the fit-test block, beside its own button.
+    @State private var fitTestSaveStatus: String?
     @State private var saveProblem: String?
     @State private var saving = false
     /// The preview shows the fit-test piece instead of the part.
@@ -828,6 +849,7 @@ private struct AccessoryDesignRunView: View {
             if new == .finished, let finish = run.finish {
                 libraryName = accessoryLibraryName(suggested: finish.name, description: brief.description)
                 saveStatus = nil
+                fitTestSaveStatus = nil
                 saveProblem = nil
             }
         }
@@ -1121,10 +1143,10 @@ private struct AccessoryDesignRunView: View {
         if let piece = finish.render.passingFitTest {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Fit-test piece").font(.subheadline.weight(.semibold))
-                Text(accessoryFitTestPrintAdvice).font(.callout).fixedSize(horizontal: false, vertical: true)
+                Text(accessoryFitTestPrintAdvice(code: finish.render.code)).font(.callout).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Text(accessoryFitTestLibraryName(libraryName: libraryName)).font(.callout).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
+                    Text(accessoryFitTestNameCaption(libraryName: libraryName)).font(.callout).foregroundStyle(.secondary)
+                        .lineLimit(2).truncationMode(.middle)
                     Spacer()
                     if savedRenderIDs.contains(piece.id) {
                         Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
@@ -1134,6 +1156,10 @@ private struct AccessoryDesignRunView: View {
                             .disabled(saving)
                             .help("Adds the small fit-test piece to your library as its own model. The whole part is saved separately.")
                     }
+                }
+                if let fitTestSaveStatus {
+                    Label(fitTestSaveStatus, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .accessibilityElement(children: .contain)
@@ -1150,17 +1176,17 @@ private struct AccessoryDesignRunView: View {
     private func saveToLibrary(_ finish: AccessoryFinish) {
         guard !saving, libraryNameProblem == nil, !savedRenderIDs.contains(finish.render.id) else { return }
         save(stl: finish.render.stl, name: libraryName.trimmingCharacters(in: .whitespacesAndNewlines), id: finish.render.id,
-             activityDetail: "Saved a new model", status: "Saved “\(libraryName.trimmingCharacters(in: .whitespacesAndNewlines))” to your library.")
+             activityDetail: "Saved a new model", isFitTest: false, status: "Saved “\(libraryName.trimmingCharacters(in: .whitespacesAndNewlines))” to your library.")
     }
 
     private func saveFitTestToLibrary(_ piece: AccessoryFitTestPiece) {
         guard !saving, piece.check.passes, !savedRenderIDs.contains(piece.id) else { return }
         save(stl: piece.stl, name: accessoryFitTestLibraryName(libraryName: libraryName), id: piece.id,
-             activityDetail: "Saved a fit-test piece", status: accessoryFitTestSavedText)
+             activityDetail: "Saved a fit-test piece", isFitTest: true, status: accessoryFitTestSavedText)
     }
 
     /// Writes the STL to a temporary folder and adds it to the library through `importModel`. Sends nothing.
-    private func save(stl: Data, name: String, id: UUID, activityDetail: String, status: String) {
+    private func save(stl: Data, name: String, id: UUID, activityDetail: String, isFitTest: Bool, status: String) {
         saving = true
         saveProblem = nil
         let fileName = exportFileName(modelName: name, fileExtension: "stl")
@@ -1181,7 +1207,7 @@ private struct AccessoryDesignRunView: View {
                 // importModel shows its own alert when copying into the library fails.
                 guard store.importModel(url) else { saveProblem = "The design couldn’t be added to your library."; return }
                 savedRenderIDs.insert(id)
-                saveStatus = status
+                if isFitTest { fitTestSaveStatus = status } else { saveStatus = status }
                 store.activities.insert(Activity(title: "Design an accessory", detail: activityDetail, success: true), at: 0)
             case .failure(let error):
                 saveProblem = error.localizedDescription

@@ -1063,7 +1063,8 @@ extension AccessoryDesignerTests {
         XCTAssertNil(accessoryNoFitTestLines(try render(try boxSTL())), "Nothing to fit, nothing to say")
 
         // None of it promises a fit.
-        for text in [accessoryFitTestPrintAdvice, accessoryPhotoCheckCaption, accessoryFitTestChecksCaption, accessoryFitTestSavedText] + lines {
+        for text in [accessoryFitTestPrintAdvice(code: fitTestCode), accessoryFitTestPrintAdvice(code: goodCode), accessoryPhotoCheckCaption,
+                     accessoryFitTestChecksCaption, accessoryFitTestSavedText, accessoryNoteImageLimitText] + lines {
             for word in ["guarantee", "perfect", "will fit", "safe", "strong"] { XCTAssertFalse(text.lowercased().contains(word), "\(text): \(word)") }
         }
     }
@@ -1077,6 +1078,37 @@ extension AccessoryDesignerTests {
         XCTAssertLessThan(forecast.maximum.usd, 10, "Still a few dollars at most")
     }
 
+    func testCustomizerCommentsOtherThanANumberRangeReadAsBefore() throws {
+        // Regressions: these must parse exactly as before round 9, so Import Orders' Etsy text still fits them.
+        let strings = scadTemplateParameters("""
+            line2 = ""; // [optional] Second line
+            name = ""; // [max 20] Name
+            nick = ""; // [e.g. Bob] Nickname
+            hole = 5; // [5, 10] Hole
+            pick = "c"; // ["a]b", "c"]
+            size = 2; // [1:Small, 2:Large]
+            cube(1);
+            """).parameters
+        XCTAssertEqual(strings.map(\.name), ["line2", "name", "nick", "hole", "pick", "size"])
+        for (index, description) in ["[optional] Second line", "[max 20] Name", "[e.g. Bob] Nickname", "[5, 10] Hole"].enumerated() {
+            XCTAssertEqual(strings[index].description, description)
+            XCTAssertEqual(strings[index].choices, [], description)
+            XCTAssertNil(strings[index].range, description)
+        }
+        // Free text stays free text for any buyer's personalisation.
+        XCTAssertNil(scadValueProblem("Happy birthday, Emma", for: strings[0]))
+        XCTAssertNil(scadValueProblem("Bob", for: strings[2]))
+        XCTAssertNil(scadValueProblem("7", for: strings[3]))
+        // A whole-comment drop-down is read as one, a quoted "]" included, and a whole-comment number drop-down too.
+        XCTAssertEqual(strings[4].choices.map(\.value), ["a]b", "c"])
+        XCTAssertNil(strings[4].description)
+        XCTAssertEqual(strings[5].choices.map(\.label), ["Small", "Large"])
+        // The one new form: a number range, then a description.
+        let clearance = try XCTUnwrap(scadTemplateParameters("gap = 0.25; // [0:0.05:1] Fit clearance per side (mm)\ncube(1);").parameters.first)
+        XCTAssertEqual(clearance.range, 0...1)
+        XCTAssertEqual(clearance.description, "Fit clearance per side (mm)")
+    }
+
     func testTemplateKeepsFitTestAsACheckbox() throws {
         let text = accessoryTemplateFileText(code: fitTestCode, name: "Phone stand")
         XCTAssertTrue(text.contains("// Fit test: turn on fit_test (“Print only a small fit-test piece”) to make only the small fit-test piece, and print it first.\n"), text)
@@ -1085,12 +1117,13 @@ extension AccessoryDesignerTests {
         XCTAssertEqual(parameters.map(\.name), ["fit_test", "clearance", "width"])
         XCTAssertEqual(parameters[1].range, 0...1)
         XCTAssertEqual(parameters[1].description, "Fit clearance per side (mm)", "A constraint, then a description, on one line")
-        // The bracket counts as a constraint only when it reads as one; otherwise the whole comment is the description.
+        // Only a number with a numeric range is split; everything else reads as before (the whole comment is the
+        // description, or a whole-comment constraint).
         let other = scadTemplateParameters("a = 2; // [not a range] Size\nb = \"x\"; // [Small, Large] Size name\ncube(a);").parameters
         XCTAssertEqual(other[0].description, "[not a range] Size")
         XCTAssertNil(other[0].range)
-        XCTAssertEqual(other[1].description, "Size name")
-        XCTAssertEqual(other[1].choices.map(\.value), ["x", "Small", "Large"])
+        XCTAssertEqual(other[1].description, "[Small, Large] Size name")
+        XCTAssertEqual(other[1].choices, [])
         let fitTest = try XCTUnwrap(parameters.first)
         XCTAssertEqual(fitTest.kind, .boolean)
         XCTAssertEqual(fitTest.defaultValue, "false")
@@ -1261,8 +1294,14 @@ extension AccessoryDesignerTests {
             XCTAssertTrue(accessorySystemPrompt.contains(phrase), phrase)
         }
         XCTAssertTrue(accessoryPhotoComparisonText.contains("If they show only the object"))
-        XCTAssertTrue(accessoryFitTestPrintAdvice.contains("Order a Sample to Me…"))
-        XCTAssertTrue(accessoryFitTestPrintAdvice.contains("change Fit clearance in Personalise from Template"))
+        // The advice names the design's own clearance values, or asks for one.
+        XCTAssertEqual(accessoryFitTestPrintAdvice(code: fitTestCode),
+                       "Print this first and check it against the real object; Order a Sample to Me… in Models can print it. Save Template… too: if the piece is tight or loose, change “Fit clearance per side (mm)” in Personalise from Template, or tell Claude by how much while this window is open.")
+        XCTAssertTrue(accessoryFitTestPrintAdvice(code: "slot_clearance = 0.2; // [0:0.05:1] Slot clearance\nhole_clearance = 0.3;\ncube(1);")
+            .contains("change “Slot clearance” or “hole_clearance” in Personalise from Template"))
+        XCTAssertEqual(accessoryFitTestPrintAdvice(code: noClearance),
+                       "Print this first and check it against the real object; Order a Sample to Me… in Models can print it. If the piece is tight or loose, tell Claude by how much while this window is open, or ask it to add a Fit clearance value.")
+        XCTAssertEqual(accessoryFitTestNameCaption(libraryName: "Phone stand (designed)"), "Saves as “Phone stand (fit test)”, from the library name below.")
     }
 
     func testThePictureSentenceNeedsAPicture() throws {
@@ -1295,6 +1334,55 @@ extension AccessoryDesignerTests {
         XCTAssertEqual(accessoryNotePlaceholder(finished: false, hasPassingFitTest: true), "Fit-test result, such as “the slot was 0.3 mm too tight”")
         XCTAssertEqual(accessoryNotePlaceholder(finished: true, hasPassingFitTest: false), "Ask for changes, such as “make the lip 2 mm taller”")
         XCTAssertEqual(accessoryNotePlaceholder(finished: false, hasPassingFitTest: false), "Tell Claude how to continue")
+    }
+
+    func testANoteOverThePictureLimitKeepsTheFinishedDesign() async throws {
+        let picture = AnthropicInputBlock.image(AnthropicImage(mediaType: .jpeg, base64Data: "AA=="))
+        let rendered = try render(try boxSTL())
+        // One reply that renders and finishes: the render's four pictures are still waiting to go with the next turn.
+        let render = AnthropicToolUse(id: "t1", name: "render_scad", input: ["code": .string(goodCode)], rawInputJSON: "{}", inputProblem: nil)
+        let finish = AnthropicToolUse(id: "t2", name: "finish_design", input: finishInput, rawInputJSON: "{}", inputProblem: nil)
+        let both = reply([AnthropicOutputBlock(content: .toolUse(render), raw: ["type": "tool_use", "id": "t1", "name": "render_scad", "input": ["code": .string(goodCode)]]),
+                          AnthropicOutputBlock(content: .toolUse(finish), raw: ["type": "tool_use", "id": "t2", "name": "finish_design", "input": finishInput])],
+                         stop: .toolUse)
+        let stub = StubClaude([.success(both)])
+        let run = makeRun(stub) { .rendered(rendered) }
+        run.start(firstTurn: .user(Array(repeating: picture, count: 97) + [.text("brief")]))
+        await settle(run)
+        XCTAssertEqual(run.phase, .finished)
+        let finished = try XCTUnwrap(run.finish)
+        let history = run.messages
+        run.sendNote("Make the lip taller")
+        XCTAssertEqual(stub.requests.count, 1, "Nothing was sent")
+        XCTAssertEqual(run.phase, .finished, "The finished design stays")
+        XCTAssertEqual(run.finish?.render.id, finished.render.id, "Its Save buttons stay")
+        XCTAssertEqual(run.messages, history, "The history is unchanged")
+        XCTAssertTrue(run.imageLimitReached)
+        XCTAssertFalse(run.canSendNote)
+        if case .notice(let text) = run.transcript.last?.kind { XCTAssertEqual(text, accessoryNoteImageLimitText) } else { XCTFail("Expected the notice") }
+        XCTAssertTrue(accessoryNoteImageLimitText.contains("Save what you have"))
+    }
+
+    func testAnAnswerOverThePictureLimitChangesNothing() async throws {
+        let picture = AnthropicInputBlock.image(AnthropicImage(mediaType: .jpeg, base64Data: "AA=="))
+        let rendered = try render(try boxSTL())
+        let render = AnthropicToolUse(id: "t1", name: "render_scad", input: ["code": .string(goodCode)], rawInputJSON: "{}", inputProblem: nil)
+        let ask = AnthropicToolUse(id: "t2", name: "ask_seller", input: ["question": "How thick is it?"], rawInputJSON: "{}", inputProblem: nil)
+        let both = reply([AnthropicOutputBlock(content: .toolUse(render), raw: ["type": "tool_use", "id": "t1", "name": "render_scad", "input": ["code": .string(goodCode)]]),
+                          AnthropicOutputBlock(content: .toolUse(ask), raw: ["type": "tool_use", "id": "t2", "name": "ask_seller", "input": ["question": "How thick is it?"]])],
+                         stop: .toolUse)
+        let stub = StubClaude([.success(both)])
+        let run = makeRun(stub) { .rendered(rendered) }
+        run.start(firstTurn: .user(Array(repeating: picture, count: 97) + [.text("brief")]))
+        await settle(run)
+        XCTAssertEqual(run.phase, .waitingForSeller)
+        let history = run.messages
+        run.answer("9.5 mm")
+        XCTAssertEqual(stub.requests.count, 1, "Nothing was sent")
+        XCTAssertEqual(run.messages, history)
+        XCTAssertEqual(run.phase, .stopped(accessoryNoteImageLimitText))
+        XCTAssertFalse(run.canTryAgain)
+        XCTAssertFalse(run.canSendNote)
     }
 
     func testTooManyPicturesStopsBeforeSending() async throws {

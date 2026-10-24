@@ -1340,6 +1340,10 @@ let accessoryMaximumImagesPerRequest = 100
 
 let accessoryImageLimitText = "This conversation has too many pictures for Claude, so Studio didn’t send it. Start Over, or save what you have."
 
+/// When the seller's answer or note would take the conversation over the picture limit: nothing changes, and a
+/// finished design keeps its Save buttons.
+let accessoryNoteImageLimitText = "Studio didn’t send this to Claude: the conversation has too many pictures for Claude. Save what you have, or close this window and start a new design."
+
 /// Pictures in the messages: image blocks, and images inside tool results.
 func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
     messages.reduce(0) { total, message in
@@ -1417,6 +1421,8 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
     /// Answers Claude's question (empty or nil skips it) and carries on in the same round.
     func answer(_ text: String?) {
         guard let id = questionToolUseID, !isWorking else { return }
+        // Checked before anything changes: the answer itself adds no pictures, but results waiting to go may.
+        if wouldExceedImageLimit { refuseForImageLimit(); return }
         let trimmed = accessoryClipped(text, 1_000)
         transcript.append(AccessoryTranscriptEntry(kind: .answer(trimmed.isEmpty ? "Skipped" : trimmed)))
         let reply = trimmed.isEmpty
@@ -1432,6 +1438,8 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
     /// Sends the seller's note and starts a new round. A note is required when Claude's turn is last.
     func sendNote(_ note: String) {
         guard canSendNote else { return }
+        // Checked before the history or the finished design changes, so a finished design keeps its Save buttons.
+        if wouldExceedImageLimit { refuseForImageLimit(); return }
         let trimmed = accessoryClipped(note, 2_000)
         if messages.last?.role == .assistant {
             guard !trimmed.isEmpty else { return }
@@ -1445,6 +1453,19 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
         finish = nil
         beginRound()
         launch()
+    }
+
+    /// The next request would carry more pictures than Anthropic accepts: the history so far plus the results waiting
+    /// to go with the next turn (a note or an answer adds none).
+    private var wouldExceedImageLimit: Bool {
+        accessoryImageCount(messages) + accessoryImageCount([.user(pendingResults)]) > accessoryMaximumImagesPerRequest
+    }
+
+    /// Refuses the seller's answer or note without changing the history, the phase of a finished design or `finish`.
+    private func refuseForImageLimit() {
+        imageLimitReached = true
+        transcript.append(AccessoryTranscriptEntry(kind: .notice(accessoryNoteImageLimitText)))
+        if phase != .finished { phase = .stopped(accessoryNoteImageLimitText) }
     }
 
     /// Resends the unanswered turn as it is, in a new round.
