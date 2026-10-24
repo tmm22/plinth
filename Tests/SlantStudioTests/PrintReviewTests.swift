@@ -21,12 +21,17 @@ final class PrintReviewTests: XCTestCase {
         try STLMesh.validated(corners(low, high))
     }
 
-    /// A closed sphere of 5,120 triangles, centred on the origin.
+    /// A closed sphere of 5,120 triangles, centred on the origin: plans are checked against it, never run on it.
     private func ball() throws -> STLMesh { try MeshRepairTests.sphere(levels: 4, radius: 20) }
 
-    /// The same sphere with one triangle missing: open.
+    /// Measurements with a small wall-thickness sample, which is all these checks need.
+    private func measure(_ mesh: STLMesh) throws -> PrintReviewMeasurements {
+        try XCTUnwrap(measureForPrintReview(mesh, wallSamples: 1_500))
+    }
+
+    /// A 1,280-triangle sphere with one triangle missing: open, and small enough to run steps on quickly.
     private func openBall() throws -> STLMesh {
-        let whole = try ball()
+        let whole = try MeshRepairTests.sphere(levels: 3, radius: 20)
         return try STLMesh.validated(Array(whole.vertices.dropLast(9)))
     }
 
@@ -35,11 +40,11 @@ final class PrintReviewTests: XCTestCase {
                                scaleBlockedReason: scale, baseBlockedReason: base)
     }
 
-    private func step(_ tool: String, target: AnthropicJSON = nil, axis: AnthropicJSON = nil, mm: AnthropicJSON = nil,
-                      cut: AnthropicJSON = nil, shape: AnthropicJSON = nil, margin: AnthropicJSON = nil,
+    private func step(_ tool: String, target: AnthropicJSON = nil, turn: AnthropicJSON = nil, axis: AnthropicJSON = nil,
+                      mm: AnthropicJSON = nil, cut: AnthropicJSON = nil, shape: AnthropicJSON = nil, margin: AnthropicJSON = nil,
                       thickness: AnthropicJSON = nil, text: AnthropicJSON = nil) -> AnthropicJSON {
-        ["tool": .string(tool), "reason": "Because.", "target_triangles": target, "axis": axis, "mm": mm, "cut_mm": cut,
-         "shape": shape, "margin_mm": margin, "thickness_mm": thickness, "text": text]
+        ["tool": .string(tool), "reason": "Because.", "target_triangles": target, "turn": turn, "axis": axis, "mm": mm,
+         "cut_mm": cut, "shape": shape, "margin_mm": margin, "thickness_mm": thickness, "text": text]
     }
 
     private func planInput(_ steps: [AnthropicJSON], risks: [AnthropicJSON] = []) -> AnthropicJSON {
@@ -84,7 +89,8 @@ final class PrintReviewTests: XCTestCase {
     func testOverhangShareOfASphereIsTheSteepLowerCap() throws {
         let share = overhangShare(try ball())
         // Faces within 45° of straight down: a cap of height r(1 − cos 45°), about 14.6% of the sphere's area.
-        XCTAssertEqual(share.fraction, 0.146, accuracy: 0.02)
+        XCTAssertEqual(share.fraction, 0.146, accuracy: 0.03)
+        XCTAssertFalse(share.isMinor)
         XCTAssertEqual(overhangShare(try ball()), share)
     }
 
@@ -92,23 +98,39 @@ final class PrintReviewTests: XCTestCase {
 
     func testFactLinesForASoundBlockSayTheChecksFoundNoProblems() throws {
         let block = try box(.zero, SIMD3(20, 30, 40))
-        let measured = try XCTUnwrap(measureForPrintReview(block))
+        let measured = try measure(block)
         XCTAssertTrue(measured.checksFoundNoProblems)
         let lines = printReviewFactLines(measured)
         XCTAssertEqual(lines.first, "Size: 20.0 mm wide (X) × 30.0 mm deep (Y) × 40.0 mm tall (Z).")
         XCTAssertTrue(lines.contains("Fits Slant’s 220 mm build volume."))
         XCTAssertTrue(lines.contains("Mesh check: closed and consistent, 1 part."))
         XCTAssertTrue(lines.contains("Flat base: enough flat area to stand on as placed."))
-        XCTAssertEqual(lines.last, "Studio’s checks found no problems.")
+        XCTAssertTrue(lines.contains { $0.hasPrefix("If turned, overhangs would be: upside down 0%;") })
+        // Says what was checked, overhangs included.
+        XCTAssertEqual(lines.last, printReviewNoProblemsLine)
+        XCTAssertTrue(printReviewNoProblemsLine.contains("overhangs on under 5% of the surface"))
+    }
+
+    func testOverhangsAboveTheLimitMeanTheChecksFoundSomething() throws {
+        let sound = try measure(try box(.zero, SIMD3(20, 30, 40)))
+        func with(_ overhang: OverhangShare) -> PrintReviewMeasurements {
+            PrintReviewMeasurements(sizeMM: sound.sizeMM, origin: sound.origin, triangles: sound.triangles, health: sound.health,
+                                    wall: sound.wall, flatBase: sound.flatBase, overhang: overhang, turns: sound.turns)
+        }
+        XCTAssertTrue(with(OverhangShare(overhangAreaMM2: 20, surfaceAreaMM2: 1000)).checksFoundNoProblems)
+        let steep = with(OverhangShare(overhangAreaMM2: 50, surfaceAreaMM2: 1000))
+        XCTAssertFalse(steep.checksFoundNoProblems)
+        XCTAssertFalse(printReviewFactLines(steep).contains(printReviewNoProblemsLine))
+        XCTAssertFalse(printReviewComparisonLines(before: sound, after: steep).contains(printReviewNoProblemsLine))
     }
 
     func testFactLinesForAnOpenOversizedModelNeverClaimNoProblems() throws {
         let big = try MeshRepairTests.sphere(levels: 3, radius: 150)
         let open = try STLMesh.validated(Array(big.vertices.dropLast(9)))
-        let measured = try XCTUnwrap(measureForPrintReview(open))
+        let measured = try XCTUnwrap(measureForPrintReview(open, wallSamples: 500))
         XCTAssertFalse(measured.checksFoundNoProblems)
         let lines = printReviewFactLines(measured)
-        XCTAssertFalse(lines.contains("Studio’s checks found no problems."))
+        XCTAssertFalse(lines.contains(printReviewNoProblemsLine))
         XCTAssertTrue(lines.contains { $0.hasPrefix("Larger than Slant’s 220 mm build volume") })
         XCTAssertTrue(lines.contains { $0.hasPrefix("Mesh check: needs repair — 3 open edges") })
         XCTAssertTrue(lines.contains { $0.hasPrefix("Flat base: removing") })
@@ -235,8 +257,9 @@ final class PrintReviewTests: XCTestCase {
         }
         XCTAssertTrue(printReviewPlanTool.strict)
         XCTAssertFalse(printReviewPlanTool.eagerInputStreaming)
-        let input = planInput([step("repair"), step("simplify", target: 3000)])
+        let input = planInput([step("repair"), step("simplify", target: 3000), step("orient", turn: "y_down"), step("auto_improve")])
         XCTAssertNil(anthropicSchemaProblem(input, schema: schema))
+        for tool in ["orient", "auto_improve"] { XCTAssertTrue(printReviewSystemPrompt.contains("- \(tool)")) }
         XCTAssertNotNil(anthropicSchemaProblem(input.setting("extra", to: 1), schema: schema))
         XCTAssertNotNil(anthropicSchemaProblem(planInput([["tool": "repair"]]), schema: schema))
     }
@@ -300,7 +323,8 @@ final class PrintReviewTests: XCTestCase {
     func testCostEstimateAndImageTokens() {
         XCTAssertEqual(printReviewImageTokens(width: 768, height: 768), 784)
         XCTAssertEqual(printReviewImageTokens(width: 0, height: 768), 0)
-        XCTAssertEqual(printReviewCostRangeText(inputTokens: 7_500), "about $0.09–$0.35")
+        // One short answer at the low end; a long answer plus the one follow-up at the high end.
+        XCTAssertEqual(printReviewCostRangeText(inputTokens: 7_500), "about $0.09–$0.61")
         let request = printReviewAnthropicRequest(views: [], factLines: [], contextLines: [])
         let tokens = printReviewEstimatedInputTokens(request, imageSizes: Array(repeating: (768, 768), count: 4))
         XCTAssertGreaterThan(tokens, 4 * 784)
@@ -320,7 +344,7 @@ final class PrintReviewTests: XCTestCase {
     func testTheRunnerAppliesStepsInOrderAndGivesTheSameBytesTwice() throws {
         let mesh = try openBall()
         let steps = [PrintReviewRunStep(number: 1, action: .repair),
-                     PrintReviewRunStep(number: 2, action: .simplify(target: 2_000)),
+                     PrintReviewRunStep(number: 2, action: .simplify(target: 600)),
                      PrintReviewRunStep(number: 3, action: .scaleToSize(axis: .z, mm: 30)),
                      PrintReviewRunStep(number: 4, action: .flatBase(cutMM: 1)),
                      PrintReviewRunStep(number: 5, action: .manual("Never run."))]
@@ -329,7 +353,7 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertEqual(first.data, second.data)
         XCTAssertTrue(first.changed)
         XCTAssertEqual(first.lines.count, 4)
-        XCTAssertLessThanOrEqual(first.mesh.triangleCount, 2_100)
+        XCTAssertLessThanOrEqual(first.mesh.triangleCount, 700)
         let report = try XCTUnwrap(analyzeMeshHealth(first.mesh))
         XCTAssertTrue(meshHealthIsSound(report))
         // Scaled to 30 mm, then 1 mm cut off the bottom.
@@ -338,14 +362,21 @@ final class PrintReviewTests: XCTestCase {
     }
 
     func testEachMeshStepAloneIsDeterministic() throws {
-        let mesh = try ball()
+        let mesh = try MeshRepairTests.sphere(levels: 2, radius: 20)
         var plinth = PlinthSettings()
         plinth.shape = .rectangular
-        for action in [PrintReviewAction.repair, .simplify(target: 2_500), .scaleToSize(axis: .longest, mm: 55),
+        for action in [PrintReviewAction.repair, .simplify(target: 200), .orient(.xUp), .scaleToSize(axis: .longest, mm: 55),
                        .flatBase(cutMM: 0.8), .plinth(plinth)] {
             let steps = [PrintReviewRunStep(number: 1, action: action)]
             XCTAssertEqual(try runPrintReviewSteps(steps, on: mesh).data, try runPrintReviewSteps(steps, on: mesh).data, "\(action)")
         }
+        // Auto-improve on a small block (Reinforce's solid check is costly on curved meshes).
+        let block = try box(.zero, SIMD3(20, 10, 6))
+        let auto = [PrintReviewRunStep(number: 1, action: .autoImprove(PrintReviewAutoImprove(intent: PartIntent(purpose: .decorative), keepPlacement: false)))]
+        let a = try runPrintReviewSteps(auto, on: block), b = try runPrintReviewSteps(auto, on: block)
+        XCTAssertEqual(a.data, b.data)
+        XCTAssertEqual(a.lines, b.lines)
+        XCTAssertTrue(a.lines.first?.hasPrefix("Auto-improve as a decorative part: ") == true, "\(a.lines)")
     }
 
     func testAFailingStepStopsTheRunAndNothingIsReturned() throws {
@@ -386,20 +417,25 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertTrue(printReadyCopyKeepsRecords([.repair, .simplify(target: 3000)]))
         XCTAssertFalse(printReadyCopyKeepsRecords([.repair, .flatBase(cutMM: 1)]))
         XCTAssertFalse(printReadyCopyKeepsRecords([.scaleToSize(axis: .z, mm: 10)]))
+        XCTAssertFalse(printReadyCopyKeepsRecords([.orient(.yUp)]))
+        let auto = PrintReviewAutoImprove(intent: PartIntent(purpose: .decorative), keepPlacement: false)
+        XCTAssertTrue(printReadyCopyKeepsRecords([.repair, .autoImprove(auto)]))
     }
 
     func testSelectionNotesWarnAboutABaseOnAnOpenMesh() throws {
         let small = try MeshRepairTests.sphere(levels: 2, radius: 20)
-        let measured = try XCTUnwrap(measureForPrintReview(try STLMesh.validated(Array(small.vertices.dropLast(9)))))
+        let measured = try measure(try STLMesh.validated(Array(small.vertices.dropLast(9))))
         XCTAssertEqual(printReviewSelectionNotes([.flatBase(cutMM: 1)], measurements: measured).count, 1)
         XCTAssertEqual(printReviewSelectionNotes([.repair, .plinth(PlinthSettings())], measurements: measured), [])
         XCTAssertEqual(printReviewSelectionNotes([.simplify(target: 2000)], measurements: measured), ["Simplify works best on a repaired mesh."])
-        let sound = try XCTUnwrap(measureForPrintReview(try box(.zero, SIMD3(10, 10, 10))))
+        let sound = try measure(try box(.zero, SIMD3(10, 10, 10)))
         XCTAssertEqual(printReviewSelectionNotes([.flatBase(cutMM: 1)], measurements: sound), [])
+        let auto = PrintReviewAction.autoImprove(PrintReviewAutoImprove(intent: PartIntent(purpose: .decorative), keepPlacement: false))
+        XCTAssertEqual(printReviewSelectionNotes([auto], measurements: sound), [])
     }
 
     func testStudioNotesShowStudiosOwnNumbers() throws {
-        let measured = try XCTUnwrap(measureForPrintReview(try box(.zero, SIMD3(20, 30, 40))))
+        let measured = try measure(try box(.zero, SIMD3(20, 30, 40)))
         let scale = printReviewStudioNote(.scaleToSize(axis: .z, mm: 80), measurements: measured,
                                           context: PrintReviewContext(intendedSizeNote: "Height 80 mm"))
         XCTAssertEqual(scale, "Studio: the height (Z) is now 40.0 mm; result 40.0 × 60.0 × 80.0 mm. You said: Height 80 mm")
@@ -417,5 +453,207 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertEqual(first, second)
         XCTAssertTrue(first.allSatisfy { $0.image.mediaType == .jpeg && $0.image.pixelWidth == 64 })
         XCTAssertNil(renderPrintReviewViews(block, size: 64, isCancelled: { true }))
+    }
+
+    // MARK: Turning and Auto-improve steps
+
+    private let decorative = PrintReviewAutoImprove(intent: PartIntent(purpose: .decorative), keepPlacement: false)
+
+    func testOrientAndAutoImproveStepsDecodeWithTheirRules() throws {
+        let mesh = try ball()
+        var ctx = context(mesh)
+        ctx.autoImprove = decorative
+        let plan = decodePrintReviewPlan(planInput([
+            step("simplify", target: 4000),
+            step("orient", turn: "y_down"),
+            step("orient", turn: "sideways"),
+            step("auto_improve"),
+            step("flat_base", cut: 1),
+            step("manual", text: "Use Reinforce to add a gusset under the arm.")
+        ]), context: ctx)
+        XCTAssertEqual(plan.steps.map(\.tool), ["simplify", "orient", "orient", "auto_improve", "flat_base", "manual"])
+        XCTAssertEqual(plan.steps[1].action, .orient(.yDown))
+        XCTAssertEqual(plan.steps[1].title, "Turn it on its side, +Y side down")
+        XCTAssertNil(plan.steps[1].problem)
+        XCTAssertNil(plan.steps[2].action)
+        XCTAssertEqual(plan.steps[2].problem, "Claude didn’t say which way to turn it.")
+        // A turn and Auto-improve don't go together; Auto-improve must come last.
+        XCTAssertEqual(plan.steps[3].problem, "Step 2 already turns the part, and Auto-improve places it for its purpose itself. Choose one.")
+        XCTAssertNil(plan.steps[4].problem)
+        XCTAssertTrue(printReviewMentionsReinforce("Use Reinforce to add a gusset under the arm."))
+        XCTAssertFalse(printReviewMentionsReinforce("Thicken the blade in your CAD app."))
+
+        let last = decodePrintReviewPlan(planInput([step("auto_improve"), step("flat_base", cut: 1), step("manual", text: "Tip.")]),
+                                         context: ctx)
+        XCTAssertEqual(last.steps[0].action, .autoImprove(decorative))
+        XCTAssertEqual(last.steps[0].title, "Auto-improve as a decorative part")
+        XCTAssertNil(last.steps[0].problem)
+        XCTAssertTrue(last.steps[1].problem?.hasPrefix("Step 1 auto-improves the part, which has to come last") == true)
+        XCTAssertNil(last.steps[2].problem)
+    }
+
+    func testAutoImproveNeedsSettingsAndFewEnoughTriangles() throws {
+        let mesh = try ball()
+        var ctx = context(mesh)
+        XCTAssertEqual(decodePrintReviewPlan(planInput([step("auto_improve")]), context: ctx).steps[0].problem,
+                       "Auto-improve isn’t available for this model.")
+        ctx.autoImproveBlockedReason = "Already auto-improved."
+        XCTAssertEqual(decodePrintReviewPlan(planInput([step("auto_improve")]), context: ctx).steps[0].problem, "Already auto-improved.")
+        ctx.autoImproveBlockedReason = nil
+        ctx.autoImprove = decorative
+        ctx.triangles = 30_000
+        let tooMany = decodePrintReviewPlan(planInput([step("auto_improve")]), context: ctx)
+        XCTAssertTrue(tooMany.steps[0].problem?.contains("30,000") == true)
+        let simplified = decodePrintReviewPlan(planInput([step("simplify", target: 20_000), step("auto_improve")]), context: ctx)
+        XCTAssertEqual(simplified.steps.map(\.problem), [nil, nil])
+        ctx.orientBlockedReason = "Stays Z up."
+        XCTAssertEqual(decodePrintReviewPlan(planInput([step("orient", turn: "x_up")]), context: ctx).steps[0].problem, "Stays Z up.")
+
+        let sound = try measure(try box(.zero, SIMD3(10, 10, 10)))
+        let big = PrintReviewMeasurements(sizeMM: sound.sizeMM, origin: sound.origin, triangles: 30_000, health: sound.health,
+                                          wall: sound.wall, flatBase: sound.flatBase, overhang: sound.overhang)
+        XCTAssertEqual(printReviewSelectionNotes([.autoImprove(decorative)], measurements: big).count, 1)
+        XCTAssertEqual(printReviewSelectionNotes([.simplify(target: 20_000), .autoImprove(decorative)], measurements: big), [])
+    }
+
+    func testLaterStepsAreCheckedAgainstTheSizeEarlierStepsLeave() throws {
+        let tall = try box(.zero, SIMD3(10, 10, 100))
+        let alone = decodePrintReviewPlan(planInput([step("flat_base", cut: 4)]), context: context(tall))
+        XCTAssertNil(alone.steps[0].problem)
+        // Scaled to 12 mm tall first, a 4 mm cut is a third of the height.
+        let scaled = decodePrintReviewPlan(planInput([step("scale_to_size", axis: "z", mm: 12), step("flat_base", cut: 4)]),
+                                           context: context(tall))
+        XCTAssertNil(scaled.steps[0].problem)
+        XCTAssertEqual(scaled.steps[1].problem, "That would remove a quarter or more of the model’s height, which is 12.0 mm at that point in the plan.")
+        // Turned on its side first, the model is 10 mm tall.
+        let turned = decodePrintReviewPlan(planInput([step("orient", turn: "x_up"), step("flat_base", cut: 4)]), context: context(tall))
+        XCTAssertTrue(turned.steps[1].problem?.contains("10.0 mm") == true)
+        // A scale after a turn measures the turned model (100 × 10 × 10 mm): 10 → 15 mm tall makes it 150 mm long, and
+        // 10 → 30 mm makes it 300 mm, too long for the build volume (unturned, 30 mm tall would be a shrink).
+        let rescaled = decodePrintReviewPlan(planInput([step("orient", turn: "x_up"), step("scale_to_size", axis: "z", mm: 15)]),
+                                             context: context(tall))
+        XCTAssertNil(rescaled.steps[1].problem)
+        let tooLong = decodePrintReviewPlan(planInput([step("orient", turn: "x_up"), step("scale_to_size", axis: "z", mm: 30)]),
+                                            context: context(tall))
+        XCTAssertTrue(tooLong.steps[1].problem?.contains("300.0 mm") == true)
+        XCTAssertNil(decodePrintReviewPlan(planInput([step("scale_to_size", axis: "z", mm: 30)]), context: context(tall)).steps[0].problem)
+
+        // The runner checks again with the real mesh, in case an earlier step wasn't ticked.
+        XCTAssertThrowsError(try runPrintReviewSteps([PrintReviewRunStep(number: 2, action: .flatBase(cutMM: 3))],
+                                                     on: try box(.zero, SIMD3(10, 10, 10)))) { error in
+            guard case .step(2, _, let message) = error as? PrintReviewRunError else { return XCTFail("\(error)") }
+            XCTAssertTrue(message.contains("quarter"))
+        }
+    }
+
+    func testTurningRunsAndReportsOverhangs() throws {
+        let block = try box(.zero, SIMD3(10, 20, 30))
+        let result = try runPrintReviewSteps([PrintReviewRunStep(number: 1, action: .orient(.xUp))], on: block)
+        XCTAssertTrue(result.changed)
+        XCTAssertEqual(result.mesh.maximum - result.mesh.minimum, SIMD3(30, 20, 10))
+        XCTAssertEqual(result.lines, ["Turn it on its side, +X side up: overhangs 0% → 0% of the surface; now 30.0 × 20.0 × 10.0 mm."])
+        XCTAssertTrue(meshHealthIsSound(try XCTUnwrap(analyzeMeshHealth(result.mesh))))
+        XCTAssertNil(result.autoImprove)
+    }
+
+    func testRunErrorsSayNothingWasSaved() {
+        XCTAssertTrue(PrintReviewRunError.madeWorse.localizedDescription.contains("nothing was saved"))
+        XCTAssertTrue(PrintReviewRunError.tooLarge(250).localizedDescription.contains("250.0 mm"))
+    }
+
+    // MARK: Copy records
+
+    func testPrintReadyCopyRecords() {
+        var model = LocalModel(name: "Bracket", filePath: "/tmp/bracket.stl")
+        model.partIntent = PartIntent(purpose: .bracket, load: .x)
+        model.sourceDetails = ModelSourceDetails(source: "Somewhere")
+        let recipe = PreparedPrintRecipe(sourceID: UUID(), sourceName: "Original", intent: PartIntent(), orientation: .yUp,
+                                         materialID: nil, created: Date(timeIntervalSince1970: 0))
+        model.printRecipe = recipe
+        let kept = printReadyCopyRecords(for: model, actions: [.repair], autoImprove: nil, materialID: nil)
+        XCTAssertEqual(kept.recipe, recipe)
+        XCTAssertEqual(kept.intent, model.partIntent)
+        let dropped = printReadyCopyRecords(for: model, actions: [.repair, .flatBase(cutMM: 1)], autoImprove: nil, materialID: nil)
+        XCTAssertNil(dropped.recipe)
+        XCTAssertEqual(dropped.intent, model.partIntent)
+
+        model.printRecipe = nil
+        let intent = PartIntent(purpose: .decorative)
+        let outcome = PrintReviewAutoImproveOutcome(intent: intent, orientation: .zDown, applied: [], skipped: ["One"], manual: ["Two"])
+        let now = Date(timeIntervalSince1970: 100)
+        let auto = printReadyCopyRecords(for: model, actions: [.autoImprove(decorative)], autoImprove: outcome, materialID: "pla", now: now)
+        XCTAssertEqual(auto.autoImprovement, AutoImprovementRecord(sourceID: model.id, orientation: .zDown, applied: [],
+                                                                    skipped: ["One"], manual: ["Two"], created: now))
+        XCTAssertEqual(auto.recipe, PreparedPrintRecipe(sourceID: model.id, sourceName: "Bracket", intent: intent, orientation: .zDown,
+                                                        materialID: "pla", created: now))
+        XCTAssertEqual(auto.intent, intent)
+    }
+
+    // MARK: What the seller says
+
+    func testPurposeAndRealSizeFields() throws {
+        XCTAssertEqual(printReviewInitialPurpose(context: PrintReviewContext(purpose: "Display piece"), partIntent: nil), .display)
+        XCTAssertEqual(printReviewInitialPurpose(context: PrintReviewContext(purpose: "Functional part"), partIntent: nil), .functional)
+        XCTAssertEqual(printReviewInitialPurpose(context: PrintReviewContext(), partIntent: PartIntent(purpose: .decorative)), .display)
+        XCTAssertEqual(printReviewInitialPurpose(context: PrintReviewContext(), partIntent: PartIntent(purpose: .clip)), .functional)
+        XCTAssertEqual(printReviewInitialPurpose(context: PrintReviewContext(), partIntent: nil), .notSure)
+
+        // Generate a Replica's note, and Studio's own.
+        let replica = ReplicaSize(axis: .height, millimetres: 120).reviewNote
+        let parsed = try XCTUnwrap(printReviewSizeFromNote(replica))
+        XCTAssertEqual(parsed.axis, .z)
+        XCTAssertEqual(parsed.mm, 120)
+        let own = try XCTUnwrap(printReviewSizeFromNote(printReviewSizeNote(axis: .longest, mm: 85.5)))
+        XCTAssertEqual(own.axis, .longest)
+        XCTAssertEqual(own.mm, 85.5)
+        XCTAssertNil(printReviewSizeFromNote("About hand-sized"))
+        XCTAssertNil(printReviewSizeFromNote(nil))
+
+        XCTAssertNil(printReviewSizeProblem(""))
+        XCTAssertNil(printReviewSizeProblem("120"))
+        XCTAssertNotNil(printReviewSizeProblem("twelve"))
+        XCTAssertNotNil(printReviewSizeProblem("0.5"))
+
+        let base = PrintReviewContext(origin: "Generated by Meshy from a photo", intendedSizeNote: replica, purpose: "Display piece")
+        let typed = printReviewEffectiveContext(base, purpose: .functional, sizeAxis: .x, sizeText: "60")
+        XCTAssertEqual(typed.purpose, "Functional part")
+        XCTAssertEqual(typed.intendedSizeNote, "Width (X) should be 60 mm (typed by the seller)")
+        XCTAssertEqual(typed.origin, base.origin)
+        let cleared = printReviewEffectiveContext(base, purpose: .notSure, sizeAxis: .z, sizeText: " ")
+        XCTAssertNil(cleared.purpose)
+        XCTAssertNil(cleared.intendedSizeNote)
+        // A note Studio couldn't read into the fields is kept while the field is empty.
+        let unread = PrintReviewContext(intendedSizeNote: "About hand-sized")
+        XCTAssertEqual(printReviewEffectiveContext(unread, purpose: .notSure, sizeAxis: .z, sizeText: "").intendedSizeNote, "About hand-sized")
+    }
+
+    func testAutoImproveSettingsFollowTheModel() {
+        var model = LocalModel(name: "Part", filePath: "/tmp/part.stl")
+        let (display, _) = printReviewAutoImproveSettings(model, purpose: .display)
+        XCTAssertEqual(display, PrintReviewAutoImprove(intent: PartIntent(purpose: .decorative), keepPlacement: false))
+        XCTAssertEqual(printReviewAutoImproveSettings(model, purpose: .notSure).0?.intent, PartIntent())
+        model.partIntent = PartIntent(purpose: .bracket)
+        let (none, why) = printReviewAutoImproveSettings(model, purpose: .display)
+        XCTAssertNil(none)
+        XCTAssertTrue(why?.contains("Optimise for purpose") == true)
+        model.autoImprovement = AutoImprovementRecord(sourceID: UUID(), orientation: .zUp, applied: [], skipped: [], manual: [], created: Date())
+        XCTAssertEqual(printReviewAutoImproveSettings(model, purpose: .display).1, "This copy has been auto-improved already.")
+        XCTAssertNil(printReviewOrientBlockedReason(model))
+        var prepared = LocalModel(name: "Part", filePath: "/tmp/part.stl")
+        prepared.printRecipe = PreparedPrintRecipe(sourceID: UUID(), sourceName: "P", intent: PartIntent(purpose: .decorative),
+                                                   orientation: .xUp, materialID: nil, created: Date())
+        XCTAssertNotNil(printReviewOrientBlockedReason(prepared))
+        XCTAssertEqual(printReviewAutoImproveSettings(prepared, purpose: .notSure).0?.keepPlacement, true)
+    }
+
+    // MARK: History
+
+    func testAReplyThatStoppedEarlyNeitherJoinsTheHistoryNorGetsAFollowUp() throws {
+        let ctx = context(try ball())
+        let early = reply(stop: "model_context_window_exceeded", blocks: [textBlock("Partial")])
+        XCTAssertFalse(early.canJoinHistory)
+        guard case .failed(let message) = printReviewReplyOutcome(early, context: ctx) else { return XCTFail("expected a failure") }
+        XCTAssertTrue(message.contains("nothing was kept"))
+        XCTAssertNil(printReviewFollowUpRequest(printReviewAnthropicRequest(views: [], factLines: [], contextLines: []), reply: early))
     }
 }

@@ -171,16 +171,16 @@ func meshHealthSummary(_ report: MeshHealthReport, objectCount: Int = 1) -> Mesh
     let title = "\(report.isClosed ? "Closed" : "Not closed"), \(parts)"
     var details: [String] = []
     if report.openEdges > 0 {
-        details.append("\(counted(report.openEdges, "open edge", "open edges")) — gaps in the surface. Slicers may fill or skip gaps, so the print may not match the model. Close them in your CAD tool or a mesh repair tool.")
+        details.append("\(counted(report.openEdges, "open edge", "open edges")) — gaps in the surface. Slicers may fill or skip gaps, so the print may not match the model. Repair & Save Copy, in Improve for printing, can close small ones; otherwise close them in your CAD tool.")
     }
     if report.nonManifoldEdges > 0 {
-        details.append("\(counted(report.nonManifoldEdges, "edge is", "edges are")) shared by more than two faces. Slicers can misread these areas; fix them in CAD or a repair tool.")
+        details.append("\(counted(report.nonManifoldEdges, "edge is", "edges are")) shared by more than two faces. Slicers can misread these areas. Repair & Save Copy, in Improve for printing, removes loose flaps; fix the rest in your CAD tool.")
     }
     if report.flippedEdges > 0 {
-        details.append("\(counted(report.flippedEdges, "edge joins faces", "edges join faces")) pointing opposite ways, so some faces are flipped. A repair tool can make them consistent.")
+        details.append("\(counted(report.flippedEdges, "edge joins faces", "edges join faces")) pointing opposite ways, so some faces are flipped. Repair & Save Copy, in Improve for printing, can make them consistent.")
     }
     if report.isInsideOut {
-        details.append("The faces point inward. Slicers may read this as a hollow; a repair tool can flip them outward.")
+        details.append("The faces point inward. Slicers may read this as a hollow; Repair & Save Copy, in Improve for printing, can turn them outward.")
     }
     if report.shells > 1, !onePartPerObject {
         let across = objectCount > 1 ? " across \(objectCount) objects" : ""

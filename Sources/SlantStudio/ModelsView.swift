@@ -280,13 +280,11 @@ struct ModelsView: View {
                             }
                         }
                         scaleNoticeBlock
-                        if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
-                            MeshFitCard(model: local, loaded: loaded).id(local.id)
-                        }
                         printConfigurationCard.id("print-configuration")
                         if let local = store.selectedLocal {
                             if local.supportsPreview {
-                                ImproveForPrintingSection(model: local).id(local.id)
+                                ImproveForPrintingSection(model: local, loaded: previewMesh.flatMap { $0.url == local.url ? $0 : nil })
+                                    .id(local.id)
                             } else if local.supportsMeshPreview {
                                 // OBJ and 3MF: the tools need an STL copy, so only this notice is shown.
                                 stlToolsNotice(local)
@@ -312,6 +310,11 @@ struct ModelsView: View {
             }
             .onChange(of: configurationRequest) { _, _ in
                 withAnimation { proxy.scrollTo("print-configuration", anchor: .top) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .improveForPrintingOpenReinforce)) { note in
+                // Review for Printing's "Open Reinforce" link: the card expands itself (ReinforcementView.swift).
+                guard let id = note.object as? UUID, id == store.selectedLocalID else { return }
+                withAnimation { proxy.scrollTo(improveForPrintingReinforceCardID, anchor: .top) }
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -1080,14 +1083,21 @@ struct LoadedPreviewMesh {
     }
 }
 
+/// The Reinforce card's scroll position in the inspector, for Review for Printing's "Open Reinforce" link.
+let improveForPrintingReinforceCardID = "improve-for-printing-reinforce"
+
 /// Shown for OBJ and 3MF models in place of the Improve for printing tools.
 let stlToolsNoticeText = "The Improve for printing tools work on STL files, so they use a separate STL copy of this model."
 
-/// The optional geometry tools for an STL model, collapsed and in the order they're usually used. Each saves a
-/// separate copy; this view only arranges them. Design improvements appears only when it can edit this model (a plain
-/// rectangular box) or when the model is a copy with an edge edit, whose summary it shows.
+/// The optional geometry tools for an STL model, collapsed and in the order they're usually used: Review for Printing
+/// first, then Repair and simplify, Size and base (once the preview's mesh is loaded), Optimise for purpose,
+/// Auto-improve, Reinforce and Design improvements. Each saves a separate copy; this view only arranges them. Design
+/// improvements appears only when it can edit this model (a plain rectangular box) or when the model is a copy with an
+/// edge edit, whose summary it shows.
 struct ImproveForPrintingSection: View {
     let model: LocalModel
+    /// The inspector's preview of this model, which Size and base works from.
+    let loaded: LoadedPreviewMesh?
     /// The model's mesh, loaded only when its edges can be edited automatically.
     @State private var edgeEditableMesh: STLMesh?
 
@@ -1095,10 +1105,14 @@ struct ImproveForPrintingSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeading(title: "Improve for printing", caption: "Optional · Each tool saves a separate copy and keeps your original.")
                 .padding(.top, 4)
+            PrintReviewCard(model: model)
             MeshToolsCard(model: model)
+            if let loaded {
+                MeshFitCard(model: model, loaded: loaded)
+            }
             PrintOrientationCard(model: model)
             AutoImproveCard(model: model)
-            ReinforcementCard(model: model)
+            ReinforcementCard(model: model).id(improveForPrintingReinforceCardID)
             if model.designImprovement != nil || edgeEditableMesh != nil {
                 DesignImprovementsCard(model: model, mesh: edgeEditableMesh)
             }

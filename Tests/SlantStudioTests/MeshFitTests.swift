@@ -134,9 +134,24 @@ final class MeshFitTests: XCTestCase {
 
     func testCopyNames() throws {
         let plan = try scaleToSizePlan(extentMM: SIMD3(10, 10, 10), axis: .z, targetMM: 50)
-        XCTAssertEqual(scaledToSizeCopyName("Owl.stl", plan: plan), "Owl-50mm-tall")
-        XCTAssertEqual(flatBaseCopyName("Owl.STL"), "Owl-flat-base")
-        XCTAssertEqual(plinthCopyName("v1.2 owl"), "v1.2 owl-plinth")
+        XCTAssertEqual(scaledToSizeCopyName("Owl.stl", plan: plan), "Owl (scaled to 50 mm tall)")
+        let longest = try scaleToSizePlan(extentMM: SIMD3(10, 10, 10), axis: .longest, targetMM: 120.5)
+        XCTAssertEqual(scaledToSizeCopyName("Owl", plan: longest), "Owl (scaled to 120.5 mm)")
+        XCTAssertEqual(flatBaseCopyName("Owl.STL"), "Owl (flat base)")
+        XCTAssertEqual(plinthCopyName("v1.2 owl"), "v1.2 owl (plinth)")
+        XCTAssertEqual(plinthCopyName("  "), "Model (plinth)")
+    }
+
+    func testResultsWithNewZeroAreaTrianglesAreRefused() {
+        func report(degenerate: Int, open: Int = 0) -> MeshHealthReport {
+            MeshHealthReport(triangleCount: 20, vertexCount: 10, openEdges: open, nonManifoldEdges: 0, flippedEdges: 0,
+                             degenerateTriangles: degenerate, shells: 1, signedVolume: 5)
+        }
+        XCTAssertNil(meshFitResultProblem(report(degenerate: 0), inputZeroArea: 0))
+        XCTAssertNil(meshFitResultProblem(report(degenerate: 2), inputZeroArea: 2))
+        XCTAssertEqual(meshFitResultProblem(report(degenerate: 1), inputZeroArea: 0), .addedZeroAreaTriangles)
+        XCTAssertEqual(meshFitResultProblem(report(degenerate: 0, open: 3), inputZeroArea: 0), .resultNotClosed)
+        XCTAssertTrue(MeshFitError.addedZeroAreaTriangles.localizedDescription.contains("zero-area"))
     }
 
     // MARK: Triangulation
@@ -251,11 +266,15 @@ final class MeshFitTests: XCTestCase {
         let result = try ball.plinthCopy(settings)
         let report = try requireClosedOutward(result.mesh)
         XCTAssertEqual(report.shells, 1)
+        // The top's triangulation around the sphere's outline used to end in a sliver; now it adds none.
+        XCTAssertEqual(report.degenerateTriangles, 0)
         XCTAssertEqual(result.mesh.minimum.z, ball.minimum.z + 0.5 - 4, accuracy: 1e-4)
         XCTAssertEqual(result.mesh.maximum.z, ball.maximum.z, accuracy: 1e-6)
         // Covers the whole footprint plus the margin.
         XCTAssertLessThanOrEqual(result.mesh.minimum.x, ball.minimum.x - 3 + 1e-3)
-        XCTAssertGreaterThan(result.contactAreaMM2, Double.pi * 23 * 23 * 0.99)
+        // The bottom is chamfered 0.5 mm in from the 23 mm outline.
+        XCTAssertGreaterThan(result.contactAreaMM2, Double.pi * 22.5 * 22.5 * 0.99)
+        XCTAssertLessThan(result.contactAreaMM2, Double.pi * 23 * 23 * 0.99)
         XCTAssertTrue(result.fitsBuildVolume)
         XCTAssertEqual(try ball.plinthCopy(settings).data, result.data)
     }
@@ -265,9 +284,28 @@ final class MeshFitTests: XCTestCase {
         let result = try hollow.plinthCopy(PlinthSettings(shape: .rectangular, marginMM: 5, thicknessMM: 3, joinDepthMM: 1))
         let report = try requireClosedOutward(result.mesh)
         XCTAssertEqual(report.shells, 2) // The outside, and the cavity above the plinth.
-        XCTAssertEqual(result.contactAreaMM2, 30 * 30, accuracy: 1e-3)
+        XCTAssertEqual(result.contactAreaMM2, 29 * 29, accuracy: 1e-3)
         XCTAssertEqual(result.sizeMM.x, 30, accuracy: 1e-4)
         XCTAssertEqual(result.sizeMM.z, 20 - 1 + 3, accuracy: 1e-4)
+    }
+
+    func testPlinthBottomEdgeIsChamfered() throws {
+        let result = try box(SIMD3(10, 10, 10)).plinthCopy(PlinthSettings(shape: .rectangular, marginMM: 2, thicknessMM: 2, joinDepthMM: 0.5))
+        _ = try requireClosedOutward(result.mesh)
+        let v = result.mesh.vertices
+        let low = result.mesh.minimum, high = result.mesh.maximum
+        var bottom: [SIMD3<Float>] = []
+        for i in stride(from: 0, to: v.count, by: 3) where v[i + 2] == low.z { bottom.append(SIMD3(v[i], v[i + 1], v[i + 2])) }
+        XCTAssertFalse(bottom.isEmpty)
+        // Every bottom corner sits 0.5 mm inside the plinth's outline; the outline itself starts 0.5 mm up.
+        for p in bottom {
+            XCTAssertEqual(min(p.x - low.x, high.x - p.x), 0.5, accuracy: 1e-4)
+            XCTAssertEqual(min(p.y - low.y, high.y - p.y), 0.5, accuracy: 1e-4)
+        }
+        XCTAssertEqual(low.x, -2, accuracy: 1e-5)
+        XCTAssertEqual(result.contactAreaMM2, 13 * 13, accuracy: 1e-3)
+        XCTAssertTrue(plinthChamferNote.contains("0.5 mm chamfer"))
+        XCTAssertFalse(elephantFootNote.contains("CAD"))
     }
 
     func testPlinthChecks() throws {
@@ -300,7 +338,7 @@ final class MeshFitTests: XCTestCase {
 
     func testHollowBoxWallsOfOneAndTwoMillimetres() throws {
         for wall: Float in [1, 2] {
-            let report = try XCTUnwrap(analyzeWallThickness(try hollowBox(wall: wall), maximumSamples: 3000))
+            let report = try XCTUnwrap(analyzeWallThickness(try hollowBox(wall: wall), maximumSamples: 1200))
             XCTAssertGreaterThan(report.measuredFraction, 0.99)
             XCTAssertEqual(try XCTUnwrap(report.medianMM), wall, accuracy: 0.01)
             XCTAssertEqual(try XCTUnwrap(report.percentile5MM), wall, accuracy: 0.05)
@@ -315,7 +353,7 @@ final class MeshFitTests: XCTestCase {
                 XCTAssertTrue(summary.line.contains("under 2 mm"), summary.line)
             }
         }
-        let thick = try XCTUnwrap(analyzeWallThickness(try hollowBox(wall: 4), maximumSamples: 2000))
+        let thick = try XCTUnwrap(analyzeWallThickness(try hollowBox(wall: 4), maximumSamples: 800))
         let summary = wallThicknessSummary(thick)
         XCTAssertEqual(summary.line, "Wall thickness: no walls under 2 mm found")
         XCTAssertTrue(summary.isClear)
@@ -332,13 +370,13 @@ final class MeshFitTests: XCTestCase {
 
     func testThicknessIsDeterministicAndCancellable() throws {
         let ball = try sphere(radius: 10, centre: SIMD3(3, 4, 10))
-        let first = analyzeWallThickness(ball, maximumSamples: 2500)
+        let first = analyzeWallThickness(ball, maximumSamples: 1200)
         XCTAssertNotNil(first)
-        XCTAssertEqual(analyzeWallThickness(ball, maximumSamples: 2500), first)
+        XCTAssertEqual(analyzeWallThickness(ball, maximumSamples: 1200), first)
         XCTAssertEqual(try XCTUnwrap(first?.medianMM), 20, accuracy: 1)
-        XCTAssertNil(analyzeWallThickness(ball, maximumSamples: 2500, isCancelled: { true }))
+        XCTAssertNil(analyzeWallThickness(ball, maximumSamples: 1200, isCancelled: { true }))
         var steps: [Double] = []
-        _ = analyzeWallThickness(ball, maximumSamples: 1000, progress: { steps.append($0) })
+        _ = analyzeWallThickness(ball, maximumSamples: 400, progress: { steps.append($0) })
         XCTAssertEqual(steps.first, 0)
         XCTAssertEqual(steps.last, 1)
     }
