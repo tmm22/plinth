@@ -6,8 +6,9 @@ import UniformTypeIdentifiers
 //
 // Opened from File › Design an Accessory from a Photo… and the Models Import menu (`StudioStore.showAccessoryDesigner`).
 // The brief (photos, description, measurements, notes) and the whole conversation live in this sheet's state and go
-// when it closes. Nothing is sent until Start Design (after the one-time photo-sharing consent for Anthropic), and
-// nothing is uploaded to Slant: Save to Library and Save Template… are local.
+// when it closes. Nothing is sent until Suggest Accessories or Start Design (after the one-time photo-sharing consent
+// for Anthropic, which covers both), and nothing is uploaded to Slant: Save to Library and Save Template… are local.
+// The suggested ideas (AccessorySuggestions.swift) live in this sheet's memory too, and survive Start Over.
 
 let accessoryInstallOpenSCADURL = URL(string: "https://openscad.org/downloads.html")!
 
@@ -91,6 +92,13 @@ struct AccessoryDesignerSheet: View {
     @State private var confirmClose = false
     /// The Claude key stays locked while this sheet is open (`AnthropicConnection.beginSession`); balanced exactly once.
     @State private var claudeSessionOpen = false
+    /// The seller's "What is it?" for Suggest Accessories. Memory only.
+    @State private var objectHint = ""
+    @StateObject private var suggestions = AccessorySuggestionRun(
+        send: { request, progress in try await AnthropicConnection.shared.send(request, onProgress: progress) })
+    /// The idea waiting for Replace / Keep Current Details.
+    @State private var pendingIdea: AccessoryIdea?
+    @State private var ideaNotice: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -122,16 +130,17 @@ struct AccessoryDesignerSheet: View {
         }
         .onDisappear {
             run?.stop()
+            suggestions.stop()
             if claudeSessionOpen {
                 claudeSessionOpen = false
                 AnthropicConnection.shared.endSession()
             }
         }
-        .confirmationDialog("Close and discard this design?", isPresented: $confirmClose, titleVisibility: .visible) {
+        .confirmationDialog(closeConfirmation?.title ?? "Close this window?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button("Discard", role: .destructive) { close() }
             Button("Keep Working", role: .cancel) {}
         } message: {
-            Text("Studio doesn’t keep the photos, the conversation or designs you haven’t saved.")
+            Text(closeConfirmation?.message ?? "Studio doesn’t keep the photos or anything you haven’t saved.")
         }
     }
 
@@ -140,11 +149,26 @@ struct AccessoryDesignerSheet: View {
         lookedForOpenSCAD = true
     }
 
+    private var closeConfirmation: (title: String, message: String)? {
+        accessoryCloseConfirmation(designStarted: run?.hasStarted == true, ideasHeld: !suggestions.ideas.isEmpty,
+                                   suggesting: suggestions.isWorking)
+    }
+
     private func requestClose() {
-        if run?.hasStarted == true { confirmClose = true } else { close() }
+        if closeConfirmation != nil { confirmClose = true } else { close() }
+    }
+
+    /// One Activity entry per suggestion request: counts, cost and status only. Holds the store itself, because the
+    /// request may end after the sheet has gone.
+    private var logSuggestion: AccessorySuggestionRun.Log {
+        let store = store
+        return { detail, success in
+            store.activities.insert(Activity(title: "Design an accessory", detail: detail, success: success), at: 0)
+        }
     }
 
     private func close() {
+        if suggestions.isWorking { suggestions.closeWhileWorking(log: logSuggestion) }
         if let run, run.isWorking {
             // The round's own entry can't be written once the sheet has gone, so record what was spent now.
             store.activities.insert(Activity(title: "Design an accessory", detail: "Closed while working · "
@@ -177,6 +201,7 @@ struct AccessoryDesignerSheet: View {
                 Text("Show the object the accessory is for, from the angles that matter. Photos are resized and their location and camera details are removed before sending.")
                     .settingsFooterLayout()
             }
+            ideasSection
             Section("What to make") {
                 TextField("Accessory", text: $brief.description, prompt: Text("A stand that holds this phone at 60°"), axis: .vertical)
                     .lineLimit(2...4)
@@ -208,6 +233,211 @@ struct AccessoryDesignerSheet: View {
             addPhotos(urls)
             return true
         }
+        // Return keeps what's in the form.
+        .confirmationDialog("Use this idea?", isPresented: Binding(get: { pendingIdea != nil }, set: { if !$0 { pendingIdea = nil } }),
+                            titleVisibility: .visible, presenting: pendingIdea) { idea in
+            Button("Replace") {
+                pendingIdea = nil
+                applyIdea(idea)
+            }
+            Button("Keep Current Details", role: .cancel) { pendingIdea = nil }
+                .keyboardShortcut(.defaultAction)
+        } message: { _ in
+            Text("What to make becomes this idea’s description and its measurements are added. Measurements you typed are kept; empty rows are removed.")
+        }
+    }
+
+    // MARK: Ideas
+
+    private var currentSuggestionInputs: AccessorySuggestionInputs {
+        AccessorySuggestionInputs(photoIDs: photos.map(\.id), hint: objectHint)
+    }
+
+    private var ideasStaleReason: String? {
+        accessoryIdeasStaleReason(suggestedFor: suggestions.suggestedFor, current: currentSuggestionInputs)
+    }
+
+    private var suggestMode: AccessorySuggestMode {
+        accessorySuggestMode(ideaCount: suggestions.ideas.count, stale: ideasStaleReason != nil, attempted: suggestions.attempted)
+    }
+
+    private var suggestBlockedReason: String? {
+        accessorySuggestBlockedReason(photoCount: photos.count, preparingPhotos: preparingPhotos, claudeConfigured: anthropic.isConfigured,
+                                      suggesting: suggestions.isWorking, designStarted: run != nil, hintLength: objectHint.count,
+                                      ideaCount: suggestions.ideas.count, mode: suggestMode)
+    }
+
+    private var suggestHelp: String {
+        switch suggestMode {
+        case .first: return "Claude looks at your photos and suggests accessories to sell. One request, billed to your Anthropic account."
+        case .again where !suggestions.ideas.isEmpty:
+            return "Replaces these ideas with new ones for your current photos and your answer to What is it? One request, billed again."
+        case .again: return "Sends a new request. It is billed again."
+        case .more: return "Asks for ideas other than these and adds them to the list. One request, billed again."
+        }
+    }
+
+    private var suggestionCostText: String {
+        let sizes: [(width: Int, height: Int)] = photos.isEmpty ? [(1568, 1176)] : photos.map { ($0.image.pixelWidth, $0.image.pixelHeight) }
+        let avoid = suggestMode == .more ? suggestions.ideas.map(\.title) : []
+        let text = accessorySuggestionTurnText(photoCount: max(1, photos.count), hint: objectHint, avoidTitles: avoid)
+        return accessorySuggestionCostForecastText(accessorySuggestionCostForecast(photoSizes: sizes, textCharacters: text.count))
+    }
+
+    private var ideasSection: some View {
+        Section {
+            TextField("What is it?", text: $objectHint, prompt: Text("Optional, such as “Sony WH-1000XM5 headphones”"))
+                .accessibilityLabel("What is it?")
+                .help("Your hint outranks what Claude sees in the photos.")
+            suggestControls
+            if let message = suggestions.message {
+                Label(message.text, systemImage: message.isProblem ? "exclamationmark.triangle" : "checkmark.circle")
+                    .foregroundStyle(message.isProblem ? Color.orange : Color.secondary).font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !suggestions.ideas.isEmpty {
+                if let ideasStaleReason {
+                    Label(ideasStaleReason + " You can still use them.", systemImage: "clock.arrow.circlepath")
+                        .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
+                if let identification = suggestions.identification {
+                    identificationView(identification)
+                }
+                ForEach(suggestions.ideas) { idea in
+                    ideaCard(idea)
+                }
+            }
+            if let ideaNotice {
+                Label(ideaNotice, systemImage: "info.circle").foregroundStyle(.secondary).font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Ideas")
+        } footer: {
+            Text("Optional. Claude looks at your photos, says what the object is and suggests accessories you could sell for it. Using an idea fills in what to make and the measurements to take; nothing is designed until you press Start Design.")
+                .settingsFooterLayout()
+        }
+    }
+
+    @ViewBuilder
+    private var suggestControls: some View {
+        if let progress = suggestions.progress {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(progress).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer()
+                    Button("Stop") { suggestions.stop() }
+                        .help("Stops the request. Anthropic may bill the part Claude has already written.")
+                }
+                Text("Stopping may still be billed for the part Claude has already written.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    // Never the default button and no shortcut: every press is a billed request.
+                    Button(suggestMode.buttonTitle) { suggestTapped() }
+                        .buttonStyle(.bordered)
+                        .disabled(suggestBlockedReason != nil)
+                        .help(suggestHelp)
+                    if let reason = suggestBlockedReason {
+                        Text(reason).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                }
+                Text(suggestionCostText).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        if let spent = accessorySuggestionSpentText(cost: suggestions.cost, mayBeHigher: suggestions.costMayBeHigher, requests: suggestions.requests) {
+            Text(spent).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func identificationView(_ identification: AccessoryObjectIdentification) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(accessoryIdentificationLine(identification)).font(.callout.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(accessoryIdentificationDetailLines(identification, notes: suggestions.notes).enumerated()), id: \.offset) { _, line in
+                Text(line).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if !identification.alternatives.isEmpty {
+                HStack(spacing: 6) {
+                    Text("Or it could be:").font(.caption).foregroundStyle(.secondary)
+                    ForEach(Array(identification.alternatives.enumerated()), id: \.offset) { _, alternative in
+                        Button(alternative) { objectHint = alternative }
+                            .controlSize(.small)
+                            .lineLimit(1)
+                            .help("Puts this in What is it? Nothing is sent.")
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func ideaCard(_ idea: AccessoryIdea) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(idea.title).font(.headline).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                if accessoryIdeaIsInUse(idea, brief: brief) {
+                    Label("In use", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
+                } else {
+                    Button("Use This Idea") { useIdea(idea) }
+                        .help("Fills in what to make and the measurements to take. Nothing is sent.")
+                }
+            }
+            Text(idea.description).fixedSize(horizontal: false, vertical: true)
+            if !idea.whoWantsIt.isEmpty {
+                Text("Who wants it: \(idea.whoWantsIt)").font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Text(accessoryIdeaFitText(idea.fit)).font(.caption)
+                .foregroundStyle(idea.fit == .tight ? Color.orange : Color.secondary)
+            if let hardware = accessoryIdeaHardwareText(idea) {
+                Text(hardware).font(.caption).fixedSize(horizontal: false, vertical: true)
+            }
+            if let measure = accessoryIdeaMeasureText(idea) {
+                Text(measure).font(.caption).fixedSize(horizontal: false, vertical: true)
+            }
+            if !idea.caution.isEmpty {
+                Label(idea.caution, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func suggestTapped() {
+        guard suggestBlockedReason == nil else { return }
+        // The same one-time consent as Start Design; Don't Send is the default.
+        runWithImageSharingConsent(.anthropic, request: $consentRequest) { beginSuggesting() }
+    }
+
+    private func beginSuggesting() {
+        guard suggestBlockedReason == nil else { return }
+        suggestions.suggest(photos: photos.map(\.image), hint: objectHint, inputs: currentSuggestionInputs,
+                            append: suggestMode == .more, log: logSuggestion)
+    }
+
+    private func useIdea(_ idea: AccessoryIdea) {
+        if accessoryIdeaNeedsConfirmation(brief, idea: idea) { pendingIdea = idea } else { applyIdea(idea) }
+    }
+
+    private func applyIdea(_ idea: AccessoryIdea) {
+        let leftOut = accessoryIdeaMeasurementsLeftOut(brief, idea: idea)
+        brief = accessoryBriefApplyingIdea(brief, idea: idea)
+        startProblem = nil
+        ideaNotice = leftOut == 0 ? nil
+            : "\(leftOut == 1 ? "1 of the idea’s measurements wasn’t" : "\(leftOut) of the idea’s measurements weren’t") added: use at most \(accessoryMaximumMeasurements)."
+    }
+
+    /// The idea the design starts from, while "What to make" is still its description.
+    private var designIdeaContext: AccessoryDesignIdeaContext? {
+        guard let idea = suggestions.ideas.first(where: { accessoryIdeaIsInUse($0, brief: brief) }) else { return nil }
+        return AccessoryDesignIdeaContext(objectHint: objectHint, identification: ideasStaleReason == nil ? suggestions.identification : nil,
+                                          idea: idea)
     }
 
     @ViewBuilder
@@ -247,10 +477,22 @@ struct AccessoryDesignerSheet: View {
     }
 
     private func measurementRow(_ row: Binding<AccessoryMeasurement>) -> some View {
+        let caption = accessoryMeasurementGuidanceCaption(row.wrappedValue)
+        return VStack(alignment: .leading, spacing: 2) {
+            measurementFields(row, caption: caption)
+            if let caption {
+                Text("How to measure: \(caption)").font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func measurementFields(_ row: Binding<AccessoryMeasurement>, caption: String?) -> some View {
         HStack(spacing: 8) {
             TextField("Measurement", text: row.label, prompt: Text("Phone thickness"))
                 .labelsHidden()
                 .accessibilityLabel("Measurement name")
+                .help(caption ?? "")
             TextField("Millimetres", text: row.millimetres, prompt: Text("mm"))
                 .labelsHidden()
                 .accessibilityLabel("Size in millimetres")
@@ -317,6 +559,7 @@ struct AccessoryDesignerSheet: View {
         if !anthropic.isConfigured { return "Add your Anthropic API key in Settings first." }
         if openSCAD == nil { return "Install OpenSCAD first." }
         if preparingPhotos > 0 { return "Preparing photos…" }
+        if suggestions.isWorking { return "Wait for Claude’s ideas, or stop them." }
         return accessoryBriefProblem(brief, photoCount: photos.count)
     }
 
@@ -393,7 +636,7 @@ struct AccessoryDesignerSheet: View {
             send: { request, progress in try await AnthropicConnection.shared.send(request, onProgress: progress) },
             render: { code in try await renderAccessoryDesign(code: code, executable: executable) })
         run = newRun
-        newRun.start(firstTurn: accessoryFirstTurn(brief, photos: photos.map(\.image)))
+        newRun.start(firstTurn: accessoryFirstTurn(brief, photos: photos.map(\.image), ideaContext: designIdeaContext))
     }
 }
 

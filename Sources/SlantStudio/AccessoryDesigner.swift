@@ -68,11 +68,19 @@ enum AccessoryMeasurementMethod: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Where and how to take a measurement, from a suggested idea (AccessorySuggestions.swift), with the name it was
+/// written for. Display only; it goes to Claude only in the context of a design started from that idea.
+struct AccessoryMeasurementGuidance: Equatable, Sendable {
+    var label: String
+    var how: String
+}
+
 struct AccessoryMeasurement: Identifiable, Equatable, Sendable {
     let id = UUID()
     var label = ""
     var millimetres = ""
     var method: AccessoryMeasurementMethod = .calipers
+    var guidance: AccessoryMeasurementGuidance?
 
     var isBlank: Bool {
         label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -133,8 +141,9 @@ func accessoryBriefProblem(_ brief: AccessoryDesignBrief, photoCount: Int) -> St
     return accessoryMeasurementsProblem(brief.measurements)
 }
 
-/// The text of the first turn, after the photos.
-func accessoryFirstTurnText(_ brief: AccessoryDesignBrief, photoCount: Int) -> String {
+/// The text of the first turn, after the photos. `ideaContext` (a design started from a suggested idea) adds what is
+/// known about the object and the idea before the last line; without it the text is unchanged.
+func accessoryFirstTurnText(_ brief: AccessoryDesignBrief, photoCount: Int, ideaContext: AccessoryDesignIdeaContext? = nil) -> String {
     var lines: [String] = []
     let photos = photoCount == 1 ? "The photo above is" : "The \(photoCount) photos above are"
     lines.append("\(photos) the seller’s, in the order they added them.")
@@ -148,14 +157,18 @@ func accessoryFirstTurnText(_ brief: AccessoryDesignBrief, photoCount: Int) -> S
         lines.append("")
         lines.append("Seller’s notes: \(notes)")
     }
+    if let ideaContext {
+        lines.append("")
+        lines.append(contentsOf: accessoryDesignIdeaContextLines(ideaContext, measurements: brief.measurements))
+    }
     lines.append("")
     lines.append("Design the accessory, then call render_scad with the complete OpenSCAD file.")
     return lines.joined(separator: "\n")
 }
 
 /// The first user turn: the photos first, then the brief.
-func accessoryFirstTurn(_ brief: AccessoryDesignBrief, photos: [PreparedImage]) -> AnthropicMessageParam {
-    .user(photos.map { .image($0.anthropicImage) } + [.text(accessoryFirstTurnText(brief, photoCount: photos.count))])
+func accessoryFirstTurn(_ brief: AccessoryDesignBrief, photos: [PreparedImage], ideaContext: AccessoryDesignIdeaContext? = nil) -> AnthropicMessageParam {
+    .user(photos.map { .image($0.anthropicImage) } + [.text(accessoryFirstTurnText(brief, photoCount: photos.count, ideaContext: ideaContext))])
 }
 
 // MARK: Prompt and tools
