@@ -683,11 +683,11 @@ final class OpenSCADRunRegistry: @unchecked Sendable {
 
 /// Temporary folders Studio makes: a local OpenSCAD run and the generated STL before it's added to the library
 /// (personalisation), a model downloaded from a 3D generation service (ImageTo3D.swift), and Repair and simplify's
-/// and Size and base's copies on their way in. Each name is the prefix followed by a UUID. Append new prefixes:
-/// callers index the first two.
+/// and Size and base's copies on their way in, and Design an Accessory's code, renders and saved copy. Each name is
+/// the prefix followed by a UUID. Append new prefixes: callers index the first two.
 let personalisationTempFolderPrefixes = [
     "SlantStudio-OpenSCAD-", "SlantStudio-Personalised-", imageTo3DTempFolderPrefix, meshToolsTempFolderPrefix,
-    meshFitTempFolderPrefix,
+    meshFitTempFolderPrefix, accessoryTempFolderPrefix,
 ]
 
 /// A folder that this temporary-folder code made: a known prefix followed by exactly a UUID.
@@ -752,10 +752,20 @@ func stalePersonalisationTempFolderNames(_ entries: [(name: String, created: Dat
     }
 }
 
+/// OpenSCAD's log from one run (its first 64 KB), for callers that show warnings. Filled before the run returns or
+/// throws, and before its folder is removed. Thread-safe.
+final class OpenSCADLogCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+    var log: String { lock.withLock { text } }
+    func store(_ value: String) { lock.withLock { text = value } }
+}
+
 /// Runs OpenSCAD (no shell) and returns the bytes it writes to `-o`. It is stopped when the task is cancelled, after
 /// `timeout`, or once its output or log grows past their limits. The log goes to a file so a full pipe can't stall it.
 func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAssignment], timeout: TimeInterval = 300,
-                        maxOutputBytes: Int = STLMesh.maximumBytes, maxLogBytes: Int = 4_000_000) async throws -> Data {
+                        maxOutputBytes: Int = STLMesh.maximumBytes, maxLogBytes: Int = 4_000_000,
+                        logCapture: OpenSCADLogCapture? = nil) async throws -> Data {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(personalisationTempFolderPrefixes[0])\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: folder) }
@@ -768,6 +778,12 @@ func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAss
     FileManager.default.createFile(atPath: logURL.path, contents: nil)
     let log = try FileHandle(forWritingTo: logURL)
     defer { try? log.close() }
+    defer {
+        if let logCapture, let handle = try? FileHandle(forReadingFrom: logURL) {
+            logCapture.store(String(decoding: (try? handle.read(upToCount: 64_000)) ?? Data(), as: UTF8.self))
+            try? handle.close()
+        }
+    }
     box.process.executableURL = executable
     box.process.arguments = openSCADArguments(templatePath: templateURL.path, outputPath: output.path, assignments: assignments)
     box.process.currentDirectoryURL = templateURL.deletingLastPathComponent()

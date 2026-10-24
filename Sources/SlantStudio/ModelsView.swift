@@ -83,6 +83,8 @@ struct ModelsView: View {
                         .disabled(store.importFromURLBlockedReason != nil)
                     // Generates an STL from an OpenSCAD template into the library (Personalisation.swift); never uploads.
                     Button("Personalise from Template…") { store.chooseAndOpenPersonalisationTemplate() }
+                    // Opens the sheet only (AccessoryDesignerView.swift); Claude is asked only after Start Design.
+                    Button("Design an Accessory from a Photo…") { store.showAccessoryDesigner = true }
                 } label: {
                     Label("Import Model", systemImage: "square.and.arrow.down")
                         .labelStyle(.titleAndIcon)

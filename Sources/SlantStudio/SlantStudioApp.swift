@@ -35,6 +35,9 @@ struct SlantStudioApp: App {
                 // Opens a .scad template to fill in; generating saves a new library model and never uploads.
                 Button("Personalise from Template…") { store.personaliseFromTemplateFromMenu() }
                     .disabled(modalUIShown)
+                // Opens the sheet only; nothing is sent to Claude until Start Design is pressed there.
+                Button("Design an Accessory from a Photo…") { store.openAccessoryDesignerFromMenu() }
+                    .disabled(modalUIShown)
                 Button("Rename Model…") { store.beginRenamingSelectedModelFromMenu() }
                     .disabled(!modelFileEnabled)
                 Button("Export Model…") { store.exportSelectedModelFromMenu() }

@@ -549,6 +549,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var meshFitRequest: MeshFitRequest?
     /// Review for Printing with Claude (PrintReviewView.swift).
     @Published var printReviewRequest: PrintReviewRequest?
+    /// Design an Accessory from a Photo (AccessoryDesignerView.swift). Its photos and conversation live in the sheet.
+    @Published var showAccessoryDesigner = false
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
     /// What buyers paid for drafts Import Orders created, by Slant order ID (ImportedSaleAmounts.swift): memory only,

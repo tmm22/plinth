@@ -80,6 +80,7 @@ struct StudioView: View {
             PersonalisationSheet().environmentObject(store)
         }
         .sheet(item: $store.meshFitRequest) { MeshFitSheet(request: $0).environmentObject(store) }
+        .sheet(isPresented: $store.showAccessoryDesigner) { AccessoryDesignerSheet().environmentObject(store) }
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }
