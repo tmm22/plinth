@@ -1662,7 +1662,7 @@ struct OrderActionConfirmSheet: View {
     }
     var sheetBodyCopy: String {
         if isPay {
-            return "This charges the payment method associated with your Slant account and starts fulfillment. Costs below are loaded fresh from Slant."
+            return "This charges the payment method associated with your Slant account and starts fulfilment. Costs below are loaded fresh from Slant."
         }
         return orderCancelSheetBody(status ?? "")
     }

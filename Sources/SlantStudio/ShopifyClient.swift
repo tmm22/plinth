@@ -206,7 +206,7 @@ enum ShopifyError: LocalizedError, Equatable {
             switch status {
             case 401: return "Shopify rejected Studio’s access. Check the app is still installed, then connect again in Settings."
             case 402: return "Shopify says this store is frozen or unpaid."
-            case 403: return "Shopify refused this request. Check the app has the access scopes listed in Settings. \(message)".trimmingCharacters(in: .whitespaces)
+            case 403: return "Shopify refused this request. Check the app has the access scopes in Studio’s Shopify setup steps (Settings › Account, shown while disconnected). \(message)".trimmingCharacters(in: .whitespaces)
             case 404: return "Shopify couldn’t find that store. Check the store address in Settings."
             case 423: return "Shopify says this store is locked."
             case 300...399: return "Shopify redirected the request, so Studio stopped. Check the store address in Settings."
@@ -217,7 +217,7 @@ enum ShopifyError: LocalizedError, Equatable {
             return "Shopify is limiting requests right now. Wait a minute, then try again."
         case .graphQL(let messages, let codes):
             if codes.contains("ACCESS_DENIED") {
-                return "Shopify refused access. Check the app has the access scopes listed in Settings. \(messages.first ?? "")".trimmingCharacters(in: .whitespaces)
+                return "Shopify refused access. Check the app has the access scopes in Studio’s Shopify setup steps (Settings › Account, shown while disconnected). \(messages.first ?? "")".trimmingCharacters(in: .whitespaces)
             }
             return "Shopify couldn’t complete that request: \(messages.first ?? "unknown error")"
         case .protectedCustomerData:

@@ -591,7 +591,8 @@ struct OrderImportDraftMarker: Equatable {
     let platformID: String
 }
 
-/// Source orders imported this session. Memory only: never written to disk, and cleared when the account changes.
+/// Source orders imported this session. Memory only: never written to disk, and kept for the whole session (a key
+/// change or Disconnect doesn't clear it).
 struct OrderImportLedger: Equatable {
     enum Entry: Equatable {
         case created(orderID: String)

@@ -112,7 +112,7 @@ struct ShopifySettingsSection: View {
                     Text(shopifySetupSteps)
                     Text("Shopify shares customers’ names and addresses with custom apps on its Grow plan or higher.")
                 }
-                Text("Used by Import Orders › Fetch from Shopify and Send Tracking to Shopify…. The details are kept in the macOS Keychain on this Mac, and Studio contacts only your store’s myshopify.com address.")
+                Text("Import Orders › Fetch from Shopify and Tracking for Your Shop › Send Tracking to Shopify use these details. They are kept in the macOS Keychain on this Mac, and Studio contacts only your store’s myshopify.com address.")
                 Link("Shopify’s Guide to Dev Dashboard Apps", destination: URL(string: "https://help.shopify.com/en/manual/apps/app-types/custom-apps")!)
             }
             .settingsFooterLayout()

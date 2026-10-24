@@ -257,4 +257,12 @@ final class OrdersImportFixesTests: XCTestCase {
         XCTAssertNotNil(spendReportPeriodLoadBlockedReason(hasKey: true, connected: true, busy: true, running: false))
         XCTAssertNil(spendReportPeriodLoadBlockedReason(hasKey: true, connected: true, busy: false, running: false))
     }
+
+    func testKeptCountryWarnsWhenThePostcodeDoesNotFit() {
+        var uk = PastedAddress(); uk.zip = "SW1A 1AA"
+        XCTAssertNotNil(pastedAddressKeptCountryWarning(uk, keptCode: "US"))
+        XCTAssertNil(pastedAddressKeptCountryWarning(uk, keptCode: "GB"))
+        var us = PastedAddress(); us.zip = "62701"
+        XCTAssertNil(pastedAddressKeptCountryWarning(us, keptCode: "US"))
+    }
 }

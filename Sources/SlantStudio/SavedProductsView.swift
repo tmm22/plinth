@@ -71,7 +71,7 @@ func savedProductItemsSummary(
         let title = savedProductLineTitle(line, localModels: localModels, components: components, stationery: stationery)
         var text = line.perOrder && line.quantity == 1 ? title : "\(line.quantity) × \(title)"
         if line.type == "PRINT", !line.filamentID.isEmpty, let filament = filaments.first(where: { $0.id == line.filamentID }) {
-            text += " in \(displayName(for: filament, fallback: "Untitled material"))"
+            text += " in \(materialDisplayName(displayName(for: filament, fallback: "Untitled material")))"
         }
         if line.perOrder { text += " per order" }
         if line.type == "PRINT", line.template != nil { text += ", personalised" }

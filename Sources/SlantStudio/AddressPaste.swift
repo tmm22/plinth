@@ -678,3 +678,11 @@ func addressPasteCountryCode(_ text: String, allowBareCode: Bool) -> String {
     let code = orderImportCountryCode(trimmed)
     return orderNonCountryRegionCodes.contains(code) ? "" : code
 }
+
+/// When the paste names no country and the form's is kept, a warning if the pasted postcode doesn't fit that
+/// country ("SW1A 1AA" with United States kept), so a foreign address isn't sent with the wrong country unnoticed.
+func pastedAddressKeptCountryWarning(_ pasted: PastedAddress, keptCode: String) -> String? {
+    guard postcodeFormatWarning(pasted.zip, country: keptCode) != nil else { return nil }
+    let name = Locale.current.localizedString(forRegionCode: keptCode) ?? keptCode
+    return "\(name) is kept from the form, but \(pasted.zip) doesn’t look like a postcode there. Choose the country in the form."
+}
