@@ -549,6 +549,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var meshFitRequest: MeshFitRequest?
     /// Review for Printing with Claude (PrintReviewView.swift).
     @Published var printReviewRequest: PrintReviewRequest?
+    /// Generate a Replica from an Image (ReplicaGeneratorView.swift). Counted in `isPresentingSheet`.
+    @Published var showReplicaGenerator = false
+    /// A review asked for from the replica sheet, opened once that sheet has closed (`presentPendingPrintReview`).
+    var pendingPrintReview: PrintReviewRequest?
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
     /// What buyers paid for drafts Import Orders created, by Slant order ID (ImportedSaleAmounts.swift): memory only,
