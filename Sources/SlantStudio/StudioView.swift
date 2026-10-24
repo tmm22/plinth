@@ -79,6 +79,7 @@ struct StudioView: View {
                                     set: { if !$0 { store.personalisationTemplate = nil } })) {
             PersonalisationSheet().environmentObject(store)
         }
+        .sheet(item: $store.meshFitRequest) { MeshFitSheet(request: $0).environmentObject(store) }
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }

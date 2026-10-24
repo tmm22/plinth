@@ -545,6 +545,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var showSpendingReport = false
     /// Personalise from Template sheet (Personalisation.swift): the chosen .scad file, in memory only.
     @Published var personalisationTemplate: PersonalisationTemplateFile?
+    /// Scale to Size, Add Flat Base and Add Plinth sheets (MeshFitView.swift). Counted in `isPresentingSheet`.
+    @Published var meshFitRequest: MeshFitRequest?
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
     /// What buyers paid for drafts Import Orders created, by Slant order ID (ImportedSaleAmounts.swift): memory only,
