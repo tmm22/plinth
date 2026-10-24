@@ -1140,12 +1140,18 @@ struct OrdersView: View {
             }
             ToolbarItem(placement: .automatic) {
                 // Less frequent tools. None sends anything to Slant: Review Drafts One by One… only opens the existing
-                // charge review (each still needs its own Pay), the others open local sheets or save a CSV through
-                // the same guarded paths as the File menu.
+                // charge review (each still needs its own Pay), Pay Several Drafts… only opens its sheet (BatchPay.swift),
+                // the others open local sheets or save a CSV through the same guarded paths as the File menu.
                 Menu {
                     Button("Review Drafts One by One…") { reviewDraftsInOrder() }
                         .disabled(store.busy || nextDraftForReview(after: nil, in: tableRows.map(\.id)) == nil)
                         .help("Review each draft in the list in turn, starting at the top. Each is paid only if you press Pay & Send to Production in its own review.")
+                    Button("Pay Several Drafts…") {
+                        guard pendingConfirm == nil else { return }
+                        store.openBatchPay(listIDs: tableRows.map(\.id))
+                    }
+                    .disabled(store.busy || batchPayDraftRecords(listIDs: tableRows.map(\.id), orders: store.orders).isEmpty)
+                    .help("Choose drafts in the list, review them together and pay them one at a time. Nothing is paid until you confirm the total.")
                     Divider()
                     // Lists loaded orders' tracking to copy into Etsy or Shopify; sends nothing.
                     Button("Tracking for Your Shop…") { store.openShopFollowUpFromMenu() }
@@ -1207,17 +1213,18 @@ struct OrdersView: View {
         .onChange(of: showsArriveByColumn) { _, _ in syncArriveByColumn() }
         .sheet(item: $pendingConfirm, onDismiss: openNextReviewIfRequested) { request in
             OrderActionConfirmSheet(method: request.method, orderID: request.orderID, onCompleted: { orderID, order in
-                let record = Record(values: order)
-                if !record.id.isEmpty, let index = store.orders.firstIndex(where: { $0.id == orderID }) {
-                    store.orders[index] = record
-                }
-                if selection == orderID { detail = order }
+                applyCompletedOrder(orderID, order)
             }, nextDraft: { nextDraftForReview(after: $0) }, onReviewNext: { id in
                 // Opens only after this review has closed; that review then needs its own Pay press.
                 nextReviewAfterDismiss = id
                 pendingConfirm = nil
             })
             .environmentObject(store)
+        }
+        // Pay Several Drafts (BatchPay.swift): each placed order is merged as the single review's are.
+        .sheet(item: $store.batchPayRequest) { request in
+            BatchPaySheet(request: request, onCompleted: { orderID, order in applyCompletedOrder(orderID, order) })
+                .environmentObject(store)
         }
         .sheet(item: $problemReport, onDismiss: reprintIfRequested) { request in
             OrderProblemReportSheet(order: request.order) {
@@ -1248,6 +1255,16 @@ struct OrdersView: View {
                 load(current) // its detail was read before the change
             }
         }
+    }
+
+    /// After a review placed or cancelled an order (or a batch payment placed one): the list and the detail show
+    /// the order as Slant returned it.
+    func applyCompletedOrder(_ orderID: String, _ order: [String: Any]) {
+        let record = Record(values: order)
+        if !record.id.isEmpty, let index = store.orders.firstIndex(where: { $0.id == orderID }) {
+            store.orders[index] = record
+        }
+        if selection == orderID { detail = order }
     }
 
     // MARK: Order detail extras hooks (OrderDetailExtras.swift)
