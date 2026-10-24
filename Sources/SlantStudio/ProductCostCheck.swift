@@ -457,11 +457,11 @@ struct ProductCostCheckView: View {
     private var unitsRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Text("Units sold")
-                TextField("Units sold", text: $unitsText)
+                Text("Units in order")
+                TextField("Units in order", text: $unitsText)
                     .labelsHidden()
                     // Hidden labels aren't read by VoiceOver on macOS, so name the field explicitly.
-                    .accessibilityLabel("Units sold")
+                    .accessibilityLabel("Units in order")
                     .frame(width: 64)
                     .disabled(runner.running)
             }

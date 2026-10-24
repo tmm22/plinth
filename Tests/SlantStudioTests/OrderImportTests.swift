@@ -622,6 +622,7 @@ final class OrderImportTests: XCTestCase {
         let check = orderImportCheck(unmatched, context: ctx)
         XCTAssertEqual(check.blockers, [])
         XCTAssertTrue(check.usesProductChoice)
+        XCTAssertEqual(check.leftOutItemCount, 1, "so the buyer's item total isn't kept for this draft")
         XCTAssertEqual(check.lines.map(\.quantity), [2])
         XCTAssertEqual(check.lines.first?.reference, "file-TIDY")
         XCTAssertEqual(check.itemsSummary, "2 × Desk Tidy")

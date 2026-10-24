@@ -370,15 +370,20 @@ func batchPersonaliseDraftLines(_ base: [OrderLine], models: [BatchPersonaliseMo
     return result
 }
 
-/// The name a personalised model is uploaded under: never the buyer's text or name. The marketplace order number
-/// is included only when it looks like one (digits, at most four letters, and `#`, `-` or `_`); otherwise a neutral name.
+/// The name a personalised model is uploaded under: never the buyer's text or name. The marketplace order number is
+/// included only in the forms those marketplaces use — Etsy's plain digits, Shopify's "#1234" — so nothing with
+/// letters (which could spell a name) goes into the file name. Studio's template takes any order ID the seller typed,
+/// so its uploads always get the neutral name.
 func batchPersonaliseUploadName(source: OrderImportFormat, sourceOrderID: String, index: Int, count: Int) -> String {
     let id = sourceOrderID.trimmingCharacters(in: .whitespacesAndNewlines)
-    let scalars = id.unicodeScalars
-    let allowed = scalars.allSatisfy { ("0"..."9").contains($0) || ("A"..."Z").contains($0) || ("a"..."z").contains($0) || "#-_".unicodeScalars.contains($0) }
-    let letters = scalars.filter { ("A"..."Z").contains($0) || ("a"..."z").contains($0) }.count
-    let looksLikeNumber = !id.isEmpty && id.count <= 30 && allowed && letters <= 4 && scalars.contains { ("0"..."9").contains($0) }
-    let base = looksLikeNumber ? "\(source.marketplace) order \(id) personalised" : "Personalised model"
+    let pattern: String?
+    switch source {
+    case .etsy: pattern = #"^[0-9]{1,20}$"#
+    case .shopify: pattern = #"^#?[0-9]{1,20}$"#
+    case .template: pattern = nil
+    }
+    let usesNumber = pattern.map { id.range(of: $0, options: .regularExpression) != nil } ?? false
+    let base = usesNumber ? "\(source.marketplace) order \(id) personalised" : "Personalised model"
     return count > 1 ? "\(base) \(index + 1) of \(count)" : base
 }
 

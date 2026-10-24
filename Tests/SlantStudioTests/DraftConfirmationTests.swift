@@ -136,7 +136,7 @@ final class DraftConfirmationTests: XCTestCase {
         var result = DraftMarkerSearchResult()
         result.ordersRead = 300
         let missing = draftCreateCheckOutcome(attempts: [ada], result: result, time: time)
-        XCTAssertEqual(missing.message, "No draft with this attempt’s marker in your 300 newest orders. It probably wasn’t created; if you create it again, check the list afterwards.")
+        XCTAssertEqual(missing.message, "Slant has no matching draft among your 300 newest orders. It probably wasn’t created; if you create it again, check the list afterwards.")
         XCTAssertFalse(missing.allConfirmed)
         XCTAssertEqual(missing.foundOrderIDs, [])
 
@@ -145,16 +145,18 @@ final class DraftConfirmationTests: XCTestCase {
         XCTAssertEqual(found.message, "Found: Slant created the draft for Ada Lovelace at 2:32 PM (order SO-9).")
         XCTAssertTrue(found.allConfirmed)
         XCTAssertEqual(found.foundOrderIDs, ["SO-9"])
+        XCTAssertEqual(found.foundOrderNumbers, ["SO-9"])
 
         let unmarked = UnconfirmedDraftAttempt(recipient: "Alan", date: date)
         let mixed = draftCreateCheckOutcome(attempts: [ada, unmarked], result: result, time: time)
         XCTAssertFalse(mixed.allConfirmed)
-        XCTAssertTrue(mixed.message.contains("went without a marker"))
+        XCTAssertTrue(mixed.message.contains("had no room for Studio’s reference"))
+        XCTAssertFalse(mixed.message.contains("marker"), "No internal jargon")
 
         var empty = DraftMarkerSearchResult()
         empty.stoppedForRateLimit = true
         let none = draftCreateCheckOutcome(attempts: [ada], result: empty, time: time)
-        XCTAssertTrue(none.message.hasPrefix("No draft with this attempt’s marker: Slant listed no orders."))
+        XCTAssertTrue(none.message.hasPrefix("Slant has no matching draft: it listed no orders."))
         XCTAssertTrue(none.message.contains("rate limit"))
     }
 
@@ -164,7 +166,8 @@ final class DraftConfirmationTests: XCTestCase {
         XCTAssertEqual(orderImportDraftCheckMessage(confirmed: 1, stillUnconfirmed: 0, result: result),
                        "Found 1 draft that didn’t confirm: Slant did create it, and it’s marked as imported.")
         XCTAssertEqual(orderImportDraftCheckMessage(confirmed: 0, stillUnconfirmed: 2, result: result),
-                       "No order with the 2 unconfirmed drafts’ markers in your 250 newest orders. They probably weren’t created; if you import them again, check Show Drafts afterwards.")
+                       "Slant has no matching drafts for the 2 unconfirmed imports among your 250 newest orders. They probably weren’t created; if you import them again, check Show Drafts afterwards.")
+        XCTAssertFalse(orderImportDraftCheckMessage(confirmed: 0, stillUnconfirmed: 1, result: result).contains("marker"))
     }
 
     // MARK: Import ledger

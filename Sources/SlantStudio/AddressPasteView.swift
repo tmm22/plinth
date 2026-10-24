@@ -17,13 +17,16 @@ struct AddressPastePopover: View {
     @State private var text: String
     @State private var parsed = PastedAddress()
     @State private var confirming = false
+    /// The form's details as they are now, for what the review says is kept (name, email, country).
+    let current: DeliveryDetails
     let needsConfirmation: (PastedAddress) -> Bool
     let onUse: (PastedAddress) -> Void
     let onCancel: () -> Void
 
-    init(initialText: String, needsConfirmation: @escaping (PastedAddress) -> Bool,
+    init(initialText: String, current: DeliveryDetails, needsConfirmation: @escaping (PastedAddress) -> Bool,
          onUse: @escaping (PastedAddress) -> Void, onCancel: @escaping () -> Void) {
         _text = State(initialValue: initialText)
+        self.current = current
         self.needsConfirmation = needsConfirmation
         self.onUse = onUse
         self.onCancel = onCancel
@@ -45,7 +48,7 @@ struct AddressPastePopover: View {
             }
             review
             if confirming {
-                Label("This replaces delivery details already in the form.", systemImage: "exclamationmark.triangle.fill")
+                Label(pastedAddressReplaceWarning(parsed, current: current), systemImage: "exclamationmark.triangle.fill")
                     .font(.callout).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
@@ -94,7 +97,7 @@ struct AddressPastePopover: View {
                     row("Name", parsed.name, missing: "Not found (the current name is kept)")
                     row("Email", parsed.email, missing: "Not found (the current email is kept)")
                     row("Street address", parsed.line1, missing: "Not found")
-                    if !parsed.line2.isEmpty { row("Apartment, suite", parsed.line2, missing: "") }
+                    if !parsed.line2.isEmpty { row("Apartment, suite, etc.", parsed.line2, missing: "") }
                     row("City", parsed.city, missing: "Not found")
                     if !parsed.state.isEmpty { row("State / province", parsed.state, missing: "") }
                     row("Postal code", parsed.zip, missing: "Not found")
@@ -119,11 +122,14 @@ struct AddressPastePopover: View {
 
     @ViewBuilder
     var countryText: some View {
-        if !parsed.countryCode.isEmpty {
-            Text(Locale.current.localizedString(forRegionCode: parsed.countryCode) ?? parsed.countryCode)
-        } else if !parsed.unrecognisedCountry.isEmpty {
-            Text("“\(parsed.unrecognisedCountry)” isn’t recognised. Choose the country in the form.").foregroundStyle(.orange)
-        } else {
+        switch pastedAddressCountryDisplay(parsed, current: current) {
+        case .pasted(let code):
+            Text(Locale.current.localizedString(forRegionCode: code) ?? code)
+        case .unrecognised(let text):
+            Text("“\(text)” isn’t recognised. Choose the country in the form.").foregroundStyle(.orange)
+        case .keptFromForm(let code):
+            Text("\(Locale.current.localizedString(forRegionCode: code) ?? code) (kept from the form)")
+        case .missing:
             Text("Not found. Choose the country in the form.").foregroundStyle(.orange)
         }
     }

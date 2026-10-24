@@ -47,7 +47,18 @@ func batchPersonaliseLoadTemplate(path: String) -> BatchPersonaliseTemplateState
 
 let batchPersonaliseNoOpenSCADNote = "OpenSCAD isn’t installed in Applications, so these orders use the plain model. Install it from openscad.org, then press Check Again to make each buyer’s model here. Slant’s generator allows only 5 models an hour, so Import Orders doesn’t use it."
 
-let batchPersonaliseSectionNote = "Choose which part of each buyer’s personalisation goes into the product’s template. When you create the drafts, Studio makes each buyer’s model with OpenSCAD on this Mac, checks it, uploads it to your Slant files named by order number (never the buyer’s text or name) and uses it in their draft. The models aren’t added to your library, and these choices aren’t saved."
+let batchPersonaliseSectionNote = "Choose which part of each buyer’s personalisation goes into the product’s template. When you create the drafts, Studio makes each buyer’s model with OpenSCAD on this Mac, checks it, uploads it to your Slant files named by its Etsy or Shopify order number, or “Personalised model” (never the buyer’s text or name) and uses it in their draft. The models aren’t added to your library, and these choices aren’t saved."
+
+/// Import Orders' Personalise with OpenSCAD disclosure label: how many of the products with a template are set to be
+/// personalised (`undecided` are still on Don't Personalise), or that OpenSCAD isn't installed.
+func batchPersonaliseSectionTitle(openSCADInstalled: Bool, products: Int, undecided: Int) -> String {
+    let title = "Personalise with OpenSCAD"
+    guard openSCADInstalled else { return "\(title) · OpenSCAD isn’t installed" }
+    guard products > 0 else { return title }
+    let personalised = max(0, products - undecided)
+    if personalised == 0 { return "\(title) · none chosen" }
+    return personalised == products ? "\(title) · all chosen" : "\(title) · \(personalised) of \(products) chosen"
+}
 
 /// Import Orders: one row per saved product with a template, with the text it takes from each buyer's
 /// personalisation. Nothing is personalised until the seller chooses.
@@ -59,8 +70,8 @@ struct OrderImportPersonaliseSection: View {
     let checkAgain: () -> Void
 
     var body: some View {
+        // Shown inside Import Orders' "Personalise with OpenSCAD" disclosure, which carries the heading.
         VStack(alignment: .leading, spacing: 6) {
-            Text("Personalise with OpenSCAD").font(.headline)
             if session.openSCAD == nil {
                 Label(batchPersonaliseNoOpenSCADNote, systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)

@@ -265,13 +265,31 @@ func importedSaleUnits(_ items: [OrderImportItem]) -> Int? {
     return units <= profitUnitsSoldLimit ? units : nil
 }
 
-/// The amounts for each order of a file that has any, by import row ID.
-func importedSaleAmountsByOrder(_ orders: [OrderImportOrder]) -> [String: ImportedSaleAmounts] {
+/// The amounts for each order of a file that has any, by import row ID. Orders in `leavingOutItemsIn` (row IDs whose
+/// drafts leave items out under Match products) keep only what still applies (`importedSaleAmountsForDraft`).
+func importedSaleAmountsByOrder(_ orders: [OrderImportOrder], leavingOutItemsIn leftOut: Set<String> = []) -> [String: ImportedSaleAmounts] {
     var result: [String: ImportedSaleAmounts] = [:]
     for order in orders {
-        if case .amounts(let amounts) = importedSaleAmounts(for: order) { result[order.id] = amounts }
+        guard case .amounts(let amounts) = importedSaleAmounts(for: order),
+              let kept = importedSaleAmountsForDraft(amounts, leavesOutItems: leftOut.contains(order.id)) else { continue }
+        result[order.id] = kept
     }
     return result
+}
+
+let importedSaleLeftOutNote = "Some items weren’t in this draft, so enter what the buyer paid for the rest."
+
+/// The amounts to keep for a draft. When Match products left some of the order's items out of the draft, the buyer's
+/// item total and units cover items Slant isn't making, and would overstate the profit: they're dropped, with a note,
+/// and only the shipping charged is kept. Nil when nothing is left to keep.
+func importedSaleAmountsForDraft(_ amounts: ImportedSaleAmounts, leavesOutItems: Bool) -> ImportedSaleAmounts? {
+    guard leavesOutItems else { return amounts }
+    var kept = amounts
+    kept.itemTotal = nil
+    kept.unitsSold = nil
+    // Notes about the item total no longer apply; the left-out note says what to enter instead.
+    kept.notes = [importedSaleLeftOutNote] + amounts.notes.filter { !$0.hasPrefix("Enter the item total") }
+    return kept.shipping == nil ? nil : kept
 }
 
 /// The import sheet's note on what happens to the amounts buyers paid, or nil when the file has none.

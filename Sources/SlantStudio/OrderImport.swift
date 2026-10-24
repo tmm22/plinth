@@ -627,6 +627,12 @@ struct OrderImportLedger: Equatable {
     }
 }
 
+/// The rows of the shown list that a ledger key belongs to, so a draft confirmed by its ledger key shows as created
+/// on its row (row IDs needn't stay the same as ledger keys).
+func orderImportRowIDs(forLedgerKey key: String, in orders: [OrderImportOrder]) -> [String] {
+    orders.filter { OrderImportLedger.key(source: $0.source, sourceOrderID: $0.sourceOrderID) == key }.map(\.id)
+}
+
 /// Ledger keys for loaded orders whose metadata names an imported source order. Slant may not return metadata in the
 /// list; then nothing matches and only the session ledger protects against duplicates. Metadata without a `source`
 /// matches that order ID from any source.
@@ -674,6 +680,19 @@ func orderImportVisibleWarnings(_ warnings: [String], rowState: OrderImportRowSt
     guard case .created(let orderID)? = rowState else { return warnings }
     let own = orderImportAlreadyImportedWarning(orderID)
     return warnings.filter { $0 != own }
+}
+
+/// Whether one of the import sheet's collapsible sections (Match products, Personalise with OpenSCAD) is open: as the
+/// seller last left it, or, until they open or close it, only while it needs a choice.
+func orderImportSectionExpanded(userChoice: Bool?, needsInput: Bool) -> Bool {
+    userChoice ?? needsInput
+}
+
+/// Match products' disclosure label, saying whether choices are still needed.
+func orderImportMatchProductsTitle(keys: Int, unchosen: Int) -> String {
+    guard keys > 0 else { return "Match products" }
+    if unchosen == 0 { return "Match products · all chosen" }
+    return "Match products · \(unchosen) of \(keys) to choose"
 }
 
 /// The import sheet before a file is chosen.
@@ -806,6 +825,8 @@ struct OrderImportCheck {
     var usesFallbackEmail = false
     /// At least one item was matched, or left out, by a Match products choice.
     var usesProductChoice = false
+    /// Items left out of the draft by a Match products choice, so the buyer's item total covers more than the draft.
+    var leftOutItemCount = 0
     /// Parallel to the order's items: the saved product each was drafted with (nil when left out or unmatched).
     var itemProductIDs: [UUID?] = []
     /// Parallel to `lines`: the saved product and item each line came from (batch personalisation).
@@ -900,6 +921,7 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
         }
         groups[product.id]?.units += units
     }
+    check.leftOutItemCount = leftOut
     if !order.items.isEmpty, leftOut == order.items.count {
         block("Every item of this order is left out, so there’s nothing to draft.")
     }
@@ -1210,6 +1232,9 @@ enum OrderImportRowState: Equatable {
     /// What buyers paid (USD), by import row ID, set by the sheet before a batch. Each created draft's amounts move
     /// to the store's in-memory `importedSaleAmounts`; never saved or logged.
     var saleAmounts: [String: ImportedSaleAmounts] = [:]
+    /// The amounts of drafts whose outcome wasn't confirmed, by ledger key, so Look for Drafts on Slant can attach them
+    /// to the order it finds. In this sheet's memory only, like `saleAmounts`.
+    private(set) var unconfirmedSaleAmounts: [String: ImportedSaleAmounts] = [:]
 
     func start(_ jobs: [OrderImportJob], store: StudioStore) {
         guard !running, !jobs.isEmpty else { return }
@@ -1233,10 +1258,15 @@ enum OrderImportRowState: Equatable {
         if running { stopRequested = true }
     }
 
-    /// Check Slant found the draft of a row whose outcome was unknown: show it as created.
+    /// Look for Drafts on Slant found the draft of a row whose outcome was unknown: show it as created.
     func noteConfirmed(_ id: String, orderID: String) {
         guard !running, case .unknown? = states[id] else { return }
         states[id] = .created(orderID)
+    }
+
+    /// The buyer's amounts for an unconfirmed draft that has now been found, once (ledger key).
+    func takeUnconfirmedSaleAmounts(ledgerKey: String) -> ImportedSaleAmounts? {
+        unconfirmedSaleAmounts.removeValue(forKey: ledgerKey)
     }
 
     /// Clears results for a newly chosen file. Ignored while a batch runs.
@@ -1372,6 +1402,9 @@ enum OrderImportRowState: Equatable {
             case .unknown(let reason):
                 store.orderImportLedger.record(.unknown, source: job.source, sourceOrderID: job.sourceOrderID,
                                                marker: job.draftMarker, platformID: platformID)
+                if job.draftMarker != nil, let amounts = saleAmounts[job.id] {
+                    unconfirmedSaleAmounts[OrderImportLedger.key(source: job.source, sourceOrderID: job.sourceOrderID)] = amounts
+                }
                 states[job.id] = .unknown(reason)
                 tally.unknown += 1
             }
@@ -1447,8 +1480,12 @@ struct OrderImportSheet: View {
     @State private var confirmCreate = false
     /// Match products choices for this file only: never saved, and cleared with the file.
     @State private var productChoices: [String: OrderImportProductChoice] = [:]
-    /// Check Slant's last result for unconfirmed imports (counts only).
+    /// Look for Drafts on Slant's last result for unconfirmed imports (counts only).
     @State private var importCheckMessage: String?
+    /// Match products and Personalise with OpenSCAD: open while they need input, until the seller opens or closes them
+    /// (`orderImportSectionExpanded`). Reset with the list.
+    @State private var matchProductsExpanded: Bool?
+    @State private var personaliseExpanded: Bool?
     /// Personalise with OpenSCAD (BatchPersonaliseView.swift): memory only, reset with the file.
     @StateObject private var personalise = BatchPersonaliseSession()
     /// Fetch from Shopify (ShopifyImport.swift) is running: Choose File… and Create wait for it.
@@ -1503,7 +1540,7 @@ struct OrderImportSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Import Orders").font(.title2.bold())
-                Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Studio’s template. Each item must match a saved product by SKU, or one you choose under Match products. Drafts aren’t charged: afterwards you review and pay each draft one at a time in Orders.")
+                Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Studio’s template. Each item must match a saved product by SKU, or one you choose under Match products. Drafts aren’t charged: afterwards you review and pay them in Orders, one at a time or together with Pay Several Drafts… in the Orders toolbar’s More menu.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let hint = shopifyImportIntroHint(shop: shopify.shop) {
                     Text(hint).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -1598,22 +1635,41 @@ struct OrderImportSheet: View {
                 }
             }
         }
+        // Collapsible, so the order list and the footer keep their room: each opens by itself only while it needs a
+        // choice (Personalise only once Match products doesn't), and stays as the seller leaves it.
         let unmatched = orderImportUnmatchedKeys(parse.orders, products: store.savedProducts)
+        let unchosen = unmatched.filter { productChoices[$0.id] == nil }.count
+        let matchOpen = orderImportSectionExpanded(userChoice: matchProductsExpanded, needsInput: unchosen > 0)
         if !unmatched.isEmpty {
-            matchProducts(unmatched, parse: parse)
+            DisclosureGroup(isExpanded: Binding(get: { matchOpen }, set: { matchProductsExpanded = $0 })) {
+                matchProducts(unmatched, parse: parse)
+            } label: {
+                Text(orderImportMatchProductsTitle(keys: unmatched.count, unchosen: unchosen)).font(.headline)
+            }
+            .studioDisclosureStyle()
         }
         let personalisable = batchPersonaliseProducts(parse.orders, checks: checks, products: store.savedProducts)
         if !personalisable.isEmpty {
-            OrderImportPersonaliseSection(
-                session: personalise, products: personalisable, disabled: runner.running,
-                choose: { id, choice in updatePersonalisation(parse) { personalise.choices[id] = choice } },
-                checkAgain: { updatePersonalisation(parse) { personalise.refresh(products: store.savedProducts) } })
+            let undecided = personalisable.filter { personalise.choices[$0.product.id] == nil }.count
+            let needsInput = personalise.openSCAD != nil && undecided > 0 && !(matchOpen && !unmatched.isEmpty)
+            DisclosureGroup(isExpanded: Binding(
+                get: { orderImportSectionExpanded(userChoice: personaliseExpanded, needsInput: needsInput) },
+                set: { personaliseExpanded = $0 })) {
+                OrderImportPersonaliseSection(
+                    session: personalise, products: personalisable, disabled: runner.running,
+                    choose: { id, choice in updatePersonalisation(parse) { personalise.choices[id] = choice } },
+                    checkAgain: { updatePersonalisation(parse) { personalise.refresh(products: store.savedProducts) } })
+            } label: {
+                Text(batchPersonaliseSectionTitle(openSCADInstalled: personalise.openSCAD != nil,
+                                                  products: personalisable.count, undecided: undecided)).font(.headline)
+            }
+            .studioDisclosureStyle()
         }
         List(parse.orders) { order in
             row(order, check: checks[order.id] ?? OrderImportCheck())
         }
         .listStyle(.inset(alternatesRowBackgrounds: true))
-        .frame(minHeight: 240)
+        .frame(minHeight: 200)
     }
 
     /// Each item key no saved product matches by SKU, once, with a product picker. A choice applies to every row with
@@ -1622,7 +1678,6 @@ struct OrderImportSheet: View {
         let products = savedProductsSorted(store.savedProducts)
         let missingSKUs = orderImportMissingSKUs(keys)
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Match products").font(.headline)
             if let summary = orderImportMissingSKUSummary(missingSKUs) {
                 HStack(spacing: 8) {
                     Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
@@ -1770,7 +1825,7 @@ struct OrderImportSheet: View {
                         .help("Stop before the next draft. A draft already being created finishes first.")
                 }
                 if !runner.running, !store.orderImportLedger.unconfirmedMarkers.isEmpty {
-                    Button("Check Slant") { checkUnconfirmedImports() }
+                    Button(draftCheckButtonTitle(count: store.orderImportLedger.unconfirmedMarkers.count)) { checkUnconfirmedImports() }
                         .disabled(store.busy)
                         .help("Look for drafts that didn’t confirm in your newest orders on Slant. Read-only: nothing is created or changed.")
                 }
@@ -1790,8 +1845,9 @@ struct OrderImportSheet: View {
         }
     }
 
-    /// Check Slant (DraftConfirmation.swift): read-only. A draft found with an unconfirmed import's marker marks that
-    /// order as created in the session ledger; not finding one changes nothing.
+    /// Look for Drafts on Slant (DraftConfirmation.swift): read-only. A draft found with an unconfirmed import's marker
+    /// marks that order as created in the session ledger, shows its row as created and gets the buyer's amounts, as a
+    /// confirmed create would; not finding one changes nothing.
     private func checkUnconfirmedImports() {
         let pending = store.orderImportLedger.unconfirmedMarkers
         var markers: [String: String] = [:]
@@ -1803,7 +1859,12 @@ struct OrderImportSheet: View {
             for (key, value) in pending {
                 guard let record = result.found[value.marker.lowercased()] else { continue }
                 store.orderImportLedger.confirm(key: key, orderID: record.id)
-                runner.noteConfirmed(key, orderID: record.id)
+                for rowID in orderImportRowIDs(forLedgerKey: key, in: parsed?.orders ?? []) {
+                    runner.noteConfirmed(rowID, orderID: record.id)
+                }
+                if let amounts = runner.takeUnconfirmedSaleAmounts(ledgerKey: key), store.importedSaleAmounts[record.id] == nil {
+                    store.importedSaleAmounts[record.id] = amounts
+                }
                 confirmed += 1
             }
             importCheckMessage = orderImportDraftCheckMessage(confirmed: confirmed, stillUnconfirmed: pending.count - confirmed, result: result)
@@ -1849,7 +1910,7 @@ struct OrderImportSheet: View {
     private func confirmMessage(_ checks: [String: OrderImportCheck]) -> String {
         guard let parsed else { return "" }
         let ids = readyIDs(parsed, checks: checks)
-        var text = "These are drafts: nothing is charged. Studio creates them one at a time on platform \(platformName) and stops if Slant doesn’t confirm one. Afterwards, review and pay each draft one at a time in Orders."
+        var text = "These are drafts: nothing is charged. Studio creates them one at a time on platform \(platformName) and stops if Slant doesn’t confirm one. Afterwards, review and pay them in Orders, one at a time or together with Pay Several Drafts… in the Orders toolbar’s More menu."
         let fallbackCount = ids.filter { checks[$0]?.usesFallbackEmail == true }.count
         if fallbackCount > 0 {
             let email = fallbackEmail.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1904,6 +1965,10 @@ struct OrderImportSheet: View {
         personalise.refresh(products: store.savedProducts)
         parsed = parse
         loadError = nil
+        // The last look on Slant and the sections' open/closed choices belong to the previous list.
+        importCheckMessage = nil
+        matchProductsExpanded = nil
+        personaliseExpanded = nil
         fileName = label
         let initial = checks(for: parse)
         ticked = Set(parse.orders.map(\.id).filter { initial[$0]?.tickedByDefault == true })
@@ -1959,7 +2024,9 @@ struct OrderImportSheet: View {
             return job
         }
         guard !jobs.isEmpty else { return }
-        runner.saleAmounts = importedSaleAmountsByOrder(parsed.orders)
+        // A draft that leaves items out doesn't get the whole order's item total (ImportedSaleAmounts.swift).
+        runner.saleAmounts = importedSaleAmountsByOrder(
+            parsed.orders, leavingOutItemsIn: Set(currentChecks.filter { $0.value.leftOutItemCount > 0 }.map(\.key)))
         importCheckMessage = nil
         runner.start(jobs, store: store)
         // Sent orders are unticked so pressing Create again never resends them without a fresh, explicit tick.

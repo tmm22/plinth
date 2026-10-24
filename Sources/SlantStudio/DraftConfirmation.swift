@@ -96,38 +96,51 @@ struct DraftMarkerSearchResult {
     var stoppedForRateLimit = false
 }
 
-/// The composer's Check Slant result: the text to show, and the found orders it offers to show.
+/// The composer's Look for Draft on Slant result: the text to show, and the found orders it offers to show.
 struct DraftCreateCheckOutcome: Equatable {
     var message: String
     var foundOrderIDs: [String]
     var allConfirmed: Bool
+    /// Parallel to `foundOrderIDs`: the order number the seller sees (`orderNumber`), for the Show Order buttons.
+    var foundOrderNumbers: [String] = []
 }
 
-/// The Check Slant message. Found attempts are named; a missing marker is reported honestly, never as proof that no
-/// draft exists; attempts that went without a marker can't be checked.
-func draftCreateCheckOutcome(attempts: [UnconfirmedDraftAttempt], result: DraftMarkerSearchResult,
+/// What a search that found nothing says, never as proof that no draft exists: "Slant has no matching draft among your
+/// 300 newest orders." `subject` names what was looked for, such as " for the unconfirmed import" (or "").
+func draftCheckNotFoundText(plural: Bool, subject: String = "", result: DraftMarkerSearchResult) -> String {
+    let draft = plural ? "drafts" : "draft"
+    var text: String
+    switch result.ordersRead {
+    case 0: text = "Slant has no matching \(draft)\(subject): it listed no orders."
+    case 1: text = "Slant has no matching \(draft)\(subject) in your newest order."
+    default: text = "Slant has no matching \(draft)\(subject) among your \(result.ordersRead) newest orders."
+    }
+    if result.stoppedForRateLimit { text += " Studio stopped early to stay within Slant’s rate limit." }
+    return text
+}
+
+/// The Look for Draft on Slant message. Found attempts are named with the order number; a draft not found is reported
+/// honestly, never as proof that none exists; attempts sent without Studio's reference (or no longer listed,
+/// `earlierUnlisted`) can't be looked for.
+func draftCreateCheckOutcome(attempts: [UnconfirmedDraftAttempt], result: DraftMarkerSearchResult, earlierUnlisted: Bool = false,
                              time: (Date) -> String = draftAttemptTimeText) -> DraftCreateCheckOutcome {
     func who(_ attempt: UnconfirmedDraftAttempt) -> String {
         attempt.recipient.isEmpty ? "at \(time(attempt.date))" : "for \(attempt.recipient) at \(time(attempt.date))"
     }
     var parts: [String] = []
     var foundIDs: [String] = []
+    var foundNumbers: [String] = []
     let found = attempts.filter { attempt in attempt.marker.map { result.found[$0.lowercased()] != nil } ?? false }
     for attempt in found {
         guard let marker = attempt.marker?.lowercased(), let record = result.found[marker] else { continue }
+        let number = orderNumber(orderObject(record.values))
         foundIDs.append(record.id)
-        parts.append("Found: Slant created the draft \(who(attempt)) (order \(record.id)).")
+        foundNumbers.append(number)
+        parts.append("Found: Slant created the draft \(who(attempt)) (order \(number)).")
     }
     let missing = attempts.filter { attempt in attempt.marker.map { result.found[$0.lowercased()] == nil } ?? false }
     if !missing.isEmpty {
-        let subject = missing.count == 1 ? "this attempt’s marker" : "these attempts’ markers"
-        var text: String
-        switch result.ordersRead {
-        case 0: text = "No draft with \(subject): Slant listed no orders."
-        case 1: text = "No draft with \(subject) in your newest order."
-        default: text = "No draft with \(subject) in your \(result.ordersRead) newest orders."
-        }
-        if result.stoppedForRateLimit { text += " Studio stopped early to stay within Slant’s rate limit." }
+        var text = draftCheckNotFoundText(plural: missing.count > 1, result: result)
         text += missing.count == 1
             ? " It probably wasn’t created; if you create it again, check the list afterwards."
             : " They probably weren’t created; if you create them again, check the list afterwards."
@@ -136,13 +149,17 @@ func draftCreateCheckOutcome(attempts: [UnconfirmedDraftAttempt], result: DraftM
     let unmarked = attempts.filter { $0.marker == nil }
     if !unmarked.isEmpty {
         let list = unmarked.map(who).joined(separator: "; ")
-        parts.append("The attempt\(unmarked.count == 1 ? "" : "s") \(list) went without a marker (all 10 reference fields were in use), so Studio can’t check \(unmarked.count == 1 ? "it" : "them"). Check your drafts (\(draftCreateCheckDraftsPath)).")
+        parts.append("The attempt\(unmarked.count == 1 ? "" : "s") \(list) had no room for Studio’s reference (all 10 reference fields were in use), so Studio can’t look for \(unmarked.count == 1 ? "it" : "them"). Check your drafts (\(draftCreateCheckDraftsPath)).")
+    }
+    if earlierUnlisted {
+        parts.append("Earlier attempts that are no longer listed can’t be looked for. Check your drafts (\(draftCreateCheckDraftsPath)).")
     }
     return DraftCreateCheckOutcome(message: parts.joined(separator: " "), foundOrderIDs: foundIDs,
-                                   allConfirmed: missing.isEmpty && unmarked.isEmpty)
+                                   allConfirmed: missing.isEmpty && unmarked.isEmpty && !earlierUnlisted,
+                                   foundOrderNumbers: foundNumbers)
 }
 
-/// Import Orders' Check Slant message: counts only, never names or addresses from the file.
+/// Import Orders' Look for Drafts on Slant message: counts only, never names or addresses from the file.
 func orderImportDraftCheckMessage(confirmed: Int, stillUnconfirmed: Int, result: DraftMarkerSearchResult) -> String {
     var parts: [String] = []
     if confirmed > 0 {
@@ -151,20 +168,19 @@ func orderImportDraftCheckMessage(confirmed: Int, stillUnconfirmed: Int, result:
             : "Found \(confirmed) drafts that didn’t confirm: Slant did create them, and they’re marked as imported.")
     }
     if stillUnconfirmed > 0 {
-        let subject = stillUnconfirmed == 1 ? "the unconfirmed draft’s marker" : "the \(stillUnconfirmed) unconfirmed drafts’ markers"
-        var text: String
-        switch result.ordersRead {
-        case 0: text = "No order with \(subject): Slant listed no orders."
-        case 1: text = "No order with \(subject) in your newest order."
-        default: text = "No order with \(subject) in your \(result.ordersRead) newest orders."
-        }
-        if result.stoppedForRateLimit { text += " Studio stopped early to stay within Slant’s rate limit." }
+        let subject = stillUnconfirmed == 1 ? " for the unconfirmed import" : " for the \(stillUnconfirmed) unconfirmed imports"
+        var text = draftCheckNotFoundText(plural: stillUnconfirmed > 1, subject: subject, result: result)
         text += stillUnconfirmed == 1
             ? " It probably wasn’t created; if you import it again, check Show Drafts afterwards."
             : " They probably weren’t created; if you import them again, check Show Drafts afterwards."
         parts.append(text)
     }
     return parts.joined(separator: " ")
+}
+
+/// The button that looks for unconfirmed drafts on Slant (composer and Import Orders).
+func draftCheckButtonTitle(count: Int) -> String {
+    count > 1 ? "Look for Drafts on Slant" : "Look for Draft on Slant"
 }
 
 // MARK: - Store hook
@@ -187,7 +203,7 @@ extension StudioStore {
             platforms[platform.trimmingCharacters(in: .whitespacesAndNewlines), default: []].insert(marker.lowercased())
         }
         var completed = false
-        let ran = await run("Check Slant for unconfirmed drafts") {
+        let ran = await run("Look for unconfirmed drafts on Slant") {
             for platform in platforms.keys.sorted() {
                 guard let platformMarkers = platforms[platform] else { continue }
                 var page = 1
@@ -223,8 +239,8 @@ extension StudioStore {
 
 // MARK: - Composer notice
 
-/// The composer's unconfirmed-draft notice with Check Slant. `outcome` belongs to the composer, so the result (and
-/// Show Order) stays visible after the last attempt is confirmed and the notice itself goes.
+/// The composer's unconfirmed-draft notice with Look for Draft on Slant. `outcome` belongs to the composer, so the
+/// result (and Show Order) stays visible after the last attempt is confirmed and the notice itself goes.
 struct UnconfirmedDraftNotice: View {
     @EnvironmentObject var store: StudioStore
     @Binding var outcome: DraftCreateCheckOutcome?
@@ -236,7 +252,8 @@ struct UnconfirmedDraftNotice: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if store.draftCreateOutcomeUnknown {
-                Label(draftCreateUnknownNotice(store.unconfirmedDraftCreates), systemImage: "exclamationmark.triangle.fill")
+                Label(draftCreateUnknownNotice(store.unconfirmedDraftCreates, earlierUnlisted: store.unconfirmedDraftCreatesOverflowed),
+                      systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -247,19 +264,21 @@ struct UnconfirmedDraftNotice: View {
             }
             HStack {
                 if store.draftCreateOutcomeUnknown, store.unconfirmedDraftCreates.contains(where: { $0.marker != nil }) {
-                    Button("Check Slant") { check() }
+                    Button(draftCheckButtonTitle(count: store.unconfirmedDraftCreates.filter { $0.marker != nil }.count)) { check() }
                         .disabled(store.busy || checking)
                         .help("Look for these drafts in your newest orders on Slant. Read-only: nothing is created or changed.")
                 }
                 if let outcome {
-                    ForEach(outcome.foundOrderIDs, id: \.self) { id in
-                        Button(outcome.foundOrderIDs.count == 1 ? "Show Order" : "Show Order \(id)") {
+                    ForEach(Array(outcome.foundOrderIDs.enumerated()), id: \.element) { pair in
+                        let id = pair.element
+                        let number = pair.offset < outcome.foundOrderNumbers.count ? outcome.foundOrderNumbers[pair.offset] : id
+                        Button(outcome.foundOrderIDs.count == 1 ? "Show Order" : "Show Order \(number)") {
                             if let record = store.orders.first(where: { $0.id == id }) ?? foundRecords[id] { onShowOrder(record) }
                         }
                         .disabled(store.busy)
                     }
                 }
-                if checking { ProgressView().controlSize(.small).accessibilityLabel("Checking Slant") }
+                if checking { ProgressView().controlSize(.small).accessibilityLabel("Looking on Slant") }
             }
         }
     }
@@ -274,7 +293,7 @@ struct UnconfirmedDraftNotice: View {
             defer { checking = false }
             guard let result = await store.searchOrdersForDraftMarkers(markers) else { return }
             for record in result.found.values { foundRecords[record.id] = record }
-            outcome = draftCreateCheckOutcome(attempts: attempts, result: result)
+            outcome = draftCreateCheckOutcome(attempts: attempts, result: result, earlierUnlisted: store.unconfirmedDraftCreatesOverflowed)
             // Found markers confirm those drafts; the rest stay unconfirmed (not finding one proves nothing).
             store.unconfirmedDraftCreates = unconfirmedDraftAttempts(store.unconfirmedDraftCreates, confirmedMarkers: Set(result.found.keys))
         }
