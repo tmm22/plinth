@@ -18,13 +18,13 @@ extension ImageTo3DService {
         self == .meshy ? URL(string: "https://www.meshy.ai/terms-of-use")! : tripoRegion.termsURL
     }
 
-    /// Plan, price and retention facts for the footer (from each service's docs, 24 Oct 2026).
+    /// Plan, price and retention facts for the footer (from each service's docs, 25 Oct 2026).
     var settingsPlanNote: String {
         switch self {
         case .meshy:
-            return "Meshy’s API needs a paid plan: free accounts can’t make API keys. A model costs about \(meshyImageTo3DMeshOnlyCredits) credits (mesh only), and Check Printability with Meshy is free. Meshy deletes models made through the API after 3 days."
+            return "Meshy’s API needs a paid plan: free accounts can’t make API keys. A model costs about \(meshyImageTo3DMeshOnlyCredits) credits (mesh only) from one photo or up to four, plus \(meshyHigherDetailCredits) if you choose Higher detail, and Check Printability with Meshy is free. Meshy deletes models made through the API after 3 days."
         case .tripo:
-            return "Tripo’s API is paid for with credits (1 credit = US$0.01); there’s no free API plan. A replica costs about \(tripoImageToModelCredits + tripoConvertBasicCredits) credits, including its conversion to STL. Keys work only on the Tripo site they were made on."
+            return "Tripo’s API is paid for with credits (1 credit = US$0.01); there’s no free API plan. A replica costs about \(tripoImageToModelCredits + tripoConvertBasicCredits) credits from one photo or up to four, including its conversion to STL, plus \(tripoHigherDetailCredits) if you choose Higher detail. Keys work only on the Tripo site they were made on."
         }
     }
 
@@ -108,7 +108,7 @@ struct ImageTo3DSettingsSection: View {
             Text("3D generation (optional)")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Generate a Replica from an Image sends a photo to the service you choose here, after you agree to it once (Photo sharing, below).")
+                Text("Generate a Replica from an Image sends your photos (a front view and up to three more) to the service you choose here, after you agree to it once (Photo sharing, below).")
                 Text(service.settingsPlanNote)
                 Text(service.settingsLicenceNote)
                 Text(imageTo3DSettingsResponsibilityNote)

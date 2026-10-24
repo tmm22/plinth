@@ -2,14 +2,23 @@ import Foundation
 
 // MARK: - Meshy
 //
-// Meshy's Open API (docs.meshy.ai, read 24 Oct 2026; not tested live). Base `https://api.meshy.ai/openapi`, header
+// Meshy's Open API (docs.meshy.ai, read 24–25 Oct 2026; not tested live). Base `https://api.meshy.ai/openapi`, header
 // `Authorization: Bearer msy_…`. Every create answers 202 `{"result": "<task id>"}` and is then read with
 // `GET …/<id>`; Meshy has no idempotency key and says a 4xx means no task was created, so creates are sent once.
-//   - Image to 3D: `POST /openapi/v1/image-to-3d` (image as a data URI, ≤ 20 MB), read `GET /openapi/v1/image-to-3d/{id}`.
-//     Statuses PENDING, IN_PROGRESS, SUCCEEDED, FAILED, CANCELED; `progress` 0–100; `model_urls` per format (3MF only
-//     when asked for); `task_error.message`. A failed task is refunded.
-//   - Analyze Printability (free): `POST /openapi/v1/print/analyze` from a finished task, read
-//     `GET /openapi/v1/print/analyze/{id}`; `printability` holds the verdict and counts.
+//   - Image to 3D: `POST /openapi/v1/image-to-3d` (`image_url`, a data URI, JPEG/PNG/WebP ≤ 20 MB), read
+//     `GET /openapi/v1/image-to-3d/{id}`. Statuses PENDING, IN_PROGRESS, SUCCEEDED, FAILED, CANCELED; `progress` 0–100;
+//     `model_urls` per format (3MF only when asked for); `task_error.message`. A failed task is refunded.
+//   - Multi-Image to 3D: `POST /openapi/v1/multi-image-to-3d` (`image_urls`, 1–4 data URIs; with meshy-7.1 the first
+//     is the front view and the others' order doesn't matter), read `GET /openapi/v1/multi-image-to-3d/{id}`, same
+//     task shape. Studio uses it for two to four photos.
+//   - Options sent (docs.meshy.ai/api/image-to-3d, /multi-image-to-3d): `should_remesh: false` (Meshy: "For the
+//     highest-quality 3D model, set it to false"; `topology` and `target_polycount` only apply when remeshing, so they
+//     aren't sent — the triangle count is whatever Meshy generates, undocumented, and Studio simplifies on the Mac);
+//     `image_enhancement` (default true, "optimize the input images", which can change details) only when the seller
+//     ticks it; `geometry_resolution` `4k` (single image) or `2k` (multi-image accepts only `2k`) for Higher detail,
+//     +5 credits; `symmetry_mode` is deprecated and never sent.
+//   - Analyze Printability (free): `POST /openapi/v1/print/analyze` from a finished task (the docs list Image to 3D and
+//     Multi-Image to 3D), read `GET /openapi/v1/print/analyze/{id}`; `printability` holds the verdict and counts.
 //   - Repair Printability (10 credits): `POST /openapi/v1/print/repair`, read `GET /openapi/v1/print/repair/{id}`.
 //     From a task ID Meshy always repairs the task's GLB and returns GLB only, so Studio converts the result.
 //   - Convert (1 credit): `POST /openapi/v1/convert` (`input_task_id` or `model_url`, `target_formats`), read
@@ -20,34 +29,53 @@ import Foundation
 //   - Errors: `{"message": "…"}`; 402 = not enough credits or the Free plan (which has no API keys); 429 = rate or
 //     concurrency limit (`Retry-After` on the rate limit only). Generated files stay on assets.meshy.ai for 3 days.
 
-/// Meshy's published credit prices (docs.meshy.ai/api/pricing, 24 Oct 2026). Approximate: prices change.
+/// Meshy's published credit prices (docs.meshy.ai/api/pricing, 25 Oct 2026). Approximate: prices change.
+/// Image to 3D and Multi-Image to 3D cost the same, mesh only.
 let meshyImageTo3DMeshOnlyCredits = 20
+/// The Ultra geometry surcharge (`geometry_resolution` 2k or 4k, meshy-7.1 only).
+let meshyHigherDetailCredits = 5
 let meshyRepairPrintabilityCredits = 10
 let meshyConvertCredits = 1
 /// The model asked for, pinned so the published price (20 credits, mesh only) stays right.
 let meshyAIModel = "meshy-7.1"
 let meshyAPIHost = "api.meshy.ai"
-/// `target_polycount` range when remeshing.
-let meshyPolycountRange = 100...300_000
+/// Higher detail's `geometry_resolution`: 4k ("for the most surface detail") with one photo; Multi-Image to 3D accepts
+/// only 2k. Both cost the same surcharge.
+let meshySingleImageHigherDetailResolution = "4k"
+let meshyMultiImageHigherDetailResolution = "2k"
 /// The size range Analyze and Repair Printability accept for `intended_print_longest_side_mm`.
 let meshyAnalyzeMaxSideMM = 1...1000.0
 
-/// The JSON body for an Image to 3D create. Mesh only (no texture), triangles remeshed to the budget, only the
-/// printable format asked for. `auto_size` with `origin_at: bottom` when the seller wants the base at the origin.
-func meshyImageTo3DBody(imageDataURI: String, options: ImageTo3DOptions) -> [String: Any] {
+/// The options both generation endpoints share: meshy-7.1, mesh only, not remeshed (Meshy keeps the detail it
+/// generates; Studio simplifies on the Mac), photo enhancement only when asked for, only the printable format, and
+/// `auto_size` with `origin_at: bottom` when the seller wants the base at the origin.
+private func meshyGenerationBody(options: ImageTo3DOptions, higherDetailResolution: String) -> [String: Any] {
     var body: [String: Any] = [
-        "image_url": imageDataURI,
         "ai_model": meshyAIModel,
         "should_texture": false,
-        "should_remesh": true,
-        "topology": "triangle",
-        "target_polycount": imageTo3DClampedTriangles(options.targetTriangles, range: meshyPolycountRange),
+        "should_remesh": false,
+        "image_enhancement": options.enhancePhoto,
         "target_formats": [options.format.rawValue]
     ]
+    if options.higherDetail { body["geometry_resolution"] = higherDetailResolution }
     if options.originAtBottom {
         body["auto_size"] = true
         body["origin_at"] = "bottom"
     }
+    return body
+}
+
+/// The JSON body for an Image to 3D create (one photo).
+func meshyImageTo3DBody(imageDataURI: String, options: ImageTo3DOptions) -> [String: Any] {
+    var body = meshyGenerationBody(options: options, higherDetailResolution: meshySingleImageHigherDetailResolution)
+    body["image_url"] = imageDataURI
+    return body
+}
+
+/// The JSON body for a Multi-Image to 3D create: the data URIs in order, front first.
+func meshyMultiImageTo3DBody(imageDataURIs: [String], options: ImageTo3DOptions) -> [String: Any] {
+    var body = meshyGenerationBody(options: options, higherDetailResolution: meshyMultiImageHigherDetailResolution)
+    body["image_urls"] = imageDataURIs
     return body
 }
 
@@ -213,7 +241,7 @@ func runMeshyRepair(client: MeshyClient, ofTask inputTaskID: String, longestSide
                     makeFolder: () throws -> URL = makeImageTo3DTempFolder,
                     progress: @escaping @Sendable (ImageTo3DProgress) -> Void = { _ in }) async -> Result<ImageTo3DGeneratedModel, ImageTo3DStop> {
     if Task.isCancelled {
-        return .failure(ImageTo3DStop(reason: .cancelled, stage: .repairing, service: .meshy, taskID: nil, detail: ""))
+        return .failure(ImageTo3DStop(reason: .cancelled, stage: .repairing, service: .meshy, taskID: nil, detail: "", requestKind: .repair))
     }
     progress(ImageTo3DProgress(stage: .repairing, taskID: inputTaskID, state: nil, percent: nil))
     switch await client.createRepair(ofTask: inputTaskID, longestSideMM: longestSideMM) {
@@ -223,9 +251,11 @@ func runMeshyRepair(client: MeshyClient, ofTask inputTaskID: String, longestSide
                                                options: options, timeout: timeout, sleep: sleep, now: now,
                                                makeFolder: makeFolder, progress: progress)
     case .notSent(let error):
-        return .failure(ImageTo3DStop(reason: .notSent, stage: .repairing, service: .meshy, taskID: nil, detail: error.userMessage))
+        return .failure(ImageTo3DStop(reason: .notSent, stage: .repairing, service: .meshy, taskID: nil, detail: error.userMessage,
+                                      requestKind: .repair))
     case .unknown(let id, let error):
-        return .failure(ImageTo3DStop(reason: .outcomeUnknown, stage: .repairing, service: .meshy, taskID: id, detail: error.userMessage))
+        return .failure(ImageTo3DStop(reason: .outcomeUnknown, stage: .repairing, service: .meshy, taskID: id, detail: error.userMessage,
+                                      requestKind: .repair))
     }
 }
 
@@ -243,8 +273,14 @@ struct MeshyClient: ImageTo3DProvider {
 
     private var secrets: [String] { [apiKey] }
 
-    func estimatedCost(for options: ImageTo3DOptions) -> ImageTo3DCostEstimate {
-        ImageTo3DCostEstimate(service: .meshy, credits: meshyImageTo3DMeshOnlyCredits, breakdown: "Image to 3D, mesh only")
+    /// The same price for one photo or several; Higher detail adds the Ultra surcharge.
+    func estimatedCost(for options: ImageTo3DOptions, photoCount: Int) -> ImageTo3DCostEstimate {
+        let name = photoCount > 1 ? "Multi-Image to 3D" : "Image to 3D"
+        guard options.higherDetail else {
+            return ImageTo3DCostEstimate(service: .meshy, credits: meshyImageTo3DMeshOnlyCredits, breakdown: "\(name), mesh only")
+        }
+        return ImageTo3DCostEstimate(service: .meshy, credits: meshyImageTo3DMeshOnlyCredits + meshyHigherDetailCredits,
+                                     breakdown: "\(name), mesh only \(meshyImageTo3DMeshOnlyCredits) + \(meshyHigherDetailCredits) for higher detail")
     }
 
     /// Repair Printability plus the conversion of its GLB to STL or 3MF.
@@ -259,9 +295,18 @@ struct MeshyClient: ImageTo3DProvider {
         return balance
     }
 
-    func createGeneration(image: ImageTo3DImage, options: ImageTo3DOptions) async -> ImageTo3DCreateResult {
-        if let problem = imageTo3DImageProblem(image) { return .notSent(.invalidInput(problem)) }
-        return await create("/openapi/v1/image-to-3d", body: meshyImageTo3DBody(imageDataURI: meshyImageDataURI(image), options: options),
+    /// One photo goes to Image to 3D; two to four go to Multi-Image to 3D, front first. Sent once.
+    func createGeneration(views: [ImageTo3DViewImage], options: ImageTo3DOptions,
+                          proceed: @escaping @Sendable () -> Bool) async -> ImageTo3DCreateResult {
+        if let problem = imageTo3DViewsProblem(views) { return .notSent(.invalidInput(problem)) }
+        let ordered = imageTo3DOrderedViews(views)
+        guard !Task.isCancelled, proceed() else { return .notSent(.invalidInput(imageTo3DStoppedBeforeSendingMessage)) }
+        if ordered.count == 1 {
+            return await create(Self.readPath(.generation),
+                                body: meshyImageTo3DBody(imageDataURI: meshyImageDataURI(ordered[0].image), options: options), knownTaskID: nil)
+        }
+        return await create(Self.readPath(.multiImageGeneration),
+                            body: meshyMultiImageTo3DBody(imageDataURIs: ordered.map { meshyImageDataURI($0.image) }, options: options),
                             knownTaskID: nil)
     }
 
@@ -279,6 +324,7 @@ struct MeshyClient: ImageTo3DProvider {
     static func readPath(_ kind: ImageTo3DTaskKind) -> String {
         switch kind {
         case .generation: return "/openapi/v1/image-to-3d"
+        case .multiImageGeneration: return "/openapi/v1/multi-image-to-3d"
         case .conversion: return "/openapi/v1/convert"
         case .repair: return "/openapi/v1/print/repair"
         }

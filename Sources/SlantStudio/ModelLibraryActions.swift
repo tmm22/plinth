@@ -207,12 +207,15 @@ private func degenerateTriangleCount(_ mesh: STLMesh) -> Int {
 
 extension STLMesh {
     /// A uniformly scaled binary STL, parsed back and checked before it is returned.
-    func scaledSTLData(by factor: Double) throws -> Data {
+    func scaledSTLData(by factor: Double) throws -> Data { try scaledSTLData(by: factor, maximumTriangles: STLMesh.maximumTriangles) }
+
+    /// `maximumTriangles` is the read-back limit: only the replica pipeline passes more than the library's.
+    func scaledSTLData(by factor: Double, maximumTriangles: Int) throws -> Data {
         guard factor.isFinite, factor > 0 else { throw ScaledCopyError.invalidFactor }
         let f = Float(factor)
         let scaled = STLMesh(vertices: vertices.map { $0 * f }, minimum: minimum * f, maximum: maximum * f)
         let data = scaled.binarySTL()
-        let parsed = try STLMesh.parse(data)
+        let parsed = try STLMesh.parse(data, maximumTriangles: maximumTriangles)
         guard parsed.triangleCount == triangleCount else { throw ScaledCopyError.changedTopology }
         guard degenerateTriangleCount(parsed) <= degenerateTriangleCount(self) else { throw ScaledCopyError.collapsedTriangles }
         let expected = (maximum - minimum) * f

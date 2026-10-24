@@ -2,17 +2,24 @@ import Foundation
 
 // MARK: - Tripo
 //
-// Tripo's v3 API (developers.tripo3d.ai/en/docs, read 24 Oct 2026; not tested live). Two regional sites with
+// Tripo's v3 API (developers.tripo3d.ai/en/docs, read 24–25 Oct 2026; not tested live). Two regional sites with
 // separate keys: international `https://openapi.tripo3d.ai/v3` and China mainland `https://openapi.tripo3d.com/v3`.
 // Header `Authorization: Bearer <key>`. Replies are `{"code": 0, "data": {…}}`; any other code is an error
 // (`{"code", "message", "suggestion"}`).
 //   - Upload: `POST /v3/files`, multipart field `file` (JPEG/PNG ≤ 20 MB) → `data.file_token`. Free.
 //   - Image to model: `POST /v3/generation/image-to-model` with `input` = the file token → `data.task_id`. Generation
-//     gives GLB only (20 credits without texture).
+//     gives GLB only (20 credits without texture). Studio sends `texture: false` and `pbr: false` (PBR defaults to on
+//     and forces texture), and `face_limit` (500 up to 1,500,000 on v3.1, or 2,000,000 with `geometry_quality:
+//     "detailed"`, which adds 20 credits; without it Tripo picks the count).
+//   - Multiview to model: `POST /v3/generation/multiview-to-model` with `inputs` = an array of one-key objects, each
+//     `front`, `left`, `back` or `right` → a file token. Front is required, 2–4 photos, order doesn't matter; same
+//     options and price as image to model. Every photo is uploaded first; any upload failure stops before the create.
+//     Tripo doesn't define `left`; Studio takes it as the object's own left side (as ComfyUI's Tripo node describes it).
 //   - Tasks: `GET /v3/tasks/{id}` → `status` (queued, running, success, failed, banned, expired, cancelled),
 //     `progress` 0–100, `output.model_url` on success (links expire after about 5 minutes), `error_message` on failure.
 //   - Convert: `POST /v3/models/convert` with `input` = the generation task and `format` STL or 3MF → a task whose
-//     `output.model_url` is the file. 5 credits, or 10 with any non-default option (`pivot_to_center_bottom`).
+//     `output.model_url` is the file. 5 credits, or 10 with any non-default option (`pivot_to_center_bottom`,
+//     `face_limit`, …). Without `face_limit` the conversion keeps the generation's face count, so none is sent.
 //   - Balance: `GET /v3/account/balance` → `data.balance`, `data.frozen` (decimals).
 //   - Errors: 401 bad key; 403 no permission or not enough credits (code 2010); 429 code 1007 (rate) or 2000
 //     (concurrency, with Retry-After); 2008 content policy. Credits are frozen at create and released on failure.
@@ -48,24 +55,46 @@ enum TripoRegion: String, CaseIterable, Identifiable, Sendable {
     var termsURL: URL { URL(string: "\(site)/terms")! }
 }
 
-/// Tripo's published credit prices (developers.tripo3d.ai/en/pricing, 24 Oct 2026; 1 credit = US$0.01). Approximate.
+/// Tripo's published credit prices (developers.tripo3d.ai/en/pricing, 25 Oct 2026; 1 credit = US$0.01). Approximate.
+/// Image to model and multiview to model cost the same without texture.
 let tripoImageToModelCredits = 20
+/// The HD geometry add-on (`geometry_quality: "detailed"`, v3.0 or later).
+let tripoHigherDetailCredits = 20
 let tripoConvertBasicCredits = 5
 let tripoConvertAdvancedCredits = 10
 /// The generation model, pinned so the published price stays right.
 let tripoModelVersion = "v3.1-20260211"
-/// `face_limit` range Studio sends (without smart low-poly, which costs 10 more credits).
+/// `face_limit` range Studio sends on v3.1 (without smart low-poly, which costs 10 more credits); detailed geometry
+/// allows up to 2,000,000.
 let tripoFaceLimitRange = 500...1_500_000
+let tripoDetailedFaceLimitRange = 500...2_000_000
 
-/// The JSON body for image-to-model: no texture, no PBR, at most `targetTriangles` faces.
-func tripoImageToModelBody(fileToken: String, options: ImageTo3DOptions) -> [String: Any] {
-    [
-        "input": fileToken,
+/// The options both generation endpoints share: no texture, no PBR, at most `targetTriangles` faces, and detailed
+/// geometry for Higher detail.
+private func tripoGenerationOptions(_ options: ImageTo3DOptions) -> [String: Any] {
+    var body: [String: Any] = [
         "model": tripoModelVersion,
         "texture": false,
         "pbr": false,
-        "face_limit": imageTo3DClampedTriangles(options.targetTriangles, range: tripoFaceLimitRange)
+        "face_limit": imageTo3DClampedTriangles(options.targetTriangles,
+                                                range: options.higherDetail ? tripoDetailedFaceLimitRange : tripoFaceLimitRange)
     ]
+    if options.higherDetail { body["geometry_quality"] = "detailed" }
+    return body
+}
+
+/// The JSON body for image-to-model (one photo).
+func tripoImageToModelBody(fileToken: String, options: ImageTo3DOptions) -> [String: Any] {
+    var body = tripoGenerationOptions(options)
+    body["input"] = fileToken
+    return body
+}
+
+/// The JSON body for multiview-to-model: one `{view: file token}` object per photo, front first.
+func tripoMultiviewToModelBody(fileTokens: [(view: ImageTo3DPhotoView, token: String)], options: ImageTo3DOptions) -> [String: Any] {
+    var body = tripoGenerationOptions(options)
+    body["inputs"] = fileTokens.map { [$0.view.rawValue: $0.token] }
+    return body
 }
 
 /// The JSON body for converting a finished generation to STL or 3MF.
@@ -149,6 +178,25 @@ func tripoError(status: Int, body: Data, retryAfter: String?, secrets: [String])
     return .http(service: .tripo, status: effective, code: code, message: message)
 }
 
+/// An upload failure, naming which photo when there are several. Uploads create nothing, so every one is a refusal:
+/// the key, plan and rate-limit errors keep their own wording; anything else says which photo didn't go.
+func tripoUploadError(_ error: ImageTo3DError, which: String, count: Int) -> ImageTo3DError {
+    guard count > 1 else { return error }
+    let nothing = "The upload of \(which) failed, so nothing was created."
+    switch error {
+    case .notConfigured, .paymentRequired, .rateLimited, .invalidInput:
+        return error
+    case .http(_, 401, _, _):
+        return error
+    case .http, .downloadRefused:
+        return .invalidInput("\(error.userMessage) \(nothing)")
+    case .transport(let message):
+        return .invalidInput("Studio couldn’t reach Tripo: \(message) \(nothing)")
+    case .invalidResponse, .responseTooLarge:
+        return .invalidInput("Tripo’s reply couldn’t be read. \(nothing)")
+    }
+}
+
 struct TripoClient: ImageTo3DProvider {
     let service = ImageTo3DService.tripo
     let region: TripoRegion
@@ -163,10 +211,14 @@ struct TripoClient: ImageTo3DProvider {
 
     private var secrets: [String] { [apiKey] }
 
-    func estimatedCost(for options: ImageTo3DOptions) -> ImageTo3DCostEstimate {
+    /// The same price for one photo or several; Higher detail adds the HD geometry add-on.
+    func estimatedCost(for options: ImageTo3DOptions, photoCount: Int) -> ImageTo3DCostEstimate {
         let convert = options.originAtBottom ? tripoConvertAdvancedCredits : tripoConvertBasicCredits
-        return ImageTo3DCostEstimate(service: .tripo, credits: tripoImageToModelCredits + convert,
-                                     breakdown: "image to model \(tripoImageToModelCredits), conversion to \(options.format.title) \(convert)")
+        let name = photoCount > 1 ? "multiview to model" : "image to model"
+        let detail = options.higherDetail ? tripoHigherDetailCredits : 0
+        let detailText = options.higherDetail ? " + \(tripoHigherDetailCredits) for higher detail" : ""
+        return ImageTo3DCostEstimate(service: .tripo, credits: tripoImageToModelCredits + detail + convert,
+                                     breakdown: "\(name) \(tripoImageToModelCredits)\(detailText), conversion to \(options.format.title) \(convert)")
     }
 
     func readBalance() async throws -> ImageTo3DBalance {
@@ -175,26 +227,37 @@ struct TripoClient: ImageTo3DProvider {
         return balance
     }
 
-    /// Uploads the photo, then sends the generation once. Any upload failure means nothing was created (uploads are
-    /// free), so it is `.notSent`.
-    func createGeneration(image: ImageTo3DImage, options: ImageTo3DOptions) async -> ImageTo3DCreateResult {
-        if let problem = imageTo3DImageProblem(image) { return .notSent(.invalidInput(problem)) }
-        let token: String
-        do {
-            let boundary = "SlantStudio-\(UUID().uuidString)"
-            let reply = try await send("POST", "/v3/files", body: tripoUploadBody(image: image, boundary: boundary),
-                                       contentType: "multipart/form-data; boundary=\(boundary)")
-            guard let value = tripoEnvelopeData(reply.json)?["file_token"] as? String, !value.isEmpty, value.count <= 512 else {
-                return .notSent(.invalidResponse("Tripo didn’t accept the photo upload."))
+    /// Uploads every photo, then sends the generation once: image to model for one photo, multiview to model for two
+    /// to four. Uploads are free and create nothing, so any upload failure (or a stop before the create) is `.notSent`.
+    func createGeneration(views: [ImageTo3DViewImage], options: ImageTo3DOptions,
+                          proceed: @escaping @Sendable () -> Bool) async -> ImageTo3DCreateResult {
+        if let problem = imageTo3DViewsProblem(views) { return .notSent(.invalidInput(problem)) }
+        let ordered = imageTo3DOrderedViews(views)
+        var tokens: [(view: ImageTo3DPhotoView, token: String)] = []
+        for view in ordered {
+            guard !Task.isCancelled, proceed() else { return .notSent(.invalidInput(imageTo3DStoppedBeforeSendingMessage)) }
+            let which = ordered.count == 1 ? "the photo" : "the \(view.view.title.lowercased()) photo"
+            do {
+                let boundary = "SlantStudio-\(UUID().uuidString)"
+                let reply = try await send("POST", "/v3/files", body: tripoUploadBody(image: view.image, boundary: boundary),
+                                           contentType: "multipart/form-data; boundary=\(boundary)")
+                guard let value = tripoEnvelopeData(reply.json)?["file_token"] as? String, !value.isEmpty, value.count <= 512 else {
+                    return .notSent(.invalidResponse("Tripo didn’t accept \(which) upload, so nothing was created."))
+                }
+                tokens.append((view.view, value))
+            } catch let error as ImageTo3DError {
+                return .notSent(tripoUploadError(error, which: which, count: ordered.count))
+            } catch {
+                return .notSent(.transport("The upload of \(which) stopped, so nothing was created."))
             }
-            token = value
-        } catch let error as ImageTo3DError {
-            return .notSent(error)
-        } catch {
-            return .notSent(.transport("The photo upload stopped."))
         }
-        if Task.isCancelled { return .notSent(.invalidInput("Stopped before the generation was sent.")) }
-        return await create("/v3/generation/image-to-model", json: tripoImageToModelBody(fileToken: token, options: options), knownTaskID: nil)
+        guard !Task.isCancelled, proceed() else { return .notSent(.invalidInput(imageTo3DStoppedBeforeSendingMessage)) }
+        if tokens.count == 1 {
+            return await create("/v3/generation/image-to-model", json: tripoImageToModelBody(fileToken: tokens[0].token, options: options),
+                                knownTaskID: nil)
+        }
+        return await create("/v3/generation/multiview-to-model", json: tripoMultiviewToModelBody(fileTokens: tokens, options: options),
+                            knownTaskID: nil)
     }
 
     func readTask(_ taskID: String, kind: ImageTo3DTaskKind) async throws -> ImageTo3DTaskStatus {

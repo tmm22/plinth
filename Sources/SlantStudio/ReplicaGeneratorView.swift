@@ -2,8 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 // The Generate a Replica from an Image sheet (ReplicaGenerator.swift holds the pure pipeline and rules). Opened from
-// Models › Import and File; never from a shortcut. Everything typed or chosen here, the photo and the downloaded model
-// live in this sheet's memory and go when it closes; closing cancels running work. Paid requests whose outcome is
+// Models › Import and File; never from a shortcut. Everything typed or chosen here, the photos (a front view and up to
+// three more) and the downloaded model live in this sheet's memory and go when it closes; closing cancels running
+// work. Only Meshy's photo touch-up choice is remembered (a plain preference). Paid requests whose outcome is
 // unconfirmed are remembered for the session in `ImageTo3DConnection` (service, task and time only).
 
 extension StudioStore {
@@ -53,6 +54,8 @@ struct GeneratedReplicaFile {
     let service: ImageTo3DService
     let sourceTaskID: String
     let sourceKind: ImageTo3DTaskKind
+    /// The views the photos showed, for the review hand-off. No photo is kept.
+    let views: [ImageTo3DPhotoView]
 }
 
 /// The sheet's run state. Lives and dies with the sheet.
@@ -78,6 +81,8 @@ struct GeneratedReplicaFile {
     private(set) var lastInputs: ReplicaInputs?
     private(set) var lastUpAxis: ReplicaUpAxis = .z
     private(set) var estimate: ImageTo3DCostEstimate?
+    /// The views sent with the latest generation.
+    private(set) var requestedViews: [ImageTo3DPhotoView] = []
     private var options: ImageTo3DOptions?
     private var provider: ImageTo3DProvider?
     private var control: ReplicaRunControl?
@@ -104,17 +109,27 @@ struct GeneratedReplicaFile {
 
     // MARK: Remote
 
-    func start(provider: ImageTo3DProvider, image: ImageTo3DImage, inputs: ReplicaInputs, host: ReplicaLibraryHost) {
-        guard !isRunning else { return }
+    /// Sends the photos once. One photo goes to the single-image endpoint, two to four to the multi-view one.
+    func start(provider: ImageTo3DProvider, views: [ImageTo3DViewImage], inputs: ReplicaInputs, higherDetail: Bool = false,
+               enhancePhoto: Bool = false, host: ReplicaLibraryHost) {
+        guard !isRunning, imageTo3DViewsProblem(views) == nil else { return }
         self.provider = provider
-        let options = replicaGenerationOptions(for: provider.service, purpose: inputs.purpose)
+        let options = replicaGenerationOptions(for: provider.service, purpose: inputs.purpose, higherDetail: higherDetail,
+                                               enhancePhoto: enhancePhoto)
         self.options = options
-        estimate = provider.estimatedCost(for: options)
+        estimate = provider.estimatedCost(for: options, photoCount: views.count)
+        requestedViews = imageTo3DOrderedViews(views).map(\.view)
         lastStop = nil
         lastStopRecordID = nil
-        runRemote(inputs: inputs, host: host) { sleep, report in
-            await runImageTo3DGeneration(provider: provider, image: image, options: options, sleep: sleep, progress: report)
+        runRemote(inputs: inputs, host: host) { sleep, proceed, report in
+            await runImageTo3DGeneration(provider: provider, views: views, options: options, sleep: sleep, proceed: proceed,
+                                         progress: report)
         }
+    }
+
+    /// One photo, as the front view.
+    func start(provider: ImageTo3DProvider, image: ImageTo3DImage, inputs: ReplicaInputs, host: ReplicaLibraryHost) {
+        start(provider: provider, views: [ImageTo3DViewImage(view: .front, image: image)], inputs: inputs, host: host)
     }
 
     /// Keep Waiting, Try Download Again or Try Conversion Again: carries on from the stop's resume point. Never
@@ -122,13 +137,14 @@ struct GeneratedReplicaFile {
     func resume(inputs: ReplicaInputs, host: ReplicaLibraryHost) {
         guard !isRunning, let stop = lastStop, let point = stop.resumePoint, replicaResumeAction(for: stop) != nil,
               let provider, provider.service == stop.service, let options else { return }
-        runRemote(inputs: inputs, host: host) { sleep, report in
+        runRemote(inputs: inputs, host: host) { sleep, _, report in
             await resumeImageTo3DGeneration(provider: provider, from: point, options: options, sleep: sleep, progress: report)
         }
     }
 
     private func runRemote(inputs: ReplicaInputs, host: ReplicaLibraryHost,
                            body: @escaping @Sendable (_ sleep: @escaping ImageTo3DSleep,
+                                                      _ proceed: @escaping @Sendable () -> Bool,
                                                       _ report: @escaping @Sendable (ImageTo3DProgress) -> Void) async -> Result<ImageTo3DGeneratedModel, ImageTo3DStop>) {
         let control = ReplicaRunControl()
         self.control = control
@@ -137,6 +153,8 @@ struct GeneratedReplicaFile {
         stopping = false
         processingProblem = nil
         let sleep = replicaInterruptibleSleep(control)
+        // Asked before each Tripo upload and before the create: a Stop pressed by then sends nothing more.
+        let proceed: @Sendable () -> Bool = { !control.isStopRequested }
         let report: @Sendable (ImageTo3DProgress) -> Void = { [weak self] value in
             control.report(value)
             DispatchQueue.main.async {
@@ -146,7 +164,7 @@ struct GeneratedReplicaFile {
         let connection = connection
         connection.beginWork()
         let task = Task { @MainActor [weak self] in
-            let result = await body(sleep, report)
+            let result = await body(sleep, proceed, report)
             connection.endWork()
             guard let self, self.control === control else {
                 // The sheet closed. A paid request whose outcome is unknown, or a model nobody will see, is
@@ -195,7 +213,7 @@ struct GeneratedReplicaFile {
             case .success(let mesh):
                 connection.confirmDelivered(service: model.service, sourceTaskID: model.sourceTaskID)
                 generated = GeneratedReplicaFile(mesh: mesh, service: model.service, sourceTaskID: model.sourceTaskID,
-                                                 sourceKind: model.sourceKind)
+                                                 sourceKind: model.sourceKind, views: requestedViews)
                 lastStop = nil
                 lastStopRecordID = nil
                 meshyReport = nil
@@ -329,16 +347,17 @@ struct GeneratedReplicaFile {
         phase = .saved
         host.addReplicaActivity(Activity(title: "Generate Replica",
                                          detail: replicaSavedActivityDetail(service: generated.service, triangles: processed.mesh.triangleCount,
-                                                                             estimate: estimate),
+                                                                             estimate: estimate, photoCount: generated.views.count),
                                          success: true))
     }
 
     // MARK: Meshy's free check
 
-    /// Meshy's Analyze Printability (free) of its own model at `longestSideMM`. Read-only for credits; sent once.
+    /// Meshy's Analyze Printability (free) of its own model at `longestSideMM`. Read-only for credits; sent once. Meshy
+    /// documents it for Image to 3D and Multi-Image to 3D tasks alike.
     func analyzeWithMeshy(longestSideMM: Double, host: ReplicaLibraryHost) {
         guard !analyzing, let client = provider as? MeshyClient, let generated, generated.service == .meshy,
-              generated.sourceKind == .generation else { return }
+              generated.sourceKind.isGeneration else { return }
         analyzing = true
         analysisProblem = nil
         let connection = connection
@@ -380,17 +399,29 @@ func replicaPreviewImage(_ mesh: STLMesh, size: Int = 220, isCancelled: () -> Bo
 
 // MARK: - Sheet
 
+/// One photo slot in the sheet: the prepared photo (memory only), its preview, the file's name and any problem.
+struct ReplicaPhotoSlot {
+    var image: ImageTo3DImage?
+    var preview: NSImage?
+    var name: String?
+    var problem: String?
+    var preparing = false
+}
+
 struct ReplicaGeneratorSheet: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject private var connection = ImageTo3DConnection.shared
     @StateObject private var session = ReplicaGeneratorSession()
 
-    @State private var photo: ImageTo3DImage?
-    @State private var photoPreview: NSImage?
-    @State private var photoName: String?
-    @State private var photoProblem: String?
-    @State private var preparingPhoto = false
-    @State private var photoJob: Task<Void, Never>?
+    @State private var slots: [ImageTo3DPhotoView: ReplicaPhotoSlot] = [:]
+    @State private var photoJobs: [ImageTo3DPhotoView: Task<Void, Never>] = [:]
+    @State private var dropTarget: ImageTo3DPhotoView?
+    /// Remembered: holds no customer data, and costs nothing.
+    @AppStorage(replicaMeshyPhotoEnhancementDefaultsKey) private var enhancePhoto = false
+    /// Never remembered: it costs more every time.
+    @State private var higherDetail = false
+    /// What the cost shown covered when Generate was pressed; the send goes ahead only if nothing changed since.
+    @State private var pendingPlan: ReplicaRequestPlan?
     @State private var name = ""
     @State private var axis: ReplicaSizeAxis = .height
     @State private var sizeText = ""
@@ -401,16 +432,27 @@ struct ReplicaGeneratorSheet: View {
     @State private var consentRequest: ImageSharingConsentRequest?
     @State private var confirmGenerateAgain = false
     @State private var closeWarning: ReplicaCloseWarning?
-    @State private var dropTargeted = false
 
     private var service: ImageTo3DService { connection.selectedService }
+    /// The chosen photos in slot order.
+    private var views: [ImageTo3DViewImage] {
+        ImageTo3DPhotoView.allCases.compactMap { view in slots[view]?.image.map { ImageTo3DViewImage(view: view, image: $0) } }
+    }
+    private var preparingPhotos: Bool { slots.values.contains { $0.preparing } }
     private var estimate: ImageTo3DCostEstimate {
-        replicaCostEstimate(service: service, purpose: purpose, tripoRegion: connection.tripoRegion)
+        replicaCostEstimate(service: service, purpose: purpose, photoCount: max(1, views.count), higherDetail: higherDetail,
+                            tripoRegion: connection.tripoRegion)
+    }
+    private var currentPlan: ReplicaRequestPlan {
+        ReplicaRequestPlan(service: service, views: views.map(\.view), higherDetail: higherDetail,
+                           enhancePhoto: service == .meshy && enhancePhoto, credits: estimate.credits)
     }
     private var inputs: ReplicaInputs? { replicaInputs(name: name, axis: axis, sizeText: sizeText, purpose: purpose) }
     private var blockedReasons: [String] {
-        replicaGenerateBlockedReasons(photoReady: photo != nil, photoPreparing: preparingPhoto, nameText: name, sizeText: sizeText,
-                                      service: service, hasKey: connection.hasKey(service))
+        let hasFront = slots[.front]?.image != nil
+        return replicaGenerateBlockedReasons(photoReady: hasFront, photoPreparing: preparingPhotos, nameText: name, sizeText: sizeText,
+                                             service: service, hasKey: connection.hasKey(service),
+                                             extraPhotosWithoutFront: !hasFront && !views.isEmpty)
     }
     private var inputsLocked: Bool { session.isRunning || session.phase == .saved }
     private var currentCloseWarning: ReplicaCloseWarning? {
@@ -425,7 +467,7 @@ struct ReplicaGeneratorSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Generate a replica from an image").font(.title2.weight(.bold))
-                Text("\(service.title) makes a 3D model from one photo. Studio then scales it to the size you give, repairs it on this Mac and shows you the result before saving it as a new model in your library. Nothing is uploaded to Slant.")
+                Text("\(service.title) makes a 3D model from a front photo, and up to three more views if you add them. Studio then scales it to the size you give, repairs it on this Mac and shows you the result before saving it as a new model in your library. Nothing is uploaded to Slant.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -445,7 +487,9 @@ struct ReplicaGeneratorSheet: View {
         .interactiveDismissDisabled(session.isRunning || currentCloseWarning != nil)
         .imageSharingConsent($consentRequest)
         .onDisappear {
-            photoJob?.cancel()
+            for job in photoJobs.values { job.cancel() }
+            photoJobs = [:]
+            slots = [:]
             session.cancelAll()
         }
     }
@@ -454,44 +498,70 @@ struct ReplicaGeneratorSheet: View {
 
     private var photoSection: some View {
         Section {
-            HStack(alignment: .top, spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(dropTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
-                                      style: StrokeStyle(lineWidth: 1, dash: photoPreview == nil ? [4] : []))
-                    if let photoPreview {
-                        Image(nsImage: photoPreview).resizable().scaledToFit().padding(4)
-                            .accessibilityLabel("Chosen photo")
-                    } else if preparingPhoto {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("Drop a photo here").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 140, height: 140)
-                .dropDestination(for: URL.self) { urls, _ in
-                    guard !inputsLocked, let url = urls.first(where: \.isFileURL) else { return false }
-                    choosePhoto(url)
-                    return true
-                } isTargeted: { dropTargeted = $0 }
-                VStack(alignment: .leading, spacing: 8) {
-                    if let photoName { Text(photoName).font(.callout).lineLimit(1).truncationMode(.middle) }
-                    Button(photo == nil ? "Choose Photo…" : "Choose Another Photo…") { pickPhoto() }
-                        .disabled(inputsLocked || preparingPhoto)
-                    Text(replicaPhotoAdvice).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let photoProblem {
-                        Label(photoProblem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(ImageTo3DPhotoView.allCases) { view in photoSlot(view) }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(ImageTo3DPhotoView.allCases.filter { slots[$0]?.problem != nil }) { view in
+                Label("\(view.title): \(slots[view]?.problem ?? "")", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(replicaPhotoAdvice)
+                Text(replicaPhotoDistanceAdvice)
+            }
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         } header: {
-            Text("Photo")
+            Text("Photos")
         } footer: {
-            Text("Studio resizes the photo and removes its location, camera and other hidden details before sending it. It isn’t saved.")
+            Text("Studio resizes each photo and removes its location, camera and other hidden details before sending it. Photos aren’t saved.")
                 .settingsFooterLayout()
         }
+    }
+
+    /// One labelled slot: drop a photo on it, or Choose…; Remove clears it.
+    private func photoSlot(_ view: ImageTo3DPhotoView) -> some View {
+        let slot = slots[view] ?? ReplicaPhotoSlot()
+        return VStack(alignment: .leading, spacing: 4) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(dropTarget == view ? Color.accentColor : Color.secondary.opacity(0.4),
+                                  style: StrokeStyle(lineWidth: 1, dash: slot.preview == nil ? [4] : []))
+                if let preview = slot.preview {
+                    Image(nsImage: preview).resizable().scaledToFit().padding(4)
+                        .accessibilityLabel("\(view.title) photo")
+                } else if slot.preparing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text(view == .front ? "Drop the front photo here" : "Drop a photo here")
+                        .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(6)
+                }
+            }
+            .frame(width: 104, height: 104)
+            .dropDestination(for: URL.self) { urls, _ in
+                guard !inputsLocked, let url = urls.first(where: \.isFileURL) else { return false }
+                choosePhoto(url, for: view)
+                return true
+            } isTargeted: { targeted in
+                if targeted { dropTarget = view } else if dropTarget == view { dropTarget = nil }
+            }
+            Text(view == .front ? "\(view.title) (required)" : "\(view.title) (optional)")
+                .font(.caption.weight(view == .front ? .semibold : .regular))
+            if let name = slot.name {
+                Text(name).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).frame(width: 104, alignment: .leading)
+            }
+            Button(slot.image == nil ? "Choose…" : "Replace…") { pickPhoto(for: view) }
+                .controlSize(.small)
+                .disabled(inputsLocked || slot.preparing)
+                .accessibilityLabel(slot.image == nil ? "Choose \(view.title.lowercased()) photo" : "Replace \(view.title.lowercased()) photo")
+            if slot.image != nil || slot.problem != nil {
+                Button("Remove") { removePhoto(view) }
+                    .controlSize(.small)
+                    .disabled(inputsLocked)
+                    .accessibilityLabel("Remove \(view.title.lowercased()) photo")
+            }
+        }
+        .frame(width: 112, alignment: .leading)
     }
 
     private var detailsSection: some View {
@@ -527,7 +597,7 @@ struct ReplicaGeneratorSheet: View {
         } header: {
             Text("Replica")
         } footer: {
-            Text("Neither service knows how big the object really is, so Studio scales the model to this measurement. A display piece is made with more detail (about \(replicaDisplayTriangleTarget.formatted()) triangles); a functional part with \(replicaTriangleTarget.formatted()), so Reinforce and Auto-improve can work on it. The purpose is also passed to Review for Printing with Claude.")
+            Text("Neither service knows how big the object really is, so Studio scales the model to this measurement. Studio asks the service for more detail than it keeps, then simplifies on this Mac: a display piece keeps up to \(replicaDisplayTriangleCeiling.formatted()) triangles; a functional part \(replicaTriangleTarget.formatted()), so Reinforce and Auto-improve can work on it. The purpose is also passed to Review for Printing with Claude.")
                 .settingsFooterLayout()
         }
         .disabled(inputsLocked)
@@ -541,7 +611,19 @@ struct ReplicaGeneratorSheet: View {
                     Text(connection.hasKey(service) ? "Key saved" : "No key").foregroundStyle(.secondary)
                 }
             }
-            Text(estimate.summary).font(.callout).foregroundStyle(.secondary)
+            if service == .meshy {
+                Toggle("Let Meshy touch up the photos", isOn: $enhancePhoto)
+                    .disabled(inputsLocked)
+                if enhancePhoto {
+                    Text(replicaPhotoEnhancementNote).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Toggle("Higher detail", isOn: $higherDetail)
+                .disabled(inputsLocked)
+            Text(replicaHigherDetailNote(service: service, photoCount: max(1, views.count)))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(replicaCostLine(estimate, photoCount: views.count)).font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Change in Settings…") { store.requestSettings(.designTools) }
@@ -680,7 +762,7 @@ struct ReplicaGeneratorSheet: View {
             Text("The details above changed since this result was made. Process Again to apply them before saving.")
                 .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
         }
-        if session.generated?.service == .meshy, session.generated?.sourceKind == .generation {
+        if session.generated?.service == .meshy, session.generated?.sourceKind.isGeneration == true {
             meshyAnalysis(processed)
         }
     }
@@ -770,8 +852,11 @@ struct ReplicaGeneratorSheet: View {
         }
         .padding(20)
         .confirmationDialog("Generate another model?", isPresented: $confirmGenerateAgain, titleVisibility: .visible) {
-            Button("Generate Again") { DispatchQueue.main.async { startWithConsent() } }
-            Button("Don’t Generate", role: .cancel) {}
+            Button("Generate Again") {
+                let plan = pendingPlan
+                DispatchQueue.main.async { if let plan { startWithConsent(plan) } }
+            }
+            Button("Don’t Generate", role: .cancel) { pendingPlan = nil }
                 .keyboardShortcut(.defaultAction)
         } message: {
             // The message's first part covers this sheet's own stop, so the notice leaves it out.
@@ -806,7 +891,7 @@ struct ReplicaGeneratorSheet: View {
     private var generateButton: some View {
         let button = Button(session.phase == .ready ? "Generate Replica" : "Generate Again…") { requestGenerate() }
             .disabled(!blockedReasons.isEmpty || session.isRunning)
-            .help("Sends the photo to \(service.title) once. \(estimate.summary)")
+            .help("Sends the \(views.count > 1 ? "photos" : "photo") to \(service.title) once. \(estimate.summary)")
         if session.phase == .processed {
             button
         } else {
@@ -816,44 +901,58 @@ struct ReplicaGeneratorSheet: View {
 
     // MARK: Actions
 
-    private func pickPhoto() {
+    private func pickPhoto(for view: ImageTo3DPhotoView) {
         let panel = NSOpenPanel()
-        panel.message = "Choose one photo of the object, on a plain background."
+        panel.message = view == .front
+            ? "Choose a photo of the object’s front, on a plain background."
+            : "Choose a photo of the object’s \(view.title.lowercased()), with the same lighting as the front photo."
         panel.allowedContentTypes = [.jpeg, .png, .heic]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        choosePhoto(url)
+        choosePhoto(url, for: view)
     }
 
-    private func choosePhoto(_ url: URL) {
+    private func removePhoto(_ view: ImageTo3DPhotoView) {
         guard !inputsLocked else { return }
-        photoJob?.cancel()
-        preparingPhoto = true
-        photoProblem = nil
+        photoJobs[view]?.cancel()
+        photoJobs[view] = nil
+        slots[view] = nil
+        startProblem = nil
+    }
+
+    /// Prepares the photo for the 3D services (2048 px, no metadata, transparency kept) off the main actor.
+    private func choosePhoto(_ url: URL, for view: ImageTo3DPhotoView) {
+        guard !inputsLocked else { return }
+        photoJobs[view]?.cancel()
+        var slot = slots[view] ?? ReplicaPhotoSlot()
+        slot.preparing = true
+        slot.problem = nil
+        slots[view] = slot
         startProblem = nil
         let job = Task { @MainActor in
             let result = await Task.detached(priority: .userInitiated) { () -> Result<PreparedImage, Error> in
                 let access = url.startAccessingSecurityScopedResource()
                 defer { if access { url.stopAccessingSecurityScopedResource() } }
-                return Result { try prepareImageForSharing(at: url, maxLongEdge: imagePreparationMaxLongEdge) }
+                return Result { try prepareImageForSharing(at: url, profile: .imageTo3D) }
             }.value
             guard !Task.isCancelled else { return }
-            preparingPhoto = false
+            photoJobs[view] = nil
+            var updated = slots[view] ?? ReplicaPhotoSlot()
+            updated.preparing = false
             switch result {
             case .success(let prepared):
                 let image = ImageTo3DImage(data: prepared.data, mediaType: prepared.mediaType.rawValue)
                 if let problem = imageTo3DImageProblem(image) {
-                    photoProblem = problem
-                    return
+                    updated.problem = problem
+                } else {
+                    updated = ReplicaPhotoSlot(image: image, preview: NSImage(data: prepared.data), name: url.lastPathComponent)
                 }
-                photo = image
-                photoPreview = NSImage(data: prepared.data)
-                photoName = url.lastPathComponent
             case .failure(let error):
-                photoProblem = error.localizedDescription
+                updated.problem = error.localizedDescription
             }
+            slots[view] = updated
         }
-        photoJob = job
+        photoJobs[view] = job
     }
 
     private func checkBalance() {
@@ -879,31 +978,40 @@ struct ReplicaGeneratorSheet: View {
         }
     }
 
+    /// Captures what the cost shown covers, then asks first when anything may already have been charged.
     private func requestGenerate() {
         startProblem = nil
-        guard blockedReasons.isEmpty, !session.isRunning else { return }
+        guard blockedReasons.isEmpty, !session.isRunning, imageTo3DViewsProblem(views) == nil else { return }
+        let plan = currentPlan
         if replicaGenerateNeedsConfirmation(lastStop: session.lastStop, modelAlreadyMade: session.generated != nil,
                                             earlierUnconfirmed: connection.hasUnconfirmedRequests) {
+            pendingPlan = plan
             confirmGenerateAgain = true
         } else {
-            startWithConsent()
+            startWithConsent(plan)
         }
     }
 
-    private func startWithConsent() {
-        let chosen = service
-        runWithImageSharingConsent(chosen.sharingService, request: $consentRequest) { start(chosen) }
+    /// One consent per service covers all its photos.
+    private func startWithConsent(_ plan: ReplicaRequestPlan) {
+        pendingPlan = nil
+        runWithImageSharingConsent(plan.service.sharingService, request: $consentRequest) { start(plan) }
     }
 
-    private func start(_ chosen: ImageTo3DService) {
-        guard connection.selectedService == chosen, blockedReasons.isEmpty, !session.isRunning,
-              let photo, let inputs else { return }
+    /// Sends only what the seller saw priced: the same service, photos, Higher detail and touch-up choice.
+    private func start(_ plan: ReplicaRequestPlan) {
+        guard blockedReasons.isEmpty, !session.isRunning, let inputs else { return }
+        guard currentPlan == plan else {
+            startProblem = "The photos or options changed after the cost was shown, so nothing was sent. Check the cost, then choose Generate Replica again."
+            return
+        }
         let provider: ImageTo3DProvider
-        do { provider = try connection.provider(for: chosen) } catch {
+        do { provider = try connection.provider(for: plan.service) } catch {
             startProblem = imageTo3DRedacted((error as? ImageTo3DError)?.userMessage ?? error.localizedDescription)
             return
         }
-        session.start(provider: provider, image: photo, inputs: inputs, host: store)
+        session.start(provider: provider, views: views, inputs: inputs, higherDetail: plan.higherDetail,
+                      enhancePhoto: plan.enhancePhoto, host: store)
     }
 
     private func close() {
@@ -922,7 +1030,7 @@ struct ReplicaGeneratorSheet: View {
         guard let id = session.savedModelIDs.last, store.localModels.contains(where: { $0.id == id }),
               let processed = session.processed, let inputs = session.lastInputs, let service = session.generated?.service else { return }
         let context = replicaPrintReviewContext(service: service, size: processed.size, purpose: inputs.purpose,
-                                                meshyReport: session.meshyReport)
+                                                meshyReport: session.meshyReport, views: session.generated?.views ?? [.front])
         store.openPrintReviewAfterReplica(PrintReviewRequest(modelID: id, context: context))
     }
 }

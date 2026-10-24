@@ -3,11 +3,12 @@ import simd
 
 // MARK: - Generate a Replica from an Image
 //
-// One photo goes to the seller's chosen 3D service (Meshy or Tripo3D, ImageTo3D.swift), which makes a mesh. Studio
-// then works on this Mac only, in a fixed order: read the file, (optionally) stand it upright, scale it to the real
-// size the seller typed (neither service knows it), repair, simplify when above the purpose's ceiling (Reinforce's
-// 20,000-triangle limit for a functional part, 200,000 for a display piece), fit the size again if repair removed
-// fragments, then check it. The seller sees the result, chooses which way is up, and only then is one library copy,
+// One to four photos (a front view, and optionally the left side, back and right side) go to the seller's chosen 3D
+// service (Meshy or Tripo3D, ImageTo3D.swift), which makes a mesh. Studio asks for more detail than it keeps, then
+// works on this Mac only, in a fixed order: read the file (up to `replicaMaximumModelTriangles`, far above the
+// library's limit), (optionally) stand it upright, scale it to the real size the seller typed (neither service knows
+// it), repair, simplify when above the purpose's ceiling (Reinforce's 20,000-triangle limit for a functional part,
+// 200,000 for a display piece), fit the size again if repair removed fragments, then check it. The seller sees the result, chooses which way is up, and only then is one library copy,
 // "<name> (replica)", saved. The paid model stays in memory, so processing it again is free.
 //
 // Rules this file keeps:
@@ -17,21 +18,32 @@ import simd
 //   - Generating again after anything that may have spent credits needs an explicit confirmation.
 //   - Photos, names, sizes and the downloaded model stay in memory with the sheet; temporary files live in
 //     `SlantStudio-Replica-…` folders (removed after the import, and at launch). Activity gets service, status,
-//     counts and credits only.
+//     counts (photos and triangles) and credits only.
+//   - Higher detail costs more every time, so it is chosen per replica and never remembered; Meshy's photo touch-up
+//     is a remembered preference (`replicaMeshyPhotoEnhancementDefaultsKey`), off by default.
 //   - Everything geometric is deterministic: the wave-1 mesh tools walk index order, and so does this file.
 
 /// Temporary folders for the replica on its way into the library; listed in `personalisationTempFolderPrefixes`.
 let replicaTempFolderPrefix = "SlantStudio-Replica-"
 /// The smallest real size accepted: smaller replicas lose almost all detail on an FDM printer.
 let replicaMinimumSizeMM = 5.0
-/// The triangle budget asked of the service for a functional part, and kept after simplifying (Reinforce and
-/// Auto-improve's limit).
+/// The triangles kept for a functional part after simplifying (Reinforce and Auto-improve's limit).
 let replicaTriangleTarget = imageTo3DDefaultTriangleTarget
-/// The triangle budget asked of the service for a display piece, where detail matters more than the tools'
-/// 20,000-triangle limit. Within both services' documented ranges (Meshy 100–300,000; Tripo 500–1,500,000).
-let replicaDisplayTriangleTarget = 150_000
+/// The triangle budget asked of Tripo (`face_limit`) for a functional part: five times what Studio keeps, so its own
+/// simplification chooses which detail goes. Meshy isn't remeshed, so it sends what it generates.
+let replicaFunctionalTriangleRequest = 100_000
+/// The triangle budget asked of Tripo for a display piece: more than Studio keeps (a 25 MB STL), within its v3.1 range
+/// (500–1,500,000; 2,000,000 with detailed geometry).
+let replicaDisplayTriangleTarget = 500_000
 /// A display piece is simplified only above this, well below the 500,000-triangle import limit.
 let replicaDisplayTriangleCeiling = 200_000
+/// The most triangles the replica pipeline reads from a downloaded model: what fits in the 128 MB download as binary
+/// STL (50 bytes a triangle). Meshy doesn't document how many an unremeshed model has. Repair and simplify work on it in
+/// memory and the saved copy is always within the library's 500,000-triangle limit. 3MF downloads keep the library's
+/// limit (Studio asks both services for STL).
+let replicaMaximumModelTriangles = Int(imageTo3DMaxDownloadBytes / 50)
+/// The preference for Meshy's photo touch-up (`image_enhancement`). Holds only true or false.
+let replicaMeshyPhotoEnhancementDefaultsKey = "replicaMeshyPhotoEnhancement"
 /// "Checks found no problems" needs overhangs (faces down more steeply than 45° from vertical) on under this
 /// share of the surface: more usually needs supports or another orientation.
 let replicaOverhangShareLimit = printReviewOverhangLimit
@@ -102,14 +114,14 @@ enum ReplicaPurpose: String, CaseIterable, Identifiable, Sendable {
     /// direction, so it's left for them to set.
     var partIntent: PartIntent? { self == .display ? PartIntent(purpose: .decorative) : nil }
 
-    /// Triangles asked of the service: more detail for a display piece; Reinforce's limit for a functional part.
-    var requestedTriangles: Int { self == .display ? replicaDisplayTriangleTarget : replicaTriangleTarget }
+    /// Triangles asked of Tripo: more than Studio keeps for either purpose, so Studio's simplification decides.
+    var requestedTriangles: Int { self == .display ? replicaDisplayTriangleTarget : replicaFunctionalTriangleRequest }
     /// Studio simplifies only above this, down to it.
     var triangleCeiling: Int { self == .display ? replicaDisplayTriangleCeiling : replicaTriangleTarget }
 }
 
 /// Shown under Purpose for a functional part.
-let replicaFunctionalPartWarning = "A model made from one photo isn’t dimensionally accurate: only the size you type is measured, and holes, slots and other sizes are the service’s guess. For a part that must fit something, use Design an Accessory from a Photo… (in the Import menu and the File menu) instead."
+let replicaFunctionalPartWarning = "A model made from photos isn’t dimensionally accurate: only the size you type is measured, and holes, slots and other sizes are the service’s guess. For a part that must fit something, use Design an Accessory from a Photo… (in the Import menu and the File menu) instead."
 
 /// What the seller typed, checked: used for processing and the review hand-off. Memory only.
 struct ReplicaInputs: Equatable, Sendable {
@@ -147,14 +159,17 @@ func replicaCopyName(_ name: String) -> String {
     return base + replicaNameSuffix
 }
 
-/// What the service is asked for. Mesh only, STL, the purpose's triangle budget. The origin option is kept for Meshy
-/// (free) and left off for Tripo, where it makes the conversion cost 10 credits instead of 5: Studio places the
-/// model itself.
-func replicaGenerationOptions(for service: ImageTo3DService, purpose: ReplicaPurpose) -> ImageTo3DOptions {
+/// What the service is asked for. Mesh only, STL, the purpose's triangle budget, Higher detail only when ticked, and
+/// Meshy's photo touch-up only when ticked (never for Tripo). The origin option is kept for Meshy (free) and left off
+/// for Tripo, where it makes the conversion cost 10 credits instead of 5: Studio places the model itself.
+func replicaGenerationOptions(for service: ImageTo3DService, purpose: ReplicaPurpose, higherDetail: Bool = false,
+                              enhancePhoto: Bool = false) -> ImageTo3DOptions {
     var options = ImageTo3DOptions()
     options.targetTriangles = purpose.requestedTriangles
     options.format = .stl
     options.originAtBottom = service == .meshy
+    options.higherDetail = higherDetail
+    options.enhancePhoto = service == .meshy && enhancePhoto
     return options
 }
 
@@ -169,17 +184,34 @@ private struct ReplicaOfflineTransport: ImageTo3DTransport {
 }
 
 /// The published price of a replica with `service`, before anything is sent. No key is read.
-func replicaCostEstimate(service: ImageTo3DService, purpose: ReplicaPurpose = .functional,
-                         tripoRegion: TripoRegion = .international) -> ImageTo3DCostEstimate {
+func replicaCostEstimate(service: ImageTo3DService, purpose: ReplicaPurpose = .functional, photoCount: Int = 1,
+                         higherDetail: Bool = false, tripoRegion: TripoRegion = .international) -> ImageTo3DCostEstimate {
     makeImageTo3DProvider(service, key: "", tripoRegion: tripoRegion, transport: ReplicaOfflineTransport())
-        .estimatedCost(for: replicaGenerationOptions(for: service, purpose: purpose))
+        .estimatedCost(for: replicaGenerationOptions(for: service, purpose: purpose, higherDetail: higherDetail), photoCount: photoCount)
+}
+
+/// The cost line under the service: the estimate, then whether extra photos change it. Both services charge the same
+/// for two to four photos as for one.
+func replicaCostLine(_ estimate: ImageTo3DCostEstimate, photoCount: Int) -> String {
+    photoCount > 1 ? "\(estimate.summary) Extra photos don’t change the price." : estimate.summary
+}
+
+/// What the seller chose that changes the request or its price, captured when Generate is pressed so a later change
+/// (another photo, Higher detail, the service) can't slip past the cost that was shown.
+struct ReplicaRequestPlan: Equatable, Sendable {
+    let service: ImageTo3DService
+    let views: [ImageTo3DPhotoView]
+    let higherDetail: Bool
+    let enhancePhoto: Bool
+    let credits: Int
 }
 
 /// What still stops Generate Replica, in the order the sheet shows them. Empty when it can start.
 func replicaGenerateBlockedReasons(photoReady: Bool, photoPreparing: Bool, nameText: String, sizeText: String,
-                                   service: ImageTo3DService, hasKey: Bool) -> [String] {
+                                   service: ImageTo3DService, hasKey: Bool, extraPhotosWithoutFront: Bool = false) -> [String] {
     var reasons: [String] = []
-    if photoPreparing { reasons.append("Wait while Studio prepares the photo.") }
+    if photoPreparing { reasons.append("Wait while Studio prepares the photos.") }
+    else if extraPhotosWithoutFront { reasons.append("Add a front photo: the other views go with it.") }
     else if !photoReady { reasons.append("Choose a photo of the object.") }
     if let problem = replicaNameProblem(nameText) { reasons.append(problem == "Enter a name." ? "Enter a name for the replica." : problem) }
     if let problem = replicaSizeProblem(sizeText) { reasons.append(problem) }
@@ -187,7 +219,21 @@ func replicaGenerateBlockedReasons(photoReady: Bool, photoPreparing: Bool, nameT
     return reasons
 }
 
-let replicaPhotoAdvice = "Use one clear photo of the object on its own: even light, a plain background, nothing in front of it, seen from slightly above. The service guesses the sides it can’t see."
+let replicaPhotoAdvice = "A front photo is enough; the left side, back and right side help the service get the shape right instead of guessing. Use the same object and lighting in each, a plain background, the camera at the same height and the object filling the frame."
+/// Near-orthographic shots distort less (Meshy recommends a telephoto lens or a near-orthographic view).
+let replicaPhotoDistanceAdvice = "Step back and zoom in rather than shooting close up: the object looks less distorted. Left and right are the object’s own sides: from the front, its left side is on your right."
+/// Shown under Meshy's photo touch-up when it is on.
+let replicaPhotoEnhancementNote = "Meshy redraws the photos before modelling, which can change details. Leave it off for clear, well-lit photos."
+/// Shown under Higher detail.
+func replicaHigherDetailNote(service: ImageTo3DService, photoCount: Int) -> String {
+    switch service {
+    case .meshy:
+        let resolution = photoCount > 1 ? "Ultra 2K (the most Meshy offers with several photos)" : "Ultra 4K"
+        return "Meshy generates the shape at \(resolution) for finer surface detail, for \(meshyHigherDetailCredits) more credits each time. Fine detail can print differently, so check the result."
+    case .tripo:
+        return "Tripo generates detailed geometry for \(tripoHigherDetailCredits) more credits each time. Fine detail can print differently, so check the result."
+    }
+}
 let replicaRightsNote = "Make replicas only of objects you have the right to copy. Other people’s designs, characters and trademarks stay theirs."
 
 // MARK: Stopping safely
@@ -420,6 +466,7 @@ enum ReplicaProcessingError: LocalizedError, Equatable {
     case unreadable(String)
     case flat(ReplicaSizeAxis)
     case exceedsBuildVolume(size: ReplicaSize, longestMM: Float)
+    case tooDetailed(triangles: Int)
     case invalidResult
 
     var errorDescription: String? {
@@ -430,6 +477,8 @@ enum ReplicaProcessingError: LocalizedError, Equatable {
             return "The model has no \(axis.rawValue.lowercased()) to scale to. Choose another measurement and Process Again."
         case .exceedsBuildVolume(let size, let longest):
             return "At \(size.label), the replica would be \(String(format: "%.0f", longest)) mm on its longest side, more than Slant’s \(Int(slantBuildVolumeMM)) mm build volume. Enter a smaller size, then Process Again: the model is still here, so nothing is sent or charged."
+        case .tooDetailed(let triangles):
+            return "Studio couldn’t simplify the model below \(STLMesh.maximumTriangles.formatted()) triangles (it still has \(triangles.formatted())), so it can’t be added to your library. Nothing was saved."
         case .invalidResult:
             return "The processed model didn’t pass Studio’s checks, so it wasn’t saved."
         }
@@ -448,6 +497,8 @@ struct ReplicaProcessed: Sendable {
     let size: ReplicaSize
     let upAxis: ReplicaUpAxis
     let originalTriangles: Int
+    /// Simplify's estimated largest surface change in millimetres, when Studio simplified.
+    var simplifiedDeviationMM: Double? = nil
     let health: MeshHealthReport
     let wallThickness: WallThicknessReport?
     /// Downward faces steeper than 45° from vertical, as placed (`overhangShare`, PrintReview.swift).
@@ -487,7 +538,8 @@ func replicaPlacedOnBed(_ mesh: STLMesh) throws -> STLMesh {
 func replicaScaledToSize(_ mesh: STLMesh, size: ReplicaSize) throws -> STLMesh {
     let data: Data
     do {
-        data = try mesh.scaledToSizeSTLData(axis: size.axis.meshFitAxis, targetMM: size.millimetres).data
+        data = try mesh.scaledToSizeSTLData(axis: size.axis.meshFitAxis, targetMM: size.millimetres,
+                                            maximumTriangles: replicaMaximumModelTriangles).data
     } catch MeshFitError.exceedsBuildVolume(let longest) {
         throw ReplicaProcessingError.exceedsBuildVolume(size: size, longestMM: longest)
     } catch MeshFitError.flatAxis {
@@ -495,16 +547,18 @@ func replicaScaledToSize(_ mesh: STLMesh, size: ReplicaSize) throws -> STLMesh {
     } catch {
         throw ReplicaProcessingError.unreadable(error.localizedDescription)
     }
-    return try replicaPlacedOnBed(STLMesh.parse(data))
+    return try replicaPlacedOnBed(STLMesh.parse(data, maximumTriangles: replicaMaximumModelTriangles))
 }
 
-/// The downloaded file read as the format its content shows (`imageTo3DDetectedFormat`), whatever its link said.
+/// The downloaded file read as the format its content shows (`imageTo3DDetectedFormat`), whatever its link said. An
+/// STL may have up to `replicaMaximumModelTriangles`; a 3MF keeps the library's limit.
 func replicaReadModel(_ data: Data) throws -> STLMesh {
     guard let format = imageTo3DDetectedFormat(data) else {
         throw ReplicaProcessingError.unreadable("the file isn’t an STL or 3MF model.")
     }
     do {
-        return try parsePreviewModel(data, format: format == .stl ? .stl : .threeMF).mesh
+        if format == .stl { return try STLMesh.parse(data, maximumTriangles: replicaMaximumModelTriangles) }
+        return try parsePreviewModel(data, format: .threeMF).mesh
     } catch {
         throw ReplicaProcessingError.unreadable(error.localizedDescription)
     }
@@ -524,17 +578,20 @@ func processReplicaModel(_ data: Data, size: ReplicaSize, upAxis: ReplicaUpAxis 
 }
 
 /// The same pipeline from a model already read (the sheet keeps the paid model read once, so Process Again is free).
+/// `savedTriangleLimit` is the library's limit; tests pass a smaller one.
 func processReplicaModel(mesh: STLMesh, size: ReplicaSize, upAxis: ReplicaUpAxis = .z,
                          triangleTarget: Int = replicaTriangleTarget, wallThicknessSamples: Int = wallThicknessMaximumSamples,
+                         savedTriangleLimit: Int = STLMesh.maximumTriangles,
                          progress: MeshToolProgress = { _, _ in }, isCancelled: () -> Bool = { false }) throws -> ReplicaProcessed {
     try withoutActuallyEscaping(progress) { progress in
         try replicaProcess(mesh, size: size, upAxis: upAxis, triangleTarget: triangleTarget,
-                           wallThicknessSamples: wallThicknessSamples, progress: progress, isCancelled: isCancelled)
+                           wallThicknessSamples: wallThicknessSamples, savedTriangleLimit: savedTriangleLimit,
+                           progress: progress, isCancelled: isCancelled)
     }
 }
 
 private func replicaProcess(_ input: STLMesh, size: ReplicaSize, upAxis: ReplicaUpAxis, triangleTarget: Int,
-                            wallThicknessSamples: Int, progress: @escaping MeshToolProgress,
+                            wallThicknessSamples: Int, savedTriangleLimit: Int, progress: @escaping MeshToolProgress,
                             isCancelled: () -> Bool) throws -> ReplicaProcessed {
     func checkCancelled() throws { if isCancelled() { throw MeshToolError.cancelled } }
     func within(_ low: Double, _ high: Double) -> MeshToolProgress {
@@ -559,7 +616,9 @@ private func replicaProcess(_ input: STLMesh, size: ReplicaSize, upAxis: Replica
     try checkCancelled()
 
     do {
-        let repaired = try repairMesh(mesh, progress: within(0.1, 0.45), isCancelled: isCancelled)
+        var repairOptions = MeshRepairOptions()
+        repairOptions.maximumTriangles = replicaMaximumModelTriangles
+        let repaired = try repairMesh(mesh, options: repairOptions, progress: within(0.1, 0.45), isCancelled: isCancelled)
         steps.append(.repair)
         if repaired.summary.changed {
             mesh = repaired.mesh
@@ -572,6 +631,7 @@ private func replicaProcess(_ input: STLMesh, size: ReplicaSize, upAxis: Replica
     }
     try checkCancelled()
 
+    var deviation: Double?
     if mesh.triangleCount > triangleTarget {
         var options = MeshSimplifyOptions()
         options.targetTriangles = triangleTarget
@@ -580,6 +640,7 @@ private func replicaProcess(_ input: STLMesh, size: ReplicaSize, upAxis: Replica
             steps.append(.simplify)
             if simplified.changed {
                 mesh = simplified.mesh
+                deviation = simplified.estimatedMaximumDeviation
                 changes.append(contentsOf: meshSimplifySummaryLines(simplified).dropLast())
             }
         } catch MeshToolError.cancelled {
@@ -588,6 +649,11 @@ private func replicaProcess(_ input: STLMesh, size: ReplicaSize, upAxis: Replica
             changes.append("Couldn’t simplify below \(mesh.triangleCount.formatted()) triangles: \(error.localizedDescription)")
         }
         try checkCancelled()
+    }
+
+    // The library (and every tool after this) reads at most its preview limit.
+    guard mesh.triangleCount <= min(savedTriangleLimit, STLMesh.maximumTriangles) else {
+        throw ReplicaProcessingError.tooDetailed(triangles: mesh.triangleCount)
     }
 
     // Removing loose fragments can shrink the bounding box or lift the base: fit and place again.
@@ -618,7 +684,8 @@ private func replicaProcess(_ input: STLMesh, size: ReplicaSize, upAxis: Replica
     }
     progress(1, "Done")
     return ReplicaProcessed(mesh: readBack, stlData: stl, size: size, upAxis: upAxis, originalTriangles: originalTriangles,
-                            health: health, wallThickness: wall, overhang: overhang, changes: changes, steps: steps)
+                            simplifiedDeviationMM: deviation, health: health, wallThickness: wall, overhang: overhang,
+                            changes: changes, steps: steps)
 }
 
 /// The finished summary: size, triangles, Studio's checks. What changed is listed separately (`changes`).
@@ -631,6 +698,9 @@ func replicaSummaryLines(_ processed: ReplicaProcessed) -> [String] {
     } else {
         lines.append("\(triangles.formatted()) triangles (the service sent \(processed.originalTriangles.formatted())).")
     }
+    if let deviation = processed.simplifiedDeviationMM {
+        lines.append(replicaSimplifiedDeviationLine(deviation))
+    }
     if triangles > meshToolsReinforceTriangleLimit {
         lines.append("Reinforce and Auto-improve need \(meshToolsReinforceTriangleLimit.formatted()) triangles or fewer. To use them, make a lighter copy with Simplify & Save Copy in Improve for printing › Repair and simplify.")
     }
@@ -640,6 +710,12 @@ func replicaSummaryLines(_ processed: ReplicaProcessed) -> [String] {
     }
     lines.append(printReviewOverhangLine(processed.overhang))
     return lines
+}
+
+/// Simplify's estimate as a result fact: an estimate of how far the surface moved, not a measurement.
+func replicaSimplifiedDeviationLine(_ deviationMM: Double) -> String {
+    let value = deviationMM < 0.01 ? "under 0.01 mm" : String(format: "about %.2f mm", deviationMM)
+    return "Simplifying moved the surface by \(value) at most (an estimate). Check fine details before ordering."
 }
 
 /// Whether Studio's own checks found nothing: a sound mesh, no thin walls or small features, and overhangs on under
@@ -667,8 +743,8 @@ func replicaOriginText(service: ImageTo3DService) -> String {
 
 /// What Review for Printing with Claude is told about the replica. No name, photo or seller text beyond the size.
 func replicaPrintReviewContext(service: ImageTo3DService, size: ReplicaSize, purpose: ReplicaPurpose,
-                               meshyReport: MeshyPrintabilityReport?) -> PrintReviewContext {
-    var findings = ["Made from one photo, so the sides the photo didn’t show (back, underside) are the service’s guess."]
+                               meshyReport: MeshyPrintabilityReport?, views: [ImageTo3DPhotoView] = [.front]) -> PrintReviewContext {
+    var findings = [replicaPhotoCoverageFinding(views)]
     if let meshyReport {
         let list = meshyReport.findings
         let detail = list.isEmpty ? "" : ": " + list.joined(separator: "; ")
@@ -678,12 +754,28 @@ func replicaPrintReviewContext(service: ImageTo3DService, size: ReplicaSize, pur
                               purpose: purpose.rawValue, findings: findings)
 }
 
+/// What the photos covered, for the review: the sides no photo showed are the service's guess.
+func replicaPhotoCoverageFinding(_ views: [ImageTo3DPhotoView]) -> String {
+    let shown = ImageTo3DPhotoView.allCases.filter(views.contains)
+    guard shown.count > 1 else {
+        return "Made from one photo, so the sides the photo didn’t show (back, underside) are the service’s guess."
+    }
+    // Joined the British way, whatever the Mac's language: this goes to Claude in English.
+    func joined(_ parts: [String]) -> String {
+        parts.count <= 1 ? parts.joined() : parts.dropLast().joined(separator: ", ") + " and " + parts[parts.count - 1]
+    }
+    let names = joined(shown.map { $0.title.lowercased() })
+    let missing = ImageTo3DPhotoView.allCases.filter { !shown.contains($0) }.map { $0.title.lowercased() } + ["underside"]
+    return "Made from \(shown.count) photos (\(names)), so what they didn’t show (\(joined(missing))) is the service’s guess."
+}
+
 // MARK: Activity
 
-/// Activity-safe detail for a saved replica: service, triangles and the estimated credits only.
-func replicaSavedActivityDetail(service: ImageTo3DService, triangles: Int, estimate: ImageTo3DCostEstimate?) -> String {
+/// Activity-safe detail for a saved replica: service, photo count, triangles and the estimated credits only.
+func replicaSavedActivityDetail(service: ImageTo3DService, triangles: Int, estimate: ImageTo3DCostEstimate?, photoCount: Int = 1) -> String {
     let credits = estimate.map { ", about \($0.credits) credits" } ?? ""
-    return "\(service.title): saved, \(triangles.formatted()) triangles\(credits)"
+    let photos = photoCount > 1 ? ", \(photoCount) photos" : ""
+    return "\(service.title): saved\(photos), \(triangles.formatted()) triangles\(credits)"
 }
 
 /// Activity-safe detail for Meshy's analysis: verdict and counts only.

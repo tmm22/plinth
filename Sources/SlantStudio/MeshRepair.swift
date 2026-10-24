@@ -163,6 +163,9 @@ struct MeshRepairOptions: Equatable, Sendable {
     var minimumShellTriangles = 4
     /// A separate part enclosing less than this fraction of the largest part's volume is removed as a fragment.
     var minimumShellVolumeFraction = 0.001
+    /// The largest mesh repaired, and the most triangles the result may have. Only the replica pipeline raises it, for a
+    /// generated model it simplifies before saving; the library's tools keep the preview limit.
+    var maximumTriangles = STLMesh.maximumTriangles
 }
 
 struct RemovedMeshShell: Equatable, Sendable {
@@ -217,6 +220,8 @@ struct MeshRepairResult: Sendable {
 func repairMesh(_ mesh: STLMesh, options: MeshRepairOptions = MeshRepairOptions(),
                 progress: MeshToolProgress = { _, _ in }, isCancelled: () -> Bool = { false }) throws -> MeshRepairResult {
     guard mesh.triangleCount > 0 else { throw MeshToolError.empty }
+    let limit = max(options.maximumTriangles, 1)
+    guard mesh.triangleCount <= limit else { throw MeshToolError.tooLarge }
     progress(0, "Checking the mesh…")
     guard let before = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { throw MeshToolError.cancelled }
     var summary = MeshRepairSummary(before: before, after: before)
@@ -227,7 +232,7 @@ func repairMesh(_ mesh: STLMesh, options: MeshRepairOptions = MeshRepairOptions(
     let weld = try weldMeshCorners(mesh, tolerance: tolerance, isCancelled: isCancelled)
     summary.weldedVertices = weld.mergedPositions
     return try withoutActuallyEscaping(isCancelled) { isCancelled in
-    var work = RepairWork(points: weld.points, triangles: weld.triangles, isCancelled: isCancelled)
+    var work = RepairWork(points: weld.points, triangles: weld.triangles, limit: limit, isCancelled: isCancelled)
 
     progress(0.2, "Removing zero-area triangles…")
     try work.removeDegenerate(&summary)
@@ -248,7 +253,7 @@ func repairMesh(_ mesh: STLMesh, options: MeshRepairOptions = MeshRepairOptions(
 
     let triangles = work.liveTriangles()
     guard !triangles.isEmpty else { throw MeshToolError.empty }
-    guard triangles.count <= STLMesh.maximumTriangles else { throw MeshToolError.tooLarge }
+    guard triangles.count <= limit else { throw MeshToolError.tooLarge }
     let repaired: STLMesh
     do { repaired = try STLMesh.validated(meshSoup(points: work.points, triangles: triangles)) } catch { throw MeshToolError.empty }
     progress(0.9, "Checking the repaired mesh…")
@@ -264,13 +269,16 @@ private struct RepairWork {
     var points: [SIMD3<Float>]
     var triangles: [SIMD3<Int32>]
     var alive: [Bool]
+    /// `MeshRepairOptions.maximumTriangles`.
+    let limit: Int
     let isCancelled: () -> Bool
     /// Positions are measured from here in Double, as `analyzeMeshHealth` does, so both apply the same zero-area test.
     let origin: SIMD3<Double>
 
-    init(points: [SIMD3<Float>], triangles: [SIMD3<Int32>], isCancelled: @escaping () -> Bool) {
+    init(points: [SIMD3<Float>], triangles: [SIMD3<Int32>], limit: Int, isCancelled: @escaping () -> Bool) {
         self.points = points
         self.triangles = triangles
+        self.limit = limit
         self.alive = [Bool](repeating: true, count: triangles.count)
         self.isCancelled = isCancelled
         var low = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
@@ -359,7 +367,7 @@ private struct RepairWork {
                 remove(n)
                 continue
             }
-            guard triangles.count < STLMesh.maximumTriangles * 2,
+            guard triangles.count < limit * 2,
                   let start = (0..<3).first(where: { k in
                       let u = other[k], v = other[(k + 1) % 3]
                       return (u == p && v == q) || (u == q && v == p)
@@ -592,7 +600,7 @@ private struct RepairWork {
             if let centre = cap.centre { points.append(centre); onLoop.append(-1) }
             summary.filledHoles += 1
             summary.addedTriangles += cap.triangles.count
-            if triangles.count > STLMesh.maximumTriangles * 2 { throw MeshToolError.tooLarge }
+            if triangles.count > limit * 2 { throw MeshToolError.tooLarge }
         }
     }
 

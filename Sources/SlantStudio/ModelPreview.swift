@@ -154,7 +154,11 @@ struct STLMesh: Sendable {
         return try parse(Data(contentsOf: url, options: .mappedIfSafe))
     }
 
-    static func parse(_ data: Data) throws -> STLMesh {
+    static func parse(_ data: Data) throws -> STLMesh { try parse(data, maximumTriangles: maximumTriangles) }
+
+    /// The same reader with another triangle limit. Only the replica pipeline passes a higher one, for a generated model
+    /// it simplifies in memory before anything is saved; the library and every other reader keep `maximumTriangles`.
+    static func parse(_ data: Data, maximumTriangles: Int) throws -> STLMesh {
         guard data.count <= maximumBytes else { throw ParseError.oversized }
         var vertices: [Float] = []
         // Read bytes explicitly: binary STL fields may be unaligned in memory.
@@ -168,11 +172,16 @@ struct STLMesh: Sendable {
             if expectedSize == data.count || (count > 0 && expectedSize < data.count && !data.prefix(5).elementsEqual("solid".utf8)) {
                 guard count <= maximumTriangles else { throw ParseError.oversized }
                 guard count > 0 else { throw ParseError.empty }
-                vertices.reserveCapacity(count * 9)
-                for triangle in 0..<count {
-                    let base = 84 + triangle * 50 + 12
-                    for component in 0..<9 {
-                        vertices.append(Float(bitPattern: uint32(base + component * 4)))
+                vertices = [Float](repeating: 0, count: count * 9)
+                vertices.withUnsafeMutableBufferPointer { output in
+                    data.withUnsafeBytes { raw in
+                        for triangle in 0..<count {
+                            let base = 84 + triangle * 50 + 12
+                            for component in 0..<9 {
+                                let bits = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + component * 4, as: UInt32.self))
+                                output[triangle * 9 + component] = Float(bitPattern: bits)
+                            }
+                        }
                     }
                 }
                 return try validated(vertices)

@@ -26,8 +26,8 @@ enum ImageSharingService: String, CaseIterable, Identifiable, Sendable {
             return "the photo you choose, the details you type (such as measurements and notes) and pictures Studio renders of the models it makes"
         case .meshy, .tripo:
             return self == .meshy
-                ? "the photo you choose (and, if you use its free printability check, the size you typed)"
-                : "the photo you choose"
+                ? "the photos you choose (and, if you use its free printability check, the size you typed)"
+                : "the photos you choose"
         }
     }
 }

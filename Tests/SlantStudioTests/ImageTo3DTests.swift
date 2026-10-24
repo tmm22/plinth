@@ -166,9 +166,9 @@ final class ImageTo3DTests: XCTestCase {
     func testMeshyRequestBodies() {
         let body = meshyImageTo3DBody(imageDataURI: "data:image/jpeg;base64,AA==", options: ImageTo3DOptions(targetTriangles: 50))
         XCTAssertEqual(body["should_texture"] as? Bool, false)
-        XCTAssertEqual(body["should_remesh"] as? Bool, true)
-        XCTAssertEqual(body["topology"] as? String, "triangle")
-        XCTAssertEqual(body["target_polycount"] as? Int, 100, "clamped to Meshy's range")
+        XCTAssertEqual(body["should_remesh"] as? Bool, false, "not remeshed: Meshy keeps the detail it generates")
+        XCTAssertNil(body["topology"])
+        XCTAssertNil(body["target_polycount"])
         XCTAssertEqual(body["target_formats"] as? [String], ["stl"])
         XCTAssertEqual(body["ai_model"] as? String, meshyAIModel)
         XCTAssertEqual(body["auto_size"] as? Bool, true)
@@ -176,7 +176,6 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertNil(body["enable_pbr"])
 
         let flat = meshyImageTo3DBody(imageDataURI: "x", options: ImageTo3DOptions(format: .threeMF, originAtBottom: false))
-        XCTAssertEqual(flat["target_polycount"] as? Int, 20_000)
         XCTAssertEqual(flat["target_formats"] as? [String], ["3mf"])
         XCTAssertNil(flat["auto_size"])
         XCTAssertNil(flat["origin_at"])

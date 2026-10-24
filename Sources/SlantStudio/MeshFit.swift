@@ -114,10 +114,11 @@ func meshFitBaseName(_ name: String) -> String {
 extension STLMesh {
     /// A binary STL scaled so the chosen axis matches `targetMM`, checked like any scaled copy. Refuses results that
     /// don't fit Slant's build volume.
-    func scaledToSizeSTLData(axis: MeshFitAxis, targetMM: Double) throws -> (data: Data, plan: ScaleToSizePlan) {
+    func scaledToSizeSTLData(axis: MeshFitAxis, targetMM: Double,
+                             maximumTriangles: Int = STLMesh.maximumTriangles) throws -> (data: Data, plan: ScaleToSizePlan) {
         let plan = try scaleToSizePlan(extentMM: maximum - minimum, axis: axis, targetMM: targetMM)
         guard plan.fitsBuildVolume else { throw MeshFitError.exceedsBuildVolume(largestMM: plan.resultSizeMM.max()) }
-        return (try scaledSTLData(by: plan.factor), plan)
+        return (try scaledSTLData(by: plan.factor, maximumTriangles: maximumTriangles), plan)
     }
 }
 

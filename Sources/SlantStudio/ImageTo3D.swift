@@ -3,9 +3,10 @@ import Security
 
 // MARK: - Image to 3D services
 //
-// The provider-neutral layer behind Generate a Replica from an Image: one photo (already prepared, re-encoded without
-// metadata, by ImagePreparation.swift) goes to the seller's chosen service — Meshy or Tripo3D — which makes a mesh that
-// Studio downloads as STL or 3MF into a `SlantStudio-Generated3D-…` temporary folder for the library import.
+// The provider-neutral layer behind Generate a Replica from an Image: one to four labelled photos (already prepared,
+// re-encoded without metadata, by ImagePreparation.swift) go to the seller's chosen service — Meshy or Tripo3D — which
+// makes a mesh that Studio downloads as STL or 3MF into a `SlantStudio-Generated3D-…` temporary folder. One photo uses
+// the service's single-image endpoint; two to four use its multi-view endpoint (`ImageTo3DTaskKind.multiImageGeneration`).
 //
 // Rules this layer keeps:
 //   - Creating a task (generation, Tripo's conversion, Meshy's repair) spends the seller's credits, so it is sent once
@@ -26,6 +27,8 @@ let imageTo3DMaxDownloadBytes: Int64 = 128 * 1024 * 1024
 let imageTo3DMaxResponseBytes = 2 * 1024 * 1024
 /// Largest prepared image accepted. Tripo's upload limit is 20 MB; a prepared 2048 px JPEG is far smaller.
 let imageTo3DMaxImageBytes = 20 * 1024 * 1024
+/// Most photos one generation takes: Meshy's Multi-Image to 3D and Tripo's multiview-to-model both take up to four.
+let imageTo3DMaxPhotos = 4
 /// Per-request timeout for API calls. A create can take a while to answer under load.
 let imageTo3DRequestTimeout: TimeInterval = 60
 /// Longest Studio waits for one task (generation, conversion or repair) to finish.
@@ -101,6 +104,50 @@ struct ImageTo3DImage: Equatable, Sendable {
     var fileExtension: String { mediaType == "image/png" ? "png" : "jpg" }
 }
 
+/// The view a photo shows, in slot order. The names are Tripo's multiview keys; Meshy only needs the front first.
+/// Left and right are the object's own sides (from the front, its left side is on the viewer's right).
+enum ImageTo3DPhotoView: String, CaseIterable, Identifiable, Sendable {
+    case front, left, back, right
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .front: return "Front"
+        case .left: return "Left side"
+        case .back: return "Back"
+        case .right: return "Right side"
+        }
+    }
+}
+
+/// One prepared photo and the view it shows.
+struct ImageTo3DViewImage: Equatable, Sendable {
+    let view: ImageTo3DPhotoView
+    let image: ImageTo3DImage
+}
+
+/// The photos in slot order (front, left side, back, right side): Meshy reads the first as the front.
+func imageTo3DOrderedViews(_ views: [ImageTo3DViewImage]) -> [ImageTo3DViewImage] {
+    ImageTo3DPhotoView.allCases.compactMap { slot in views.first { $0.view == slot } }
+}
+
+/// Why these photos can't be sent together, or nil: one to four, a front view, each view once, each photo valid.
+func imageTo3DViewsProblem(_ views: [ImageTo3DViewImage]) -> String? {
+    if views.isEmpty { return "Choose a photo of the object." }
+    if views.count > imageTo3DMaxPhotos { return "Use at most \(imageTo3DMaxPhotos) photos." }
+    guard views.contains(where: { $0.view == .front }) else { return "Add a front photo: both services need the front view." }
+    for slot in ImageTo3DPhotoView.allCases where views.filter({ $0.view == slot }).count > 1 {
+        return "Use one photo for the \(slot.title.lowercased()) view."
+    }
+    for view in imageTo3DOrderedViews(views) {
+        if let problem = imageTo3DImageProblem(view.image) {
+            return views.count == 1 ? problem : "\(view.view.title) photo: \(problem)"
+        }
+    }
+    return nil
+}
+
 /// Why the image can't be sent, or nil.
 func imageTo3DImageProblem(_ image: ImageTo3DImage) -> String? {
     if image.data.isEmpty { return "The photo is empty." }
@@ -116,9 +163,15 @@ func imageTo3DImageProblem(_ image: ImageTo3DImage) -> String? {
 
 /// What to ask the service for. Texture is always off: Slant prints a single material, and texturing costs more.
 struct ImageTo3DOptions: Equatable, Sendable {
-    /// Triangle budget the service aims for (its own range applies; see each client).
+    /// Triangle budget for Tripo's `face_limit` (its own range applies). Meshy isn't asked to remesh, so it keeps the
+    /// detail it generates and ignores this.
     var targetTriangles: Int = imageTo3DDefaultTriangleTarget
     var format: ImageTo3DOutputFormat = .stl
+    /// Paid higher-detail geometry: Meshy's Ultra `geometry_resolution` (+5 credits), Tripo's `geometry_quality:
+    /// detailed` (+20 credits). Off unless the seller ticks it for this replica.
+    var higherDetail = false
+    /// Meshy only: let Meshy's `image_enhancement` redraw the photos first (details can change). Off unless ticked.
+    var enhancePhoto = false
     /// Put the model's origin at the centre of its base (Meshy `auto_size` + `origin_at: bottom`; Tripo's conversion
     /// `pivot_to_center_bottom`, which makes it an "advanced" conversion at 10 credits rather than 5).
     ///
@@ -785,6 +838,8 @@ struct ImageTo3DUnconfirmedRequest: Equatable, Sendable, Identifiable {
     /// The latest task Studio knows of, for the dashboard.
     let taskID: String?
     let time: Date
+    /// What kind of request it was (a single- or multi-image generation, a conversion or repair), when known.
+    var sourceKind: ImageTo3DTaskKind? = nil
 }
 
 /// The most records kept; older ones drop off, and `unconfirmedRequestsOverflowed` keeps the guard.
@@ -798,10 +853,12 @@ func imageTo3DStopIsUnconfirmed(_ stop: ImageTo3DStop) -> Bool {
     return true
 }
 
-/// "Meshy at 14:32 (task t1)".
+/// "Meshy at 14:32 (task t1)"; "Meshy at 14:32 (multi-image task t1)" for a generation from several photos, which
+/// Meshy lists apart from its single-image tasks.
 func imageTo3DUnconfirmedLabel(_ request: ImageTo3DUnconfirmedRequest,
                                timeText: (Date) -> String = { $0.formatted(date: .omitted, time: .shortened) }) -> String {
-    let task = request.taskID.map { " (task \($0))" } ?? ""
+    let kind = request.sourceKind == .multiImageGeneration ? "multi-image task" : "task"
+    let task = request.taskID.map { " (\(kind) \($0))" } ?? (request.sourceKind == .multiImageGeneration ? " (multi-image)" : "")
     return "\(request.service.title) at \(timeText(request.time))\(task)"
 }
 
@@ -862,7 +919,8 @@ extension ImageTo3DService {
         if let source {
             unconfirmedRequests.removeAll { $0.service == stop.service && $0.sourceTaskID == source }
         }
-        let record = ImageTo3DUnconfirmedRequest(id: UUID(), service: stop.service, sourceTaskID: source, taskID: stop.taskID, time: time)
+        let record = ImageTo3DUnconfirmedRequest(id: UUID(), service: stop.service, sourceTaskID: source, taskID: stop.taskID, time: time,
+                                                 sourceKind: stop.resumePoint?.sourceKind ?? stop.requestKind)
         unconfirmedRequests.append(record)
         if unconfirmedRequests.count > imageTo3DUnconfirmedRequestLimit {
             unconfirmedRequests.removeFirst(unconfirmedRequests.count - imageTo3DUnconfirmedRequestLimit)
@@ -921,19 +979,32 @@ extension ImageTo3DService {
 // MARK: Provider
 
 /// Which kind of task a status read is for (Meshy reads each kind from its own endpoint; Tripo has one).
+/// `multiImageGeneration` is a generation from two to four photos (Meshy's Multi-Image to 3D, Tripo's
+/// multiview-to-model): resume points and unconfirmed records carry it, so Keep Waiting reads the right endpoint.
 enum ImageTo3DTaskKind: String, Sendable {
-    case generation, conversion, repair
+    case generation, multiImageGeneration, conversion, repair
+
+    /// The generation kind for this many photos.
+    static func generation(photoCount: Int) -> ImageTo3DTaskKind {
+        photoCount > 1 ? .multiImageGeneration : .generation
+    }
+
+    var isGeneration: Bool { self == .generation || self == .multiImageGeneration }
 }
 
 /// One image-to-3D service. Creates are sent once; reads may be repeated by the caller.
 protocol ImageTo3DProvider: Sendable {
     var service: ImageTo3DService { get }
-    /// The published price of a generation with these options (including any conversion), before anything is sent.
-    func estimatedCost(for options: ImageTo3DOptions) -> ImageTo3DCostEstimate
+    /// The published price of a generation from `photoCount` photos with these options (including any conversion),
+    /// before anything is sent.
+    func estimatedCost(for options: ImageTo3DOptions, photoCount: Int) -> ImageTo3DCostEstimate
     /// Reads the account's credits (read-only; Settings › Save & Test uses it).
     func readBalance() async throws -> ImageTo3DBalance
-    /// Sends the generation once (Tripo uploads the photo first; a failed upload means nothing was created).
-    func createGeneration(image: ImageTo3DImage, options: ImageTo3DOptions) async -> ImageTo3DCreateResult
+    /// Sends the generation once: one photo to the single-image endpoint, two to four to the multi-view one (kind
+    /// `ImageTo3DTaskKind.generation(photoCount:)`). Tripo uploads every photo first; a failed upload means nothing was
+    /// created. `proceed` is asked right before each upload and before the create: false stops with nothing created.
+    func createGeneration(views: [ImageTo3DViewImage], options: ImageTo3DOptions,
+                          proceed: @escaping @Sendable () -> Bool) async -> ImageTo3DCreateResult
     /// One status read.
     func readTask(_ taskID: String, kind: ImageTo3DTaskKind) async throws -> ImageTo3DTaskStatus
     /// Whether a finished task needs a conversion task before `format` can be downloaded (Tripo always; Meshy after
@@ -946,6 +1017,19 @@ protocol ImageTo3DProvider: Sendable {
     /// Downloads a model link with no credentials, capped at `imageTo3DMaxDownloadBytes`.
     func download(_ url: URL, into folder: URL, fileName: String) async throws -> URL
 }
+
+extension ImageTo3DProvider {
+    /// The price of a generation from one photo.
+    func estimatedCost(for options: ImageTo3DOptions) -> ImageTo3DCostEstimate { estimatedCost(for: options, photoCount: 1) }
+
+    /// One photo, as the front view.
+    func createGeneration(image: ImageTo3DImage, options: ImageTo3DOptions) async -> ImageTo3DCreateResult {
+        await createGeneration(views: [ImageTo3DViewImage(view: .front, image: image)], options: options, proceed: { true })
+    }
+}
+
+/// The detail of a create that `proceed` stopped before anything was sent.
+let imageTo3DStoppedBeforeSendingMessage = "Stopped before the generation was sent."
 
 struct ImageTo3DModelLink: Equatable, Sendable {
     let url: URL
@@ -1046,6 +1130,9 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
     /// anything that may already exist. Nil after an unknown create outcome, a refusal of the first create or a
     /// task that ended.
     var resumePoint: ImageTo3DResumePoint? = nil
+    /// The kind of the run's source request (single- or multi-image generation, or repair), also when there's no
+    /// resume point, so an unconfirmed record names it.
+    var requestKind: ImageTo3DTaskKind? = nil
 
     /// Whether the seller may have been charged: anything once a create may have gone through.
     var creditsMayHaveBeenSpent: Bool { reason != .notSent && !(reason == .cancelled && taskID == nil) }
@@ -1097,6 +1184,12 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
     func resumable(from point: ImageTo3DResumePoint?) -> ImageTo3DStop {
         var copy = self
         copy.resumePoint = point
+        return copy
+    }
+
+    func kind(_ kind: ImageTo3DTaskKind?) -> ImageTo3DStop {
+        var copy = self
+        copy.requestKind = kind
         return copy
     }
 }
@@ -1154,31 +1247,45 @@ func imageTo3DPollUntilFinished(provider: ImageTo3DProvider, taskID: String, kin
 }
 
 /// The whole run: create the generation once, then carry on as `resumeImageTo3DGeneration`. Never sends a create
-/// twice. Cancelling the Swift task stops waiting (the service may still finish and charge).
+/// twice. Cancelling the Swift task stops waiting (the service may still finish and charge). `proceed` is asked before
+/// anything is sent (and by Tripo before each upload): false stops with nothing created, as Stop does.
+func runImageTo3DGeneration(provider: ImageTo3DProvider, views: [ImageTo3DViewImage], options: ImageTo3DOptions,
+                            timeout: TimeInterval = imageTo3DPollTimeout,
+                            sleep: ImageTo3DSleep = imageTo3DRealSleep, now: ImageTo3DClock = { Date() },
+                            makeFolder: () throws -> URL = makeImageTo3DTempFolder,
+                            proceed: @escaping @Sendable () -> Bool = { true },
+                            progress: @escaping @Sendable (ImageTo3DProgress) -> Void = { _ in }) async -> Result<ImageTo3DGeneratedModel, ImageTo3DStop> {
+    let service = provider.service
+    let kind = ImageTo3DTaskKind.generation(photoCount: views.count)
+    func halt(_ reason: ImageTo3DStopReason, _ taskID: String?, _ detail: String) -> Result<ImageTo3DGeneratedModel, ImageTo3DStop> {
+        .failure(ImageTo3DStop(reason: reason, stage: .sending, service: service, taskID: taskID, detail: detail, requestKind: kind))
+    }
+    if let problem = imageTo3DViewsProblem(views) { return halt(.notSent, nil, problem) }
+    if Task.isCancelled || !proceed() { return halt(.cancelled, nil, "") }
+    progress(ImageTo3DProgress(stage: .sending, taskID: nil, state: nil, percent: nil))
+    switch await provider.createGeneration(views: imageTo3DOrderedViews(views), options: options, proceed: proceed) {
+    case .created(let id):
+        return await resumeImageTo3DGeneration(provider: provider,
+                                               from: ImageTo3DResumePoint(sourceTaskID: id, sourceKind: kind, conversionTaskID: nil),
+                                               options: options, timeout: timeout, sleep: sleep, now: now,
+                                               makeFolder: makeFolder, progress: progress)
+    case .notSent(.invalidInput(imageTo3DStoppedBeforeSendingMessage)):
+        return halt(.cancelled, nil, "")
+    case .notSent(let error):
+        return halt(.notSent, nil, error.userMessage)
+    case .unknown(let id, let error):
+        return halt(.outcomeUnknown, id, error.userMessage)
+    }
+}
+
+/// One photo, as the front view.
 func runImageTo3DGeneration(provider: ImageTo3DProvider, image: ImageTo3DImage, options: ImageTo3DOptions,
                             timeout: TimeInterval = imageTo3DPollTimeout,
                             sleep: ImageTo3DSleep = imageTo3DRealSleep, now: ImageTo3DClock = { Date() },
                             makeFolder: () throws -> URL = makeImageTo3DTempFolder,
                             progress: @escaping @Sendable (ImageTo3DProgress) -> Void = { _ in }) async -> Result<ImageTo3DGeneratedModel, ImageTo3DStop> {
-    let service = provider.service
-    if let problem = imageTo3DImageProblem(image) {
-        return .failure(ImageTo3DStop(reason: .notSent, stage: .sending, service: service, taskID: nil, detail: problem))
-    }
-    if Task.isCancelled {
-        return .failure(ImageTo3DStop(reason: .cancelled, stage: .sending, service: service, taskID: nil, detail: ""))
-    }
-    progress(ImageTo3DProgress(stage: .sending, taskID: nil, state: nil, percent: nil))
-    switch await provider.createGeneration(image: image, options: options) {
-    case .created(let id):
-        return await resumeImageTo3DGeneration(provider: provider,
-                                               from: ImageTo3DResumePoint(sourceTaskID: id, sourceKind: .generation, conversionTaskID: nil),
-                                               options: options, timeout: timeout, sleep: sleep, now: now,
-                                               makeFolder: makeFolder, progress: progress)
-    case .notSent(let error):
-        return .failure(ImageTo3DStop(reason: .notSent, stage: .sending, service: service, taskID: nil, detail: error.userMessage))
-    case .unknown(let id, let error):
-        return .failure(ImageTo3DStop(reason: .outcomeUnknown, stage: .sending, service: service, taskID: id, detail: error.userMessage))
-    }
+    await runImageTo3DGeneration(provider: provider, views: [ImageTo3DViewImage(view: .front, image: image)], options: options,
+                                 timeout: timeout, sleep: sleep, now: now, makeFolder: makeFolder, progress: progress)
 }
 
 /// Carries a run on from `point`: waits for the source task, sends the conversion once when the service needs one
@@ -1193,7 +1300,8 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
     let sourceStage: ImageTo3DStage = point.sourceKind == .repair ? .repairing : .generating
     func stop(_ reason: ImageTo3DStopReason, _ stage: ImageTo3DStage, _ taskID: String?, _ detail: String,
               resume: ImageTo3DResumePoint?) -> Result<ImageTo3DGeneratedModel, ImageTo3DStop> {
-        .failure(ImageTo3DStop(reason: reason, stage: stage, service: service, taskID: taskID, detail: detail, resumePoint: resume))
+        .failure(ImageTo3DStop(reason: reason, stage: stage, service: service, taskID: taskID, detail: detail, resumePoint: resume,
+                               requestKind: point.sourceKind))
     }
     // Polling stops that can carry on later: waiting, reading or cancelling never sends a create.
     func canCarryOn(_ reason: ImageTo3DStopReason) -> Bool {
@@ -1209,7 +1317,7 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
         switch await imageTo3DPollUntilFinished(provider: provider, taskID: point.sourceTaskID, kind: point.sourceKind, stage: sourceStage,
                                                 timeout: timeout, sleep: sleep, now: now, progress: progress) {
         case .success(let status): finished = status
-        case .failure(let halt): return .failure(halt.resumable(from: canCarryOn(halt.reason) ? point : nil))
+        case .failure(let halt): return .failure(halt.resumable(from: canCarryOn(halt.reason) ? point : nil).kind(point.sourceKind))
         }
         guard finished.state == .succeeded else {
             return stop(.taskEnded(finished.state), sourceStage, point.sourceTaskID, finished.message ?? "", resume: nil)
@@ -1234,7 +1342,7 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
         switch await imageTo3DPollUntilFinished(provider: provider, taskID: conversionID, kind: .conversion, stage: .converting,
                                                 timeout: timeout, sleep: sleep, now: now, progress: progress) {
         case .success(let status): finished = status
-        case .failure(let halt): return .failure(halt.resumable(from: canCarryOn(halt.reason) ? converting : nil))
+        case .failure(let halt): return .failure(halt.resumable(from: canCarryOn(halt.reason) ? converting : nil).kind(point.sourceKind))
         }
         guard finished.state == .succeeded else {
             return stop(.taskEnded(finished.state), .converting, conversionID, finished.message ?? "", resume: nil)

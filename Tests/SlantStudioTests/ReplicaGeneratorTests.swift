@@ -120,7 +120,7 @@ final class ReplicaGeneratorTests: XCTestCase {
 
     func testOptionsAndCostWithoutAKey() {
         let meshy = replicaGenerationOptions(for: .meshy, purpose: .functional)
-        XCTAssertEqual(meshy.targetTriangles, 20_000)
+        XCTAssertEqual(meshy.targetTriangles, 100_000)
         XCTAssertEqual(meshy.format, .stl)
         XCTAssertTrue(meshy.originAtBottom)
         XCTAssertFalse(replicaGenerationOptions(for: .tripo, purpose: .functional).originAtBottom,
@@ -135,16 +135,19 @@ final class ReplicaGeneratorTests: XCTestCase {
         // A display piece asks for far more triangles, within both services' documented maximums.
         let meshy = replicaGenerationOptions(for: .meshy, purpose: .display)
         let tripo = replicaGenerationOptions(for: .tripo, purpose: .display)
-        XCTAssertEqual(meshy.targetTriangles, 150_000)
-        XCTAssertEqual(meshyImageTo3DBody(imageDataURI: "data:", options: meshy)["target_polycount"] as? Int, 150_000)
-        XCTAssertEqual(tripoImageToModelBody(fileToken: "f", options: tripo)["face_limit"] as? Int, 150_000)
-        XCTAssertLessThanOrEqual(replicaDisplayTriangleTarget, meshyPolycountRange.upperBound)
+        XCTAssertEqual(meshy.targetTriangles, 500_000)
+        // Meshy isn't remeshed, so it gets no triangle budget at all.
+        XCTAssertNil(meshyImageTo3DBody(imageDataURI: "data:", options: meshy)["target_polycount"])
+        XCTAssertEqual(meshyImageTo3DBody(imageDataURI: "data:", options: meshy)["should_remesh"] as? Bool, false)
+        XCTAssertEqual(tripoImageToModelBody(fileToken: "f", options: tripo)["face_limit"] as? Int, 500_000)
         XCTAssertLessThanOrEqual(replicaDisplayTriangleTarget, tripoFaceLimitRange.upperBound)
+        XCTAssertEqual(tripoImageToModelBody(fileToken: "f", options: replicaGenerationOptions(for: .tripo, purpose: .functional))["face_limit"] as? Int,
+                       100_000, "a functional part asks for five times what Studio keeps")
         // Studio simplifies a display piece only above its ceiling, well under the import limit; a functional part
         // still goes down to Reinforce's limit.
         XCTAssertEqual(ReplicaPurpose.display.triangleCeiling, 200_000)
         XCTAssertLessThan(ReplicaPurpose.display.triangleCeiling, STLMesh.maximumTriangles)
-        XCTAssertEqual(ReplicaPurpose.functional.requestedTriangles, meshToolsReinforceTriangleLimit)
+        XCTAssertEqual(ReplicaPurpose.functional.requestedTriangles, replicaFunctionalTriangleRequest)
         XCTAssertEqual(ReplicaPurpose.functional.triangleCeiling, meshToolsReinforceTriangleLimit)
         XCTAssertTrue(replicaFunctionalPartWarning.contains("isn’t dimensionally accurate"))
         XCTAssertTrue(replicaFunctionalPartWarning.contains("Design an Accessory from a Photo"))
@@ -172,7 +175,7 @@ final class ReplicaGeneratorTests: XCTestCase {
         XCTAssertTrue(all[3].contains("Meshy API key"))
         XCTAssertEqual(replicaGenerateBlockedReasons(photoReady: false, photoPreparing: true, nameText: "A", sizeText: "50",
                                                      service: .tripo, hasKey: true),
-                       ["Wait while Studio prepares the photo."])
+                       ["Wait while Studio prepares the photos."])
         XCTAssertTrue(replicaGenerateBlockedReasons(photoReady: true, photoPreparing: false, nameText: "A", sizeText: "50",
                                                     service: .tripo, hasKey: true).isEmpty)
     }
@@ -565,6 +568,130 @@ final class ReplicaGeneratorTests: XCTestCase {
 
     private var cat: ReplicaInputs { ReplicaInputs(name: "Cat", size: size(.height, 25), purpose: .functional) }
     private let meshyFinished = #"{"id":"t1","status":"SUCCEEDED","progress":100,"model_urls":{"stl":"https://assets.meshy.ai/t1/model.stl"}}"#
+
+    // MARK: Round 8: accuracy
+
+    func testHigherParseLimitOnlyOnTheReplicaPath() throws {
+        XCTAssertEqual(STLMesh.maximumTriangles, 500_000, "the library's limit is unchanged")
+        XCTAssertGreaterThanOrEqual(replicaMaximumModelTriangles, 2_600_000, "everything a 128 MB download can hold as binary STL")
+        XCTAssertLessThanOrEqual(Int64(replicaMaximumModelTriangles) * 50, imageTo3DMaxDownloadBytes)
+        let cube = try MeshRepairTests.cube(size: 1)
+        XCTAssertThrowsError(try STLMesh.parse(cube.binarySTL(), maximumTriangles: 11))
+        XCTAssertEqual(try STLMesh.parse(cube.binarySTL(), maximumTriangles: 12).triangleCount, 12)
+        XCTAssertThrowsError(try cube.scaledSTLData(by: 2, maximumTriangles: 11))
+        XCTAssertEqual(MeshRepairOptions().maximumTriangles, STLMesh.maximumTriangles)
+        var tight = MeshRepairOptions()
+        tight.maximumTriangles = 11
+        XCTAssertThrowsError(try repairMesh(cube, options: tight)) { XCTAssertEqual($0 as? MeshToolError, .tooLarge) }
+
+        // 500,001 copies of one triangle: the library refuses the file, the replica pipeline reads it.
+        var data = Data(count: 80)
+        var count = UInt32(500_001).littleEndian
+        withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
+        var record = Data(count: 12)
+        for value: Float in [0, 0, 0, 1, 0, 0, 0, 1, 0] {
+            var bits = value.bitPattern.littleEndian
+            withUnsafeBytes(of: &bits) { record.append(contentsOf: $0) }
+        }
+        record.append(contentsOf: [0, 0])
+        data.append(Data(repeating: 0, count: 0))
+        data.reserveCapacity(84 + 500_001 * 50)
+        for _ in 0..<500_001 { data.append(record) }
+        XCTAssertThrowsError(try parsePreviewModel(data, format: .stl)) {
+            guard case STLMesh.ParseError.oversized = $0 else { return XCTFail("\($0)") }
+        }
+        XCTAssertEqual(try replicaReadModel(data).triangleCount, 500_001)
+    }
+
+    func testAResultTooDetailedForTheLibraryIsRefused() throws {
+        let cube = try MeshRepairTests.cube(size: 0.02)
+        XCTAssertThrowsError(try processReplicaModel(mesh: cube, size: size(.height, 40), wallThicknessSamples: samples,
+                                                     savedTriangleLimit: 10)) {
+            XCTAssertEqual($0 as? ReplicaProcessingError, .tooDetailed(triangles: 12))
+        }
+        XCTAssertTrue(ReplicaProcessingError.tooDetailed(triangles: 600_000).localizedDescription.contains("Nothing was saved"))
+    }
+
+    func testDetailedMeshSimplifiesToTheLimitToTheSameBytes() throws {
+        let sphere = try MeshRepairTests.sphere(levels: 4, radius: 0.04)
+        let data = sphere.binarySTL()
+        let first = try processReplicaModel(data, size: size(.longest, 50), triangleTarget: 1_000, wallThicknessSamples: samples)
+        let second = try processReplicaModel(data, size: size(.longest, 50), triangleTarget: 1_000, wallThicknessSamples: samples)
+        XCTAssertEqual(first.stlData, second.stlData)
+        XCTAssertLessThanOrEqual(first.mesh.triangleCount, 1_000)
+        XCTAssertTrue(meshHealthIsSound(first.health))
+        let deviation = try XCTUnwrap(first.simplifiedDeviationMM)
+        XCTAssertGreaterThan(deviation, 0)
+        XCTAssertTrue(replicaSummaryLines(first).contains(replicaSimplifiedDeviationLine(deviation)),
+                      "the estimate is a result fact, not only in the collapsed list")
+        let unsimplified = try processReplicaModel(MeshRepairTests.cube(size: 0.02).binarySTL(), size: size(.height, 40),
+                                                   wallThicknessSamples: samples)
+        XCTAssertNil(unsimplified.simplifiedDeviationMM)
+        XCTAssertFalse(replicaSummaryLines(unsimplified).contains { $0.hasPrefix("Simplifying moved") })
+        XCTAssertEqual(replicaSimplifiedDeviationLine(0.004), "Simplifying moved the surface by under 0.01 mm at most (an estimate). Check fine details before ordering.")
+        XCTAssertTrue(replicaSimplifiedDeviationLine(0.123).contains("about 0.12 mm"))
+    }
+
+    func testPhotoGuidanceAndCoverage() {
+        XCTAssertTrue(replicaPhotoAdvice.contains("same object and lighting"))
+        XCTAssertTrue(replicaPhotoAdvice.contains("plain background"))
+        XCTAssertTrue(replicaPhotoDistanceAdvice.contains("Step back and zoom in"))
+        XCTAssertTrue(replicaPhotoDistanceAdvice.contains("object’s own sides"))
+        XCTAssertTrue(replicaPhotoEnhancementNote.contains("can change details"))
+        XCTAssertTrue(replicaHigherDetailNote(service: .meshy, photoCount: 1).contains("Ultra 4K"))
+        XCTAssertTrue(replicaHigherDetailNote(service: .meshy, photoCount: 3).contains("Ultra 2K"))
+        XCTAssertTrue(replicaHigherDetailNote(service: .tripo, photoCount: 2).contains("20 more credits"))
+        XCTAssertEqual(replicaPhotoCoverageFinding([.front]),
+                       "Made from one photo, so the sides the photo didn’t show (back, underside) are the service’s guess.")
+        XCTAssertEqual(replicaPhotoCoverageFinding([.back, .front]),
+                       "Made from 2 photos (front and back), so what they didn’t show (left side, right side and underside) is the service’s guess.")
+        let context = replicaPrintReviewContext(service: .meshy, size: size(.height, 40), purpose: .display, meshyReport: nil,
+                                                views: [.front, .left, .back, .right])
+        XCTAssertTrue(context.findings[0].hasPrefix("Made from 4 photos"))
+        XCTAssertEqual(replicaSavedActivityDetail(service: .tripo, triangles: 1_000, estimate: nil, photoCount: 3),
+                       "Tripo: saved, 3 photos, 1,000 triangles")
+        XCTAssertEqual(replicaGenerateBlockedReasons(photoReady: false, photoPreparing: false, nameText: "A", sizeText: "50",
+                                                     service: .meshy, hasKey: true, extraPhotosWithoutFront: true),
+                       ["Add a front photo: the other views go with it."])
+    }
+
+    func testRequestPlanNoticesAChange() {
+        let plan = ReplicaRequestPlan(service: .meshy, views: [.front, .back], higherDetail: false, enhancePhoto: false,
+                                      credits: replicaCostEstimate(service: .meshy, photoCount: 2).credits)
+        let ticked = ReplicaRequestPlan(service: .meshy, views: [.front, .back], higherDetail: true, enhancePhoto: false,
+                                        credits: replicaCostEstimate(service: .meshy, photoCount: 2, higherDetail: true).credits)
+        XCTAssertNotEqual(plan, ticked, "Higher detail ticked after the cost was shown")
+        XCTAssertEqual(ticked.credits, plan.credits + meshyHigherDetailCredits)
+        XCTAssertNotEqual(plan, ReplicaRequestPlan(service: .tripo, views: [.front, .back], higherDetail: false, enhancePhoto: false,
+                                                   credits: plan.credits), "another service")
+        XCTAssertNotEqual(plan, ReplicaRequestPlan(service: .meshy, views: [.front], higherDetail: false, enhancePhoto: false,
+                                                   credits: plan.credits), "a photo removed")
+    }
+
+    @MainActor func testSessionSendsSeveralPhotosOnceAndKeepsTheirViews() async throws {
+        let transport = ReplicaScriptedTransport([(202, #"{"result":"t1"}"#),
+                                                  (200, meshyFinished)],
+                                                 modelData: try MeshRepairTests.cube(size: 0.05).binarySTL())
+        let connection = makeTestConnection()
+        let host = ReplicaTestHost()
+        let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        let views = [ImageTo3DViewImage(view: .back, image: jpeg), ImageTo3DViewImage(view: .front, image: jpeg)]
+        session.start(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), views: views, inputs: cat,
+                      higherDetail: true, enhancePhoto: true, host: host)
+        try await waitFor(session, [.processed, .stopped, .processingFailed])
+        XCTAssertEqual(session.phase, .processed, "\(String(describing: session.lastStop))")
+        XCTAssertEqual(transport.posts, 1)
+        XCTAssertEqual(transport.requests.first?.url?.path, "/openapi/v1/multi-image-to-3d")
+        XCTAssertEqual(transport.requests.dropFirst().first?.url?.path, "/openapi/v1/multi-image-to-3d/t1")
+        XCTAssertEqual(session.generated?.views, [.front, .back])
+        XCTAssertEqual(session.generated?.sourceKind, .multiImageGeneration)
+        XCTAssertEqual(session.estimate?.credits, 25)
+        let sent = (transport.requests.first?.httpBody).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        XCTAssertEqual(sent?["geometry_resolution"] as? String, "2k")
+        XCTAssertEqual(sent?["image_enhancement"] as? Bool, true)
+        session.save(inputs: cat, host: host)
+        XCTAssertEqual(host.activities.last?.detail.contains("2 photos"), true)
+    }
 
     @MainActor func testSessionGeneratesDownloadsProcessesThenSavesOnce() async throws {
         // Regression: the session used to stay in "generating" for ever after a successful download.
