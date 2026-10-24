@@ -81,6 +81,10 @@ struct StudioView: View {
         }
         .sheet(item: $store.meshFitRequest) { MeshFitSheet(request: $0).environmentObject(store) }
         .sheet(item: $store.printReviewRequest) { PrintReviewSheet(request: $0).environmentObject(store) }
+        // Generate a Replica from an Image: its Review for Printing hand-off opens once this sheet has gone.
+        .sheet(isPresented: $store.showReplicaGenerator, onDismiss: { store.presentPendingPrintReview() }) {
+            ReplicaGeneratorSheet().environmentObject(store)
+        }
         .task(id: store.hasKey) {
             if store.hasKey, !store.accountLoaded { await store.refresh() }
         }
