@@ -158,7 +158,8 @@ final class ImagePreparationTests: XCTestCase {
         XCTAssertEqual(claude.cancelButton, "Don’t Send")
         for service in [ImageSharingService.meshy, .tripo] {
             let text = imageSharingConsentText(service)
-            XCTAssertTrue(text.message.contains("Studio sends \(service.displayName) the photo you choose and the details you type"))
+            XCTAssertTrue(text.message.contains("Studio sends \(service.displayName) the photo you choose"))
+            XCTAssertFalse(text.message.contains("details you type"))
             XCTAssertFalse(text.message.contains("renders"))
         }
         XCTAssertEqual(ImageSharingService.allCases.map(\.rawValue), ["anthropic", "meshy", "tripo"])

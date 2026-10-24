@@ -407,9 +407,9 @@ struct PrintReviewSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Ask Claude").font(.headline)
             if !claudeConnection.isConfigured {
-                Text("Add your Anthropic API key in Settings › Account › Claude (Anthropic) to ask Claude.")
+                Text("Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic) to ask Claude.")
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
-                Button("Open Settings") { store.requestSettings(.account) }
+                Button("Open Settings") { store.requestSettings(.designTools) }
             } else {
                 Text(printReviewSendSummary(pictures: session.renders.count, hasContext: !printReviewContextLines(request.context).isEmpty))
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

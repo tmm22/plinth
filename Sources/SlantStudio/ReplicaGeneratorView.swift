@@ -436,8 +436,8 @@ struct ReplicaGeneratorSheet: View {
             Text(estimate.summary).font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Button("Change in Settings…") { store.requestSettings(.account) }
-                    .help("Choose Meshy or Tripo3D and add its API key in Settings › Account › 3D generation.")
+                Button("Change in Settings…") { store.requestSettings(.designTools) }
+                    .help("Choose Meshy or Tripo3D and add its API key in Settings › Design Tools › 3D generation.")
                 Button("Check Balance") { checkBalance() }
                     .disabled(!connection.hasKey(service) || checkingBalance || session.isRunning)
                     .help("Reads your \(service.title) credits. Nothing is spent.")
@@ -596,7 +596,7 @@ struct ReplicaGeneratorSheet: View {
                     Text(reason).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
                 if !connection.hasKey(service) {
-                    Button("Open Settings") { store.requestSettings(.account) }
+                    Button("Open Settings") { store.requestSettings(.designTools) }
                 }
             }
             Spacer()

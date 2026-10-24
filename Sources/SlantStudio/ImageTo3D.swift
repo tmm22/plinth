@@ -249,13 +249,13 @@ enum ImageTo3DError: LocalizedError, Equatable, Sendable {
     var userMessage: String {
         switch self {
         case .notConfigured(let service):
-            return "Add your \(service.title) API key in Settings › Account › 3D generation first."
+            return "Add your \(service.title) API key in Settings › Design Tools › 3D generation first."
         case .invalidInput(let message):
             return message
         case .http(let service, let status, _, let message):
             let detail = message.isEmpty ? "" : " \(message)"
             switch status {
-            case 401: return "\(service.title) rejected the API key. Check it in Settings › Account › 3D generation."
+            case 401: return "\(service.title) rejected the API key. Check it in Settings › Design Tools › 3D generation."
             case 403: return "\(service.title) refused this request.\(detail)"
             case 404: return "\(service.title) couldn’t find that task. It may have been deleted or expired."
             case 400, 422: return "\(service.title) couldn’t accept that request.\(detail)"
@@ -813,7 +813,7 @@ extension ImageTo3DService {
     func endWork() { activeWork = max(0, activeWork - 1) }
 
     func hasKey(_ service: ImageTo3DService) -> Bool { savedKeys.contains(service) }
-    /// Whether the seller agreed to send photos to `service` (Settings › Account › Photo sharing).
+    /// Whether the seller agreed to send photos to `service` (Settings › Design Tools › Photo sharing).
     func hasPhotoConsent(_ service: ImageTo3DService) -> Bool {
         ImageSharingConsentStore.shared.hasConsented(service.sharingService)
     }

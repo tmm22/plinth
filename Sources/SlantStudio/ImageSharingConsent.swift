@@ -4,7 +4,7 @@ import SwiftUI
 //
 // Before the first photo goes to Anthropic, Meshy or Tripo3D, Studio says what will be sent and asks once per
 // service. Only a yes/no and the date it was given are kept, in preferences; never the image, the details typed or
-// anything about a customer. Settings › Account › Photo sharing shows each answer and can reset it.
+// anything about a customer. Settings › Design Tools › Photo sharing shows each answer and can reset it.
 
 enum ImageSharingService: String, CaseIterable, Identifiable, Sendable {
     case anthropic, meshy, tripo
@@ -25,7 +25,9 @@ enum ImageSharingService: String, CaseIterable, Identifiable, Sendable {
         case .anthropic:
             return "the photo you choose, the details you type (such as measurements and notes) and pictures Studio renders of the models it makes"
         case .meshy, .tripo:
-            return "the photo you choose and the details you type (such as the size you want)"
+            return self == .meshy
+                ? "the photo you choose (and, if you use its free printability check, the size you typed)"
+                : "the photo you choose"
         }
     }
 }
@@ -45,7 +47,7 @@ func imageSharingConsentText(_ service: ImageSharingService) -> ImageSharingCons
             + "Photos are resized and their location, camera and other hidden details are removed first. "
             + "\(service.displayName) handles what it receives under its own terms and privacy policy. "
             + "Don’t include customers’ names, addresses or other personal details. "
-            + "Studio asks once; you can reset this in Settings › Account › Photo sharing.",
+            + "Studio asks once; you can reset this in Settings › Design Tools › Photo sharing.",
         allowButton: "Allow and Send",
         cancelButton: "Don’t Send")
 }
@@ -157,7 +159,7 @@ private struct ImageSharingConsentModifier: ViewModifier {
 
 // MARK: Settings
 
-/// Settings › Account › Photo sharing: each service's answer, with Reset.
+/// Settings › Design Tools › Photo sharing: each service's answer, with Reset.
 struct ImageSharingConsentSettingsSection: View {
     @ObservedObject private var consents = ImageSharingConsentStore.shared
 

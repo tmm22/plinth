@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Settings › Account › Claude (Anthropic)
+// MARK: - Settings › Design Tools › Claude (Anthropic)
 
 /// One line after a successful key test.
 func anthropicKeyTestStatusLine(_ message: AnthropicMessage) -> String {
@@ -85,6 +85,13 @@ struct AnthropicSettingsSection: View {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let client = AnthropicClient(apiKey: trimmed)
         run(client) { message in
+            // Only the test itself may be running, and no Claude conversation may have opened meanwhile.
+            if let reason = anthropicKeyChangeBlockedReason(activeRequests: connection.activeRequests - 1,
+                                                            openSessions: connection.openSessions) {
+                client.invalidate()
+                problem = "The key worked but wasn’t saved. \(reason)"
+                return
+            }
             do {
                 try connection.save(key: trimmed, client: client)
             } catch {

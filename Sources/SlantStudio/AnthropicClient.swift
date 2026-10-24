@@ -442,8 +442,25 @@ struct AnthropicMessage: Equatable, Sendable {
         }.joined(separator: "\n\n")
     }
 
+    /// Tool calls in the reply. After a mid-reply fallback only calls after the last switch point count: earlier ones
+    /// belong to the model that was replaced and aren't in `historyContent`, so answering them would be refused.
     var toolUses: [AnthropicToolUse] {
-        blocks.compactMap { block -> AnthropicToolUse? in if case .toolUse(let use) = block.content { return use }; return nil }
+        let lastFallback = blocks.lastIndex { if case .fallback = $0.content { return true }; return false }
+        return blocks.enumerated().compactMap { index, block -> AnthropicToolUse? in
+            if let lastFallback, index < lastFallback { return nil }
+            if case .toolUse(let use) = block.content { return use }
+            return nil
+        }
+    }
+
+    /// Whether this reply may join the conversation history. A reply cut off by `max_tokens`, the context window or
+    /// any other reason can end in a half-written tool call or an unsigned thinking block, which the next request would
+    /// be refused for; a refusal's output is discarded.
+    var canJoinHistory: Bool {
+        switch stopReason {
+        case .endTurn, .toolUse, .stopSequence, .pauseTurn: return true
+        default: return false
+        }
     }
 
     /// Tool calls Studio may act on: only when Claude stopped to use tools (never after a refusal or a cut-off reply,
@@ -519,7 +536,7 @@ enum AnthropicError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .missingKey:
-            return "Add your Anthropic API key in Settings › Account › Claude (Anthropic) first."
+            return "Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic) first."
         case .notSent(let message):
             return message
         case .http(let status, let type, let message, let retryAfter):
@@ -568,7 +585,7 @@ func anthropicHTTPErrorMessage(status: Int, type: String?, message: String, retr
     case 400:
         return "Anthropic couldn’t accept the request.\(detail)"
     case 401:
-        return "Anthropic rejected the API key. Check it in Settings › Account › Claude (Anthropic)."
+        return "Anthropic rejected the API key. Check it in Settings › Design Tools › Claude (Anthropic)."
     case 402:
         return "Anthropic reported a billing problem with this account. Check its credit balance at console.anthropic.com."
     case 403:
@@ -1011,6 +1028,9 @@ final class AnthropicClient: @unchecked Sendable {
 
     func invalidate() { session.invalidateAndCancel() }
 
+    /// Lets requests already sent finish, then releases the session.
+    func invalidateAfterRunningRequests() { session.finishTasksAndInvalidate() }
+
     /// The cheapest request that proves the key, the model and billing all work: a one-word reply at low effort.
     static func keyTestRequest() -> AnthropicRequest {
         AnthropicRequest(maxTokens: 256, messages: [.user(text: "Reply with the single word OK.")], effort: .low)
@@ -1156,6 +1176,9 @@ struct AIServiceKeychainItem: Equatable, Sendable {
     @Published private(set) var isConfigured: Bool
     /// Claude requests running now (feature sheets and Settings' test). The key can't change under them.
     @Published private(set) var activeRequests = 0
+    /// Open Design an Accessory or Review for Printing sheets. A conversation must stay on one key and account, so
+    /// the key can't change while one is open, even between requests.
+    @Published private(set) var openSessions = 0
     private var client: AnthropicClient?
     private let defaults: UserDefaults
     private let keychain: AIServiceKeychainItem
@@ -1170,11 +1193,14 @@ struct AIServiceKeychainItem: Equatable, Sendable {
 
     /// Why the key can't be saved or removed now, or nil.
     var keyChangeBlockedReason: String? {
-        anthropicKeyChangeBlockedReason(activeRequests: activeRequests)
+        anthropicKeyChangeBlockedReason(activeRequests: activeRequests, openSessions: openSessions)
     }
 
     func beginRequest() { activeRequests += 1 }
     func endRequest() { activeRequests = max(0, activeRequests - 1) }
+    /// Call when a sheet that talks to Claude appears, and `endSession` when it goes.
+    func beginSession() { openSessions += 1 }
+    func endSession() { openSessions = max(0, openSessions - 1) }
 
     /// The client for the saved key, reading the Keychain the first time.
     func currentClient() throws -> AnthropicClient {
@@ -1203,7 +1229,7 @@ struct AIServiceKeychainItem: Equatable, Sendable {
     func save(key: String, client: AnthropicClient) throws {
         try keychain.save(key.trimmingCharacters(in: .whitespacesAndNewlines))
         defaults.set(true, forKey: Self.keySavedDefaultsKey)
-        if self.client !== client { self.client?.invalidate() }
+        if self.client !== client { self.client?.invalidateAfterRunningRequests() }
         self.client = client
         isConfigured = true
     }
@@ -1212,13 +1238,16 @@ struct AIServiceKeychainItem: Equatable, Sendable {
     func remove() throws {
         try keychain.delete()
         defaults.set(false, forKey: Self.keySavedDefaultsKey)
-        client?.invalidate()
+        client?.invalidateAfterRunningRequests()
         client = nil
         isConfigured = false
     }
 }
 
-/// Why the Claude key can't change now, or nil: a request using it is still running.
-func anthropicKeyChangeBlockedReason(activeRequests: Int) -> String? {
-    activeRequests > 0 ? "Wait for the current Claude request to finish." : nil
+/// Why the Claude key can't change now, or nil: a request using it is still running, or a sheet holding a Claude
+/// conversation is open.
+func anthropicKeyChangeBlockedReason(activeRequests: Int, openSessions: Int = 0) -> String? {
+    if activeRequests > 0 { return "Wait for the current Claude request to finish." }
+    if openSessions > 0 { return "Close Design an Accessory or Review for Printing first." }
+    return nil
 }

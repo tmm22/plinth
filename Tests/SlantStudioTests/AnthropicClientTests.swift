@@ -408,6 +408,42 @@ final class AnthropicStreamTests: XCTestCase {
         XCTAssertEqual(message.stopReason, .endTurn)
     }
 
+    func testToolCallsBeforeAFallbackAreNotRunAndCutOffRepliesDontJoinHistory() throws {
+        let stream = """
+        data: {"type":"message_start","message":{"id":"m","model":"claude-opus-5","usage":{"input_tokens":5}}}
+
+        data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_old","name":"render_scad","input":{}}}
+
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"cube(1);\\"}"}}
+
+        data: {"type":"content_block_stop","index":0}
+
+        data: {"type":"content_block_start","index":1,"content_block":{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-5"}}}
+
+        data: {"type":"content_block_stop","index":1}
+
+        data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_new","name":"render_scad","input":{}}}
+
+        data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"cube(2);\\"}"}}
+
+        data: {"type":"content_block_stop","index":2}
+
+        data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}
+
+        data: {"type":"message_stop"}
+        """
+        let (message, _) = try accumulate(stream)
+        XCTAssertEqual(message.toolUses.map(\.id), ["toolu_new"])
+        XCTAssertEqual(message.toolUsesToRun.map(\.id), ["toolu_new"])
+        XCTAssertTrue(message.canJoinHistory)
+        XCTAssertEqual(message.historyContent.compactMap { $0["id"]?.stringValue }, ["toolu_new"])
+
+        let cutOff = stream.replacingOccurrences(of: #""stop_reason":"tool_use""#, with: #""stop_reason":"model_context_window_exceeded""#)
+        let (cutMessage, _) = try accumulate(cutOff)
+        XCTAssertFalse(cutMessage.canJoinHistory)
+        XCTAssertTrue(cutMessage.toolUsesToRun.isEmpty)
+    }
+
     func testMidReplyFallbackHistoryKeepsOnlyEarlierText() throws {
         let stream = """
         data: {"type":"message_start","message":{"id":"m","model":"claude-opus-5","usage":{"input_tokens":5}}}
@@ -495,6 +531,8 @@ final class AnthropicSupportTests: XCTestCase {
         XCTAssertNotNil(anthropicKeyProblem("sk-ant-" + String(repeating: "a", count: 300)))
         XCTAssertEqual(anthropicKeyChangeBlockedReason(activeRequests: 1), "Wait for the current Claude request to finish.")
         XCTAssertNil(anthropicKeyChangeBlockedReason(activeRequests: 0))
+        XCTAssertEqual(anthropicKeyChangeBlockedReason(activeRequests: 0, openSessions: 1),
+                       "Close Design an Accessory or Review for Printing first.")
     }
 
     func testCostEstimate() {

@@ -233,10 +233,10 @@ struct AccessoryDesignerSheet: View {
                 Label("Claude (Anthropic) is set up.", systemImage: "checkmark.circle").foregroundStyle(.secondary)
             } else {
                 HStack {
-                    Label("Add your Anthropic API key in Settings › Account › Claude (Anthropic).", systemImage: "exclamationmark.triangle")
+                    Label("Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic).", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                     Spacer()
-                    Button("Open Settings") { store.requestSettings(.account) }
+                    Button("Open Settings") { store.requestSettings(.designTools) }
                 }
             }
             if openSCAD != nil {

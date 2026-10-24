@@ -123,7 +123,7 @@ enum Destination: String, CaseIterable, Identifiable {
 
 /// Tabs of the Settings window (⌘,), the single home for the account, platforms and developer options.
 enum SettingsTab: Hashable {
-    case account, advanced
+    case account, designTools, advanced
 }
 
 let showDeveloperToolsDefaultsKey = "showDeveloperTools"

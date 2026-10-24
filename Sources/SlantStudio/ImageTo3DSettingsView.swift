@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Settings › Account › 3D generation
+// MARK: - Settings › Design Tools › 3D generation
 
 extension ImageTo3DService {
     /// Placeholder for the key field.

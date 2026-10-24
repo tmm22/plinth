@@ -14,6 +14,9 @@ struct SettingsView: View {
             AccountSettingsTab()
                 .tabItem { Label("Account", systemImage: "person.crop.circle") }
                 .tag(SettingsTab.account)
+            DesignToolsSettingsTab()
+                .tabItem { Label("Design Tools", systemImage: "wand.and.stars") }
+                .tag(SettingsTab.designTools)
             AdvancedSettingsTab()
                 .tabItem { Label("Advanced", systemImage: "gearshape.2") }
                 .tag(SettingsTab.advanced)
@@ -160,10 +163,6 @@ struct AccountSettingsTab: View {
             SellerAddressSettingsSection() // SellerAddressView.swift
 
             ShopifySettingsSection() // ShopifySettingsView.swift
-
-            AnthropicSettingsSection() // AnthropicSettingsView.swift
-            ImageTo3DSettingsSection() // ImageTo3DSettingsView.swift: Meshy / Tripo keys
-            ImageSharingConsentSettingsSection() // ImageSharingConsent.swift
         }
         .formStyle(.grouped)
         .frame(width: 620, height: settingsTabHeight)
@@ -205,6 +204,20 @@ struct AccountSettingsTab: View {
 }
 
 // MARK: - Advanced
+
+/// The optional services behind Design an Accessory, Generate a Replica and Review for Printing: the Claude key, the 3D
+/// generation service and its keys, and the one-time photo-sharing answers.
+struct DesignToolsSettingsTab: View {
+    var body: some View {
+        Form {
+            AnthropicSettingsSection() // AnthropicSettingsView.swift
+            ImageTo3DSettingsSection() // ImageTo3DSettingsView.swift: Meshy / Tripo keys
+            ImageSharingConsentSettingsSection() // ImageSharingConsent.swift
+        }
+        .formStyle(.grouped)
+        .frame(width: 620, height: settingsTabHeight)
+    }
+}
 
 struct AdvancedSettingsTab: View {
     @EnvironmentObject var store: StudioStore

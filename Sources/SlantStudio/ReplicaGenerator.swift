@@ -163,7 +163,7 @@ func replicaGenerateBlockedReasons(photoReady: Bool, photoPreparing: Bool, nameT
     else if !photoReady { reasons.append("Choose a photo of the object.") }
     if let problem = replicaNameProblem(nameText) { reasons.append(problem == "Enter a name." ? "Enter a name for the replica." : problem) }
     if let problem = replicaSizeProblem(sizeText) { reasons.append(problem) }
-    if !hasKey { reasons.append("Add your \(service.title) API key in Settings › Account › 3D generation.") }
+    if !hasKey { reasons.append("Add your \(service.title) API key in Settings › Design Tools › 3D generation.") }
     return reasons
 }
 
