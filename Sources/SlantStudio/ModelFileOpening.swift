@@ -4,11 +4,14 @@ import UserNotifications
 
 // MARK: - Opening models from Finder
 
-/// Pending Finder opens, without duplicates and in the order received. Only STL, OBJ and 3MF file URLs are kept.
-func queuedModelOpens(_ pending: [URL], adding urls: [URL]) -> [URL] {
+/// Pending Finder opens, without duplicates and in the order received. Only STL, OBJ and 3MF file URLs are kept; a
+/// model dragged from the library onto the Dock icon (its drag copy, ModelDragExport.swift) is already in the library.
+func queuedModelOpens(_ pending: [URL], adding urls: [URL],
+                      temporaryDirectory: URL = FileManager.default.temporaryDirectory) -> [URL] {
     var result = pending
     var seen = Set(pending.map { $0.standardizedFileURL.path })
-    for url in urls where url.isFileURL && ModelFileFormat(url: url) != nil {
+    for url in urls where url.isFileURL && ModelFileFormat(url: url) != nil
+        && !ModelDragExport.isDragCopy(url, temporaryDirectory: temporaryDirectory) {
         if seen.insert(url.standardizedFileURL.path).inserted { result.append(url) }
     }
     return result

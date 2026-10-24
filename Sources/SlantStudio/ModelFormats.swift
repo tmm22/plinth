@@ -24,6 +24,8 @@ struct PreviewModel: Sendable {
     /// OBJ faces that couldn't be split into triangles exactly (for example a face that crosses itself). They are
     /// previewed as a fan, but no STL copy is saved from such a model because it wouldn't match the file.
     var inexactFaces = 0
+    /// Designer, licence and source from a 3MF's model-level metadata (ModelSourceDetails.swift); empty otherwise.
+    var sourceDetails = ModelSourceDetails()
 }
 
 enum ModelFormatError: LocalizedError, Equatable {
@@ -370,6 +372,7 @@ func triangulateOBJFace(_ points: [SIMD3<Float>], work: inout Int, workLimit: In
 
 /// 3MF core geometry: the root model part (found through `_rels/.rels`), `unit`, objects with meshes or components,
 /// `<build><item>` placement and 3×4 transforms, and production-extension `path` references to other model parts.
+/// The root part's model-level `<metadata>` is read separately (`ThreeMFMetadataReader`) for designer and licence.
 /// Colours, materials, slicer paint data and plate metadata are ignored.
 enum ThreeMFReader {
     static let maximumDepth = 32
@@ -396,7 +399,12 @@ enum ThreeMFReader {
 
         let rootPath = try rootModelPath(archive, extract: extract)
         guard let rootEntry = archive.entry(named: rootPath) else { throw ModelFormatError.missingModel }
-        let root = try ThreeMFModelPart.parse(try extract(rootEntry), isRoot: true)
+        // The root part's bytes are read once more for its metadata, then released before the geometry is built.
+        let (root, sourceDetails) = try { () throws -> (ThreeMFModelPart, ModelSourceDetails) in
+            let rootData = try extract(rootEntry)
+            let part = try ThreeMFModelPart.parse(rootData, isRoot: true)
+            return (part, modelSourceDetails(fromMetadata: ThreeMFMetadataReader.entries(in: rootData)))
+        }()
         let unit = root.unit ?? "millimeter"
         guard let scale = unitScale[unit.lowercased()] else { throw ModelFormatError.unsupportedUnit(unit) }
         guard !root.items.isEmpty else { throw ModelFormatError.noBuildItems }
@@ -487,7 +495,8 @@ enum ThreeMFReader {
         }
         guard !output.isEmpty else { throw STLMesh.ParseError.empty }
         let mesh = try STLMesh.validated(output)
-        return PreviewModel(mesh: mesh, format: .threeMF, objectCount: root.items.count, partExtents: extents)
+        return PreviewModel(mesh: mesh, format: .threeMF, objectCount: root.items.count, partExtents: extents,
+                            sourceDetails: sourceDetails)
     }
 
     private static func rootModelPath(_ archive: ZipArchive, extract: (ZipArchive.Entry) throws -> Data) throws -> String {
@@ -741,6 +750,84 @@ enum ThreeMFRelationships {
             guard localName(elementName) == "Relationship", attribute(attributes, "Type") == type,
                   let target = attribute(attributes, "Target") else { return }
             targets.append(target)
+        }
+    }
+}
+
+/// Model-level `<metadata name="…">value</metadata>` entries of a 3MF model part, in document order (3MF Core
+/// Specification §3.4.1: children of `<model>`, before `<resources>`). Object-level metadata groups are not read.
+///
+/// This is a second, separate pass over a part the geometry parser has already accepted (so DTDs are already refused,
+/// and are refused again here). It stops at the first `<resources>`, `<build>` or `<object>`, so it costs next to
+/// nothing on large meshes, and it is bounded: at most `maximumEntries` entries of `maximumValueLength` characters
+/// each. Metadata is advisory, so a failure here never fails the preview; it just yields fewer entries.
+enum ThreeMFMetadataReader {
+    static let maximumEntries = 64
+    static let maximumValueLength = 4_096
+
+    static func entries(in data: Data) -> [(name: String, value: String)] {
+        guard (try? rejectDocumentType(data)) != nil else { return [] }
+        let delegate = MetadataDelegate()
+        let parser = XMLParser(data: data)
+        parser.shouldResolveExternalEntities = false
+        parser.delegate = delegate
+        _ = parser.parse()  // Usually aborted on purpose at <resources>; what was read before that is kept.
+        return delegate.refused ? [] : delegate.entries
+    }
+
+    private final class MetadataDelegate: DocumentTypeRefusingDelegate {
+        var entries: [(name: String, value: String)] = []
+        var refused = false
+        private var depth = 0
+        private var modelDepth: Int?
+        private var current: (name: String, value: String)?
+
+        func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+                    qualifiedName qName: String?, attributes: [String: String] = [:]) {
+            depth += 1
+            let name = localName(elementName)
+            if modelDepth == nil {
+                if name == "model" { modelDepth = depth }
+                return
+            }
+            guard let modelDepth, depth == modelDepth + 1 else { return }
+            switch name {
+            case "resources", "build", "object":
+                parser.abortParsing()
+            case "metadata":
+                guard entries.count < maximumEntries else { return parser.abortParsing() }
+                current = (attribute(attributes, "name") ?? "", "")
+            default:
+                break
+            }
+        }
+
+        func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+            if let entry = current, let modelDepth, depth == modelDepth + 1 {
+                if !entry.name.isEmpty { entries.append(entry) }
+                current = nil
+            }
+            depth -= 1
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) { append(string) }
+
+        func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+            append(String(decoding: CDATABlock, as: UTF8.self))
+        }
+
+        private func append(_ text: String) {
+            guard var entry = current, entry.value.utf16.count < maximumValueLength else { return }
+            entry.value += text
+            if entry.value.utf16.count > maximumValueLength {
+                entry.value = String(entry.value.prefix(maximumValueLength))
+            }
+            current = entry
+        }
+
+        override func refuseDocumentType(_ parser: XMLParser) {
+            refused = true
+            parser.abortParsing()
         }
     }
 }
