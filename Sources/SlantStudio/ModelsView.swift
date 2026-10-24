@@ -276,6 +276,9 @@ struct ModelsView: View {
                             }
                         }
                         scaleNoticeBlock
+                        if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
+                            MeshFitCard(model: local, loaded: loaded).id(local.id)
+                        }
                         printConfigurationCard.id("print-configuration")
                         if let local = store.selectedLocal {
                             if local.supportsPreview {

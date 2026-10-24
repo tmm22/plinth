@@ -1,0 +1,473 @@
+import SwiftUI
+import simd
+
+// The model inspector's Size and base card and its sheets (MeshFit.swift does the geometry). Everything runs on this
+// Mac; nothing is uploaded. Edits are STL-only and saved as separate library copies.
+
+enum MeshFitTool: String, Sendable {
+    case scale, flatBase, plinth
+    var title: String {
+        switch self {
+        case .scale: return "Scale to Size"
+        case .flatBase: return "Add Flat Base"
+        case .plinth: return "Add Plinth"
+        }
+    }
+}
+
+/// A store-driven sheet, counted in `isPresentingSheet`.
+struct MeshFitRequest: Identifiable {
+    let id = UUID()
+    let tool: MeshFitTool
+    let modelID: UUID
+    let mesh: STLMesh
+    /// The previewed file's own source details, carried to the copy.
+    let fileDetails: ModelSourceDetails
+}
+
+/// Temporary folders for copies being saved; removed right after import, and at launch if a crash left one.
+let meshFitTempFolderPrefix = "SlantStudio-MeshFit-"
+
+/// Why `tool` can't edit this model, or nil when it can.
+func meshFitEditBlockedReason(_ model: LocalModel, tool: MeshFitTool) -> String? {
+    guard model.supportsPreview else {
+        return model.supportsMeshPreview
+            ? "Scaling and bases work on an STL copy. Use Save STL Copy below, then select the copy."
+            : "Available for STL files."
+    }
+    switch tool {
+    case .scale:
+        // The same rule as the scale check: records on prepared or edited copies depend on their size.
+        return canSaveScaledCopy(model) ? nil
+            : "This copy records a placement or edits that depend on its size. Scale the original import instead."
+    case .flatBase, .plinth:
+        return model.requiresZUp
+            ? "This copy has features that depend on its print layers. Add the base to the original, then reinforce that copy."
+            : nil
+    }
+}
+
+/// Size label for a mesh's bounding box.
+func meshFitSizeLabel(_ size: SIMD3<Float>) -> String { footprintLabel((size.x, size.y, size.z)) }
+
+func meshFitAreaLabel(_ area: Double) -> String {
+    "\(Int(area.rounded()).formatted()) mm²"
+}
+
+/// Height text for a prefilled field, without trailing zeros ("0.65", "1").
+func meshFitHeightText(_ value: Float) -> String {
+    String(format: "%g", (Double(value) * 100).rounded() / 100)
+}
+
+extension StudioStore {
+    /// Opens a fit sheet for the selected model, unless another sheet or a request is up.
+    func beginMeshFit(_ tool: MeshFitTool, model: LocalModel, loaded: LoadedPreviewMesh) {
+        guard !isPresentingSheet, !busy, meshFitEditBlockedReason(model, tool: tool) == nil,
+              loaded.url == model.url else { return }
+        meshFitRequest = MeshFitRequest(tool: tool, modelID: model.id, mesh: loaded.mesh, fileDetails: loaded.sourceDetails)
+    }
+
+    /// Adds `data` (an already-checked binary STL) to the library as a separate copy named `name`.
+    @discardableResult
+    func saveMeshFitCopy(_ data: Data, name: String, of model: LocalModel, fileDetails: ModelSourceDetails,
+                         activityTitle: String) -> Bool {
+        do {
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(meshFitTempFolderPrefix)\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let url = folder.appendingPathComponent(exportFileName(modelName: name, fileExtension: "stl"))
+            try data.write(to: url, options: .atomic)
+            guard importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: fileDetails)) else {
+                return false
+            }
+            activities.insert(Activity(title: activityTitle, detail: model.name, success: true), at: 0)
+            return true
+        } catch {
+            showError("The copy wasn’t saved: \(error.localizedDescription)")
+            return false
+        }
+    }
+}
+
+// MARK: - Card
+
+/// In memory, per model file version. Cleared when the app quits.
+@MainActor enum WallThicknessCache {
+    static var reports: [String: WallThicknessReport] = [:]
+}
+
+struct MeshFitCard: View {
+    @EnvironmentObject var store: StudioStore
+    let model: LocalModel
+    let loaded: LoadedPreviewMesh
+    @State private var expanded = false
+    @State private var report: WallThicknessReport?
+    @State private var checking = false
+    @State private var progress = 0.0
+    @State private var worker: Task<Void, Never>?
+    @State private var breakdownExpanded = false
+
+    private var cacheKey: String { "\(model.id.uuidString)|\(model.filePath)|\(loaded.mesh.triangleCount)" }
+
+    var body: some View {
+        Card {
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 14) {
+                    editTools
+                    Divider()
+                    thicknessSection
+                }
+                .padding(.top, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                SectionHeading(title: "Size and base",
+                               caption: "Scale to a real size, flatten the bottom, add a plinth or check wall thickness")
+            }
+            .studioDisclosureStyle()
+        }
+        .onAppear { report = WallThicknessCache.reports[cacheKey] }
+        .onDisappear { worker?.cancel() }
+    }
+
+    @ViewBuilder
+    private var editTools: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Now \(meshFitSizeLabel(loaded.mesh.maximum - loaded.mesh.minimum))")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                ForEach([MeshFitTool.scale, .flatBase, .plinth], id: \.self) { tool in
+                    Button("\(tool.title)…") { store.beginMeshFit(tool, model: model, loaded: loaded) }
+                        .disabled(store.busy || meshFitEditBlockedReason(model, tool: tool) != nil)
+                        .help(meshFitEditBlockedReason(model, tool: tool) ?? "Saves a separate copy and keeps this model")
+                }
+            }
+            // One note, for the first tool that is unavailable; the others share the reason or are available.
+            if let reason = [MeshFitTool.scale, .flatBase, .plinth].lazy.compactMap({ meshFitEditBlockedReason(model, tool: $0) }).first {
+                Text(reason).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Each saves a separate copy; this model is kept as it is.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var thicknessSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if checking {
+                HStack(spacing: 10) {
+                    ProgressView(value: progress).frame(maxWidth: 200)
+                    Text("Checking wall thickness… \(Int(progress * 100))%")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button("Stop") { worker?.cancel() }
+                }
+                .accessibilityElement(children: .combine)
+            } else if let report {
+                let summary = wallThicknessSummary(report, origin: loaded.mesh.minimum)
+                Label(summary.line, systemImage: summary.isClear ? "checkmark.circle" : "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(summary.isClear ? Color.green : Color.primary)
+                DisclosureGroup("Breakdown", isExpanded: $breakdownExpanded) {
+                    breakdown(report, summary: summary).padding(.top, 6)
+                }
+                .studioDisclosureStyle()
+                .font(.callout)
+                Button("Check Again", action: startCheck).disabled(store.busy)
+            } else {
+                HStack(spacing: 12) {
+                    Button("Check Wall Thickness", action: startCheck)
+                    Text("Advisory · measured on this Mac")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func breakdown(_ report: WallThicknessReport, summary: WallThicknessSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if report.measuredFraction >= 0.5 {
+                ForEach(Array(report.bands.enumerated()), id: \.offset) { _, band in
+                    Text(wallThicknessBandLabel(band)).monospacedDigit()
+                }
+            }
+            ForEach(summary.details, id: \.self) { line in
+                Text(line).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Measured inward from \(report.sampleCount.formatted()) points spread over the surface. Positions are from the model’s lowest corner. A guide only: it doesn’t block upload and isn’t a strength rating.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func startCheck() {
+        guard !checking else { return }
+        checking = true
+        progress = 0
+        let mesh = loaded.mesh, key = cacheKey
+        worker = Task {
+            let job = Task.detached(priority: .userInitiated) { () -> WallThicknessReport? in
+                analyzeWallThickness(mesh, progress: { value in
+                    Task { @MainActor in progress = max(progress, value) }
+                }, isCancelled: { Task.isCancelled })
+            }
+            let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            checking = false
+            guard !Task.isCancelled, let result else { return }
+            WallThicknessCache.reports[key] = result
+            report = result
+        }
+    }
+}
+
+// MARK: - Sheet
+
+struct MeshFitSheet: View {
+    @EnvironmentObject var store: StudioStore
+    @Environment(\.dismiss) private var dismiss
+    let request: MeshFitRequest
+
+    // Scale to Size
+    @State private var axis = MeshFitAxis.longest
+    @State private var sizeText = ""
+    // Add Flat Base
+    @State private var suggestion: FlatBaseSuggestion?
+    @State private var heightText = ""
+    @State private var contactAtHeight: Double?
+    // Add Plinth
+    @State private var plinth = PlinthSettings()
+    @State private var marginText = "3"
+    @State private var thicknessText = "3"
+    @State private var joinText = "0.5"
+
+    @State private var saving = false
+    @State private var failure: String?
+    @State private var worker: Task<Void, Never>?
+
+    private var model: LocalModel? { store.localModels.first { $0.id == request.modelID } }
+    private var extent: SIMD3<Float> { request.mesh.maximum - request.mesh.minimum }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(request.tool.title).font(.title2.weight(.bold))
+                Text("\(model?.name ?? "This model") · now \(meshFitSizeLabel(extent))")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            .padding(24)
+            Divider()
+            Form {
+                switch request.tool {
+                case .scale: scaleForm
+                case .flatBase: flatBaseForm
+                case .plinth: plinthForm
+                }
+                if let failure {
+                    Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .formStyle(.grouped)
+            .disabled(saving)
+            Divider()
+            HStack {
+                Button("Cancel") {
+                    worker?.cancel()
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Spacer()
+                if saving { ProgressView().controlSize(.small) }
+                Button(saveTitle, action: save)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave || saving || model == nil)
+            }
+            .padding(20)
+        }
+        .frame(minWidth: 480, idealWidth: 520, minHeight: 420)
+        .onDisappear { worker?.cancel() }
+        .task {
+            guard request.tool == .flatBase else { return }
+            let mesh = request.mesh
+            let found = await Task.detached(priority: .userInitiated) { mesh.flatBaseSuggestion() }.value
+            guard !Task.isCancelled else { return }
+            suggestion = found
+            if heightText.isEmpty { heightText = meshFitHeightText(found.cutHeightMM ?? min(1, found.maximumCutMM)) }
+        }
+        .task(id: heightText) {
+            guard request.tool == .flatBase else { return }
+            contactAtHeight = nil
+            guard let height = meshFitMillimetres(heightText), height < Double(extent.z) else { return }
+            let mesh = request.mesh
+            // Debounced so typing doesn't queue a pass per keystroke.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let area = await Task.detached(priority: .userInitiated) { mesh.crossSectionAreaMM2(atHeight: Float(height)) }.value
+            guard !Task.isCancelled else { return }
+            contactAtHeight = area
+        }
+    }
+
+    private var saveTitle: String {
+        switch request.tool {
+        case .scale: return "Save Scaled Copy"
+        case .flatBase: return "Save Copy with Flat Base"
+        case .plinth: return "Save Copy with Plinth"
+        }
+    }
+
+    private var scalePlan: ScaleToSizePlan? {
+        meshFitMillimetres(sizeText).flatMap { try? scaleToSizePlan(extentMM: extent, axis: axis, targetMM: $0) }
+    }
+
+    private var plinthSettings: PlinthSettings? {
+        guard let margin = meshFitMillimetres(marginText), let thickness = meshFitMillimetres(thicknessText),
+              let join = meshFitMillimetres(joinText) else { return nil }
+        var settings = plinth
+        settings.marginMM = Float(margin); settings.thicknessMM = Float(thickness); settings.joinDepthMM = Float(join)
+        return settings
+    }
+
+    private var canSave: Bool {
+        switch request.tool {
+        case .scale: return scalePlan?.fitsBuildVolume == true
+        case .flatBase:
+            guard let height = meshFitMillimetres(heightText) else { return false }
+            return height < Double(extent.z)
+        case .plinth: return plinthSettings.map { plinthSettingsProblem($0) == nil } ?? false
+        }
+    }
+
+    // MARK: Forms
+
+    @ViewBuilder
+    private var scaleForm: some View {
+        Section {
+            Picker("Measure", selection: $axis) {
+                ForEach(MeshFitAxis.allCases) { Text($0.rawValue).tag($0) }
+            }
+            TextField("Size (mm)", text: $sizeText, prompt: Text("e.g. 50"))
+        } footer: {
+            Group {
+                if let plan = scalePlan {
+                    if plan.fitsBuildVolume {
+                        Label("Result \(meshFitSizeLabel(plan.resultSizeMM)) · fits Slant’s 220 mm build volume", systemImage: "checkmark.circle")
+                    } else {
+                        Label("Result \(meshFitSizeLabel(plan.resultSizeMM)) · larger than Slant’s 220 mm build volume", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                } else if !sizeText.isEmpty {
+                    Text("Enter a size in millimetres, such as 50 or 12.5.")
+                } else {
+                    Text("Scales evenly in all directions, so the shape keeps its proportions. Image-to-3D models don’t know their real size, so measure the object if you can.")
+                }
+            }
+            .settingsFooterLayout()
+        }
+    }
+
+    @ViewBuilder
+    private var flatBaseForm: some View {
+        Section {
+            if let suggestion {
+                LabeledContent("Flat on the bed now", value: meshFitAreaLabel(suggestion.currentContactMM2))
+                TextField("Remove from the bottom (mm)", text: $heightText)
+                LabeledContent("Flat base after the cut") {
+                    Text(contactAtHeight.map(meshFitAreaLabel) ?? "…").monospacedDigit()
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Measuring the bottom…").foregroundStyle(.secondary)
+                }
+            }
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let suggestion {
+                    if suggestion.alreadyFlat {
+                        Text("This model already sits on \(meshFitAreaLabel(suggestion.currentContactMM2)) of flat base, so it may not need one.")
+                    } else if let cut = suggestion.cutHeightMM {
+                        Text("Suggested: remove \(meshFitHeightText(cut)) mm for at least \(meshFitAreaLabel(suggestion.targetContactMM2)) flat on the bed.")
+                    } else {
+                        Text("Removing up to \(meshFitHeightText(suggestion.maximumCutMM)) mm doesn’t give \(meshFitAreaLabel(suggestion.targetContactMM2)) of flat base. A plinth may suit this model better.")
+                    }
+                }
+                Text("Cuts the model level and fills the cut. Needs a closed mesh.")
+                Text(elephantFootNote)
+            }
+            .settingsFooterLayout()
+        }
+    }
+
+    @ViewBuilder
+    private var plinthForm: some View {
+        Section {
+            Picker("Shape", selection: $plinth.shape) {
+                ForEach(PlinthShape.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            TextField("Margin around the model (mm)", text: $marginText)
+            TextField("Plinth thickness (mm)", text: $thicknessText)
+            TextField("Sink the model into it (mm)", text: $joinText)
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let settings = plinthSettings, let problem = plinthSettingsProblem(settings) {
+                    Text(problem).foregroundStyle(.orange)
+                } else if plinthSettings == nil {
+                    Text("Enter each size in millimetres.").foregroundStyle(.orange)
+                }
+                Text("Adds a base under the whole model, joined into one solid, so tall or top-heavy figures stand steady. Needs a closed mesh.")
+                Text(elephantFootNote)
+            }
+            .settingsFooterLayout()
+        }
+    }
+
+    // MARK: Save
+
+    private func save() {
+        guard canSave, !saving, let model else { return }
+        failure = nil
+        saving = true
+        let mesh = request.mesh, tool = request.tool
+        let name: String, title: String
+        let job: @Sendable () throws -> Data
+        switch tool {
+        case .scale:
+            guard let plan = scalePlan else { saving = false; return }
+            name = scaledToSizeCopyName(model.name, plan: plan)
+            title = "Scale to size"
+            job = { try mesh.scaledToSizeSTLData(axis: plan.axis, targetMM: plan.targetMM).data }
+        case .flatBase:
+            guard let height = meshFitMillimetres(heightText) else { saving = false; return }
+            name = flatBaseCopyName(model.name)
+            title = "Add flat base"
+            job = { try mesh.flatBaseCopy(cutHeightMM: Float(height), isCancelled: { Task.isCancelled }).data }
+        case .plinth:
+            guard let settings = plinthSettings else { saving = false; return }
+            name = plinthCopyName(model.name)
+            title = "Add plinth"
+            job = { try mesh.plinthCopy(settings, isCancelled: { Task.isCancelled }).data }
+        }
+        let details = request.fileDetails
+        worker = Task {
+            let running = Task.detached(priority: .userInitiated) { Result { try job() } }
+            let result = await withTaskCancellationHandler { await running.value } onCancel: { running.cancel() }
+            saving = false
+            // Closing the sheet stops the work and nothing is saved.
+            guard !Task.isCancelled else { return }
+            switch result {
+            case .success(let data):
+                if store.saveMeshFitCopy(data, name: name, of: model, fileDetails: details, activityTitle: title) {
+                    dismiss()
+                }
+            case .failure(let error):
+                failure = error.localizedDescription
+            }
+        }
+    }
+}
