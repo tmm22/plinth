@@ -66,6 +66,49 @@ func accessoryFitSizeLines(_ fitSizes: [AccessoryFitSize]) -> [String] {
         : fitSizes.map(accessoryFitSizeText)
 }
 
+/// Studio's checks of the fit-test piece, for the seller.
+func accessoryFitTestCheckLines(_ piece: AccessoryFitTestPiece) -> [String] {
+    let size = piece.facts.sizeMM
+    let check = piece.check
+    var lines = ["Size: \(String(format: "%.1f", size.x)) × \(String(format: "%.1f", size.y)) × \(String(format: "%.1f", size.z)) mm (W × D × H)"]
+    if let share = check.volumeShare { lines.append("About \(percentLabel(share)) of the part’s material") }
+    if check.passes {
+        lines.append("One closed solid on the bed, smaller than the part")
+        if check.partFitSizeCount > 0 {
+            lines.append(check.partFitSizeCount == 1 ? "Has the part’s fit size" : "Has all \(check.partFitSizeCount) of the part’s fit sizes")
+        }
+        if check.isLargerThanNeeded {
+            lines.append("Larger than it needs to be: you can ask Claude to cut it down to just the part that must fit")
+        }
+    } else {
+        lines.append(contentsOf: check.problems)
+        lines.append(contentsOf: check.fitSizeMismatches.map(accessoryFitSizeMismatchText))
+    }
+    return lines
+}
+
+/// Shown with a passing fit-test piece. It never promises a fit.
+let accessoryFitTestPrintAdvice = "Print this first and check it against the real object; if it fits, print the whole part. If it’s tight or loose, tell Claude by how much in a note."
+
+/// Why there is no fit-test piece to print, for a design that has something to fit (it echoed fit sizes or declared
+/// `fit_test`); nil when a passing piece exists or there is nothing to fit.
+func accessoryNoFitTestLines(_ render: AccessoryRender) -> [String]? {
+    guard render.passingFitTest == nil, !render.facts.fitSizes.isEmpty || render.facts.fitTestDeclaration != .none else { return nil }
+    var lines = ["No fit-test piece: print the whole part to check the fit."]
+    switch render.fitTest {
+    case .made(let piece)?:
+        lines.append("Studio’s fit-test piece didn’t pass its checks: " + piece.check.problems.joined(separator: " "))
+    case .failed?:
+        lines.append("OpenSCAD couldn’t make the fit-test piece.")
+    case nil:
+        break
+    }
+    return lines
+}
+
+/// Under Claude's photo comparison: it is Claude's reading of the pictures, not a measurement.
+let accessoryPhotoCheckCaption = "Claude’s comparison of the renders with your photos. Only a test print shows whether it fits."
+
 /// The status line under the conversation: replies and renders used this round, and what has been spent.
 func accessoryProgressLine(repliesThisRound: Int, rendersThisRound: Int, limits: AccessoryDesignLimits) -> String {
     "Reply \(repliesThisRound) of \(limits.maxReplies) · render \(rendersThisRound) of \(limits.maxRenders) this round"
@@ -727,7 +770,7 @@ struct AccessoryDesignerSheet: View {
         }
         let newRun = AccessoryDesignRun(
             send: { request, progress in try await AnthropicConnection.shared.send(request, onProgress: progress) },
-            render: { code in try await renderAccessoryDesign(code: code, executable: executable) })
+            render: { code, variant in try await renderAccessoryDesign(code: code, variant: variant, executable: executable) })
         run = newRun
         newRun.start(firstTurn: accessoryFirstTurn(brief, photos: photos.map(\.image), ideaContext: designIdeaContext))
     }
@@ -748,6 +791,8 @@ private struct AccessoryDesignRunView: View {
     @State private var saveStatus: String?
     @State private var saveProblem: String?
     @State private var saving = false
+    /// The preview shows the fit-test piece instead of the part.
+    @State private var showFitTest = false
 
     var body: some View {
         HSplitView {
@@ -756,6 +801,8 @@ private struct AccessoryDesignRunView: View {
             preview
                 .frame(minWidth: 380)
         }
+        // Each new render opens on the part.
+        .onChange(of: (run.finish?.render ?? run.latestRender)?.id) { showFitTest = false }
         .onChange(of: run.phase) { old, new in
             logActivityIfRoundEnded(from: old, to: new)
             if new == .finished, let finish = run.finish {
@@ -801,6 +848,10 @@ private struct AccessoryDesignRunView: View {
         case .renderFailed(let number, let text):
             Label("Render \(number) failed: \(text)", systemImage: "xmark.octagon")
                 .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+        case .fitTest(let line, let passed):
+            Label(line, systemImage: passed ? "ruler" : "exclamationmark.triangle")
+                .foregroundStyle(passed ? Color.secondary : Color.orange).font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
         case .refusedCode(let text):
             Label("Studio didn’t run Claude’s code: \(text)", systemImage: "hand.raised")
                 .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
@@ -894,16 +945,34 @@ private struct AccessoryDesignRunView: View {
 
     // MARK: Preview and result
 
+    /// The fit-test piece the preview may show instead of the part.
+    private func madePiece(_ render: AccessoryRender) -> AccessoryFitTestPiece? {
+        if case .made(let piece)? = render.fitTest { return piece }
+        return nil
+    }
+
     private var preview: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let render = run.finish?.render ?? run.latestRender {
-                    // A new view per render: the scene is built once per view.
-                    STLSceneView(mesh: render.mesh, showsPrintBed: true)
-                        .id(render.id)
+                    let piece = madePiece(render)
+                    let showsPiece = showFitTest && piece != nil
+                    if piece != nil {
+                        Picker("Preview", selection: $showFitTest) {
+                            Text("Part").tag(false)
+                            Text("Fit Test").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .accessibilityLabel("Preview")
+                        .fixedSize()
+                    }
+                    // A new view per mesh: the scene is built once per view.
+                    STLSceneView(mesh: showsPiece ? piece!.mesh : render.mesh, showsPrintBed: true)
+                        .id(showsPiece ? piece!.id : render.id)
                         .frame(minHeight: 260, idealHeight: 320)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .accessibilityLabel("3D preview of the latest render")
+                        .accessibilityLabel(showsPiece ? "3D preview of the fit-test piece" : "3D preview of the latest render")
                     if let finish = run.finish, run.phase == .finished {
                         resultSection(finish)
                     }
@@ -929,6 +998,17 @@ private struct AccessoryDesignRunView: View {
                     .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
             fitSection(render.facts.fitSizes)
+            if let piece = madePiece(render) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Fit-test piece").font(.subheadline.weight(.semibold))
+                    ForEach(Array(accessoryFitTestCheckLines(piece).enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.callout).foregroundStyle(piece.check.passes ? Color.primary : Color.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.top, 4)
+                .accessibilityElement(children: .contain)
+            }
             Text("Advisory only: these checks and Claude’s notes can’t tell how strong a part will be. Test-print it before selling.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
@@ -961,6 +1041,15 @@ private struct AccessoryDesignRunView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Claude’s design").font(.headline)
             if !finish.summary.isEmpty { Text(finish.summary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+            if !finish.photoCheck.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Compared with your photos").font(.subheadline.weight(.semibold))
+                    Text(finish.photoCheck).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Text(accessoryPhotoCheckCaption).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .contain)
+            }
             if !finish.printOrientation.isEmpty {
                 LabeledContent("Print orientation") { Text(finish.printOrientation).fixedSize(horizontal: false, vertical: true) }
             }
@@ -985,6 +1074,7 @@ private struct AccessoryDesignRunView: View {
                         .disabled(saving || libraryNameProblem != nil)
                 }
             }
+            fitTestSaveSection(finish)
             if let message = saveProblem ?? libraryNameProblem {
                 Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1001,12 +1091,54 @@ private struct AccessoryDesignRunView: View {
         return nil
     }
 
+    /// The fit-test piece beside the part: what to do with it and its own save button, or why there is none.
+    @ViewBuilder
+    private func fitTestSaveSection(_ finish: AccessoryFinish) -> some View {
+        if let piece = finish.render.passingFitTest {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Fit-test piece").font(.subheadline.weight(.semibold))
+                Text(accessoryFitTestPrintAdvice).font(.callout).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text(accessoryFitTestLibraryName(libraryName: libraryName)).font(.callout).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    if savedRenderIDs.contains(piece.id) {
+                        Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else {
+                        // Not the default button: Save to Library stays the main action.
+                        Button("Save Fit Test to Library") { saveFitTestToLibrary(piece) }
+                            .disabled(saving)
+                            .help("Adds the small fit-test piece to your library as its own model. The whole part is saved separately.")
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+        } else if let lines = accessoryNoFitTestLines(finish.render) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    Text(line).font(index == 0 ? .callout : .caption).foregroundStyle(index == 0 ? Color.primary : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
     private func saveToLibrary(_ finish: AccessoryFinish) {
         guard !saving, libraryNameProblem == nil, !savedRenderIDs.contains(finish.render.id) else { return }
+        save(stl: finish.render.stl, name: libraryName.trimmingCharacters(in: .whitespacesAndNewlines), id: finish.render.id,
+             activityDetail: "Saved a new model")
+    }
+
+    private func saveFitTestToLibrary(_ piece: AccessoryFitTestPiece) {
+        guard !saving, piece.check.passes, !savedRenderIDs.contains(piece.id) else { return }
+        save(stl: piece.stl, name: accessoryFitTestLibraryName(libraryName: libraryName), id: piece.id,
+             activityDetail: "Saved a fit-test piece")
+    }
+
+    /// Writes the STL to a temporary folder and adds it to the library through `importModel`. Sends nothing.
+    private func save(stl: Data, name: String, id: UUID, activityDetail: String) {
         saving = true
         saveProblem = nil
-        let name = libraryName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stl = finish.render.stl
         let fileName = exportFileName(modelName: name, fileExtension: "stl")
         Task { @MainActor in
             defer { saving = false }
@@ -1024,9 +1156,9 @@ private struct AccessoryDesignRunView: View {
                 defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
                 // importModel shows its own alert when copying into the library fails.
                 guard store.importModel(url) else { saveProblem = "The design couldn’t be added to your library."; return }
-                savedRenderIDs.insert(finish.render.id)
+                savedRenderIDs.insert(id)
                 saveStatus = "Saved “\(name)” to your library."
-                store.activities.insert(Activity(title: "Design an accessory", detail: "Saved a new model", success: true), at: 0)
+                store.activities.insert(Activity(title: "Design an accessory", detail: activityDetail, success: true), at: 0)
             case .failure(let error):
                 saveProblem = error.localizedDescription
             }

@@ -48,7 +48,7 @@ private func toolCall(_ id: String, _ name: String, _ input: AnthropicJSON, prob
 }
 
 private let goodCode = "width = 20; // [10:1:40] Width\ncube([width, 30, 10]);"
-private let finishInput: AnthropicJSON = ["name": "Phone stand", "summary": "A stand.", "print_orientation": "Flat on its back.", "notes": ["Check the lip."]]
+private let finishInput: AnthropicJSON = ["name": "Phone stand", "summary": "A stand.", "print_orientation": "Flat on its back.", "notes": ["Check the lip."], "photo_check": "Matches the photos."]
 
 /// Claude's replies in order, and every request Studio sent.
 @MainActor private final class StubClaude {
@@ -252,7 +252,9 @@ final class AccessoryDesignerTests: XCTestCase {
         }
         XCTAssertEqual(id, "t1")
         XCTAssertFalse(isError)
-        XCTAssertEqual(content.count, 1 + 2 * 4)
+        XCTAssertEqual(content.count, 1 + 2 * 4 + 1)
+        guard case .text(let last) = content.last else { return XCTFail("Expected the photo comparison line last") }
+        XCTAssertEqual(last, accessoryPhotoComparisonText)
         guard case .text = content[1], case .image(let image) = content[2] else { return XCTFail("Expected a caption, then a picture") }
         XCTAssertEqual(image.mediaType, .jpeg)
         guard case .toolResult(_, _, let failedIsError, _) = accessoryRenderToolResult(.failed("Syntax error"), toolUseID: "t2", renderNumber: 2, maxRenders: 4) else {
@@ -292,6 +294,7 @@ final class AccessoryDesignerTests: XCTestCase {
             ? "#!/bin/sh\necho \"ERROR: Parser error in file $PWD/design.scad, line 3: syntax error\" >&2\nexit 1\n"
             : """
             #!/bin/sh
+            printf '%s\\n' "$@" > "\(folder.path)/args.txt"
             out=""
             while [ $# -gt 0 ]; do
               if [ "$1" = "-o" ]; then out="$2"; shift; fi
@@ -414,7 +417,7 @@ final class AccessoryDesignerTests: XCTestCase {
     private func makeRun(_ stub: StubClaude, limits: AccessoryDesignLimits = AccessoryDesignLimits(), counter: RenderCounter = RenderCounter(),
                          outcome: @escaping @Sendable () throws -> AccessoryRenderOutcome) -> AccessoryDesignRun {
         AccessoryDesignRun(limits: limits, send: { request, _ in try stub.next(request) },
-                           render: { _ in counter.bump(); return try outcome() })
+                           render: { _, _ in counter.bump(); return try outcome() })
     }
 
     private func settle(_ run: AccessoryDesignRun) async {
@@ -446,7 +449,7 @@ final class AccessoryDesignerTests: XCTestCase {
         guard case .toolResult(let id, let content, let isError, _) = lastUserBlocks(stub.requests[1]).first else { return XCTFail("No tool result") }
         XCTAssertEqual(id, "t1")
         XCTAssertFalse(isError)
-        XCTAssertEqual(content.count, 9)
+        XCTAssertEqual(content.count, 10)
         XCTAssertEqual(stub.requests[1].messages.map(\.role), [.user, .assistant, .user])
         if case .claude(let text) = run.transcript.first?.kind { XCTAssertEqual(text, "Here’s a first version.") } else { XCTFail("Claude's text wasn't shown") }
     }
@@ -725,5 +728,419 @@ final class AccessoryDesignerTests: XCTestCase {
 
     func testRenderOutcomeForTooMuchMemory() {
         XCTAssertTrue(accessoryOpenSCADFailureText(.tooMuchMemory, messages: []).contains("too much memory"))
+    }
+}
+
+// MARK: - Round 9: the fit-test piece and the photo comparison
+
+private let fitTestCode = """
+/* [Fit test] */
+fit_test = false; // Print only a small fit-test piece
+/* [Size] */
+width = 20; // [10:1:40] Width
+module body() { cube([width, 30, 10]); }
+if (fit_test) intersection() { body(); cube([5, 5, 5]); } else body();
+"""
+
+/// Facts of an axis-aligned box from `low` to `high`, with the given fit sizes.
+private func boxFacts(_ low: SIMD3<Float> = .zero, _ high: SIMD3<Float>, fitSizes: [AccessoryFitSize] = [],
+                      code: String = fitTestCode) throws -> AccessoryRenderFacts {
+    try render(try boxSTL(low, high), code: code, fitSizes: fitSizes).facts
+}
+
+/// A 40 × 30 × 20 mm render of `code` with an optional fit-test piece attached, as the run attaches it.
+private func renderWithPiece(code: String = fitTestCode, fitSizes: [AccessoryFitSize] = [],
+                             piece: AccessoryRenderOutcome?) throws -> AccessoryRender {
+    var result = try render(try boxSTL(.zero, SIMD3(40, 30, 20)), code: code, fitSizes: fitSizes)
+    if let piece { result.fitTest = accessoryFitTestOutcome(piece, part: result.facts) }
+    return result
+}
+
+private func toolResultTexts(_ block: AnthropicInputBlock) -> (texts: [String], images: Int) {
+    guard case .toolResult(_, let content, _, _) = block else { return ([], 0) }
+    var texts: [String] = []
+    var images = 0
+    for item in content {
+        switch item {
+        case .text(let text): texts.append(text)
+        case .image: images += 1
+        }
+    }
+    return (texts, images)
+}
+
+/// Stands in for OpenSCAD in the loop: the part for `.design`, the piece for `.fitTest`, counting each.
+private final class VariantRenderer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var designs = 0
+    private var pieces = 0
+    var designCount: Int { lock.withLock { designs } }
+    var pieceCount: Int { lock.withLock { pieces } }
+    let part: AccessoryRenderOutcome
+    let piece: AccessoryRenderOutcome
+    let pieceWaitsForStop: Bool
+    init(part: AccessoryRenderOutcome, piece: AccessoryRenderOutcome, pieceWaitsForStop: Bool = false) {
+        self.part = part
+        self.piece = piece
+        self.pieceWaitsForStop = pieceWaitsForStop
+    }
+    func render(_ variant: AccessoryRenderVariant) async throws -> AccessoryRenderOutcome {
+        switch variant {
+        case .design:
+            lock.withLock { designs += 1 }
+            return part
+        case .fitTest:
+            lock.withLock { pieces += 1 }
+            if pieceWaitsForStop { try await Task.sleep(nanoseconds: 20_000_000_000) }
+            return piece
+        }
+    }
+}
+
+extension AccessoryDesignerTests {
+    func testFitTestIsDetectedOnlyAsATopLevelCustomizerValue() {
+        XCTAssertEqual(accessoryFitTestDeclaration(fitTestCode), .ready)
+        XCTAssertEqual(accessoryFitTestAssignments(fitTestCode), [ScadAssignment(name: "fit_test", literal: "true")])
+        let cases: [(String, AccessoryFitTestDeclaration)] = [
+            (goodCode, .none),
+            ("module a(fit_test = false) { cube(1); }\na();", .notCustomizerValue),
+            ("module a() { fit_test = false; cube(1); }\na();", .notCustomizerValue),
+            ("width = 2;\nmodule a() { cube(width); }\nfit_test = false;\na();", .notCustomizerValue),
+            ("/* [Hidden] */\nfit_test = false;\ncube(1);", .notCustomizerValue),
+            ("fit_test = 0; // Fit test\ncube(1);", .notBoolean),
+            ("fit_test = \"no\";\ncube(1);", .notBoolean),
+            ("fit_test = true; // Print only a small fit-test piece\ncube(1);", .defaultTrue),
+            ("my_fit_test = false;\ncube(1);", .none),
+        ]
+        for (code, expected) in cases {
+            XCTAssertEqual(accessoryFitTestDeclaration(code), expected, code)
+            XCTAssertEqual(accessoryFitTestAssignments(code), [], code)
+        }
+    }
+
+    func testFitTestTrueByDefaultBlocksFinishing() throws {
+        let result = try render(try boxSTL(), code: "fit_test = true; // Print only a small fit-test piece\ncube([20, 30, 10]);")
+        XCTAssertEqual(result.facts.fitTestDeclaration, .defaultTrue)
+        XCTAssertFalse(result.isAcceptable)
+        XCTAssertTrue(result.problems.joined().contains("set fit_test = false"))
+        XCTAssertTrue(try XCTUnwrap(accessoryFitTestFactsText(result)).contains("already the piece"))
+    }
+
+    func testFitTestRenderPassesTheDefineOnlyForADeclaredValue() async throws {
+        let fake = try fakeOpenSCAD(failing: false)
+        defer { try? FileManager.default.removeItem(at: fake.folder) }
+        let argsFile = fake.folder.appendingPathComponent("args.txt")
+        func arguments() throws -> [String] {
+            try String(contentsOf: argsFile, encoding: .utf8).split(separator: "\n").map(String.init)
+        }
+        let before = accessoryTempFolders()
+
+        guard case .rendered(let piece) = try await renderAccessoryDesign(code: fitTestCode, variant: .fitTest, executable: fake.executable,
+                                                                           timeout: 30, budget: testBudget) else {
+            return XCTFail("Expected the piece")
+        }
+        let pieceArguments = try arguments()
+        let define = try XCTUnwrap(pieceArguments.firstIndex(of: "-D"))
+        XCTAssertEqual(pieceArguments[define + 1], "fit_test=true")
+        XCTAssertEqual(pieceArguments.filter { $0 == "-D" }.count, 1)
+        XCTAssertEqual(piece.images.count, 1, "One three-quarter picture of the piece")
+        XCTAssertNil(piece.facts.wallThickness, "The piece's walls aren't measured")
+
+        try FileManager.default.removeItem(at: argsFile)
+        guard case .rendered(let part) = try await renderAccessoryDesign(code: fitTestCode, executable: fake.executable,
+                                                                          timeout: 30, budget: testBudget) else {
+            return XCTFail("Expected the part")
+        }
+        XCTAssertFalse(try arguments().contains("-D"), "The part renders as written")
+        XCTAssertEqual(part.images.count, 4)
+
+        // Code without a top-level fit_test never runs as a fit test.
+        try FileManager.default.removeItem(at: argsFile)
+        for code in [goodCode, "module a() { fit_test = false; cube(1); }\na();", "fit_test = true;\ncube(1);"] {
+            guard case .failed = try await renderAccessoryDesign(code: code, variant: .fitTest, executable: fake.executable, timeout: 30, budget: testBudget) else {
+                return XCTFail("Expected a refusal for \(code)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: argsFile.path), "OpenSCAD wasn't run")
+        // The safety check still applies to the fit-test render.
+        guard case .failed(let refused) = try await renderAccessoryDesign(code: fitTestCode + "\nimport(\"a.stl\");", variant: .fitTest,
+                                                                           executable: fake.executable) else {
+            return XCTFail("Expected a refusal")
+        }
+        XCTAssertTrue(refused.contains("import"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: argsFile.path), "OpenSCAD wasn't run")
+        XCTAssertEqual(accessoryTempFolders(), before, "The temporary folders are removed")
+    }
+
+    func testFitTestCheckCoversEveryBranch() throws {
+        let slot = AccessoryFitSize(name: "slot_width", millimetres: 9.9)
+        let hole = AccessoryFitSize(name: "hole_d", millimetres: 3.4)
+        // A 40 × 30 × 20 mm part (24,000 mm³).
+        let part = try boxFacts(.zero, SIMD3(40, 30, 20), fitSizes: [slot, hole])
+
+        // A small piece with the same fit sizes (within 0.001 mm, plus an extra one, which is ignored) passes.
+        let good = accessoryFitTestCheck(piece: try boxFacts(.zero, SIMD3(10, 10, 5), fitSizes: [slot, AccessoryFitSize(name: "extra", millimetres: 1),
+                                                                                                    AccessoryFitSize(name: "hole_d", millimetres: 3.4005)]), part: part)
+        XCTAssertTrue(good.passes, "\(good.problems)")
+        XCTAssertEqual(try XCTUnwrap(good.volumeShare), 500.0 / 24_000, accuracy: 1e-6)
+        XCTAssertFalse(good.isLargerThanNeeded)
+        XCTAssertEqual(good.partFitSizeCount, 2)
+
+        // Over a quarter of the part: passes, flagged.
+        let large = accessoryFitTestCheck(piece: try boxFacts(.zero, SIMD3(40, 30, 6), fitSizes: [slot, hole]), part: part)
+        XCTAssertTrue(large.passes)
+        XCTAssertTrue(large.isLargerThanNeeded)
+
+        // Half the part or more fails.
+        let half = accessoryFitTestCheck(piece: try boxFacts(.zero, SIMD3(40, 30, 12), fitSizes: [slot, hole]), part: part)
+        XCTAssertFalse(half.passes)
+        XCTAssertFalse(half.isSmallerThanPart)
+        XCTAssertTrue(half.problems.joined().contains("of the part’s volume"))
+
+        // The same piece as the part, or one longer than it, fails.
+        XCTAssertFalse(accessoryFitTestCheck(piece: part, part: part).passes)
+        let longer = accessoryFitTestCheck(piece: try boxFacts(.zero, SIMD3(50, 5, 5), fitSizes: [slot, hole]), part: part)
+        XCTAssertFalse(longer.withinPartSize)
+        XCTAssertFalse(longer.passes)
+        // A piece turned 90° is still within the part's size.
+        let turned = accessoryFitTestCheck(piece: try boxFacts(.zero, SIMD3(5, 38, 5), fitSizes: [slot, hole]), part: part)
+        XCTAssertTrue(turned.withinPartSize)
+
+        // Off the bed, two parts, too big for the build volume.
+        let raised = accessoryFitTestCheck(piece: try boxFacts(SIMD3(0, 0, 2), SIMD3(10, 10, 7), fitSizes: [slot, hole]), part: part)
+        XCTAssertFalse(raised.sitsOnBed)
+        XCTAssertFalse(raised.passes)
+        let twoParts = try render(try STLMesh.validated(boxTriangles(.zero, SIMD3(5, 5, 5)) + boxTriangles(SIMD3(10, 0, 0), SIMD3(15, 5, 5))).stlCopyData(),
+                                  code: fitTestCode, fitSizes: [slot, hole]).facts
+        let split = accessoryFitTestCheck(piece: twoParts, part: part)
+        XCTAssertFalse(split.isOneClosedSolid)
+        XCTAssertNil(split.volumeShare)
+        XCTAssertEqual(split.problems.first, "It isn’t one closed solid.")
+        let bigPart = try boxFacts(.zero, SIMD3(300, 30, 20), fitSizes: [slot])
+        let tooBig = accessoryFitTestCheck(piece: try boxFacts(.zero, SIMD3(230, 5, 5), fitSizes: [slot]), part: bigPart)
+        XCTAssertFalse(tooBig.fitsBuildVolume)
+        XCTAssertFalse(tooBig.passes)
+
+        // Fit sizes that differ by more than 0.001 mm, or are missing.
+        let differs = accessoryFitTestCheck(piece: try boxFacts(.zero, SIMD3(10, 10, 5), fitSizes: [AccessoryFitSize(name: "slot_width", millimetres: 9.902)]), part: part)
+        XCTAssertFalse(differs.passes)
+        XCTAssertEqual(differs.fitSizeMismatches, [AccessoryFitSizeMismatch(name: "slot_width", partMM: 9.9, pieceMM: 9.902),
+                                                   AccessoryFitSizeMismatch(name: "hole_d", partMM: 3.4, pieceMM: nil)])
+        XCTAssertEqual(accessoryFitSizeMismatchText(differs.fitSizeMismatches[1]), "hole_d: 3.4 mm in the part, not echoed by the piece")
+        XCTAssertEqual(accessoryFitSizeMismatchText(AccessoryFitSizeMismatch(name: "slot_width", partMM: 9.9, pieceMM: 10.1)),
+                       "slot_width: 9.9 mm in the part, 10.1 mm in the piece")
+
+        // A part with no fit sizes has nothing to compare.
+        let noFits = accessoryFitTestCheck(piece: try boxFacts(.zero, SIMD3(10, 10, 5)), part: try boxFacts(.zero, SIMD3(40, 30, 20)))
+        XCTAssertTrue(noFits.passes)
+        XCTAssertEqual(noFits.partFitSizeCount, 0)
+    }
+
+    func testToolResultCarriesTheFitTestBlockOnlyWhenThereIsOne() throws {
+        let slot = AccessoryFitSize(name: "slot_width", millimetres: 9.9)
+        let pieceRender = try render(try boxSTL(.zero, SIMD3(10, 10, 5)), code: fitTestCode, fitSizes: [slot])
+
+        // A passing piece: the block after the facts, and its picture after the part's four.
+        let passing = try renderWithPiece(fitSizes: [slot], piece: .rendered(pieceRender))
+        XCTAssertNotNil(passing.passingFitTest)
+        let result = toolResultTexts(accessoryRenderToolResult(.rendered(passing), toolUseID: "t1", renderNumber: 1, maxRenders: 4))
+        XCTAssertEqual(result.images, 5)
+        XCTAssertTrue(result.texts[1].hasPrefix("Fit-test piece: Studio rendered this file again with fit_test = true"), result.texts[1])
+        XCTAssertTrue(result.texts[1].contains("volume: 2% of the part’s"), result.texts[1])
+        XCTAssertTrue(result.texts[1].contains("the piece echoes the part’s fit size with the same value"))
+        XCTAssertTrue(result.texts[1].contains("passes Studio’s checks"))
+        XCTAssertTrue(result.texts.contains { $0.hasPrefix("Fit-test piece: Three-quarter view") })
+        XCTAssertEqual(result.texts.last, accessoryPhotoComparisonText)
+
+        // A failing piece: the block says why, and no picture of it is sent.
+        let failing = try renderWithPiece(fitSizes: [slot], piece: .rendered(try render(try boxSTL(.zero, SIMD3(10, 10, 5)), code: fitTestCode)))
+        XCTAssertNil(failing.passingFitTest)
+        let failed = toolResultTexts(accessoryRenderToolResult(.rendered(failing), toolUseID: "t1", renderNumber: 1, maxRenders: 4))
+        XCTAssertEqual(failed.images, 4)
+        XCTAssertTrue(failed.texts[1].contains("Fit sizes that differ or are missing: slot_width: 9.9 mm in the part, not echoed by the piece."), failed.texts[1])
+        XCTAssertTrue(failed.texts[1].contains("doesn’t pass"))
+
+        // OpenSCAD couldn't make the piece.
+        let broken = try renderWithPiece(piece: .failed("OpenSCAD didn’t finish within 120 seconds, so Studio stopped it."))
+        XCTAssertTrue(try XCTUnwrap(accessoryFitTestFactsText(broken)).contains("and it failed. OpenSCAD didn’t finish"))
+        // Declared, but not made (the run makes it only after an acceptable render).
+        XCTAssertTrue(try XCTUnwrap(accessoryFitTestFactsText(try renderWithPiece(piece: nil))).contains("not made"))
+
+        // No fit_test and no fit sizes: no block at all.
+        let plain = try render(try boxSTL())
+        XCTAssertNil(accessoryFitTestFactsText(plain))
+        let plainResult = toolResultTexts(accessoryRenderToolResult(.rendered(plain), toolUseID: "t1", renderNumber: 1, maxRenders: 4))
+        XCTAssertFalse(plainResult.texts.contains { $0.hasPrefix("Fit-test piece") })
+        XCTAssertEqual(plainResult.texts.count, 1 + 4 + 1)
+        // Fit sizes but no fit_test: one line asking for it.
+        let hint = try XCTUnwrap(accessoryFitTestFactsText(try render(try boxSTL(), fitSizes: [slot])))
+        XCTAssertTrue(hint.contains("doesn’t declare fit_test"))
+        XCTAssertTrue(hint.contains("fit_test = false; // Print only a small fit-test piece"))
+    }
+
+    func testFinishDesignRequiresAPhotoCheckAndClipsIt() throws {
+        let finish = try XCTUnwrap(accessoryTools.first { $0.name == "finish_design" })
+        XCTAssertTrue(finish.strict)
+        XCTAssertEqual(finish.inputSchema["additionalProperties"], .bool(false))
+        XCTAssertEqual(finish.inputSchema["required"]?.arrayValue?.compactMap(\.stringValue), ["name", "summary", "print_orientation", "notes", "photo_check"])
+        XCTAssertEqual(finish.inputSchema["properties"]?["photo_check"]?["type"], .string("string"))
+        XCTAssertNil(anthropicSchemaProblem(finishInput, schema: finish.inputSchema))
+        let missing: AnthropicJSON = ["name": "Phone stand", "summary": "A stand.", "print_orientation": "Flat.", "notes": []]
+        XCTAssertNotNil(anthropicSchemaProblem(missing, schema: finish.inputSchema))
+
+        XCTAssertEqual(accessoryFinishFields(finishInput).photoCheck, "Matches the photos.")
+        let long: AnthropicJSON = ["name": "Phone stand", "summary": "A stand.", "print_orientation": "Flat.", "notes": [],
+                                   "photo_check": .string(String(repeating: "p", count: 900))]
+        XCTAssertEqual(accessoryFinishFields(long).photoCheck.count, accessoryPhotoCheckMaximumLength + 1)
+        XCTAssertEqual(accessoryFinishFields(missing).photoCheck, "")
+
+        for phrase in ["compare the pictures with the seller's photos", "In photo_check", "never say it fits exactly or",
+                       "fit_test = false; // Print only a small fit-test piece", "intersection()", "change the clearance variable",
+                       "doesn't count as one of your renders", "Never promise a fit"] {
+            XCTAssertTrue(accessorySystemPrompt.contains(phrase), phrase)
+        }
+    }
+
+    func testResultScreenTextAndTheFitTestName() throws {
+        XCTAssertEqual(accessoryFitTestLibraryName(libraryName: "Phone stand (designed)"), "Phone stand (fit test)")
+        XCTAssertEqual(accessoryFitTestLibraryName(libraryName: "  Hook  "), "Hook (fit test)")
+        XCTAssertEqual(accessoryFitTestLibraryName(libraryName: "Hook (fit test)"), "Hook (fit test)")
+        XCTAssertEqual(accessoryFitTestLibraryName(libraryName: ""), "Accessory (fit test)")
+        let long = accessoryFitTestLibraryName(libraryName: String(repeating: "x", count: 300))
+        XCTAssertLessThanOrEqual(long.count, maximumModelNameLength)
+        XCTAssertTrue(long.hasSuffix(" (fit test)"))
+
+        let slot = AccessoryFitSize(name: "slot_width", millimetres: 9.9)
+        let passing = try renderWithPiece(fitSizes: [slot], piece: .rendered(try render(try boxSTL(.zero, SIMD3(10, 10, 5)), code: fitTestCode, fitSizes: [slot])))
+        XCTAssertNil(accessoryNoFitTestLines(passing))
+        let piece = try XCTUnwrap(passing.passingFitTest)
+        let lines = accessoryFitTestCheckLines(piece)
+        XCTAssertEqual(lines.first, "Size: 10.0 × 10.0 × 5.0 mm (W × D × H)")
+        XCTAssertTrue(lines.contains("Has the part’s fit size"))
+
+        let failingPiece = try renderWithPiece(fitSizes: [slot], piece: .rendered(try render(try boxSTL(.zero, SIMD3(10, 10, 5)), code: fitTestCode)))
+        let noPiece = try XCTUnwrap(accessoryNoFitTestLines(failingPiece))
+        XCTAssertEqual(noPiece.first, "No fit-test piece: print the whole part to check the fit.")
+        XCTAssertTrue(noPiece[1].contains("didn’t pass"))
+        if case .made(let failed)? = failingPiece.fitTest {
+            XCTAssertTrue(accessoryFitTestCheckLines(failed).contains("slot_width: 9.9 mm in the part, not echoed by the piece"))
+        } else { XCTFail("Expected a made piece") }
+        XCTAssertEqual(accessoryNoFitTestLines(try render(try boxSTL(), fitSizes: [slot])), ["No fit-test piece: print the whole part to check the fit."])
+        XCTAssertNil(accessoryNoFitTestLines(try render(try boxSTL())), "Nothing to fit, nothing to say")
+
+        // None of it promises a fit.
+        for text in [accessoryFitTestPrintAdvice, accessoryPhotoCheckCaption] + lines {
+            for word in ["guarantee", "perfect", "will fit", "safe", "strong"] { XCTAssertFalse(text.lowercased().contains(word), "\(text): \(word)") }
+        }
+    }
+
+    func testCostForecastCountsTheFitTestPiece() {
+        let picture = accessoryImageTokens(pixelWidth: accessoryRenderPixelSize, pixelHeight: accessoryRenderPixelSize)
+        XCTAssertGreaterThanOrEqual(accessoryForecastRenderTokens, 5 * picture + 700)
+        let forecast = accessoryCostForecast(photoSizes: [(1568, 1176)], textCharacters: 600)
+        XCTAssertLessThan(forecast.firstReply.usd, forecast.typical.usd)
+        XCTAssertLessThan(forecast.typical.usd, forecast.maximum.usd)
+        XCTAssertLessThan(forecast.maximum.usd, 10, "Still a few dollars at most")
+    }
+
+    func testTemplateKeepsFitTestAsACheckbox() throws {
+        let text = accessoryTemplateFileText(code: fitTestCode, name: "Phone stand")
+        XCTAssertTrue(text.contains("// Turn fit_test on to make only the small fit-test piece.\n"))
+        let parameters = scadTemplateParameters(text).parameters
+        XCTAssertEqual(parameters.map(\.name), ["fit_test", "width"])
+        let fitTest = try XCTUnwrap(parameters.first)
+        XCTAssertEqual(fitTest.kind, .boolean)
+        XCTAssertEqual(fitTest.defaultValue, "false")
+        XCTAssertEqual(fitTest.description, "Print only a small fit-test piece")
+        XCTAssertEqual(fitTest.group, "Fit test")
+        XCTAssertNil(scadValueProblem("true", for: fitTest))
+        XCTAssertEqual(scadAssignments([fitTest], values: ["fit_test": "true"]), [ScadAssignment(name: "fit_test", literal: "true")])
+        XCTAssertFalse(accessoryTemplateFileText(code: goodCode, name: "Stand").contains("fit_test"))
+    }
+
+    // MARK: The loop with a fit-test piece
+
+    private func makeVariantRun(_ stub: StubClaude, renderer: VariantRenderer, limits: AccessoryDesignLimits = AccessoryDesignLimits()) -> AccessoryDesignRun {
+        AccessoryDesignRun(limits: limits, send: { request, _ in try stub.next(request) },
+                           render: { _, variant in try await renderer.render(variant) })
+    }
+
+    func testTheLoopAttachesThePieceWithoutUsingARender() async throws {
+        let slot = AccessoryFitSize(name: "slot_width", millimetres: 9.9)
+        let part = try render(try boxSTL(.zero, SIMD3(40, 30, 20)), code: fitTestCode, fitSizes: [slot])
+        let piece = try render(try boxSTL(.zero, SIMD3(10, 10, 5)), code: fitTestCode, fitSizes: [slot])
+        let renderer = VariantRenderer(part: .rendered(part), piece: .rendered(piece))
+        let stub = StubClaude([.success(toolCall("t1", "render_scad", ["code": .string(fitTestCode)])),
+                               .success(toolCall("t2", "render_scad", ["code": .string(fitTestCode)])),
+                               .success(toolCall("t3", "finish_design", finishInput))])
+        let run = makeVariantRun(stub, renderer: renderer, limits: AccessoryDesignLimits(maxReplies: 10, maxRenders: 1))
+        run.start(firstTurn: .user(text: "brief"))
+        await settle(run)
+        XCTAssertEqual(run.phase, .finished)
+        XCTAssertEqual(renderer.designCount, 1, "The second render_scad is over the limit of 1")
+        XCTAssertEqual(renderer.pieceCount, 1)
+        XCTAssertEqual(run.rendersThisRound, 1, "The piece isn't one of Claude's renders")
+        XCTAssertEqual(run.totalRenders, 1)
+        XCTAssertNotNil(run.latestRender?.passingFitTest)
+        XCTAssertNotNil(run.finish?.render.passingFitTest)
+        XCTAssertEqual(run.finish?.photoCheck, "Matches the photos.")
+        XCTAssertTrue(run.transcript.contains { if case .fitTest(_, true) = $0.kind { return true }; return false })
+        let sent = toolResultTexts(try XCTUnwrap(lastUserBlocks(stub.requests[1]).first))
+        XCTAssertTrue(sent.texts[1].hasPrefix("Fit-test piece:"))
+        XCTAssertEqual(sent.images, 5)
+        guard case .toolResult(_, _, let overLimit, _) = try XCTUnwrap(lastUserBlocks(stub.requests[2]).first) else { return XCTFail("No tool result") }
+        XCTAssertTrue(overLimit)
+    }
+
+    func testThePieceIsMadeOnlyForAnAcceptableRenderThatDeclaresFitTest() async throws {
+        let twoParts = try render(try STLMesh.validated(boxTriangles(.zero, SIMD3(10, 10, 10)) + boxTriangles(SIMD3(20, 0, 0), SIMD3(30, 10, 10))).stlCopyData(),
+                                  code: fitTestCode)
+        let plain = try render(try boxSTL())
+        let defaultTrue = try render(try boxSTL(), code: "fit_test = true;\ncube([20, 30, 10]);")
+        for part in [twoParts, plain, defaultTrue] {
+            let renderer = VariantRenderer(part: .rendered(part), piece: .failed("unused"))
+            let stub = StubClaude([.success(toolCall("t1", "render_scad", ["code": .string(part.code)]))])
+            let run = makeVariantRun(stub, renderer: renderer)
+            run.start(firstTurn: .user(text: "brief"))
+            await settle(run)
+            XCTAssertEqual(renderer.designCount, 1)
+            XCTAssertEqual(renderer.pieceCount, 0, part.code)
+            XCTAssertNil(run.latestRender?.fitTest)
+        }
+    }
+
+    func testAFailedPieceLeavesThePartAcceptable() async throws {
+        let part = try render(try boxSTL(.zero, SIMD3(40, 30, 20)), code: fitTestCode)
+        let renderer = VariantRenderer(part: .rendered(part), piece: .failed("OpenSCAD didn’t finish within 120 seconds, so Studio stopped it."))
+        let stub = StubClaude([.success(toolCall("t1", "render_scad", ["code": .string(fitTestCode)])),
+                               .success(toolCall("t2", "finish_design", finishInput))])
+        let run = makeVariantRun(stub, renderer: renderer)
+        run.start(firstTurn: .user(text: "brief"))
+        await settle(run)
+        XCTAssertEqual(run.phase, .finished, "finish_design doesn't need a fit-test piece")
+        XCTAssertNil(run.finish?.render.passingFitTest)
+        XCTAssertEqual(accessoryNoFitTestLines(try XCTUnwrap(run.finish?.render))?.last, "OpenSCAD couldn’t make the fit-test piece.")
+        let sent = toolResultTexts(try XCTUnwrap(lastUserBlocks(stub.requests[1]).first))
+        XCTAssertTrue(sent.texts[1].contains("and it failed. OpenSCAD didn’t finish within 120 seconds"))
+        XCTAssertEqual(sent.images, 4)
+    }
+
+    func testStopDuringThePieceStopsCleanly() async throws {
+        let part = try render(try boxSTL(.zero, SIMD3(40, 30, 20)), code: fitTestCode)
+        let renderer = VariantRenderer(part: .rendered(part), piece: .failed("unused"), pieceWaitsForStop: true)
+        let stub = StubClaude([.success(toolCall("t1", "render_scad", ["code": .string(fitTestCode)]))])
+        let run = makeVariantRun(stub, renderer: renderer)
+        run.start(firstTurn: .user(text: "brief"))
+        for _ in 0..<2_000 where run.phase != .working("Rendering the fit-test piece with OpenSCAD…") {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(run.phase, .working("Rendering the fit-test piece with OpenSCAD…"))
+        run.stop()
+        await settle(run)
+        XCTAssertEqual(run.phase, .stopped("Stopped. Nothing more was sent."))
+        XCTAssertEqual(stub.requests.count, 1, "Nothing more was sent")
+        XCTAssertEqual(renderer.pieceCount, 1)
+        XCTAssertNil(run.latestRender, "The interrupted call's render isn't kept")
+        XCTAssertNil(run.finish)
     }
 }

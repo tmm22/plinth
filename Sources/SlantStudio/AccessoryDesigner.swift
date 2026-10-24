@@ -12,6 +12,11 @@ import simd
 // `accessoryTempFolderPrefix` and are removed after each render and save (and at launch, if Studio quit mid-way).
 // Saving a design adds a new library model through `importModel`; Save Template… writes the .scad where the seller
 // chooses. Neither sends anything.
+//
+// When the code declares `fit_test = false;` as a top-level Customizer value, Studio renders it a second time after
+// each acceptable render with `-D fit_test=true` (locally, the same safety check, timeout and memory cap; not one of
+// Claude's renders) to get a small fit-test piece, checks it against the part (`accessoryFitTestCheck`) and reports it
+// to Claude. A passing piece can be saved as its own library model, "<name> (fit test)".
 
 let accessoryTempFolderPrefix = "SlantStudio-Accessory-"
 let accessoryMaximumPhotos = 3
@@ -191,12 +196,17 @@ unless a sensible default is clearly fine; then say what you assumed.
 with facts it measured itself (size, mesh check, wall thickness, overhangs and their heights, flat contact with the \
 bed, build-volume fit, the fit sizes your code echoed, OpenSCAD messages) and pictures from the three-quarter, front, \
 side and top views. Look at them critically and fix what is wrong.
+- After each render, compare the pictures with the seller's photos from the matching angles. Look for differences in \
+shape, features, positions and proportions that matter (a missing notch, a cut-out on the wrong side, a curve that \
+doesn't follow the object) and fix them before you finish. If you keep a difference on purpose, say which and why.
 - If a size that must fit was only estimated, ask the seller with ask_seller to measure it with calipers rather than \
 adding the estimate's ±3 mm on each side. If they skip, use the estimate with generous clearance and say so.
 - If the part carries weight (a hook, bracket, shelf or mount) and the seller hasn't said how much, ask about the load.
 - You have at most 4 renders and 10 replies, so plan the design before the first render and make each render count.
 - When the latest render is right, call finish_design. Studio accepts finish_design only right after a render that is \
-one closed solid within the 220 mm build volume.
+one closed solid within the 220 mm build volume. In photo_check, say in one or two sentences how the design matches \
+the photos and any difference you kept on purpose. Say it "matches the photos"; never say it fits exactly or \
+perfectly, because only a test print shows that.
 - Use exactly one tool in each reply. Keep any text outside tools short and plain: the seller reads it.
 
 OpenSCAD conventions
@@ -236,9 +246,28 @@ ruler ±1 mm). Make fit-critical dimensions easy to change.
 prints faster and costs less.
 - PLA softens around 55–60 °C: for a car or anything near heat, recommend PETG in the notes.
 
+Fit-test piece
+- When anything must fit the object (any size you echo as a fit size, or a snug or tight fit), declare \
+`fit_test = false; // Print only a small fit-test piece` as a top-level value in its own /* [Fit test] */ section \
+before the first module (never in [Hidden]), and leave it false. The seller prints the piece first to check the fit, \
+because Slant's slicer settings are unknown.
+- With fit_test true, the file makes only the fit-critical region: the same geometry with the same sizes, cut down \
+with intersection() to a box around the slot or hole, or a thin slice through the clip. Don't scale, rotate or \
+redesign it, and change no size because of fit_test; you may move the piece down so it sits on Z = 0. Keep every \
+fit-size echo outside any fit_test condition, so both versions echo the same values.
+- The piece must be one closed solid sitting flat on Z = 0, as small and low as possible: aim for under about 15% of \
+the full part's volume.
+- After each render Studio can accept, Studio renders the same file again with fit_test = true on the seller's Mac. \
+That doesn't count as one of your renders. It reports the piece's size, its share of the part's volume, whether it is \
+one closed solid on the bed, no larger than the part, and echoes every fit size with the same value, plus one picture \
+when it passes. If a check fails, fix it in your next render.
+- If the seller says the fit test was tight or loose by some amount, change the clearance variable by that amount, \
+not the measurement, and keep fit_test.
+
 Honesty
 - Never call a design strong, approved, guaranteed or safe, and never give a strength percentage. Say "likely weak \
 point" or "below the 2 mm guideline"; say "checks found no problems" only when Studio's checks really found none.
+- Never promise a fit: say what matches the photos and the measurements, not that a part fits perfectly.
 - Studio's measured facts outrank your intent: if they disagree, fix the code.
 """
 
@@ -253,7 +282,7 @@ enum AccessoryToolName {
 let accessoryTools: [AnthropicTool] = [
     AnthropicTool(
         name: AccessoryToolName.render,
-        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. Studio replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures. Code using include, use, import(), surface(), dxf_ modules or a file = argument, or text that looks like a file path, is refused without rendering.",
+        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. Studio replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures; when the code declares fit_test, also the facts of the fit-test piece Studio renders from it. Code using include, use, import(), surface(), dxf_ modules or a file = argument, or text that looks like a file path, is refused without rendering.",
         inputSchema: [
             "type": "object",
             "properties": ["code": ["type": "string", "description": "The complete OpenSCAD file, at most 64 KB."]],
@@ -278,9 +307,10 @@ let accessoryTools: [AnthropicTool] = [
                 "name": ["type": "string", "description": "A short name for the seller's library, 2–5 words, such as \"Phone stand\"."],
                 "summary": ["type": "string", "description": "Two or three sentences on what the design is and how it fits the measurements."],
                 "print_orientation": ["type": "string", "description": "How it should sit on the bed, and why."],
-                "notes": ["type": "array", "items": ["type": "string"], "description": "Short notes for the seller: likely weak points, what to check on the first print, material advice. At most 6."]
+                "notes": ["type": "array", "items": ["type": "string"], "description": "Short notes for the seller: likely weak points, what to check on the first print, material advice. At most 6."],
+                "photo_check": ["type": "string", "description": "One or two sentences on how the design matches the seller's photos, and any difference you kept on purpose and why. Say it matches the photos; never that it fits exactly or perfectly."]
             ],
-            "required": ["name", "summary", "print_orientation", "notes"],
+            "required": ["name", "summary", "print_orientation", "notes", "photo_check"],
             "additionalProperties": false
         ])
 ]
@@ -319,6 +349,13 @@ func accessoryImageTokens(pixelWidth: Int, pixelHeight: Int) -> Int {
     max(1, (pixelWidth * pixelHeight + 749) / 750)
 }
 
+/// Tokens one render's tool result adds, for the forecast: the four pictures and the facts, plus the fit-test piece's
+/// facts and picture (assumed on every render, as an upper bound) and the line asking Claude to compare with the photos.
+var accessoryForecastRenderTokens: Int {
+    let picture = accessoryImageTokens(pixelWidth: accessoryRenderPixelSize, pixelHeight: accessoryRenderPixelSize)
+    return 4 * picture + 700 + picture + 250 + 60
+}
+
 /// A rough forecast before anything is sent: the first turn is written to the cache, each later reply reads the
 /// conversation so far from the cache and adds one render's facts and pictures, and every reply writes about 8,000
 /// tokens. Anthropic's invoice is what counts; the sheet shows the real running cost from each reply's usage.
@@ -327,7 +364,7 @@ func accessoryCostForecast(photoSizes: [(width: Int, height: Int)], textCharacte
     let fixed = (accessorySystemPrompt.count + AnthropicJSON.array(accessoryTools.map(\.json)).encodedString.count) * 2 / 7
     let photos = photoSizes.reduce(0) { $0 + accessoryImageTokens(pixelWidth: $1.width, pixelHeight: $1.height) }
     let first = fixed + photos + textCharacters * 2 / 7 + 50
-    let renderTokens = 4 * accessoryImageTokens(pixelWidth: accessoryRenderPixelSize, pixelHeight: accessoryRenderPixelSize) + 700
+    let renderTokens = accessoryForecastRenderTokens
     func cost(replies: Int) -> AnthropicCostEstimate {
         var usage = AnthropicUsage()
         var context = 0
@@ -399,7 +436,11 @@ struct AccessoryRenderFacts: Equatable, Sendable {
     var fitSizes: [AccessoryFitSize] = []
     var customizerValues: [String]
     var openSCADMessages: [String]
+    /// How the code declares `fit_test` (`accessoryFitTestDeclaration`).
+    var fitTestDeclaration: AccessoryFitTestDeclaration = .none
 
+    /// The enclosed volume in mm³ (the mesh check's signed volume); meaningful only for one closed solid.
+    var volumeMM3: Double { health.signedVolume }
     var isOneClosedSolid: Bool {
         health.isClosed && health.isConsistentlyOriented && !health.isInsideOut && health.shells == 1
     }
@@ -527,6 +568,200 @@ func accessoryFitSizeText(_ fit: AccessoryFitSize) -> String {
     "\(fit.name) \(accessoryMillimetresText(fit.millimetres))"
 }
 
+// MARK: Fit-test piece
+
+/// The Customizer value that switches the file to its small fit-test piece.
+let accessoryFitTestVariable = "fit_test"
+/// The piece must use less than this share of the part's volume.
+let accessoryFitTestMaximumVolumeShare = 0.5
+/// Above this share the piece is flagged as larger than it needs to be (advisory).
+let accessoryFitTestLargeVolumeShare = 0.25
+/// How closely the piece's echoed fit sizes must match the part's, in mm.
+let accessoryFitTestFitSizeTolerance = 0.001
+
+/// How the code declares `fit_test`.
+enum AccessoryFitTestDeclaration: Equatable, Sendable {
+    /// Not mentioned at all.
+    case none
+    /// Mentioned, but not as a top-level Customizer value before the first module (inside a module, after one, or in
+    /// a [Hidden] section).
+    case notCustomizerValue
+    /// A top-level Customizer value, but not `true`/`false`.
+    case notBoolean
+    /// `fit_test = true;`: the file as written makes only the piece.
+    case defaultTrue
+    /// `fit_test = false;`: Studio can render the piece with `-D fit_test=true`.
+    case ready
+}
+
+/// Reads the code's `fit_test` declaration with the same Customizer detection as Personalise from Template.
+func accessoryFitTestDeclaration(_ code: String) -> AccessoryFitTestDeclaration {
+    if let parameter = scadTemplateParameters(code).parameters.first(where: { $0.name == accessoryFitTestVariable }) {
+        guard parameter.kind == .boolean else { return .notBoolean }
+        return parameter.defaultValue == "true" ? .defaultTrue : .ready
+    }
+    let mentioned = code.range(of: #"(?<![A-Za-z0-9_$])fit_test(?![A-Za-z0-9_])"#, options: .regularExpression) != nil
+    return mentioned ? .notCustomizerValue : .none
+}
+
+/// The `-D` assignment that makes the piece, `fit_test=true`, only when the code declares `fit_test = false;` as a
+/// top-level Customizer value; empty otherwise.
+func accessoryFitTestAssignments(_ code: String) -> [ScadAssignment] {
+    accessoryFitTestDeclaration(code) == .ready ? [ScadAssignment(name: accessoryFitTestVariable, literal: "true")] : []
+}
+
+/// A fit size the piece didn't echo, or echoed with a different value.
+struct AccessoryFitSizeMismatch: Equatable, Sendable {
+    let name: String
+    let partMM: Double
+    /// Nil when the piece didn't echo it.
+    let pieceMM: Double?
+}
+
+/// Studio's checks of the fit-test piece against the full part.
+struct AccessoryFitTestCheck: Equatable, Sendable {
+    var isOneClosedSolid: Bool
+    var sitsOnBed: Bool
+    var fitsBuildVolume: Bool
+    /// No side longer than the part's matching side (sides compared largest to largest, so a 90° turn is allowed).
+    var withinPartSize: Bool
+    /// The piece's volume as a share of the part's; nil unless both are closed solids.
+    var volumeShare: Double?
+    var fitSizeMismatches: [AccessoryFitSizeMismatch]
+    /// How many fit sizes the part echoed.
+    var partFitSizeCount: Int
+
+    var isSmallerThanPart: Bool { volumeShare.map { $0 < accessoryFitTestMaximumVolumeShare } ?? false }
+    /// Over a quarter of the part: it passes, but could be cut down further.
+    var isLargerThanNeeded: Bool { volumeShare.map { $0 > accessoryFitTestLargeVolumeShare } ?? false }
+    var passes: Bool { problems.isEmpty }
+
+    /// Why the piece fails, most important first; empty when it passes.
+    var problems: [String] {
+        var result: [String] = []
+        if !isOneClosedSolid { result.append("It isn’t one closed solid.") }
+        if !sitsOnBed { result.append("It doesn’t sit on the bed (Z = 0).") }
+        if !fitsBuildVolume { result.append("It doesn’t fit Slant’s \(Int(slantBuildVolumeMM)) mm build volume.") }
+        if !withinPartSize { result.append("It is larger than the part along at least one side.") }
+        if isOneClosedSolid, !isSmallerThanPart {
+            let share = volumeShare.map { "It uses \(percentLabel($0)) of the part’s volume" } ?? "Its volume couldn’t be compared with the part’s"
+            result.append("\(share); it must use under \(percentLabel(accessoryFitTestMaximumVolumeShare)).")
+        }
+        if !fitSizeMismatches.isEmpty { result.append("Its fit sizes don’t all match the part’s.") }
+        return result
+    }
+}
+
+/// Checks the piece rendered with `fit_test = true` against the full part: one closed solid on the bed, within the
+/// build volume, no larger than the part, under half its volume, and every fit size the part echoed echoed again with
+/// the same value (±0.001 mm). Sizes only the piece echoes are ignored.
+func accessoryFitTestCheck(piece: AccessoryRenderFacts, part: AccessoryRenderFacts) -> AccessoryFitTestCheck {
+    let pieceSides = [piece.sizeMM.x, piece.sizeMM.y, piece.sizeMM.z].sorted()
+    let partSides = [part.sizeMM.x, part.sizeMM.y, part.sizeMM.z].sorted()
+    let within = zip(pieceSides, partSides).allSatisfy { $0 <= $1 + 0.01 }
+    var share: Double?
+    if piece.isOneClosedSolid, part.isOneClosedSolid, part.volumeMM3 > 0, piece.volumeMM3.isFinite {
+        share = piece.volumeMM3 / part.volumeMM3
+    }
+    var mismatches: [AccessoryFitSizeMismatch] = []
+    for fit in part.fitSizes {
+        let echoed = piece.fitSizes.first { $0.name == fit.name }
+        if let echoed, abs(echoed.millimetres - fit.millimetres) <= accessoryFitTestFitSizeTolerance { continue }
+        mismatches.append(AccessoryFitSizeMismatch(name: fit.name, partMM: fit.millimetres, pieceMM: echoed?.millimetres))
+    }
+    return AccessoryFitTestCheck(isOneClosedSolid: piece.isOneClosedSolid, sitsOnBed: piece.sitsOnBed,
+                                 fitsBuildVolume: piece.fitsBuildVolume, withinPartSize: within, volumeShare: share,
+                                 fitSizeMismatches: mismatches, partFitSizeCount: part.fitSizes.count)
+}
+
+/// "slot_width: 9.9 mm in the part, 10.1 mm in the piece" or "hole_d: 3.4 mm in the part, not echoed by the piece".
+func accessoryFitSizeMismatchText(_ mismatch: AccessoryFitSizeMismatch) -> String {
+    let piece = mismatch.pieceMM.map { "\(accessoryMillimetresText($0)) in the piece" } ?? "not echoed by the piece"
+    return "\(mismatch.name): \(accessoryMillimetresText(mismatch.partMM)) in the part, \(piece)"
+}
+
+/// The small piece Studio rendered from the same code with `fit_test = true`, with one three-quarter picture.
+struct AccessoryFitTestPiece: Identifiable, Sendable {
+    let id = UUID()
+    let stl: Data
+    let mesh: STLMesh
+    let facts: AccessoryRenderFacts
+    let image: AccessoryRenderImage?
+    let check: AccessoryFitTestCheck
+}
+
+enum AccessoryFitTestOutcome: Sendable {
+    case made(AccessoryFitTestPiece)
+    /// OpenSCAD or Studio couldn't make the piece; the text says why.
+    case failed(String)
+}
+
+/// The piece's render outcome, checked against the part.
+func accessoryFitTestOutcome(_ outcome: AccessoryRenderOutcome, part: AccessoryRenderFacts) -> AccessoryFitTestOutcome {
+    switch outcome {
+    case .rendered(let piece):
+        return .made(AccessoryFitTestPiece(stl: piece.stl, mesh: piece.mesh, facts: piece.facts, image: piece.images.first,
+                                           check: accessoryFitTestCheck(piece: piece.facts, part: part)))
+    case .failed(let text):
+        return .failed(text)
+    }
+}
+
+/// The "Fit-test piece" block of a render's tool result, or nil when there is nothing to say (no fit_test and no fit
+/// sizes).
+func accessoryFitTestFactsText(_ render: AccessoryRender) -> String? {
+    let facts = render.facts
+    let declare = "declare `fit_test = false; // Print only a small fit-test piece` as a top-level value before the first module"
+    switch facts.fitTestDeclaration {
+    case .none:
+        guard !facts.fitSizes.isEmpty else { return nil }
+        return "Fit-test piece: none, because the code doesn’t declare fit_test. This design echoes fit sizes, so \(declare), and make only the fit-critical region when it is true."
+    case .notCustomizerValue:
+        return "Fit-test piece: none, because fit_test isn’t a top-level Customizer value: \(declare), outside [Hidden]."
+    case .notBoolean:
+        return "Fit-test piece: none, because fit_test isn’t true or false: \(declare)."
+    case .defaultTrue:
+        return "Fit-test piece: none. fit_test is true in the code, so this render is already the piece and the file doesn’t make the whole part. Set fit_test = false; Studio makes the piece itself."
+    case .ready:
+        break
+    }
+    guard let outcome = render.fitTest else {
+        return "Fit-test piece: not made, because Studio makes it only after a render it can accept as the finished design."
+    }
+    switch outcome {
+    case .failed(let text):
+        return "Fit-test piece: Studio rendered this file again with fit_test = true, and it failed. \(text)\nFix this in your next render."
+    case .made(let piece):
+        var lines = ["Fit-test piece: Studio rendered this file again with fit_test = true (not one of your renders)."]
+        let size = piece.facts.sizeMM
+        var sizeLine = "Size: \(accessoryOneDecimal(size.x)) × \(accessoryOneDecimal(size.y)) × \(accessoryOneDecimal(size.z)) mm; triangles: \(piece.facts.triangles.formatted())"
+        if let share = piece.check.volumeShare { sizeLine += "; volume: \(percentLabel(share)) of the part’s" }
+        lines.append(sizeLine + ".")
+        let check = piece.check
+        func yes(_ flag: Bool) -> String { flag ? "yes" : "no" }
+        lines.append("One closed solid: \(yes(check.isOneClosedSolid)). On the bed (Z = 0): \(yes(check.sitsOnBed)). "
+                     + "Fits the build volume: \(yes(check.fitsBuildVolume)). Smaller than the part: \(yes(check.withinPartSize && check.isSmallerThanPart)).")
+        if check.partFitSizeCount == 0 {
+            lines.append("Fit sizes: the part echoed none, so Studio had none to compare.")
+        } else if check.fitSizeMismatches.isEmpty {
+            lines.append(check.partFitSizeCount == 1 ? "Fit sizes: the piece echoes the part’s fit size with the same value."
+                                                     : "Fit sizes: the piece echoes all \(check.partFitSizeCount) of the part’s fit sizes with the same values.")
+        } else {
+            lines.append("Fit sizes that differ or are missing: " + check.fitSizeMismatches.map(accessoryFitSizeMismatchText).joined(separator: "; ") + ".")
+        }
+        if check.passes {
+            lines.append("The piece passes Studio’s checks; its picture follows the part’s.")
+            if check.isLargerThanNeeded { lines.append("It is larger than it needs to be: cut it down to just the fit-critical region.") }
+        } else {
+            lines.append("The piece doesn’t pass: \(check.problems.joined(separator: " ")) Fix this in your next render.")
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// The line after a render's pictures asking Claude to compare them with the seller's photos.
+let accessoryPhotoComparisonText = "Compare these pictures with the seller’s photos from the matching angles. Fix differences in shape, features, positions or proportions that matter before finishing, and say which you keep on purpose."
+
 /// Why Studio won't accept this render as a finished design; empty when it will.
 func accessoryRenderProblems(_ facts: AccessoryRenderFacts) -> [String] {
     var problems: [String] = []
@@ -540,6 +775,9 @@ func accessoryRenderProblems(_ facts: AccessoryRenderFacts) -> [String] {
     }
     if !facts.fitsBuildVolume {
         problems.append("Its largest side is \(accessoryMillimetresText(Double(facts.sizeMM.max()))), over Slant’s \(Int(slantBuildVolumeMM)) mm build volume.")
+    }
+    if facts.fitTestDeclaration == .defaultTrue {
+        problems.append("fit_test is true in the code, so the file makes only the fit-test piece; set fit_test = false.")
     }
     return problems
 }
@@ -653,9 +891,23 @@ struct AccessoryRender: Identifiable, Sendable {
     let mesh: STLMesh
     let facts: AccessoryRenderFacts
     let images: [AccessoryRenderImage]
+    /// The fit-test piece Studio rendered from the same code, when the code declares `fit_test` and this render is
+    /// acceptable.
+    var fitTest: AccessoryFitTestOutcome?
 
     var problems: [String] { accessoryRenderProblems(facts) }
     var isAcceptable: Bool { problems.isEmpty }
+    /// The fit-test piece, when it was made and passes Studio's checks.
+    var passingFitTest: AccessoryFitTestPiece? {
+        if case .made(let piece)? = fitTest, piece.check.passes { return piece }
+        return nil
+    }
+}
+
+/// Which model a render makes: the design as written, or its fit-test piece (`-D fit_test=true`).
+enum AccessoryRenderVariant: Equatable, Sendable {
+    case design
+    case fitTest
 }
 
 enum AccessoryRenderOutcome: Sendable {
@@ -669,6 +921,17 @@ struct AccessoryAnalysisBudget: Equatable, Sendable {
     var wallThicknessSamples = wallThicknessMaximumSamples
     var pictureSize = accessoryRenderPixelSize
     var rasterBudget = accessoryRenderRasterBudget
+    /// The views pictured, in order.
+    var pictureAngles = accessoryRenderAngles
+    var measuresWallThickness = true
+
+    /// The fit-test piece's analysis: one three-quarter picture and no wall-thickness check.
+    var forFitTest: AccessoryAnalysisBudget {
+        var budget = self
+        budget.pictureAngles = [.threeQuarter]
+        budget.measuresWallThickness = false
+        return budget
+    }
 }
 
 /// Parses OpenSCAD's STL and measures it, then renders the pictures. Pure CPU work, deterministic (the same bytes
@@ -691,13 +954,14 @@ func analyseAccessoryRender(stl data: Data, code: String, openSCADMessages: [Str
                                      overhang: overhangShare(mesh), overhangLocation: accessoryOverhangLocation(mesh),
                                      fitSizes: fitSizes,
                                      customizerValues: scadTemplateParameters(code).parameters.map(\.name),
-                                     openSCADMessages: openSCADMessages)
-    if facts.isOneClosedSolid {
+                                     openSCADMessages: openSCADMessages,
+                                     fitTestDeclaration: accessoryFitTestDeclaration(code))
+    if facts.isOneClosedSolid, budget.measuresWallThickness {
         guard let report = analyzeWallThickness(mesh, maximumSamples: budget.wallThicknessSamples, isCancelled: isCancelled) else { return nil }
         facts.wallThickness = wallThicknessSummary(report, origin: mesh.minimum)
     }
     var images: [AccessoryRenderImage] = []
-    for angle in accessoryRenderAngles {
+    for angle in budget.pictureAngles {
         if isCancelled() { return nil }
         let camera = listingCamera(angle)
         let style = listingRenderStyle(colour: listingNeutralColour, camera: camera)
@@ -714,15 +978,22 @@ func analyseAccessoryRender(stl data: Data, code: String, openSCADMessages: [Str
     return AccessoryRender(code: code, stl: binary, mesh: mesh, facts: facts, images: images)
 }
 
-/// A render's tool result: the facts, then each picture after its caption.
+/// A render's tool result: the facts, the fit-test block when there is one, each picture after its caption, the
+/// passing fit-test piece's picture, and the line asking Claude to compare the pictures with the photos.
 func accessoryRenderToolResult(_ outcome: AccessoryRenderOutcome, toolUseID: String, renderNumber: Int, maxRenders: Int) -> AnthropicInputBlock {
     switch outcome {
     case .rendered(let render):
         var content: [AnthropicToolResultContent] = [.text(accessoryRenderFactsText(render.facts, renderNumber: renderNumber, maxRenders: maxRenders))]
+        if let fitTest = accessoryFitTestFactsText(render) { content.append(.text(fitTest)) }
         for picture in render.images {
             content.append(.text(picture.title))
             content.append(.image(picture.image.anthropicImage))
         }
+        if let piece = render.passingFitTest, let picture = piece.image {
+            content.append(.text("Fit-test piece: \(picture.title)"))
+            content.append(.image(picture.image.anthropicImage))
+        }
+        content.append(.text(accessoryPhotoComparisonText))
         return .toolResult(toolUseID: toolUseID, content: content)
     case .failed(let text):
         return .toolResult(toolUseID: toolUseID, content: [.text("Render \(renderNumber) of \(maxRenders) this round failed. \(text)")], isError: true)
@@ -739,9 +1010,23 @@ private final class AccessoryCancelFlag: @unchecked Sendable {
 
 /// Renders code with the local OpenSCAD in an empty temporary folder (removed afterwards), then measures and pictures
 /// the result off the main actor. Throws only `CancellationError`; every other failure is a `.failed` outcome.
-func renderAccessoryDesign(code: String, executable: URL, timeout: TimeInterval = accessoryOpenSCADTimeout,
+/// `.fitTest` renders the same code with `-D fit_test=true` (only when the code declares `fit_test = false;` as a
+/// top-level Customizer value), with the same safety check, timeout and memory cap, and `budget.forFitTest`.
+func renderAccessoryDesign(code: String, variant: AccessoryRenderVariant = .design, executable: URL,
+                           timeout: TimeInterval = accessoryOpenSCADTimeout,
                            budget: AccessoryAnalysisBudget = AccessoryAnalysisBudget()) async throws -> AccessoryRenderOutcome {
     if let problem = scadSafetyProblem(code) { return .failed(problem) }
+    let assignments: [ScadAssignment]
+    let budget = variant == .fitTest ? budget.forFitTest : budget
+    switch variant {
+    case .design:
+        assignments = []
+    case .fitTest:
+        assignments = accessoryFitTestAssignments(code)
+        guard !assignments.isEmpty else {
+            return .failed("The code doesn’t declare fit_test = false; as a top-level value, so Studio can’t make a fit-test piece.")
+        }
+    }
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(accessoryTempFolderPrefix)\(UUID().uuidString)")
     let scad = folder.appendingPathComponent("design.scad")
     do {
@@ -755,7 +1040,7 @@ func renderAccessoryDesign(code: String, executable: URL, timeout: TimeInterval 
     let capture = OpenSCADLogCapture()
     let data: Data
     do {
-        data = try await runOpenSCADProcess(executable: executable, templateURL: scad, assignments: [], timeout: timeout,
+        data = try await runOpenSCADProcess(executable: executable, templateURL: scad, assignments: assignments, timeout: timeout,
                                             maxMemoryBytes: openSCADMemoryLimitBytes, logCapture: capture)
     } catch OpenSCADRunError.cancelled {
         throw CancellationError()
@@ -792,6 +1077,8 @@ struct AccessoryFinish: Sendable {
     let summary: String
     let printOrientation: String
     let notes: [String]
+    /// Claude's own comparison of the design with the seller's photos (display only).
+    var photoCheck = ""
     let render: AccessoryRender
 }
 
@@ -801,12 +1088,29 @@ private func accessoryClipped(_ text: String?, _ limit: Int) -> String {
 }
 
 /// Claude's finish_design input, clipped for display: name ≤ 60, summary ≤ 1,500, orientation ≤ 400, at most 6 notes of
-/// ≤ 400 characters (empty ones dropped).
-func accessoryFinishFields(_ input: AnthropicJSON) -> (name: String, summary: String, orientation: String, notes: [String]) {
+/// ≤ 400 characters (empty ones dropped), and the photo check ≤ `accessoryPhotoCheckMaximumLength`.
+func accessoryFinishFields(_ input: AnthropicJSON) -> (name: String, summary: String, orientation: String, notes: [String], photoCheck: String) {
     let notes = (input["notes"]?.arrayValue ?? []).compactMap(\.stringValue)
         .map { accessoryClipped($0, 400) }.filter { !$0.isEmpty }.prefix(6)
     return (accessoryClipped(input["name"]?.stringValue, 60), accessoryClipped(input["summary"]?.stringValue, 1_500),
-            accessoryClipped(input["print_orientation"]?.stringValue, 400), Array(notes))
+            accessoryClipped(input["print_orientation"]?.stringValue, 400), Array(notes),
+            accessoryClipped(input["photo_check"]?.stringValue, accessoryPhotoCheckMaximumLength))
+}
+
+let accessoryPhotoCheckMaximumLength = 600
+
+/// The fit-test piece's library name: the design's name without " (designed)", with " (fit test)", such as
+/// "Phone stand (fit test)".
+func accessoryFitTestLibraryName(libraryName: String) -> String {
+    var base = libraryName.trimmingCharacters(in: .whitespacesAndNewlines)
+    base = base.replacingOccurrences(of: #"\s*\((designed|fit test)\)$"#, with: "", options: [.regularExpression, .caseInsensitive])
+        .trimmingCharacters(in: .whitespaces)
+    if base.isEmpty { base = "Accessory" }
+    let suffix = " (fit test)"
+    if base.count + suffix.count > maximumModelNameLength {
+        base = String(base.prefix(max(1, maximumModelNameLength - suffix.count))).trimmingCharacters(in: .whitespaces)
+    }
+    return base + suffix
 }
 
 /// The library name: Claude's suggestion (else the first words of the seller's description, else "Accessory"),
@@ -832,11 +1136,15 @@ func accessoryLibraryName(suggested: String, description: String) -> String {
     return name.count > maximumModelNameLength ? String(name.prefix(maximumModelNameLength)) : name
 }
 
-/// The .scad file Save Template… writes: a short header, then Claude's code unchanged.
+/// The .scad file Save Template… writes: a short header (saying how to make the fit-test piece when the code has one),
+/// then Claude's code unchanged, so `fit_test` stays an adjustable value.
 func accessoryTemplateFileText(code: String, name: String) -> String {
     let title = name.split(whereSeparator: \.isNewline).joined(separator: " ")
-    return "// \(title)\n// Designed with Claude in Slant Studio. Check every measurement on a test print before selling.\n\n" + code
-        + (code.hasSuffix("\n") ? "" : "\n")
+    var header = "// \(title)\n// Designed with Claude in Slant Studio. Check every measurement on a test print before selling.\n"
+    if accessoryFitTestDeclaration(code) == .ready {
+        header += "// Turn fit_test on to make only the small fit-test piece.\n"
+    }
+    return header + "\n" + code + (code.hasSuffix("\n") ? "" : "\n")
 }
 
 // MARK: - The design loop
@@ -847,6 +1155,8 @@ struct AccessoryTranscriptEntry: Identifiable, Sendable {
         case claude(String)
         case render(renderID: UUID, number: Int, line: String, acceptable: Bool)
         case renderFailed(number: Int, text: String)
+        /// The fit-test piece Studio made after an acceptable render.
+        case fitTest(line: String, passed: Bool)
         /// Studio didn't run the code (ScadSafety).
         case refusedCode(String)
         case question(String)
@@ -876,13 +1186,28 @@ func accessoryRenderLine(_ render: AccessoryRender, number: Int) -> String {
     return "Render \(number): \(accessoryOneDecimal(size.x)) × \(accessoryOneDecimal(size.y)) × \(accessoryOneDecimal(size.z)) mm, \(health)"
 }
 
+/// One line for the fit-test piece in the conversation, such as "Fit-test piece: 30.0 × 12.0 × 8.0 mm, 9% of the
+/// part's volume, passes Studio's checks".
+func accessoryFitTestTranscriptLine(_ outcome: AccessoryFitTestOutcome) -> String {
+    switch outcome {
+    case .failed:
+        return "Fit-test piece: OpenSCAD couldn’t make it; Claude is told why"
+    case .made(let piece):
+        let size = piece.facts.sizeMM
+        var line = "Fit-test piece: \(accessoryOneDecimal(size.x)) × \(accessoryOneDecimal(size.y)) × \(accessoryOneDecimal(size.z)) mm"
+        if let share = piece.check.volumeShare { line += ", \(percentLabel(share)) of the part’s volume" }
+        return line + (piece.check.passes ? ", passes Studio’s checks" : ", doesn’t pass Studio’s checks; Claude is told why")
+    }
+}
+
 /// The bounded conversation with Claude. Each round (Start Design, or each note the seller sends) allows
 /// `limits.maxReplies` replies and `limits.maxRenders` renders. Nothing is sent again by itself: a failure, a refusal,
 /// a cut-off reply or a limit stops the round, and only the seller's click starts the next. The history is append-only;
 /// a turn Anthropic never answered is the only one that may still change (Try Again resends it as it is).
 @MainActor final class AccessoryDesignRun: ObservableObject {
     typealias Send = @MainActor (AnthropicRequest, @escaping @MainActor @Sendable (AnthropicStreamProgress) -> Void) async throws -> AnthropicMessage
-    typealias Render = @Sendable (String) async throws -> AccessoryRenderOutcome
+    /// Renders the code as written (`.design`) or its fit-test piece (`.fitTest`), locally.
+    typealias Render = @Sendable (String, AccessoryRenderVariant) async throws -> AccessoryRenderOutcome
 
     let limits: AccessoryDesignLimits
     private let send: Send
@@ -1127,9 +1452,23 @@ func accessoryRenderLine(_ render: AccessoryRender, number: Int) -> String {
             totalRenders += 1
             let number = rendersThisRound
             phase = .working("Rendering design \(number) of \(limits.maxRenders) with OpenSCAD…")
-            let outcome: AccessoryRenderOutcome
-            do { outcome = try await render(code) } catch { return .cancelled }
+            var outcome: AccessoryRenderOutcome
+            do { outcome = try await render(code, .design) } catch { return .cancelled }
             if Task.isCancelled { return .cancelled }
+            // The fit-test piece: the same code again with fit_test = true, locally. It isn't a request to Claude and
+            // doesn't count against the render limit; Stop during it stops the whole call, like Stop during a render.
+            var fitTestEntry: AccessoryTranscriptEntry?
+            if case .rendered(var result) = outcome, result.isAcceptable, result.facts.fitTestDeclaration == .ready {
+                phase = .working("Rendering the fit-test piece with OpenSCAD…")
+                let piece: AccessoryRenderOutcome
+                do { piece = try await render(code, .fitTest) } catch { return .cancelled }
+                if Task.isCancelled { return .cancelled }
+                let fitTest = accessoryFitTestOutcome(piece, part: result.facts)
+                result.fitTest = fitTest
+                outcome = .rendered(result)
+                fitTestEntry = AccessoryTranscriptEntry(kind: .fitTest(line: accessoryFitTestTranscriptLine(fitTest),
+                                                                       passed: result.passingFitTest != nil))
+            }
             switch outcome {
             case .rendered(let result):
                 latestRender = result
@@ -1137,6 +1476,7 @@ func accessoryRenderLine(_ render: AccessoryRender, number: Int) -> String {
                 transcript.append(AccessoryTranscriptEntry(kind: .render(renderID: result.id, number: totalRenders,
                                                                          line: accessoryRenderLine(result, number: totalRenders),
                                                                          acceptable: result.isAcceptable)))
+                if let fitTestEntry { transcript.append(fitTestEntry) }
             case .failed(let text):
                 lastAcceptableRender = nil
                 transcript.append(AccessoryTranscriptEntry(kind: .renderFailed(number: totalRenders, text: text)))
@@ -1159,8 +1499,10 @@ func accessoryRenderLine(_ render: AccessoryRender, number: Int) -> String {
                 return .next
             }
             let fields = accessoryFinishFields(use.input)
+            // A fit-test piece isn't required: some designs have nothing to fit, and the result screen says when the
+            // seller should print the whole part to check the fit.
             finish = AccessoryFinish(name: fields.name, summary: fields.summary, printOrientation: fields.orientation,
-                                     notes: fields.notes, render: accepted)
+                                     notes: fields.notes, photoCheck: fields.photoCheck, render: accepted)
             addResult(.toolResult(toolUseID: use.id, content: [.text("Studio showed the seller this design. If they ask for changes, their note follows.")]), for: use.id)
             return .finished
         default:
