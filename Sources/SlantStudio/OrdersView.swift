@@ -1586,15 +1586,20 @@ struct OrderActionConfirmSheet: View {
                 }
             case .loaded:
                 if let order = fresh {
+                    let reference = orderMarketplaceReferenceLine(order)
+                    let estimate = reviewProfitEstimate(order)
                     VStack(alignment: .leading, spacing: 8) {
                         if let items = order["items"] as? [[String: Any]], !items.isEmpty {
                             // A long list scrolls in a fixed-height box so the totals and buttons below always stay
                             // visible. Chosen by item count, never by measuring (ViewThatFits looped forever when
-                            // VoiceOver or automation hit-tested this sheet); a short list hugs its content.
-                            if orderReviewItemListScrolls(itemCount: items.count) {
+                            // VoiceOver or automation hit-tested this sheet); a short list hugs its content. Extra
+                            // receipt lines (marketplace, estimated profit) shorten it to keep the buttons in view.
+                            let itemLayout = orderReviewItemListLayout(
+                                itemCount: items.count, extraReceiptLines: (reference == nil ? 0 : 1) + (estimate == nil ? 0 : 1))
+                            if itemLayout.scrolls {
                                 ScrollView { reviewItemList(items).padding(.trailing, 12) }
                                     .scrollIndicators(.visible)
-                                    .frame(height: 128)
+                                    .frame(height: itemLayout.height)
                             } else {
                                 reviewItemList(items)
                             }
@@ -1610,6 +1615,11 @@ struct OrderActionConfirmSheet: View {
                             LabeledContent("Delivery") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
                             LabeledContent("Total") { Text("\(orderTotalMoney(order)) USD").monospacedDigit().fontWeight(.semibold) }
                             LabeledContent("Recipient") { Text(orderRecipientDisplay(order)).lineLimit(2) }
+                            if let reference {
+                                LabeledContent("Marketplace") { Text(reference).lineLimit(1).truncationMode(.middle) }
+                            }
+                            // From Import Orders' amounts (memory only): one line, informational, never affects Pay.
+                            if let estimate { importedSaleEstimateLine(estimate) }
                         }
                         .labeledContentStyle(.receipt)
                     }.font(.callout).textSelection(.enabled)
@@ -1674,6 +1684,25 @@ struct OrderActionConfirmSheet: View {
                 loadFresh(keepUnknownMessage: writeAttempted)
             }
         }
+    }
+    /// Estimated profit before paying, only from this session's imported amounts and only until Pay is pressed.
+    func reviewProfitEstimate(_ order: [String: Any]) -> ImportedSaleReviewEstimate? {
+        guard isPay, !writeAttempted,
+              let amounts = importedSaleAmountsLookup(store.importedSaleAmounts, order: order) else { return nil }
+        let preset = ProfitFeeSettings.loadPreset()
+        return importedSaleReviewEstimate(amounts, order: order, preset: preset, rates: ProfitFeeSettings.loadRates(preset))
+    }
+    /// The pay review's estimated profit from imported amounts: one line, orange with a warning sign for a loss.
+    func importedSaleEstimateLine(_ estimate: ImportedSaleReviewEstimate) -> some View {
+        Group {
+            if estimate.isLoss {
+                Label(estimate.text, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            } else {
+                Label(estimate.text, systemImage: "chart.line.uptrend.xyaxis").foregroundStyle(.secondary)
+            }
+        }
+        .lineLimit(1).truncationMode(.tail)
+        .help(estimate.text + ". From the imported order’s amounts and the order’s Slant total; see Profit check for details.")
     }
     /// The reviewed items. Large quantities are highlighted as a visual fat-finger check only; the explicit Pay
     /// confirmation is unchanged.
@@ -2565,7 +2594,8 @@ struct OrderSummary: View {
                 .foregroundStyle(.secondary)
             }
             // Keyed by order so amounts typed for one order never carry over to another.
-            ProfitCheckPanel(order: order).id(Record(values: order).id)
+            ProfitCheckPanel(order: order, imported: importedSaleAmountsLookup(store.importedSaleAmounts, order: order))
+                .id(Record(values: order).id)
             DisclosureGroup("Technical details") { JSONView(text: prettyJSON(hidingSecrets(order))).frame(height: 220) }.studioDisclosureStyle()
         }
     }

@@ -539,6 +539,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var personalisationTemplate: PersonalisationTemplateFile?
     /// Source orders imported this session (OrderImport.swift). Memory only; cleared when the account changes.
     @Published var orderImportLedger = OrderImportLedger()
+    /// What buyers paid for drafts Import Orders created, by Slant order ID (ImportedSaleAmounts.swift): memory only,
+    /// for the Profit check and the pay review. Never saved, logged or in Activity; dropped on Disconnect or a key change.
+    @Published var importedSaleAmounts: [String: ImportedSaleAmounts] = [:]
     /// Tracking for Your Shop sheet (OrderFollowUp.swift). Counted in `isPresentingSheet`.
     @Published var showShopFollowUp = false
     /// Orders ticked "done in shop" in that sheet: order IDs in memory only, for this session.
@@ -931,6 +934,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         filePage = 0; orderPage = 0; filesHasMore = false; ordersHasMore = false
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
         disabledPlatformsThisSession = []; deadWebhooks = [:]; componentCategories = []
+        importedSaleAmounts = [:]
     }
     // The pay/cancel lock, the unconfirmed draft-create notice and the import ledger are deliberately NOT cleared
     // by a key change or Disconnect: Studio can't tell whether a new key belongs to the same Slant account, and a
