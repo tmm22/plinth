@@ -6,7 +6,8 @@ import SwiftUI
 // Uses the order's own Slant total (print + delivery, in USD) rather than an estimate, because estimates exclude
 // shipping. What the buyer paid, how many units they bought and whether the sale came from an ad are typed in for this
 // order only and never stored; only the fee preset and its rates are remembered (UserDefaults), since they are
-// settings, not personal data.
+// settings, not personal data. For a draft Import Orders created this session, the amounts start filled in from the
+// file (ImportedSaleAmounts.swift, memory only) and stay editable.
 
 /// When the preset fee rates were last checked against the marketplaces' published fees.
 let profitFeeRatesCheckedDate = "October 2026"
@@ -349,6 +350,9 @@ enum ProfitFeeSettings {
 /// another order.
 struct ProfitCheckPanel: View {
     let order: [String: Any]
+    /// What the buyer paid, from Import Orders this session (memory only). Fills the empty fields once.
+    var imported: ImportedSaleAmounts? = nil
+    @State private var prefilledFromImport = false
     @State private var expanded = false
     @State private var itemText = ""
     @State private var shippingText = ""
@@ -375,13 +379,31 @@ struct ProfitCheckPanel: View {
             .labeledContentStyle(.receipt)
             .padding(.top, 6)
         }.studioDisclosureStyle()
-        .onAppear(perform: loadRatesIfNeeded)
+        .onAppear {
+            loadRatesIfNeeded()
+            prefillFromImportIfNeeded()
+        }
+        .onChange(of: imported) { _, _ in prefillFromImportIfNeeded() }
+    }
+
+    /// Fills only fields the seller hasn't typed in, and only once, so it never overwrites an edit.
+    func prefillFromImportIfNeeded() {
+        guard let imported, !prefilledFromImport else { return }
+        prefilledFromImport = true
+        let prefill = importedSalePrefill(imported, itemText: itemText, shippingText: shippingText, unitsText: unitsText)
+        if let text = prefill.itemText { itemText = text }
+        if let text = prefill.shippingText { shippingText = text }
+        if let text = prefill.unitsText { unitsText = text }
     }
 
     @ViewBuilder
     func content(slantTotal: Decimal) -> some View {
         Text("Enter what the buyer paid, in US dollars. Slant charges in USD; if you sold in another currency, convert it first. Nothing you type here is saved.")
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        if let imported, prefilledFromImport {
+            Label(importedSaleCaption(imported), systemImage: "tray.and.arrow.down")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
         moneyField("Item total paid", text: $itemText)
         moneyField("Shipping charged", text: $shippingText)
         LabeledContent {

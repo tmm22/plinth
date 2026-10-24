@@ -235,6 +235,9 @@ enum OrderImportField: String, CaseIterable {
     case dateShipped, fulfillmentStatus, cancelledAt, financialStatus
     /// Etsy's "Variations" and a dedicated personalisation column: shown in the preview only (see Personalisation).
     case variations, personalisation
+    /// What the buyer paid (ImportedSaleAmounts.swift): read for the Profit check, never sent in a draft.
+    case saleCurrency, salePrice, saleItemTotal, saleDiscount, saleShipping, saleShippingDiscount
+    case saleSubtotal, saleTaxes, saleTotal, saleRefunded
 }
 
 struct OrderImportFormatSpec {
@@ -257,7 +260,9 @@ let orderImportFormatSpecs: [OrderImportFormatSpec] = [
             .itemName: ["Lineitem name"], .name: ["Shipping Name"], .line1: ["Shipping Address1"],
             .line2: ["Shipping Address2"], .city: ["Shipping City"], .zip: ["Shipping Zip"],
             .state: ["Shipping Province"], .country: ["Shipping Country"], .company: ["Shipping Company"],
-            .fulfillmentStatus: ["Fulfillment Status"], .cancelledAt: ["Cancelled at"], .financialStatus: ["Financial Status"]
+            .fulfillmentStatus: ["Fulfillment Status"], .cancelledAt: ["Cancelled at"], .financialStatus: ["Financial Status"],
+            .saleCurrency: ["Currency"], .saleSubtotal: ["Subtotal"], .saleShipping: ["Shipping"], .saleTaxes: ["Taxes"],
+            .saleTotal: ["Total"], .saleDiscount: ["Discount Amount"], .saleRefunded: ["Refunded Amount"]
         ],
         required: [.orderID, .quantity, .sku, .name, .line1, .city, .zip, .country]
     ),
@@ -268,7 +273,9 @@ let orderImportFormatSpecs: [OrderImportFormatSpec] = [
             .city: ["Ship City"], .state: ["Ship State"], .zip: ["Ship Zipcode", "Ship Zip", "Ship Postal Code"],
             .country: ["Ship Country"], .sku: ["SKU"], .quantity: ["Quantity"], .itemName: ["Item Name"],
             .dateShipped: ["Date Shipped"],
-            .variations: ["Variations"], .personalisation: orderImportPersonalisationColumns
+            .variations: ["Variations"], .personalisation: orderImportPersonalisationColumns,
+            .saleCurrency: ["Currency"], .salePrice: ["Price"], .saleItemTotal: ["Item Total"],
+            .saleDiscount: ["Discount Amount"], .saleShipping: ["Order Shipping"], .saleShippingDiscount: ["Shipping Discount"]
         ],
         required: [.orderID, .name, .line1, .city, .zip, .country, .sku, .quantity]
     ),
@@ -362,6 +369,8 @@ struct OrderImportOrder: Identifiable, Equatable {
     var alreadyHandled: String?
     /// HTML character references (as Etsy exports them) were decoded in the name or address.
     var decodedEntities = false
+    /// The sale columns of each row that has them (ImportedSaleAmounts.swift). Memory only.
+    var saleRows: [OrderImportSaleRow] = []
 }
 
 struct OrderImportParse: Equatable {
@@ -435,6 +444,7 @@ func orderImportOrders(from csv: OrderImportCSV, layout: OrderImportLayout, maxO
                                                               column: orderImportDecodingHTMLEntities(value(.personalisation)))
             order.items.append(item)
         }
+        if let sale = orderImportSaleRow(value) { order.saleRows.append(sale) }
         if order.alreadyHandled == nil {
             order.alreadyHandled = orderImportAlreadyHandledReason(
                 format: layout.format, dateShipped: value(.dateShipped), fulfillmentStatus: value(.fulfillmentStatus),
@@ -1118,6 +1128,9 @@ enum OrderImportRowState: Equatable {
     /// Counts from the last finished batch.
     @Published private(set) var lastTally: OrderImportTally?
     private(set) var stopRequested = false
+    /// What buyers paid (USD), by import row ID, set by the sheet before a batch. Each created draft's amounts move
+    /// to the store's in-memory `importedSaleAmounts`; never saved or logged.
+    var saleAmounts: [String: ImportedSaleAmounts] = [:]
 
     func start(_ jobs: [OrderImportJob], store: StudioStore) {
         guard !running, !jobs.isEmpty else { return }
@@ -1204,6 +1217,7 @@ enum OrderImportRowState: Equatable {
                 store.orderImportLedger.record(.created(orderID: orderID), source: job.source, sourceOrderID: job.sourceOrderID)
                 states[job.id] = .created(orderID)
                 tally.created += 1
+                if let amounts = saleAmounts[job.id] { store.importedSaleAmounts[orderID] = amounts }
                 consecutiveRefusals = 0
             case .refused(let reason):
                 states[job.id] = .refused(reason)
@@ -1389,6 +1403,9 @@ struct OrderImportSheet: View {
                 Text(coverage).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text("Drafts are created on platform \(platformName).").font(.caption).foregroundStyle(.secondary)
+            if let saleNotice = orderImportSaleAmountsNotice(parse.orders) {
+                Text(saleNotice).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if parse.orders.contains(where: { $0.items.contains { !$0.personalisation.isEmpty } }) {
                 OrderImportPersonalisationNotice(list: orderImportPersonalisationList(parse.orders))
             }
@@ -1698,6 +1715,7 @@ struct OrderImportSheet: View {
             return OrderImportJob(id: order.id, source: order.source, sourceOrderID: order.sourceOrderID, body: body)
         }
         guard !jobs.isEmpty else { return }
+        runner.saleAmounts = importedSaleAmountsByOrder(parsed.orders)
         runner.start(jobs, store: store)
         // Sent orders are unticked so pressing Create again never resends them without a fresh, explicit tick.
         if runner.running { ticked.subtract(jobs.map(\.id)) }
