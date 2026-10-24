@@ -213,6 +213,13 @@ struct MeshToolsCard: View {
                 ForEach(Array(lines.enumerated()), id: \.offset) { Text($0.element).font(.callout).foregroundStyle(.secondary) }
             }
         }
+
+        Divider()
+        // Review for Printing with Claude (PrintReviewView.swift): only opens the sheet; nothing is sent from here.
+        Text("Claude can look at pictures and Studio’s measurements of this model and suggest steps from these tools. Nothing is sent until you ask, and nothing runs until you tick it.")
+            .font(.callout).foregroundStyle(.secondary)
+        Button("Review for Printing with Claude…") { store.beginPrintReview(model: model) }
+            .disabled(run.working)
     }
 
     private func start(_ kind: MeshToolKind, mesh: STLMesh) {
