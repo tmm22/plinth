@@ -190,4 +190,59 @@ final class BatchPayTests: XCTestCase {
         XCTAssertEqual(batchPaySummary(BatchPayTally(placed: 3)), "3 placed")
         XCTAssertEqual(batchPaySummary(BatchPayTally()), "0 placed")
     }
+
+    // MARK: Review fixes
+
+    func testOnlyAPlacedStatusCountsAsPlacedAfterA2xx() {
+        XCTAssertEqual(batchPayOutcomeAfterSuccess(["status": "QUEUED"]), .placed)
+        XCTAssertEqual(batchPayOutcomeAfterSuccess(["status": "processing"]), .placed)
+        guard case .notPlaced = batchPayOutcomeAfterSuccess(["status": "PAYMENT_ERROR"]) else { return XCTFail() }
+        guard case .notPlaced = batchPayOutcomeAfterSuccess(["status": "DRAFT"]) else { return XCTFail() }
+        guard case .notPlaced = batchPayOutcomeAfterSuccess(["status": "CANCELED"]) else { return XCTFail() }
+        XCTAssertEqual(batchPayOutcomeAfterSuccess(nil), .unclear)
+        XCTAssertEqual(batchPayOutcomeAfterSuccess(["status": NSNull()]), .unclear)
+        XCTAssertEqual(batchPayOutcomeAfterSuccess(["status": "  "]), .unclear)
+        for outcome: BatchPayOutcome in [.notPlaced("x"), .unclear] {
+            guard case .stop = batchPayNextStep(after: outcome) else { return XCTFail("\(outcome) must stop the batch") }
+        }
+        XCTAssertEqual(batchPayRowState(for: .notPlaced("Payment problem.")), .notPaid("Payment problem."))
+        XCTAssertEqual(batchPayRowState(for: .unclear), .unclear)
+        XCTAssertEqual(batchPayTally([.unclear, .placed]), BatchPayTally(placed: 1, unknown: 1))
+    }
+
+    func testDraftsForTheSameMarketplaceOrderAreNeverBothPaid() {
+        let etsy: [String: Any] = ["source": "etsy", "sourceOrderId": "3141"]
+        let a: [String: Any] = ["status": "DRAFT", "metadata": etsy]
+        let b: [String: Any] = ["status": "DRAFT", "metadata": ["source": "Etsy", "sourceOrderId": " 3141 "]]
+        let c: [String: Any] = ["status": "DRAFT", "metadata": ["source": "etsy", "sourceOrderId": "2718"]]
+        let plain: [String: Any] = ["status": "DRAFT"]
+        let reasons = batchPayDuplicateExclusions([(id: "A", order: a), (id: "B", order: b), (id: "C", order: c),
+                                                   (id: "P", order: plain), (id: "Q", order: plain)], placedKeys: [])
+        XCTAssertEqual(Set(reasons.keys), ["B"])
+        XCTAssertTrue(reasons["B"]?.contains("Etsy order 3141") == true)
+
+        let placed = batchPayPlacedMarketplaceKeys([
+            Record(values: ["id": "X", "status": "QUEUED", "metadata": ["source": "etsy", "sourceOrderId": "2718"]]),
+            Record(values: ["id": "Y", "status": "CANCELED", "metadata": etsy]),
+            Record(values: ["id": "Z", "status": "DRAFT", "metadata": etsy])
+        ])
+        XCTAssertEqual(placed, ["etsy|2718"])
+        let withPlaced = batchPayDuplicateExclusions([(id: "A", order: a), (id: "C", order: c)], placedKeys: placed)
+        XCTAssertEqual(Set(withPlaced.keys), ["C"])
+        XCTAssertTrue(withPlaced["C"]?.contains("already placed") == true)
+    }
+
+    func testGrandTotalAddsCentRoundedTotals() {
+        // JSON doubles can carry sub-cent noise; the sum matches the cards' rounded totals.
+        let orders: [[String: Any]] = [["total": NSNumber(value: 10.004)], ["total": NSNumber(value: 10.004)]]
+        XCTAssertEqual(batchPayGrandTotal(orders), Decimal(string: "20"))
+    }
+
+    func testLossNotice() {
+        let loss = ImportedSaleReviewEstimate(text: "This order would lose about $2.00", isLoss: true)
+        let gain = ImportedSaleReviewEstimate(text: "Estimated profit: $5.00", isLoss: false)
+        XCTAssertNil(batchPayLossNotice([gain, nil]))
+        XCTAssertEqual(batchPayLossNotice([loss, gain]), "1 order would lose money by its estimate. Check it below.")
+        XCTAssertTrue(batchPayLossNotice([loss, loss])?.hasPrefix("2 orders") == true)
+    }
 }

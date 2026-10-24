@@ -98,7 +98,7 @@ func batchPayLockNotice(lockedOrderNumbers: [String]) -> String? {
     case 2, 3: named = "orders " + numbers.joined(separator: ", ")
     default: named = "orders " + numbers.prefix(3).joined(separator: ", ") + " and \(numbers.count - 3) more"
     }
-    return "A payment or cancel request for \(named) didn’t confirm this session, so Studio won’t pay several drafts at once. Open that order’s review and press Reload Order; until its result is clear, pay drafts one at a time."
+    return "A payment or cancel request for \(named) didn’t confirm this session, so Studio won’t pay several drafts at once. Press Reload Order on it (below, or in its own review in Orders); until its result is clear, pay drafts one at a time."
 }
 
 // MARK: Review
@@ -129,14 +129,74 @@ func batchPayExclusionReason(orderID: String, order: [String: Any]?, loadFailure
     return nil
 }
 
-/// The sum of the orders' totals in USD, or nil when any total is missing.
+/// The sum of the orders' totals in USD, each rounded to cents as its card shows it, or nil when any total is missing.
 func batchPayGrandTotal(_ orders: [[String: Any]]) -> Decimal? {
     var sum = Decimal(0)
     for order in orders {
         guard let total = orderTotalAmount(order) else { return nil }
-        sum += total
+        sum += roundedToCents(total)
     }
     return sum
+}
+
+// MARK: Duplicates
+
+/// Two drafts for the same marketplace order share this key (source in lower case and the order ID); nil without one.
+func batchPayMarketplaceKey(_ order: [String: Any]) -> String? {
+    guard let reference = orderMarketplaceReference(order) else { return nil }
+    return (reference.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() + "|" + reference.id
+}
+
+/// Marketplace keys of loaded orders that were already placed (anything past a draft except a cancellation or a
+/// payment problem): a draft for the same marketplace order is probably a duplicate.
+func batchPayPlacedMarketplaceKeys(_ orders: [Record]) -> Set<String> {
+    var keys = Set<String>()
+    for record in orders {
+        let order = orderObject(record.values)
+        let status = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !status.isEmpty, !["DRAFT", "CANCELED", "CANCELLED", "PAYMENT_ERROR"].contains(status),
+              let key = batchPayMarketplaceKey(order) else { continue }
+        keys.insert(key)
+    }
+    return keys
+}
+
+/// Why a payable draft is left out as a likely duplicate, by draft ID: every draft after the first in the review for
+/// the same marketplace order, and any draft whose marketplace order already has a placed order. A timed-out create
+/// followed by Create Anyway or a re-import can leave two drafts for one sale; a batch must never pay both. The seller
+/// can still pay one in its own review after checking.
+func batchPayDuplicateExclusions(_ drafts: [(id: String, order: [String: Any])], placedKeys: Set<String>) -> [String: String] {
+    var seen = Set<String>()
+    var reasons: [String: String] = [:]
+    for draft in drafts {
+        guard let key = batchPayMarketplaceKey(draft.order), let line = orderMarketplaceReferenceLine(draft.order) else { continue }
+        if placedKeys.contains(key) {
+            reasons[draft.id] = "An order for \(line) was already placed, so this draft may be a duplicate. Check it in its own review."
+        } else if !seen.insert(key).inserted {
+            reasons[draft.id] = "Another draft in this review is also for \(line). Only the first is included; check them in Orders."
+        }
+    }
+    return reasons
+}
+
+/// Shown in the review while a draft create this session wasn't confirmed: a duplicate draft without a marketplace
+/// reference can't be detected, so the seller checks recipients for repeats.
+let batchPayUnconfirmedCreateNotice = "A draft created this session wasn’t confirmed, so a duplicate draft may exist. Check that no buyer appears twice before paying."
+
+// MARK: After paying
+
+/// Whether a 2xx payment reply really placed the order, from the order Slant returned (the refresh, else the reply).
+/// Only a status past DRAFT that isn't a cancellation or a payment problem counts as placed; anything else stops the
+/// batch. Nil (no readable order) is unclear: it may have been placed, so it is never offered again either.
+func batchPayOutcomeAfterSuccess(_ order: [String: Any]?) -> BatchPayOutcome {
+    let raw = ((order?["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    switch raw {
+    case "": return .unclear
+    case "DRAFT": return .notPlaced("Slant accepted the request but still shows it as a draft.")
+    case "PAYMENT_ERROR": return .notPlaced("Slant reported a payment problem. Check the payment method on your Slant account.")
+    case "CANCELED", "CANCELLED": return .notPlaced("Slant shows it as cancelled.")
+    default: return .placed
+    }
 }
 
 func batchPayMoneyText(_ amount: Decimal) -> String { money(NSDecimalNumber(decimal: amount)) }
@@ -163,6 +223,13 @@ func batchPayPayBlockedReason(payableCount: Int, totalKnown: Bool, busy: Bool, l
     return nil
 }
 
+/// Under the review: how many orders would lose money by the estimate from imported amounts, or nil when none would.
+func batchPayLossNotice(_ estimates: [ImportedSaleReviewEstimate?]) -> String? {
+    let losses = estimates.filter { $0?.isLoss == true }.count
+    guard losses > 0 else { return nil }
+    return losses == 1 ? "1 order would lose money by its estimate. Check it below." : "\(losses) orders would lose money by their estimates. Check them below."
+}
+
 /// Under the review: how many orders have an item flagged for a large quantity, so a flag scrolled out of view isn't missed.
 func batchPayLargeQuantityNotice(_ orders: [[String: Any]]) -> String? {
     let flagged = orders.filter { (($0["items"] as? [[String: Any]]) ?? []).contains { orderItemHasLargeQuantity($0) } }.count
@@ -183,6 +250,10 @@ enum BatchPayOutcome: Equatable {
     case unknown(String)
     /// Nothing was sent for this order (its re-fetch failed, or a check before sending stopped it).
     case notSent(String)
+    /// Slant accepted the payment request but the order it returned isn't placed (still a draft, a payment problem).
+    case notPlaced(String)
+    /// Slant accepted the payment request but returned no readable order, so whether it was placed isn't known.
+    case unclear
 }
 
 /// A failed payment request: a definite refusal, or an outcome that is unknown (timeout, transport error, 5xx, 408/409).
@@ -209,6 +280,10 @@ func batchPayNextStep(after outcome: BatchPayOutcome) -> BatchPayNextStep {
         return .stop("Stopped: Slant didn’t confirm a payment, so that order may have been charged. Reload it before paying anything else.")
     case .notSent:
         return .stop("Stopped before paying a draft, so nothing after it was paid.")
+    case .notPlaced:
+        return .stop("Stopped: an order wasn’t placed after paying, so nothing after it was paid.")
+    case .unclear:
+        return .stop("Stopped: Slant’s reply didn’t show whether an order was placed. Reload Orders and check it before paying anything else.")
     }
 }
 
@@ -219,6 +294,8 @@ enum BatchPayRowState: Equatable {
     case refused(String)
     case unknown
     case notPaid(String)
+    /// Sent and accepted, but Slant's reply didn't show the order's status.
+    case unclear
     /// An unknown outcome resolved by reloading the order: its status now.
     case reloaded(String)
 }
@@ -230,6 +307,8 @@ func batchPayRowState(for outcome: BatchPayOutcome) -> BatchPayRowState {
     case .refused(let reason): return .refused(reason)
     case .unknown: return .unknown
     case .notSent(let reason): return .notPaid(reason)
+    case .notPlaced(let reason): return .notPaid(reason)
+    case .unclear: return .unclear
     }
 }
 
@@ -241,6 +320,7 @@ func batchPayStateText(_ state: BatchPayRowState) -> String {
     case .refused(let reason): return "Refused: \(reason)"
     case .unknown: return "Not confirmed: this order may have been charged. Reload it before paying anything else."
     case .notPaid(let reason): return "Not paid: \(reason)"
+    case .unclear: return "Sent, but Slant’s reply didn’t show whether it was placed. Reload Orders and check it before paying anything else."
     case .reloaded(let status): return "Reloaded: now \(orderStatusTitle(status))."
     }
 }
@@ -258,7 +338,7 @@ func batchPayTally(_ states: [BatchPayRowState]) -> BatchPayTally {
         switch state {
         case .placed: tally.placed += 1
         case .refused: tally.refused += 1
-        case .unknown: tally.unknown += 1
+        case .unknown, .unclear: tally.unknown += 1
         case .queued, .paying, .notPaid: tally.notPaid += 1
         case .reloaded: break
         }
@@ -408,6 +488,13 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             let alreadyPaid = placedIDs.contains(id) ? "It was paid in this batch." : nil
             return BatchPayReviewedDraft(id: id, order: order, exclusion: alreadyPaid ?? reason)
         }
+        let duplicates = batchPayDuplicateExclusions(
+            reviewed.compactMap { draft in draft.payable ? draft.order.map { (id: draft.id, order: $0) } : nil },
+            placedKeys: batchPayPlacedMarketplaceKeys(store.orders))
+        reviewed = reviewed.map { draft in
+            guard let reason = duplicates[draft.id] else { return draft }
+            return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
+        }
         phase = .review
     }
 
@@ -473,7 +560,10 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             let result = await payOne(draft.id, reviewed: reviewedOrder, store: store)
             inFlight = false
             states[draft.id] = batchPayRowState(for: result.outcome)
-            if result.outcome == .placed { placedIDs.insert(draft.id) }
+            switch result.outcome {
+            case .placed, .notPlaced, .unclear: placedIDs.insert(draft.id) // accepted by Slant: never paid again from here
+            case .changed, .refused, .unknown, .notSent: break
+            }
             if let completed = result.completed { onCompleted(draft.id, completed) }
             if let error = result.error { stopDetail = activityDetail(for: error) }
             if case .stop(let reason) = batchPayNextStep(after: result.outcome) {
@@ -531,6 +621,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             return (outcome, nil, error)
         }
         noteRateLimit(payResponse, store: store)
+        // A confirmed success lifts the lock, as in the single review.
         store.clearOutcomeUnknown(orderID: id)
         let paid = mergeOrderDraftEnvelope(responseObject(payResponse))
         var completed: [String: Any]? = orderBelongs(paid, to: id) ? paid : nil
@@ -539,7 +630,8 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             let order = mergeOrderDraftEnvelope(responseObject(refreshed))
             if orderBelongs(order, to: id) { completed = order }
         }
-        return (.placed, completed, nil)
+        // The batch goes on only when the order Slant returned is actually placed.
+        return (batchPayOutcomeAfterSuccess(completed), completed, nil)
     }
 
     // MARK: After the run
@@ -693,7 +785,7 @@ struct BatchPaySheet: View {
 
     private var heading: String {
         switch runner.phase {
-        case .choose, .loading: return "Pay Several Drafts"
+        case .choose, .loading: return "Pay several drafts"
         case .review: return "Review drafts to pay"
         case .paying: return "Paying orders"
         case .done: return "Payment results"
@@ -793,12 +885,20 @@ struct BatchPaySheet: View {
         return VStack(alignment: .leading, spacing: 10) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
+                    if runner.phase == .review, store.draftCreateOutcomeUnknown || store.orderImportLedger.hasUnconfirmed {
+                        Label(batchPayUnconfirmedCreateNotice, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    }
                     if let notice = batchPayLargeQuantityNotice(payable.compactMap(\.order)) {
+                        Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.callout)
+                    }
+                    if runner.phase == .review, let notice = batchPayLossNotice(payable.compactMap(\.order).map(profitEstimate)) {
                         Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.callout)
                     }
                     ForEach(payable) { draft in
                         if let order = draft.order {
-                            BatchPayDraftCard(order: order, state: runner.states[draft.id], modelNames: names, filaments: filaments) {
+                            BatchPayDraftCard(order: order, state: runner.states[draft.id], modelNames: names, filaments: filaments,
+                                              estimate: runner.phase == .review ? profitEstimate(order) : nil) {
                                 if runner.phase == .done, store.isOutcomeUnknown(orderID: draft.id) {
                                     HStack(spacing: 8) {
                                         Button("Reload Order") { runner.reloadUnknown(draft.id, store: store, onCompleted: onCompleted) }
@@ -847,6 +947,14 @@ struct BatchPaySheet: View {
                 }
             }
         }
+    }
+
+    /// The single review's estimated profit from this session's imported amounts (ImportedSaleAmounts.swift), shown
+    /// before paying only. Informational: it never affects whether Pay is enabled.
+    private func profitEstimate(_ order: [String: Any]) -> ImportedSaleReviewEstimate? {
+        guard let amounts = importedSaleAmountsLookup(store.importedSaleAmounts, order: order) else { return nil }
+        let preset = ProfitFeeSettings.loadPreset()
+        return importedSaleReviewEstimate(amounts, order: order, preset: preset, rates: ProfitFeeSettings.loadRates(preset))
     }
 
     private func excludedTitle(_ draft: BatchPayReviewedDraft) -> String {
@@ -932,6 +1040,7 @@ struct BatchPayDraftCard<Extra: View>: View {
     let state: BatchPayRowState?
     let modelNames: [String: String]
     let filaments: [Record]
+    var estimate: ImportedSaleReviewEstimate? = nil
     @ViewBuilder let extra: () -> Extra
 
     var body: some View {
@@ -967,6 +1076,14 @@ struct BatchPayDraftCard<Extra: View>: View {
                 LabeledContent("Recipient") { Text(orderRecipientDisplay(order)).lineLimit(2) }
             }
             .labeledContentStyle(.receipt)
+            if let estimate {
+                if estimate.isLoss {
+                    Label(estimate.text, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(estimate.text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
             extra()
         }
         .font(.callout)
@@ -995,10 +1112,17 @@ struct BatchPayDraftCard<Extra: View>: View {
             Text(text).foregroundStyle(.secondary)
         case .unknown:
             Label(text, systemImage: "exclamationmark.octagon.fill").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        case .unclear:
+            Label(text, systemImage: "questionmark.circle.fill").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
         case .refused, .notPaid:
             Label(text, systemImage: "xmark.circle").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
         case .reloaded:
             Label(text, systemImage: "arrow.clockwise.circle").foregroundStyle(.secondary)
         }
     }
+}
+
+extension OrderImportLedger {
+    /// An import this session whose draft create wasn't confirmed (Pay Several Drafts warns about duplicates).
+    var hasUnconfirmed: Bool { entries.values.contains(.unknown) }
 }
