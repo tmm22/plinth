@@ -631,6 +631,12 @@ enum OpenSCADRunError: LocalizedError, Equatable {
 
 private final class OpenSCADProcessBox: @unchecked Sendable {
     let process = Process()
+    private let lock = NSLock()
+    private var didExit = false
+    /// Set by the termination handler, after the exit status is known. `waitUntilExit()` isn't used: called from a
+    /// concurrency thread it can wait forever on a run loop the termination never wakes.
+    var exited: Bool { lock.withLock { didExit } }
+    func markExited() { lock.withLock { didExit = true } }
     func stop() {
         guard process.isRunning else { return }
         process.terminate()
@@ -760,6 +766,7 @@ func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAss
     box.process.standardInput = FileHandle.nullDevice
     box.process.standardOutput = log
     box.process.standardError = log
+    box.process.terminationHandler = { [box] _ in box.markExited() }
     // Not URL.resourceValues, which caches the first size it reads.
     func fileSize(_ url: URL) -> Int { ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.intValue ?? 0 }
     func logSummary() -> String? {
@@ -772,7 +779,7 @@ func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAss
     try box.process.run()
     let started = Date()
     try await withTaskCancellationHandler {
-        while box.process.isRunning {
+        while !box.exited {
             if Task.isCancelled { box.stop(); throw OpenSCADRunError.cancelled }
             if Date().timeIntervalSince(started) > timeout { box.stop(); throw OpenSCADRunError.timedOut(timeout) }
             if fileSize(output) > maxOutputBytes || fileSize(logURL) > maxLogBytes { box.stop(); throw OpenSCADRunError.outputTooLarge }
@@ -782,7 +789,6 @@ func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAss
         box.stop()
     }
     if Task.isCancelled { throw OpenSCADRunError.cancelled }
-    box.process.waitUntilExit()
     guard box.process.terminationReason == .exit, box.process.terminationStatus == 0 else {
         throw OpenSCADRunError.failed(status: box.process.terminationStatus, summary: logSummary())
     }
@@ -821,7 +827,7 @@ func orderImportPersonalisation(options: String, column: String) -> String {
 }
 
 /// Shown above the Import Orders list when any order carries personalisation.
-let orderImportPersonalisationNote = "Buyers’ personalisation is shown so you can make each model with Personalise from Template: copy it, then paste it there. It stays in this window, isn’t saved and isn’t sent with the drafts, which use each saved product’s model unchanged, so these orders start unticked."
+let orderImportPersonalisationNote = "Buyers’ personalisation is shown so you can make each model: link the saved product to an OpenSCAD template in Saved Products to make them here, or copy the text into Personalise from Template. It stays in this window and isn’t saved. Drafts use each saved product’s model unchanged unless you personalise them below, so these orders start unticked."
 
 /// Every personalisation in the file as lines of “order ID · item: text”, for Copy All (the list is gone once the
 /// sheet closes, and Personalise from Template can't open over it). No names or addresses.

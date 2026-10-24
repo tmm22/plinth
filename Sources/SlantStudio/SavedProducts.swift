@@ -18,6 +18,8 @@ struct SavedProductLine: Codable, Equatable, Identifiable {
     var imageURL = ""
     var name = ""
     var optionsJSON = "{}"
+    /// PRINT only: made per buyer from an OpenSCAD template in Import Orders (BatchPersonalise.swift). References only.
+    var template: SavedProductTemplateLink?
 }
 
 /// A product a seller sells repeatedly: its items, material and SKU, added to a draft in one step.
@@ -45,6 +47,8 @@ extension SavedProductLine {
         imageURL = try container.decodeIfPresent(String.self, forKey: .imageURL) ?? ""
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         optionsJSON = try container.decodeIfPresent(String.self, forKey: .optionsJSON) ?? "{}"
+        // A damaged link drops only the link, never the item or the product.
+        template = (try? container.decodeIfPresent(SavedProductTemplateLink.self, forKey: .template)) ?? nil
     }
 }
 

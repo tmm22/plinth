@@ -74,6 +74,7 @@ func savedProductItemsSummary(
             text += " in \(displayName(for: filament, fallback: "Untitled material"))"
         }
         if line.perOrder { text += " per order" }
+        if line.type == "PRINT", line.template != nil { text += ", personalised" }
         return text
     }.joined(separator: " · ")
 }
@@ -107,7 +108,7 @@ func savedProductSaveBlockedReason(_ product: SavedProduct, in products: [SavedP
             return "Choose a type for \(item)."
         }
     }
-    return nil
+    return savedProductTemplateLinkProblem(product)
 }
 
 /// Trims what was typed, drops fields that don't apply to a line's type and refreshes each print line's file
@@ -122,6 +123,7 @@ func savedProductForSaving(_ product: SavedProduct, localModels: [LocalModel]) -
         line.reference = saved.reference.trimmingCharacters(in: .whitespacesAndNewlines)
         line.filamentID = saved.type == "PRINT" ? saved.filamentID.trimmingCharacters(in: .whitespacesAndNewlines) : ""
         line.imageURL = saved.type == "STATIONERY" ? saved.imageURL.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        line.template = saved.type == "PRINT" ? saved.template.map(savedProductTemplateLinkTrimmed) : nil
         if saved.type == "PRINT" {
             if let id = saved.localModelID, let model = localModels.first(where: { $0.id == id }), localModelIsUploaded(model) {
                 line.reference = (model.remoteID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -144,6 +146,7 @@ func savedProductLine(_ line: SavedProductLine, changingTypeTo type: String) -> 
     result.filamentID = ""
     result.imageURL = ""
     result.optionsJSON = "{}"
+    result.template = nil
     result.perOrder = type == "STATIONERY"
     return result
 }
@@ -461,6 +464,8 @@ struct SavedProductsSheet: View {
             case "PRINT":
                 modelPicker(line)
                 materialField(line)
+                // Personalised imports (BatchPersonaliseView.swift).
+                SavedProductTemplateLinkEditor(link: line.template)
             case "COMPONENT":
                 catalogField(.components, title: "Component", placeholder: "Choose a component", records: store.components, selection: line.reference)
             case "STATIONERY":
