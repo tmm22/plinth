@@ -705,8 +705,9 @@ func stalePersonalisationTempFolderNames(_ entries: [(name: String, created: Dat
     }.map(\.name)
 }
 
-/// Launch hook (StudioStore.init): deletes leftover personalisation folders from Studio's temporary folder in the
-/// background, and stops local OpenSCAD runs when the app terminates. Runs once per process.
+/// Launch hook (StudioStore.init): deletes leftover personalisation and drag-out folders (ModelDragExport.swift) from
+/// Studio's temporary folder in the background, and stops local OpenSCAD runs and removes this session's drag folders
+/// when the app terminates. Runs once per process.
 @MainActor enum PersonalisationTempCleanup {
     private static var started = false
 
@@ -715,6 +716,7 @@ func stalePersonalisationTempFolderNames(_ entries: [(name: String, created: Dat
         started = true
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
             OpenSCADRunRegistry.shared.stopAll()
+            DragFolderRegistry.shared.removeAll()
         }
         // Without a bundle ID (a development build) Studio can't tell whether another copy is running.
         let otherInstance: Bool = {
@@ -740,6 +742,7 @@ func stalePersonalisationTempFolderNames(_ entries: [(name: String, created: Dat
             for name in stalePersonalisationTempFolderNames(entries, now: Date(), otherInstanceMayBeRunning: otherInstance) {
                 if let url = byName[name] { try? FileManager.default.removeItem(at: url) }
             }
+            ModelDragExport.removeLeftoverFolders(in: folder, otherInstanceMayBeRunning: otherInstance)
         }
     }
 }

@@ -59,6 +59,9 @@ struct LocalModel: Codable, Identifiable {
     var designImprovement: DesignImprovementRecord?
     var reinforcement: ReinforcementRecord?
     var autoImprovement: AutoImprovementRecord?
+    /// Designer, licence, source and copyright carried over from the 3MF (or earlier copy) an STL copy was made from.
+    /// Nil for anything else; older libraries load without it (ModelSourceDetails.swift).
+    var sourceDetails: ModelSourceDetails?
     var url: URL { URL(fileURLWithPath: filePath) }
     /// Copies whose features depend on the print layers must stay Z up.
     var requiresZUp: Bool { reinforcement?.requiresZUp == true || autoImprovement?.requiresZUp == true }
@@ -688,7 +691,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         saveModels()
     }
     @discardableResult
-    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil) -> Bool {
+    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil) -> Bool {
         let ext = url.pathExtension.lowercased()
         guard ["stl", "obj", "3mf"].contains(ext) else {
             showError("Slant Studio accepts STL, OBJ, and 3MF models.")
@@ -702,7 +705,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let destination = folder.appendingPathComponent(UUID().uuidString + "." + ext)
             try FileManager.default.copyItem(at: url, to: destination)
             let model = LocalModel(name: url.deletingPathExtension().lastPathComponent, filePath: destination.path,
-                                   partIntent: recipe?.intent ?? intent, printRecipe: recipe, designImprovement: improvement, reinforcement: reinforcement, autoImprovement: autoImprovement)
+                                   partIntent: recipe?.intent ?? intent, printRecipe: recipe, designImprovement: improvement, reinforcement: reinforcement, autoImprovement: autoImprovement,
+                                   sourceDetails: sourceDetails?.isEmpty == false ? sourceDetails : nil)
             localModels.insert(model, at: 0)
             select(model)
             saveModels()

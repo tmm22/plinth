@@ -287,7 +287,8 @@ struct DesignImprovementsCard: View {
             let name = URL(fileURLWithPath: model.name).lastPathComponent
             let url = folder.appendingPathComponent("\(name)-edge-improved.stl")
             try preview.binarySTL().write(to: url, options: .atomic)
-            store.importModel(url, improvement: record, intent: designEditIntent(model), reinforcement: model.reinforcement)
+            store.importModel(url, improvement: record, intent: designEditIntent(model), reinforcement: model.reinforcement,
+                              sourceDetails: model.sourceDetails)
             review = false
         } catch { store.showError(error.localizedDescription) }
         saving = false

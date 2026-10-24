@@ -275,13 +275,21 @@ func listingDetailsText(_ facts: ListingDetailsFacts) -> String {
     return blocks.joined(separator: "\n\n") + "\n"
 }
 
-/// The confirmation after copying, with what the seller should check, then the production-partner note.
-func listingDetailsCopiedMessage(hasSize: Bool, scaleSuspect: Bool) -> String {
-    let base: String
+/// The confirmation after copying, with what the seller should check, the licence advisory when the model has one
+/// (never copied into the listing), then the production-partner note.
+func listingDetailsCopiedMessage(hasSize: Bool, scaleSuspect: Bool, licenceAdvisory: String? = nil) -> String {
+    var base: String
     if !hasSize { base = "Listing details copied, without the size: the model couldn’t be read." }
     else if scaleSuspect { base = "Listing details copied. Check the size: this model may not be in millimetres." }
     else { base = "Listing details copied." }
+    if let licenceAdvisory { base += " " + licenceAdvisory }
     return base + " " + listingProductionPartnerNote
+}
+
+/// The licence advisory for a listing action: from a 3MF's own details, or those an STL copy carried over.
+func listingLicenceAdvisory(model: LocalModel, fileDetails: ModelSourceDetails?) -> String? {
+    let details = modelSourceDetailsToShow(stored: model.sourceDetails, fromFile: fileDetails ?? ModelSourceDetails())
+    return modelLicenceAdvisory(details, edited: modelIsEditedCopy(model))
 }
 
 /// The material line's name: print configuration's material belongs to the selected model, so another model's
@@ -344,7 +352,9 @@ extension StudioStore {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(listingDetailsText(facts), forType: .string)
             let suspect = extent.map { scaleWarning(extentMM: $0, fileExtension: url.pathExtension) != nil } ?? false
-            notices.show(listingDetailsCopiedMessage(hasSize: listingDimensionsLine(extentMM: extent) != nil, scaleSuspect: suspect))
+            let advisory = listingLicenceAdvisory(model: model, fileDetails: preview?.sourceDetails)
+            notices.show(listingDetailsCopiedMessage(hasSize: listingDimensionsLine(extentMM: extent) != nil, scaleSuspect: suspect,
+                                                     licenceAdvisory: advisory))
         }
     }
 
@@ -439,6 +449,7 @@ struct ListingImagesSheet: View {
     @State private var selectedAngles = Set(ListingImageAngle.allCases.filter(\.selectedByDefault))
     @State private var materialID = ""
     @State private var background = ListingBackground.white
+    @State private var licenceAdvisory: String?
     @StateObject private var job = ListingExportJob()
 
     private var model: LocalModel? { store.localModels.first { $0.id == modelID } }
@@ -453,6 +464,12 @@ struct ListingImagesSheet: View {
                      ?? "This model is no longer in your library.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let licenceAdvisory {
+                    Label(licenceAdvisory, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(24)
             Divider()
@@ -529,6 +546,20 @@ struct ListingImagesSheet: View {
             if materialID.isEmpty, store.listingSelectedMaterial != nil { materialID = store.filamentID }
         }
         .onDisappear { job.stop() }
+        .task(id: modelID) { await loadLicenceAdvisory() }
+    }
+
+    /// Only a 3MF carries its own details, so only a 3MF is read (off the main thread); others use the stored ones.
+    private func loadLicenceAdvisory() async {
+        licenceAdvisory = nil
+        guard let model else { return }
+        var fileDetails: ModelSourceDetails?
+        if ModelFileFormat(url: model.url) == .threeMF {
+            let url = model.url
+            fileDetails = await Task.detached(priority: .utility) { try? loadPreviewModel(from: url).sourceDetails }.value
+            guard !Task.isCancelled else { return }
+        }
+        licenceAdvisory = listingLicenceAdvisory(model: model, fileDetails: fileDetails)
     }
 
     private var swatch: Color {
