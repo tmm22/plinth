@@ -738,7 +738,7 @@ func renderAccessoryDesign(code: String, executable: URL, timeout: TimeInterval 
     let data: Data
     do {
         data = try await runOpenSCADProcess(executable: executable, templateURL: scad, assignments: [], timeout: timeout,
-                                            logCapture: capture)
+                                            maxMemoryBytes: openSCADMemoryLimitBytes, logCapture: capture)
     } catch OpenSCADRunError.cancelled {
         throw CancellationError()
     } catch is CancellationError {

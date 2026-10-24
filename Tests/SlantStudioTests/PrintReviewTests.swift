@@ -284,6 +284,8 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertTrue(userText.contains("- Purpose: Display piece"))
         XCTAssertTrue(userText.contains("Pictures above, in order: Front."))
         XCTAssertEqual(json.encodedString.components(separatedBy: "\"cache_control\"").count - 1, 1)
+        // On the system block, so the tool before it and the prompt are both cached.
+        XCTAssertNotNil(json["system"]?.arrayValue?.first?["cache_control"])
     }
 
     func testRepliesMapToPlanRefusalFailureOrOneFollowUp() throws {
@@ -377,6 +379,16 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertEqual(a.data, b.data)
         XCTAssertEqual(a.lines, b.lines)
         XCTAssertTrue(a.lines.first?.hasPrefix("Auto-improve as a decorative part: ") == true, "\(a.lines)")
+    }
+
+    func testAutoImproveAfterABaseKeepsTheBaseOnTheBed() throws {
+        let tall = try box(.zero, SIMD3(10, 20, 40))
+        let auto = PrintReviewAutoImprove(intent: PartIntent(purpose: .decorative), keepPlacement: false)
+        let steps = [PrintReviewRunStep(number: 1, action: .flatBase(cutMM: 0.5)), PrintReviewRunStep(number: 2, action: .autoImprove(auto))]
+        let result = try runPrintReviewSteps(steps, on: tall)
+        if let outcome = result.autoImprove { XCTAssertEqual(outcome.orientation, .zUp) }
+        let height = result.mesh.maximum.z - result.mesh.minimum.z
+        XCTAssertEqual(Double(height), 39.5, accuracy: 1, "the cut base must stay down")
     }
 
     func testAFailingStepStopsTheRunAndNothingIsReturned() throws {

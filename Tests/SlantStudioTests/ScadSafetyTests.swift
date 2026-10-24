@@ -59,10 +59,11 @@ final class ScadSafetyTests: XCTestCase {
     }
 
     func testPathLikeTextAnywhereInAStringIsRefused() {
-        for text in ["parts/etc/passwd", "a/Users/b", "x/home", "x/~/y", "x/~me", "x/..", "..", "a/../b", "x/PRIVATE/var"] {
+        for text in ["/etc/passwd", "~/x", "~me", "x/..", "..", "a/../b", "../Users", "C:/Windows"] {
             XCTAssertTrue(scadSafetyLooksLikePath(text), text)
         }
-        for text in ["1/2 inch", "and/or", "24/7", "Users", "home", "W/H"] {
+        // Label text that only looks like folders stays allowed: it can't leave OpenSCAD's empty temporary folder.
+        for text in ["1/2 inch", "and/or", "24/7", "Users", "home", "W/H", "Work/Home", "Recycling/Bin", "Office/Private"] {
             XCTAssertFalse(scadSafetyLooksLikePath(text), text)
         }
         XCTAssertNil(scadSafetyProblem("text(\"use 1/2 inch\", font = \"Liberation Sans:style=Bold\"); cube(1);"))

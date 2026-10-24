@@ -778,6 +778,8 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
     var mesh = original
     var lines: [String] = []
     var autoImprove: PrintReviewAutoImproveOutcome?
+    // A flat base or plinth made earlier in the run must stay on the bed, so Auto-improve then keeps Z up.
+    var baseAdded = false
     let share = 1 / Double(runnable.count)
     for (index, step) in runnable.enumerated() {
         if isCancelled() { throw PrintReviewRunError.cancelled }
@@ -793,7 +795,7 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
                 lines.append("\(title): overhangs \(percentLabel(before.fraction)) → \(percentLabel(overhangShare(mesh).fraction)) of the surface; now \(meshFitSizeLabel(mesh.maximum - mesh.minimum)).")
             case .autoImprove(let settings):
                 let placement: PrintOrientation
-                if settings.keepPlacement {
+                if settings.keepPlacement || baseAdded {
                     placement = .zUp
                 } else {
                     guard let found = AutoImprover.orientation(for: mesh, intent: settings.intent, locked: false) else {
@@ -812,6 +814,7 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
                     lines.append("\(title): no automatic changes suit this part.")
                 }
             case .flatBase(let cut):
+                baseAdded = true
                 let height = mesh.maximum.z - mesh.minimum.z
                 guard cut < height / 4 else {
                     throw StudioError("That would remove a quarter or more of the model’s height, which is \(String(format: "%.1f", height)) mm at that point.")
@@ -836,6 +839,7 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
                 mesh = try STLMesh.parse(scaled.data)
                 lines.append("\(title): \(meshFitSizeLabel(before)) → \(meshFitSizeLabel(scaled.plan.resultSizeMM)).")
             case .plinth(let settings):
+                baseAdded = true
                 let result = try mesh.plinthCopy(settings, isCancelled: isCancelled)
                 mesh = result.mesh
                 lines.append("\(title): now \(meshFitSizeLabel(result.sizeMM)).")
@@ -1041,8 +1045,7 @@ let printReviewPlanTool = AnthropicTool(
     ],
     strict: true,
     // A short input: wait for the whole call, so Anthropic's strict check covers it.
-    eagerInputStreaming: false,
-    cacheControl: .fiveMinutes)
+    eagerInputStreaming: false)
 
 /// A rendered view to send.
 struct PrintReviewRender: Equatable, Sendable {
@@ -1092,7 +1095,7 @@ func printReviewUserText(viewTitles: [String], factLines: [String], contextLines
 func printReviewAnthropicRequest(views: [PrintReviewRender], factLines: [String], contextLines: [String]) -> AnthropicRequest {
     var content: [AnthropicInputBlock] = views.map { .image($0.image.anthropicImage) }
     content.append(.text(printReviewUserText(viewTitles: views.map(\.title), factLines: factLines, contextLines: contextLines)))
-    return AnthropicRequest(maxTokens: 32_000, system: [AnthropicSystemBlock(printReviewSystemPrompt)], tools: [printReviewPlanTool],
+    return AnthropicRequest(maxTokens: 32_000, system: [AnthropicSystemBlock(printReviewSystemPrompt, cacheControl: .fiveMinutes)], tools: [printReviewPlanTool],
                             disableParallelToolUse: true, messages: [.user(content)], effort: .high)
 }
 

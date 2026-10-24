@@ -329,6 +329,7 @@ struct PrintReviewSheet: View {
     @State private var askedContext: PrintReviewContext?
     /// True between this sheet's `beginSession` and `endSession`, so each is called once.
     @State private var holdsClaudeSession = false
+    @State private var reinforceConfirmation: LocalModel?
     let request: PrintReviewRequest
 
     /// What is sent: the context passed in, with the seller's purpose and real size.
@@ -337,6 +338,19 @@ struct PrintReviewSheet: View {
     }
 
     var body: some View {
+        content
+            .confirmationDialog("Close this review and open Reinforce?",
+                                isPresented: Binding(get: { reinforceConfirmation != nil },
+                                                     set: { if !$0 { reinforceConfirmation = nil } }),
+                                presenting: reinforceConfirmation) { model in
+                Button("Close and Open Reinforce") { openReinforce(model) }
+                Button("Keep Reviewing", role: .cancel) {}
+            } message: { _ in
+                Text("Claude’s plan isn’t kept. Reviewing again sends a new request.")
+            }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Review for printing").font(.title2.weight(.bold))
@@ -413,6 +427,7 @@ struct PrintReviewSheet: View {
     private func openReinforce(_ model: LocalModel) {
         session.cancelAll()
         dismiss()
+        store.destination = .models
         let id = model.id
         if store.selectedLocalID != id, let current = store.localModels.first(where: { $0.id == id }) { store.select(current) }
         // After the sheet has gone and the inspector shows the model.
@@ -664,7 +679,7 @@ struct PrintReviewSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 if case .manual(let text)? = step.action, printReviewMentionsReinforce(text) {
-                    Button("Open Reinforce") { openReinforce(model) }
+                    Button("Open Reinforce") { reinforceConfirmation = model }
                         .disabled(session.isRunning)
                         .help("Closes this review and opens Reinforce this part for this model")
                 }

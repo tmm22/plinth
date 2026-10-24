@@ -763,8 +763,9 @@ final class OpenSCADLogCapture: @unchecked Sendable {
     func store(_ value: String) { lock.withLock { text = value } }
 }
 
-/// The most memory a local OpenSCAD run may use: 2 GB, or a quarter of this Mac's memory when that is less. CGAL
-/// renders of complex code can otherwise grow until the whole Mac swaps.
+/// The most memory a local OpenSCAD run of Claude-written code may use: 2 GB, or a quarter of this Mac's memory when
+/// that is less. CGAL renders of complex code can otherwise grow until the whole Mac swaps. The seller's own templates
+/// (Personalise from Template, batch personalisation) have no limit: a heavy `minkowski()` name plate can need more.
 let openSCADMemoryLimitBytes: UInt64 = min(2 * 1024 * 1024 * 1024, ProcessInfo.processInfo.physicalMemory / 4)
 
 /// How much memory a running process uses now (the larger of its resident size and its footprint, which also counts
@@ -783,7 +784,7 @@ func processMemoryBytes(_ pid: pid_t) -> UInt64? {
 /// passes `maxMemoryBytes`. The log goes to a file so a full pipe can't stall it.
 func runOpenSCADProcess(executable: URL, templateURL: URL, assignments: [ScadAssignment], timeout: TimeInterval = 300,
                         maxOutputBytes: Int = STLMesh.maximumBytes, maxLogBytes: Int = 4_000_000,
-                        maxMemoryBytes: UInt64 = openSCADMemoryLimitBytes, memoryCheckInterval: TimeInterval = 0.5,
+                        maxMemoryBytes: UInt64 = .max, memoryCheckInterval: TimeInterval = 0.5,
                         logCapture: OpenSCADLogCapture? = nil) async throws -> Data {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(personalisationTempFolderPrefixes[0])\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

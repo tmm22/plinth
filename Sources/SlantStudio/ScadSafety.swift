@@ -15,9 +15,6 @@ let scadSafetyMaximumBytes = 64 * 1024
 /// Words that make OpenSCAD read another file. Compared as whole identifiers outside comments and strings.
 let scadSafetyFileReadingWords = ["include", "use", "import", "surface", "dxf_linear_extrude", "dxf_rotate_extrude", "dxf_dim", "dxf_cross"]
 
-/// Folders a string mustn't name after a path separator (whole path segments, compared case-insensitively).
-let scadSafetySystemFolders = ["etc", "users", "home", "private", "var", "tmp", "system", "library", "applications", "volumes",
-                               "bin", "sbin", "usr", "dev", "opt", "cores", "network", "root", "proc", "windows"]
 
 /// File extensions a string literal mustn't end with: things OpenSCAD (or a later version of it) could read.
 let scadSafetyFileExtensions = ["stl", "scad", "dxf", "svg", "png", "dat", "off", "obj", "3mf", "amf", "csg", "json", "txt", "csv", "ttf", "otf"]
@@ -65,7 +62,8 @@ func scadSafetyLooksLikePath(_ text: String) -> Bool {
     let segments = trimmed.split(separator: "/", omittingEmptySubsequences: false)
         .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
     if segments.contains("..") { return true }
-    for segment in segments.dropFirst() where segment.hasPrefix("~") || scadSafetySystemFolders.contains(segment) { return true }
+    // A system folder or `~` matters only in a path that leaves the empty temporary folder OpenSCAD runs in (absolute,
+    // home-relative or climbing with `..`, all refused above), so label text such as "Work/Home" stays allowed.
     if trimmed.range(of: #"^[A-Za-z]:[\\/]"#, options: .regularExpression) != nil { return true }
     if trimmed.lowercased().hasPrefix("file:") { return true }
     if let dot = trimmed.lastIndex(of: ".") {

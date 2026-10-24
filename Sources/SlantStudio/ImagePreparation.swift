@@ -111,7 +111,7 @@ func prepareImageForSharing(data: Data, maxLongEdge: Int = imagePreparationClaud
         kCGImageSourceShouldCacheImmediately: true
     ] as CFDictionary
     guard let decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else { throw ImagePreparationError.unreadable }
-    // Redrawn into a plain sRGB bitmap: drops the colour profile and alpha, and guarantees the size limit.
+    // Redrawn into a plain sRGB bitmap: converts any other colour profile to sRGB, drops alpha and guarantees the size limit.
     let target = imagePreparationTargetSize(width: decoded.width, height: decoded.height, maxLongEdge: longEdge)
     guard let flattened = imagePreparationFlatten(decoded, width: target.width, height: target.height) else {
         throw ImagePreparationError.encodingFailed
@@ -119,11 +119,11 @@ func prepareImageForSharing(data: Data, maxLongEdge: Int = imagePreparationClaud
     var jpegQuality = min(max(quality, 0.3), 0.95)
     while true {
         guard let encoded = imagePreparationEncode(flattened, type: .jpeg, quality: jpegQuality) else { throw ImagePreparationError.encodingFailed }
-        if encoded.count <= imagePreparationMaxOutputBytes || jpegQuality <= 0.35 {
+        if encoded.count <= imagePreparationMaxOutputBytes || jpegQuality <= 0.3 {
             guard encoded.count <= imagePreparationMaxOutputBytes else { throw ImagePreparationError.encodingFailed }
             return PreparedImage(data: encoded, mediaType: .jpeg, pixelWidth: flattened.width, pixelHeight: flattened.height)
         }
-        jpegQuality -= 0.15
+        jpegQuality = max(0.3, jpegQuality - 0.15)
     }
 }
 
