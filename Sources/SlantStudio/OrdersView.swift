@@ -198,6 +198,12 @@ struct OrderComposerView: View {
     @State private var confirmUseMyAddress = false
     /// The country was chosen in the picker (not the Mac-region default), so replacing it needs confirmation too.
     @State private var countryPicked = false
+    // Paste Address… (AddressPaste.swift): the popover and its starting text, in memory only and cleared once
+    // the popover closes.
+    @State private var showAddressPaste = false
+    @State private var addressPasteText = ""
+    /// Check Slant's last result for unconfirmed drafts (DraftConfirmation.swift).
+    @State private var draftCheckOutcome: DraftCreateCheckOutcome?
 
     var hasUnsavedInput: Bool {
         orderComposerHasUnsavedInput(
@@ -293,6 +299,8 @@ struct OrderComposerView: View {
             Text(draftCreateAnywayMessage(store.unconfirmedDraftCreates))
         }
         .onAppear(perform: seedIfNeeded)
+        // Pasted text goes as soon as the popover closes, however it closed.
+        .onChange(of: showAddressPaste) { _, shown in if !shown { addressPasteText = "" } }
         // Pending location work stops whenever the form actually closes (create, cancel or discard).
         .onDisappear { locationLookup.cancel() }
         .task(id: catalogTaskID) { await loadNeededCatalogs() }
@@ -301,11 +309,9 @@ struct OrderComposerView: View {
 
     var composerForm: some View {
         Form {
-            if store.draftCreateOutcomeUnknown {
+            if store.draftCreateOutcomeUnknown || draftCheckOutcome != nil {
                 Section {
-                    Label(draftCreateUnknownNotice(store.unconfirmedDraftCreates), systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
+                    UnconfirmedDraftNotice(outcome: $draftCheckOutcome) { record in showFoundDraft(record) }
                 }
             }
             if sourceOrderNumber != nil {
@@ -391,6 +397,26 @@ struct OrderComposerView: View {
                         .controlSize(.small)
                         .disabled(store.busy)
                         .help("Fill in your own address from Settings › Account, for a sample sent to you")
+                    }
+                    // The pasteboard is read only when this is pressed; nothing changes until Use These Details.
+                    Button {
+                        addressPasteText = addressPastePasteboardText()
+                        showAddressPaste = true
+                    } label: {
+                        Label("Paste Address…", systemImage: "doc.on.clipboard")
+                    }
+                    .controlSize(.small)
+                    .disabled(store.busy)
+                    .help("Fill in an address copied from Etsy, Shopify or an email, after you check it")
+                    .popover(isPresented: $showAddressPaste, arrowEdge: .bottom) {
+                        // The popover asks before replacing details already in the form.
+                        AddressPastePopover(initialText: addressPasteText, needsConfirmation: { pasted in
+                            pastedAddressNeedsConfirmation(current: delivery, replacement: deliveryDetails(applyingPasted: pasted, to: delivery),
+                                                           countryPicked: countryPicked)
+                        }, onUse: { pasted in
+                            showAddressPaste = false
+                            applyPastedAddress(pasted)
+                        }, onCancel: { showAddressPaste = false })
                     }
                     // Location is only requested when this is pressed; manual entry stays available.
                     Button {
@@ -768,6 +794,23 @@ struct OrderComposerView: View {
         editingDelivery = true
     }
 
+    /// Fills the delivery fields from a reviewed (and, if it replaces anything, confirmed) paste and shows them.
+    func applyPastedAddress(_ pasted: PastedAddress) {
+        delivery = deliveryDetails(applyingPasted: pasted, to: delivery)
+        countryPicked = false
+        locationAddressApplied = false
+        editingDelivery = true
+    }
+
+    /// Check Slant found an unconfirmed draft: select it in Orders, then close the form (asking first if it has
+    /// unsaved input, as Cancel does).
+    func showFoundDraft(_ record: Record) {
+        if !store.orders.contains(where: { $0.id == record.id }) { store.orders.insert(record, at: 0) }
+        store.draft = ["order": record.values]
+        store.destination = .orders
+        requestClose()
+    }
+
     /// Starts this draft's address from empty instead of the last draft's. Nothing typed is lost, so the empty form
     /// becomes the discard check's starting point; the remembered address stays for the next draft.
     func clearReusedDelivery() {
@@ -821,11 +864,17 @@ struct OrderComposerView: View {
                 throw error
             }
             let options = orderShippingOptions(provider: shippingProvider)
+            // A fresh marker per press, so Check Slant can later tell whether this draft was created
+            // (DraftConfirmation.swift). Left out when the reference fields already use all 10 metadata fields.
+            let generatedMarker = newStudioDraftMarker()
+            let markedMetadata = orderMetadataAddingDraftMarker(metadata, marker: generatedMarker)
             let body = try orderDraftPayload(
                 platformID: draftPlatformID, ownerID: store.ownerID, email: delivery.email, recipientName: delivery.name,
                 line1: delivery.line1, line2: delivery.line2, city: delivery.city, state: delivery.state, zip: delivery.zip, country: country,
-                paymentID: paymentID, metadata: metadata, options: options, lines: lines
+                paymentID: paymentID, metadata: markedMetadata, options: options, lines: lines
             )
+            let marker = orderDraftMarkerSent(body, generated: generatedMarker)
+            let sentPlatformID = draftPlatformID
             validation = nil
             if draftCreateNeedsConfirmation(outcomeUnknown: store.draftCreateOutcomeUnknown, confirmed: confirmedDespiteUnknownOutcome) {
                 confirmCreateAnyway = true
@@ -855,7 +904,10 @@ struct OrderComposerView: View {
                 }
                 if ran {
                     store.unconfirmedDraftCreates = unconfirmedDraftAttempts(previous: store.unconfirmedDraftCreates, attempt: attempt,
-                                                                             recipient: recipient, date: attemptDate)
+                                                                             recipient: recipient, date: attemptDate,
+                                                                             marker: marker, platformID: sentPlatformID)
+                    // An earlier Check Slant result no longer describes the notice.
+                    draftCheckOutcome = nil
                 }
             }
         } catch { validation = error.localizedDescription }

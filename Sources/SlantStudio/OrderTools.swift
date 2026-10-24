@@ -175,6 +175,11 @@ enum DraftCreateAttempt {
 struct UnconfirmedDraftAttempt: Equatable {
     let recipient: String
     let date: Date
+    /// The `metadata.studioDraftId` sent with this attempt, for Check Slant (DraftConfirmation.swift); nil when the
+    /// draft's metadata had no room for it.
+    var marker: String? = nil
+    /// The platform the draft was sent to, so Check Slant reads that platform's orders.
+    var platformID: String = ""
 }
 
 /// How many unconfirmed attempts the notice remembers (the most recent ones).
@@ -185,14 +190,17 @@ let unconfirmedDraftAttemptLimit = 5
 /// happened (refused with a definite 4xx, or never sent) leaves the list as it was, because it says nothing about the
 /// earlier requests.
 func unconfirmedDraftAttempts(previous: [UnconfirmedDraftAttempt], attempt: DraftCreateAttempt,
-                              recipient: String, date: Date) -> [UnconfirmedDraftAttempt] {
+                              recipient: String, date: Date,
+                              marker: String? = nil, platformID: String = "") -> [UnconfirmedDraftAttempt] {
     switch attempt {
     case .notSent: return previous
     case .succeeded: return []
     case .failed(let error):
         if orderMutationErrorProvesNoEffect(error) { return previous }
         let name = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Array((previous + [UnconfirmedDraftAttempt(recipient: name, date: date)]).suffix(unconfirmedDraftAttemptLimit))
+        let added = UnconfirmedDraftAttempt(recipient: name, date: date, marker: marker,
+                                            platformID: platformID.trimmingCharacters(in: .whitespacesAndNewlines))
+        return Array((previous + [added]).suffix(unconfirmedDraftAttemptLimit))
     }
 }
 

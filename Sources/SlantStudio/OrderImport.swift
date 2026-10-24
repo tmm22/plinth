@@ -568,12 +568,20 @@ func orderImportPaddedUSZIP(_ zip: String) -> String? {
     return parts.count == 2 ? "\(head)-\(parts[1])" : head
 }
 
-/// The metadata each imported draft carries, so later imports can recognise it. Two of Slant's ten fields.
-func orderImportMetadata(source: OrderImportFormat, sourceOrderID: String) -> [String: Any] {
-    ["source": source.rawValue, "sourceOrderId": sourceOrderID.trimmingCharacters(in: .whitespacesAndNewlines)]
+/// The metadata each imported draft carries, so later imports can recognise it. Two of Slant's ten fields, plus the
+/// draft marker (`studioDraftId`, DraftConfirmation.swift) on the body actually sent.
+func orderImportMetadata(source: OrderImportFormat, sourceOrderID: String, draftMarker: String? = nil) -> [String: Any] {
+    let metadata: [String: Any] = ["source": source.rawValue, "sourceOrderId": sourceOrderID.trimmingCharacters(in: .whitespacesAndNewlines)]
+    guard let draftMarker else { return metadata }
+    return orderMetadataAddingDraftMarker(metadata, marker: draftMarker)
 }
 
 // MARK: Duplicate protection
+
+struct OrderImportDraftMarker: Equatable {
+    let marker: String
+    let platformID: String
+}
 
 /// Source orders imported this session. Memory only: never written to disk, and cleared when the account changes.
 struct OrderImportLedger: Equatable {
@@ -583,12 +591,28 @@ struct OrderImportLedger: Equatable {
         case unknown
     }
     private(set) var entries: [String: Entry] = [:]
+    /// For `.unknown` entries, the marker their draft was sent with and its platform, so Check Slant can look for it
+    /// (DraftConfirmation.swift). Keyed like `entries`.
+    private(set) var unconfirmedMarkers: [String: OrderImportDraftMarker] = [:]
 
     static func key(source: OrderImportFormat, sourceOrderID: String) -> String {
         "\(source.rawValue)|\(sourceOrderID.trimmingCharacters(in: .whitespacesAndNewlines))"
     }
-    mutating func record(_ entry: Entry, source: OrderImportFormat, sourceOrderID: String) {
-        entries[Self.key(source: source, sourceOrderID: sourceOrderID)] = entry
+    mutating func record(_ entry: Entry, source: OrderImportFormat, sourceOrderID: String,
+                         marker: String? = nil, platformID: String = "") {
+        let key = Self.key(source: source, sourceOrderID: sourceOrderID)
+        entries[key] = entry
+        if entry == .unknown, let marker {
+            unconfirmedMarkers[key] = OrderImportDraftMarker(marker: marker, platformID: platformID)
+        } else {
+            unconfirmedMarkers[key] = nil
+        }
+    }
+    /// Check Slant found the draft of an unconfirmed import: it was created, as `orderID`.
+    mutating func confirm(key: String, orderID: String) {
+        guard entries[key] == .unknown, !orderID.isEmpty else { return }
+        entries[key] = .created(orderID: orderID)
+        unconfirmedMarkers[key] = nil
     }
     func entry(source: OrderImportFormat, sourceOrderID: String) -> Entry? {
         entries[Self.key(source: source, sourceOrderID: sourceOrderID)]
@@ -780,8 +804,10 @@ struct OrderImportCheck {
 }
 
 /// Everything the preview says about one order, and the draft body when it can be imported. `padZIP` applies the
-/// zero-padded US ZIP the user chose for this order.
-func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, padZIP: Bool = false) -> OrderImportCheck {
+/// zero-padded US ZIP the user chose for this order. `draftMarker` (only for the body actually sent) is added to its
+/// metadata as `studioDraftId`.
+func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, padZIP: Bool = false,
+                      draftMarker: String? = nil) -> OrderImportCheck {
     var check = OrderImportCheck()
     func block(_ text: String) { if !check.blockers.contains(text) { check.blockers.append(text) } }
     func warn(_ text: String) { if !check.warnings.contains(text) { check.warnings.append(text) } }
@@ -955,7 +981,7 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
         check.body = try orderDraftPayload(
             platformID: context.platformID, ownerID: context.ownerID, email: email, recipientName: order.name,
             line1: order.line1, line2: order.line2, city: order.city, state: order.state, zip: zip, country: order.countryCode,
-            paymentID: "", metadata: orderImportMetadata(source: order.source, sourceOrderID: order.sourceOrderID),
+            paymentID: "", metadata: orderImportMetadata(source: order.source, sourceOrderID: order.sourceOrderID, draftMarker: draftMarker),
             options: [:], lines: check.lines)
     } catch {
         block(error.localizedDescription)
@@ -1105,6 +1131,8 @@ struct OrderImportJob {
     let source: OrderImportFormat
     let sourceOrderID: String
     let body: [String: Any]
+    /// The `metadata.studioDraftId` in `body`, kept with an unknown outcome for Check Slant.
+    var draftMarker: String? = nil
 }
 
 enum OrderImportRowState: Equatable {
@@ -1152,6 +1180,12 @@ enum OrderImportRowState: Equatable {
 
     func requestStop() {
         if running { stopRequested = true }
+    }
+
+    /// Check Slant found the draft of a row whose outcome was unknown: show it as created.
+    func noteConfirmed(_ id: String, orderID: String) {
+        guard !running, case .unknown? = states[id] else { return }
+        states[id] = .created(orderID)
     }
 
     /// Clears results for a newly chosen file. Ignored while a batch runs.
@@ -1224,7 +1258,8 @@ enum OrderImportRowState: Equatable {
                 tally.refused += 1
                 consecutiveRefusals += 1
             case .unknown(let reason):
-                store.orderImportLedger.record(.unknown, source: job.source, sourceOrderID: job.sourceOrderID)
+                store.orderImportLedger.record(.unknown, source: job.source, sourceOrderID: job.sourceOrderID,
+                                               marker: job.draftMarker, platformID: platformID)
                 states[job.id] = .unknown(reason)
                 tally.unknown += 1
             }
@@ -1299,6 +1334,8 @@ struct OrderImportSheet: View {
     @State private var confirmCreate = false
     /// Match products choices for this file only: never saved, and cleared with the file.
     @State private var productChoices: [String: OrderImportProductChoice] = [:]
+    /// Check Slant's last result for unconfirmed imports (counts only).
+    @State private var importCheckMessage: String?
 
     private var context: OrderImportContext {
         OrderImportContext(
@@ -1574,6 +1611,9 @@ struct OrderImportSheet: View {
             } else if let message = runner.message {
                 Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
+            if !runner.running, let importCheckMessage {
+                Text(importCheckMessage).font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 if let reason = store.orderDraftBlockedReason {
                     Text(reason).font(.caption).foregroundStyle(.secondary)
@@ -1582,6 +1622,11 @@ struct OrderImportSheet: View {
                 if runner.running {
                     Button("Stop") { runner.requestStop() }
                         .help("Stop before the next draft. A draft already being created finishes first.")
+                }
+                if !runner.running, !store.orderImportLedger.unconfirmedMarkers.isEmpty {
+                    Button("Check Slant") { checkUnconfirmedImports() }
+                        .disabled(store.busy)
+                        .help("Look for drafts that didn’t confirm in your newest orders on Slant. Read-only: nothing is created or changed.")
                 }
                 if showDraftsAvailable {
                     let drafts = orderImportDraftsFilter()
@@ -1596,6 +1641,26 @@ struct OrderImportSheet: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(count == 0 || runner.running || store.busy || store.orderDraftBlockedReason != nil)
             }
+        }
+    }
+
+    /// Check Slant (DraftConfirmation.swift): read-only. A draft found with an unconfirmed import's marker marks that
+    /// order as created in the session ledger; not finding one changes nothing.
+    private func checkUnconfirmedImports() {
+        let pending = store.orderImportLedger.unconfirmedMarkers
+        var markers: [String: String] = [:]
+        for value in pending.values { markers[value.marker] = value.platformID }
+        guard !markers.isEmpty, !store.busy, !runner.running else { return }
+        Task {
+            guard let result = await store.searchOrdersForDraftMarkers(markers) else { return }
+            var confirmed = 0
+            for (key, value) in pending {
+                guard let record = result.found[value.marker.lowercased()] else { continue }
+                store.orderImportLedger.confirm(key: key, orderID: record.id)
+                runner.noteConfirmed(key, orderID: record.id)
+                confirmed += 1
+            }
+            importCheckMessage = orderImportDraftCheckMessage(confirmed: confirmed, stillUnconfirmed: pending.count - confirmed, result: result)
         }
     }
 
@@ -1710,12 +1775,19 @@ struct OrderImportSheet: View {
         guard let parsed, !runner.running, store.orderDraftBlockedReason == nil else { return }
         // Rebuilt from the current state, so the bodies sent are exactly what the preview shows.
         let currentChecks = checks(for: parsed)
+        let context = context
         let jobs: [OrderImportJob] = parsed.orders.compactMap { order in
-            guard ticked.contains(order.id), isSendable(order.id, checks: currentChecks), let body = currentChecks[order.id]?.body else { return nil }
-            return OrderImportJob(id: order.id, source: order.source, sourceOrderID: order.sourceOrderID, body: body)
+            guard ticked.contains(order.id), isSendable(order.id, checks: currentChecks) else { return nil }
+            // The same body with a fresh draft marker (DraftConfirmation.swift), so Check Slant can find it later.
+            let marker = newStudioDraftMarker()
+            let marked = orderImportCheck(order, context: context, padZIP: paddedZIP.contains(order.id), draftMarker: marker)
+            guard marked.blockers.isEmpty, let body = marked.body else { return nil }
+            return OrderImportJob(id: order.id, source: order.source, sourceOrderID: order.sourceOrderID, body: body,
+                                  draftMarker: orderDraftMarkerSent(body, generated: marker))
         }
         guard !jobs.isEmpty else { return }
         runner.saleAmounts = importedSaleAmountsByOrder(parsed.orders)
+        importCheckMessage = nil
         runner.start(jobs, store: store)
         // Sent orders are unticked so pressing Create again never resends them without a fresh, explicit tick.
         if runner.running { ticked.subtract(jobs.map(\.id)) }
