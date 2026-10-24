@@ -367,6 +367,9 @@ struct ShopFollowUpSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showDone = false
     @State private var exportError: String?
+    /// Send Tracking to Shopify… (ShopifyTracking.swift), with the orders fixed when it opens.
+    @State private var shopifySend: [ShopifyTrackingCandidate]?
+    @ObservedObject private var shopify = ShopifyConnection.shared
 
     var body: some View {
         let groups = shopFollowUpGroups(store.orders, done: store.shopFollowUpDoneIDs, showDone: showDone)
@@ -407,6 +410,14 @@ struct ShopFollowUpSheet: View {
                 .help(shopifyCount == 0
                       ? "No imported Shopify orders with tracking are listed"
                       : "Order name, tracking number and company for a Shopify bulk-fulfilment app")
+                if shopify.isConfigured {
+                    let candidates = shopifyTrackingCandidates(listed, done: store.shopFollowUpDoneIDs)
+                    Button("Send Tracking to Shopify…") { shopifySend = candidates }
+                        .disabled(candidates.isEmpty || shopify.busy)
+                        .help(candidates.isEmpty
+                              ? "No imported Shopify orders with tracking are waiting"
+                              : "Review, then add this tracking to the orders in \(shopify.shop ?? "your store")")
+                }
                 if groups.doneCount > 0 {
                     Toggle("Show Marked Orders (\(groups.doneCount))", isOn: $showDone)
                         .toggleStyle(.checkbox)
@@ -426,6 +437,9 @@ struct ShopFollowUpSheet: View {
         }
         .padding(20)
         .frame(minWidth: 620, idealWidth: 700, minHeight: 440, idealHeight: 560)
+        .sheet(isPresented: Binding(get: { shopifySend != nil }, set: { if !$0 { shopifySend = nil } })) {
+            ShopifyTrackingSheet(candidates: shopifySend ?? []).environmentObject(store)
+        }
     }
 
     private func row(_ entry: ShopFollowUpEntry) -> some View {

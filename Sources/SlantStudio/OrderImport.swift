@@ -1323,6 +1323,9 @@ struct OrderImportSheet: View {
             }
             HStack {
                 Button("Choose File…") { chooseFile() }.disabled(runner.running)
+                // ShopifyImport.swift: shown only once Shopify is connected in Settings.
+                ShopifyImportFetchButton(disabled: runner.running, onLoaded: { apply($0, label: $1) },
+                                         onError: { loadError = $0 })
                 Button("Save Template…") { saveTemplate() }
                 if let fileName {
                     Text(fileName).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -1648,15 +1651,7 @@ struct OrderImportSheet: View {
             if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > orderImportMaxFileBytes {
                 throw StudioError("This file is larger than \(orderImportMaxFileBytes / (1024 * 1024)) MB. Import at most \(orderImportMaxOrders) orders at a time.")
             }
-            let parse = try orderImportParse(data: try Data(contentsOf: url))
-            runner.reset()
-            paddedZIP = []
-            productChoices = [:]
-            parsed = parse
-            loadError = nil
-            fileName = url.lastPathComponent
-            let initial = checks(for: parse)
-            ticked = Set(parse.orders.map(\.id).filter { initial[$0]?.tickedByDefault == true })
+            apply(try orderImportParse(data: try Data(contentsOf: url)), label: url.lastPathComponent)
         } catch {
             parsed = nil
             ticked = []
@@ -1665,6 +1660,19 @@ struct OrderImportSheet: View {
             fileName = url.lastPathComponent
             loadError = error.localizedDescription
         }
+    }
+
+    /// Shows a parsed file, or orders fetched from Shopify (ShopifyImport.swift), with fresh results and choices.
+    private func apply(_ parse: OrderImportParse, label: String) {
+        guard !runner.running else { return }
+        runner.reset()
+        paddedZIP = []
+        productChoices = [:]
+        parsed = parse
+        loadError = nil
+        fileName = label
+        let initial = checks(for: parse)
+        ticked = Set(parse.orders.map(\.id).filter { initial[$0]?.tickedByDefault == true })
     }
 
     private func saveTemplate() {

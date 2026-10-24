@@ -158,6 +158,8 @@ struct AccountSettingsTab: View {
             PlatformsSettingsSections(state: $platforms, createProminent: prominent == .createPlatform)
 
             SellerAddressSettingsSection() // SellerAddressView.swift
+
+            ShopifySettingsSection() // ShopifySettingsView.swift
         }
         .formStyle(.grouped)
         .frame(width: 620, height: settingsTabHeight)
