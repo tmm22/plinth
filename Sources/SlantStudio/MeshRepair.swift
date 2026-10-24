@@ -132,7 +132,6 @@ func meshTriangleIsZeroArea(_ a: SIMD3<Double>, _ b: SIMD3<Double>, _ c: SIMD3<D
     return simd_length(cross) <= meshHealthDegenerateRatio * longest
 }
 
-/// Undirected edge key with the direction in the lowest bit: 0 when the edge runs from the lower id to the higher.
 /// A triangle's corners as a sort key that ignores rotation: (smallest id, the other two in order), and whether the
 /// smaller of those two comes next in its winding. Collision-free for any Int32 ids, and ordered exactly as the ids are.
 struct MeshTriangleCornerKey: Comparable, Hashable, Sendable {
@@ -149,6 +148,7 @@ func meshTriangleCornerKey(_ t: SIMD3<Int32>) -> (key: MeshTriangleCornerKey, fo
     return (MeshTriangleCornerKey(high: a << 32 | b, low: UInt32(max(s.y, s.z))), s.y < s.z)
 }
 
+/// Undirected edge key with the direction in the lowest bit: 0 when the edge runs from the lower id to the higher.
 @inline(__always) func meshDirectedEdgeKey(_ p: Int32, _ q: Int32) -> UInt64 {
     let low = UInt64(UInt32(min(p, q))), high = UInt64(UInt32(max(p, q)))
     return (low << 33) | (high << 1) | (p < q ? 0 : 1)

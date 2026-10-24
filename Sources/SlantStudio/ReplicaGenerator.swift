@@ -431,10 +431,12 @@ func replicaResumeNote(_ stop: ImageTo3DStop, action: ReplicaResumeAction) -> St
     return "\(action.title) carries on with the same task. Nothing new is made or charged."
 }
 
-/// One extra sentence for the stop message: whether credits may have gone.
+/// One extra sentence for the stop message: whether credits may have gone. None for a model too large, whose message
+/// already says the credits were spent.
 func replicaCreditsNote(_ stop: ImageTo3DStop) -> String? {
     guard stop.creditsMayHaveBeenSpent else { return "No credits were spent." }
     switch stop.reason {
+    case .modelTooLarge: return nil
     case .taskEnded(.failed): return "\(stop.service.title) usually refunds a task that failed; check your balance."
     default: return "\(stop.service.title) may have charged for this."
     }
@@ -496,6 +498,13 @@ func replicaCloseWarning(hasUnsavedModel: Bool, lastStop: ImageTo3DStop?, servic
     }
     guard let lastStop, lastStop.creditsMayHaveBeenSpent else { return nil }
     let name = lastStop.service.title
+    if lastStop.reason == .modelTooLarge {
+        // Finished and paid for; nothing is running, and nothing more can be done with it here.
+        let kept = lastStop.service == .meshy ? " (Meshy keeps it for 3 days)" : ""
+        return ReplicaCloseWarning(title: "Close without the model \(name) made?",
+                                   message: "\(name) made the model and charged for it, but it was too detailed for Studio. It stays on \(name)’s dashboard\(kept).",
+                                   confirmTitle: "Close")
+    }
     let task = lastStop.taskID.map { " for task \($0)" } ?? ""
     let resume = replicaResumeAction(for: lastStop).map { " Once this closes, Studio can’t \($0.title) for it." } ?? ""
     return ReplicaCloseWarning(title: "Close while \(name) may have charged?",
@@ -514,7 +523,8 @@ enum ReplicaProcessingError: LocalizedError, Equatable {
     case flat(ReplicaSizeAxis)
     case exceedsBuildVolume(size: ReplicaSize, longestMM: Float)
     /// More than `replicaMaximumModelTriangles`, or a 3MF above the library's limit: it can't be read at all.
-    case modelTooLarge
+    /// `limit` names the limit hit, as in "more than 2,684,354 triangles".
+    case modelTooLarge(limit: String)
     case tooDetailed(triangles: Int)
     case invalidResult
 
@@ -526,10 +536,10 @@ enum ReplicaProcessingError: LocalizedError, Equatable {
             return "The model has no \(axis.rawValue.lowercased()) to scale to. Choose another measurement and Process Again."
         case .exceedsBuildVolume(let size, let longest):
             return "At \(size.label), the replica would be \(String(format: "%.0f", longest)) mm on its longest side, more than Slant’s \(Int(slantBuildVolumeMM)) mm build volume. Enter a smaller size, then Process Again: the model is still here, so nothing is sent or charged."
-        case .modelTooLarge:
-            return "The model is too detailed for Studio to read (more than \(replicaMaximumModelTriangles.formatted()) triangles)."
+        case .modelTooLarge(let limit):
+            return "The model is too detailed for Studio to read (\(limit))."
         case .tooDetailed(let triangles):
-            return "Studio couldn’t simplify the model below \(STLMesh.maximumTriangles.formatted()) triangles (it still has \(triangles.formatted())), so it can’t be added to your library and nothing was saved. Generating again without Higher detail may help; the service keeps this model on its dashboard."
+            return "Studio couldn’t simplify the model below \(STLMesh.maximumTriangles.formatted()) triangles (it still has \(triangles.formatted())), so it can’t be added to your library and nothing was saved. The service keeps this model on its dashboard."
         case .invalidResult:
             return "The processed model didn’t pass Studio’s checks, so it wasn’t saved."
         }
@@ -607,11 +617,20 @@ func replicaReadModel(_ data: Data, maximumTriangles: Int = replicaMaximumModelT
     guard let format = imageTo3DDetectedFormat(data) else {
         throw ReplicaProcessingError.unreadable("the file isn’t an STL or 3MF model.")
     }
+    if format == .stl {
+        do { return try STLMesh.parse(data, maximumTriangles: maximumTriangles) } catch STLMesh.ParseError.oversized {
+            throw ReplicaProcessingError.modelTooLarge(limit: "more than \(maximumTriangles.formatted()) triangles")
+        } catch {
+            throw ReplicaProcessingError.unreadable(error.localizedDescription)
+        }
+    }
     do {
-        if format == .stl { return try STLMesh.parse(data, maximumTriangles: maximumTriangles) }
         return try parsePreviewModel(data, format: .threeMF).mesh
     } catch STLMesh.ParseError.oversized {
-        throw ReplicaProcessingError.modelTooLarge
+        // A 3MF keeps the library's limit.
+        throw ReplicaProcessingError.modelTooLarge(limit: "a 3MF with more than \(STLMesh.maximumTriangles.formatted()) triangles")
+    } catch ZipArchive.ZipError.oversized {
+        throw ReplicaProcessingError.modelTooLarge(limit: "a 3MF over 128 MB unpacked")
     } catch {
         throw ReplicaProcessingError.unreadable(error.localizedDescription)
     }
@@ -784,6 +803,15 @@ func replicaProcessingFailureAllowsProcessAgain(_ error: Error) -> Bool {
     case .tooDetailed?, .modelTooLarge?: return false
     default: return true
     }
+}
+
+/// The message for a processing failure, with the Higher detail advice only when the request used it.
+func replicaProcessingFailureMessage(_ error: Error, higherDetail: Bool) -> String {
+    var message = error.localizedDescription
+    if higherDetail, case .tooDetailed? = error as? ReplicaProcessingError {
+        message += " Generating again without Higher detail may help."
+    }
+    return message
 }
 
 /// Whether Studio's own checks found nothing: a sound mesh, no thin walls or small features, and overhangs on under

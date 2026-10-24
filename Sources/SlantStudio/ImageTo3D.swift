@@ -921,6 +921,10 @@ extension ImageTo3DService {
     /// same task replaces its earlier record. Returns the record's ID, or nil when nothing was recorded.
     @discardableResult
     func rememberUnconfirmed(_ stop: ImageTo3DStop, at time: Date = Date()) -> UUID? {
+        if stop.reason == .modelTooLarge, let source = stop.sourceTaskID ?? stop.taskID {
+            // The model arrived (too large to use): its earlier stops, such as a Keep Waiting timeout, are accounted for.
+            confirmDelivered(service: stop.service, sourceTaskID: source)
+        }
         guard imageTo3DStopIsUnconfirmed(stop) else { return nil }
         let source = stop.resumePoint?.sourceTaskID ?? stop.taskID
         if let source {
@@ -1142,6 +1146,11 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
     /// The kind of the run's source request (single- or multi-image generation, or repair), also when there's no
     /// resume point, so an unconfirmed record names it.
     var requestKind: ImageTo3DTaskKind? = nil
+    /// The run's generation (or repair) task, also when there's no resume point. For Tripo, `taskID` may be the
+    /// conversion's.
+    var sourceTaskID: String? = nil
+    /// Whether the request asked for Higher detail, so advice to go without it is given only when it applies.
+    var higherDetailRequested = false
 
     /// Whether the seller may have been charged: anything once a create may have gone through.
     var creditsMayHaveBeenSpent: Bool { reason != .notSent && !(reason == .cancelled && taskID == nil) }
@@ -1167,9 +1176,12 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
         case .downloadFailed:
             return "\(service.title) made the model, but Studio couldn’t download it.\(detailText)"
         case .modelTooLarge:
+            // `detail` names the limit hit when it wasn't the download's 128 MB.
+            let limit = detail.isEmpty ? "over 128 MB" : detail
             let kept = service == .meshy ? " (Meshy keeps it for 3 days)" : ""
             let task = taskID.map { ", task \($0)" } ?? ""
-            return "\(service.title)’s model was too detailed for Studio (over 128 MB, or more than \(replicaMaximumModelTriangles.formatted()) triangles), so it wasn’t used. The credits for it were spent, and the model stays on \(service.title)’s dashboard\(kept)\(task). Generating again without Higher detail may help."
+            let advice = higherDetailRequested ? " Generating again without Higher detail may help." : ""
+            return "\(service.title)’s model was too detailed for Studio (\(limit)), so it wasn’t used. The credits for it were spent, and the model stays on \(service.title)’s dashboard\(kept)\(task).\(advice)"
         case .cancelled:
             return taskID == nil ? "Stopped before anything was sent." : "Stopped. \(service.title) may still finish the task and charge for it."
         }
@@ -1386,7 +1398,12 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
         try? FileManager.default.removeItem(at: folder)
         if error is CancellationError { return stop(.cancelled, .downloading, lastID, "", resume: downloadPoint) }
         // Too large is final: downloading it again would only be refused again.
-        if (error as? ImageTo3DError) == .modelTooLarge { return stop(.modelTooLarge, .downloading, lastID, "", resume: nil) }
+        if (error as? ImageTo3DError) == .modelTooLarge {
+            var final = ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: service, taskID: lastID, detail: "",
+                                      requestKind: point.sourceKind, sourceTaskID: point.sourceTaskID)
+            final.higherDetailRequested = options.higherDetail
+            return .failure(final)
+        }
         return stop(.downloadFailed, .downloading, lastID, (error as? ImageTo3DError)?.userMessage ?? "", resume: downloadPoint)
     }
 }

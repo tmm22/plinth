@@ -204,11 +204,13 @@ struct GeneratedReplicaFile {
             }
             stopping = false
             switch read {
-            case .failure(ReplicaProcessingError.modelTooLarge):
+            case .failure(ReplicaProcessingError.modelTooLarge(let limit)):
                 // Final: reading it again would fail the same way, so there's no resume point.
-                stopped(ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: model.service,
-                                      taskID: model.conversionTaskID ?? model.sourceTaskID, detail: "", requestKind: model.sourceKind),
-                        host: host)
+                var final = ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: model.service,
+                                          taskID: model.conversionTaskID ?? model.sourceTaskID, detail: limit,
+                                          requestKind: model.sourceKind, sourceTaskID: model.sourceTaskID)
+                final.higherDetailRequested = options?.higherDetail ?? false
+                stopped(final, host: host)
             case .failure(let error):
                 let detail = (error as? ReplicaProcessingError)?.errorDescription ?? "Studio couldn’t read the downloaded file."
                 stopped(ImageTo3DStop(reason: .downloadFailed, stage: .downloading, service: model.service,
@@ -322,7 +324,8 @@ struct GeneratedReplicaFile {
             failProcessing(MeshToolError.cancelled.localizedDescription)
         case .failure(let error):
             let cancelled = stopped || (error as? MeshToolError) == .cancelled
-            failProcessing(cancelled ? MeshToolError.cancelled.localizedDescription : error.localizedDescription,
+            failProcessing(cancelled ? MeshToolError.cancelled.localizedDescription
+                                     : replicaProcessingFailureMessage(error, higherDetail: options?.higherDetail ?? false),
                            processAgainCanHelp: cancelled || replicaProcessingFailureAllowsProcessAgain(error))
         }
     }
@@ -831,6 +834,8 @@ struct ReplicaGeneratorSheet: View {
                 } else if let reason = blockedReasons.first {
                     Text(reason).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
+                // Beside the reason, never squeezing the buttons: one line, truncated if it must be.
+                Text(replicaFooterCostLabel(estimate)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 if !connection.hasKey(service) {
                     Button("Open Settings") { store.requestSettings(.designTools) }
                 }
@@ -910,10 +915,9 @@ struct ReplicaGeneratorSheet: View {
     }
 
     /// Never the default button and no shortcut: it spends the seller's credits.
-    /// The estimated credits stay visible beside it, not only in its help.
+    /// The estimated credits stay visible in the footer (`replicaFooterCostLabel`), not only in its help.
     @ViewBuilder
     private var generateButton: some View {
-        Text(replicaFooterCostLabel(estimate)).font(.callout).foregroundStyle(.secondary).fixedSize()
         let button = Button(generateButtonTitle) { requestGenerate() }
             .disabled(!blockedReasons.isEmpty || session.isRunning)
             .help("Sends the \(views.count > 1 ? "photos" : "photo") to \(service.title) once. \(estimate.summary)")

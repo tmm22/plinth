@@ -630,20 +630,83 @@ final class ReplicaGeneratorTests: XCTestCase {
     func testAModelTooLargeToReadIsFinalAndSaysWhatToDo() throws {
         let cube = try MeshRepairTests.cube(size: 1).binarySTL()
         XCTAssertThrowsError(try replicaReadModel(cube, maximumTriangles: 11)) {
-            XCTAssertEqual($0 as? ReplicaProcessingError, .modelTooLarge)
+            XCTAssertEqual($0 as? ReplicaProcessingError, .modelTooLarge(limit: "more than 11 triangles"))
         }
         let stop = ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: .tripo, taskID: "conv", detail: "")
         XCTAssertNil(replicaResumeAction(for: stop))
         XCTAssertTrue(stop.userMessage.contains("Tripo’s dashboard"))
         XCTAssertFalse(stop.userMessage.contains("3 days"), "Meshy's retention only")
         XCTAssertFalse(replicaProcessingFailureAllowsProcessAgain(ReplicaProcessingError.tooDetailed(triangles: 600_000)))
-        XCTAssertFalse(replicaProcessingFailureAllowsProcessAgain(ReplicaProcessingError.modelTooLarge))
+        XCTAssertFalse(replicaProcessingFailureAllowsProcessAgain(ReplicaProcessingError.modelTooLarge(limit: "x")))
         XCTAssertTrue(replicaProcessingFailureAllowsProcessAgain(ReplicaProcessingError.flat(.height)))
         XCTAssertTrue(replicaProcessingFailureAllowsProcessAgain(MeshToolError.cancelled))
-        let message = ReplicaProcessingError.tooDetailed(triangles: 600_000).localizedDescription
+        let tooDetailed = ReplicaProcessingError.tooDetailed(triangles: 600_000)
+        let message = replicaProcessingFailureMessage(tooDetailed, higherDetail: true)
         XCTAssertTrue(message.contains("without Higher detail"))
         XCTAssertTrue(message.contains("dashboard"))
         XCTAssertFalse(message.contains("Process Again"))
+        XCTAssertFalse(replicaProcessingFailureMessage(tooDetailed, higherDetail: false).contains("Higher detail"),
+                       "only when the request used it")
+        XCTAssertEqual(replicaProcessingFailureMessage(ReplicaProcessingError.flat(.height), higherDetail: true),
+                       ReplicaProcessingError.flat(.height).localizedDescription)
+    }
+
+    func testAModelTooLargeHasItsOwnCloseAndCreditsWording() {
+        let stop = ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: .meshy, taskID: "m1", detail: "")
+        XCTAssertNil(replicaCreditsNote(stop), "the message already says the credits were spent")
+        let warning = replicaCloseWarning(hasUnsavedModel: false, lastStop: stop, service: .meshy)
+        XCTAssertEqual(warning?.title, "Close without the model Meshy made?")
+        XCTAssertEqual(warning?.message, "Meshy made the model and charged for it, but it was too detailed for Studio. It stays on Meshy’s dashboard (Meshy keeps it for 3 days).")
+        XCTAssertFalse(warning?.message.contains("may still finish") == true)
+        XCTAssertFalse(warning?.message.contains("asks before generating again") == true)
+        let tripo = replicaCloseWarning(hasUnsavedModel: false, lastStop: ImageTo3DStop(reason: .modelTooLarge, stage: .downloading,
+                                                                                         service: .tripo, taskID: "c1", detail: ""), service: .tripo)
+        XCTAssertFalse(tripo?.message.contains("3 days") == true)
+    }
+
+    func testHigherDetailAdviceOnlyWhenItWasUsed() {
+        var stop = ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: .meshy, taskID: "m1", detail: "")
+        XCTAssertFalse(stop.userMessage.contains("Higher detail"))
+        XCTAssertTrue(stop.userMessage.contains("over 128 MB"))
+        stop.higherDetailRequested = true
+        XCTAssertTrue(stop.userMessage.hasSuffix("Generating again without Higher detail may help."))
+        let read = ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: .meshy, taskID: "m1",
+                                 detail: "a 3MF with more than 500,000 triangles")
+        XCTAssertTrue(read.userMessage.contains("(a 3MF with more than 500,000 triangles)"), "the limit actually hit")
+    }
+
+    @MainActor func testATooLargeModelAccountsForItsEarlierStops() {
+        let connection = makeTestConnection()
+        // Keep Waiting timed out on Tripo's generation earlier.
+        connection.rememberUnconfirmed(ImageTo3DStop(reason: .timedOut, stage: .generating, service: .tripo, taskID: "gen", detail: "",
+                                                     resumePoint: ImageTo3DResumePoint(sourceTaskID: "gen", sourceKind: .generation,
+                                                                                       conversionTaskID: nil)))
+        XCTAssertEqual(connection.unconfirmedRequests.count, 1)
+        // Now its conversion is too large: the stop's task is the conversion's, the source is the generation.
+        let final = ImageTo3DStop(reason: .modelTooLarge, stage: .downloading, service: .tripo, taskID: "conv", detail: "",
+                                  requestKind: .generation, sourceTaskID: "gen")
+        XCTAssertNil(connection.rememberUnconfirmed(final))
+        XCTAssertTrue(connection.unconfirmedRequests.isEmpty)
+        XCTAssertFalse(connection.hasUnconfirmedRequests)
+    }
+
+    func testThreeMFReadsNameTheLibraryLimit() throws {
+        // Instanced past the 500,000-triangle limit: a final stop naming that limit, not the STL path's.
+        let components = String(repeating: "<component objectid=\"1\"/>", count: 45_000)
+        let resources = "<object id=\"1\">\(cubeMeshXML())</object><object id=\"2\"><components>\(components)</components></object>"
+        let instanced = package(model: modelXML(resources: resources, build: "<item objectid=\"2\"/>"))
+        XCTAssertThrowsError(try replicaReadModel(instanced)) {
+            XCTAssertEqual($0 as? ReplicaProcessingError, .modelTooLarge(limit: "a 3MF with more than 500,000 triangles"))
+        }
+        // A package whose model declares more than 128 MB unpacked.
+        var zip = TestZip()
+        zip.add("[Content_Types].xml", "<Types/>")
+        zip.add("_rels/.rels", threeMFRels)
+        zip.items.append(.init(name: "3D/3dmodel.model", data: Data("tiny".utf8), declaredUncompressed: 200_000_000))
+        XCTAssertThrowsError(try replicaReadModel(zip.build())) {
+            XCTAssertEqual($0 as? ReplicaProcessingError, .modelTooLarge(limit: "a 3MF over 128 MB unpacked"))
+        }
+        XCTAssertFalse(replicaProcessingFailureAllowsProcessAgain(ReplicaProcessingError.modelTooLarge(limit: "a 3MF over 128 MB unpacked")))
     }
 
     func testFooterCostAndButtonTitles() {
