@@ -25,12 +25,44 @@ func accessoryStudioCheckLines(_ facts: AccessoryRenderFacts) -> [String] {
         lines.append(wall.line)
         lines.append(contentsOf: wall.details)
     }
+    if facts.overhang.overhangAreaMM2 <= 0 || facts.overhangLocation == nil {
+        lines.append("Overhangs: none steeper than 45° from vertical")
+    } else if facts.hasNotableOverhangs, let location = facts.overhangLocation {
+        let low = String(format: "%.0f", location.lowestZ), high = String(format: "%.0f", location.highestZ)
+        let place = low == high ? "at \(low) mm up" : "between \(low) and \(high) mm up"
+        lines.append("Overhangs: \(percentLabel(facts.overhang.fraction)) of the surface faces down more steeply than 45°, \(place); "
+                     + "it may need supports. Ask Claude to fix them")
+    } else {
+        lines.append("Overhangs: small (under \(percentLabel(accessoryOverhangNotableShare)) of the surface steeper than 45°)")
+    }
     lines.append(facts.customizerValues.isEmpty
                  ? "No values to adjust were found, so Personalise from Template can’t change this design’s sizes"
                  : "\(facts.customizerValues.count) values you can adjust later in Personalise from Template")
     let warnings = facts.openSCADMessages.filter { $0.uppercased().hasPrefix("WARNING") }.count
     if warnings > 0 { lines.append(warnings == 1 ? "OpenSCAD reported 1 warning" : "OpenSCAD reported \(warnings) warnings") }
     return lines
+}
+
+/// The seller's typed measurements, as shown beside the design's fit sizes: "Phone thickness: 9.5 mm (calipers)".
+func accessoryTypedMeasurementLines(_ rows: [AccessoryMeasurement]) -> [String] {
+    rows.compactMap { row in
+        let label = row.label.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        guard !label.isEmpty, let value = meshFitMillimetres(row.millimetres) else { return nil }
+        let method: String
+        switch row.method {
+        case .calipers: method = "calipers"
+        case .ruler: method = "ruler"
+        case .estimate: method = "estimate"
+        }
+        return "\(label): \(accessoryMillimetresText(value)) (\(method))"
+    }
+}
+
+/// The design's fit sizes for the seller, or a line saying it reported none.
+func accessoryFitSizeLines(_ fitSizes: [AccessoryFitSize]) -> [String] {
+    fitSizes.isEmpty
+        ? ["This version didn’t report its fit sizes. Ask Claude to echo each size that must fit."]
+        : fitSizes.map(accessoryFitSizeText)
 }
 
 /// The status line under the conversation: replies and renders used this round, and what has been spent.
@@ -57,6 +89,8 @@ struct AccessoryDesignerSheet: View {
     @State private var consentRequest: ImageSharingConsentRequest?
     @State private var run: AccessoryDesignRun?
     @State private var confirmClose = false
+    /// The Claude key stays locked while this sheet is open (`AnthropicConnection.beginSession`); balanced exactly once.
+    @State private var claudeSessionOpen = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -79,8 +113,20 @@ struct AccessoryDesignerSheet: View {
             }
         }
         .frame(minWidth: 820, idealWidth: 960, minHeight: 620, idealHeight: 760)
-        .onAppear { if !lookedForOpenSCAD { lookForOpenSCAD() } }
-        .onDisappear { run?.stop() }
+        .onAppear {
+            if !claudeSessionOpen {
+                claudeSessionOpen = true
+                AnthropicConnection.shared.beginSession()
+            }
+            if !lookedForOpenSCAD { lookForOpenSCAD() }
+        }
+        .onDisappear {
+            run?.stop()
+            if claudeSessionOpen {
+                claudeSessionOpen = false
+                AnthropicConnection.shared.endSession()
+            }
+        }
         .confirmationDialog("Close and discard this design?", isPresented: $confirmClose, titleVisibility: .visible) {
             Button("Discard", role: .destructive) { close() }
             Button("Keep Working", role: .cancel) {}
@@ -546,9 +592,33 @@ private struct AccessoryDesignRunView: View {
                 Label(render.problems.joined(separator: " "), systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
+            fitSection(render.facts.fitSizes)
             Text("Advisory only: these checks and Claude’s notes can’t tell how strong a part will be. Test-print it before selling.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// The seller's measurements beside the sizes the design reported, so a slot or hole can be checked by eye.
+    private func fitSection(_ fitSizes: [AccessoryFitSize]) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Your measurements").font(.subheadline.weight(.semibold))
+                ForEach(Array(accessoryTypedMeasurementLines(brief.measurements).enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Sizes that must fit, in this version").font(.subheadline.weight(.semibold))
+                ForEach(Array(accessoryFitSizeLines(fitSizes).enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.callout).foregroundStyle(fitSizes.isEmpty ? .secondary : .primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.top, 4)
+        .accessibilityElement(children: .contain)
     }
 
     private func resultSection(_ finish: AccessoryFinish) -> some View {

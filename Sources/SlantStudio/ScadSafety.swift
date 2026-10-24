@@ -3,16 +3,21 @@ import Foundation
 // MARK: - Checking OpenSCAD code Claude wrote before running it
 //
 // Design an Accessory from a Photo runs OpenSCAD code that Claude writes on the seller's Mac. OpenSCAD can't run
-// programs, but it can read files: `include <…>`, `use <…>`, `import("…")` and `surface("…")`. Studio refuses code
-// that uses any of them, or carries something that looks like a file path, before OpenSCAD ever sees it. The code is
-// written to an empty temporary folder and run without a shell, with a time limit and bounded output
+// programs, but it can read files: `include <…>`, `use <…>`, `import("…")`, `surface("…")`, the old `dxf_…` modules
+// and functions, and the old `file =` argument of `linear_extrude` and `rotate_extrude`. Studio refuses code that uses
+// any of them, or carries a string that looks like a file path once its escapes are decoded, before OpenSCAD ever sees
+// it. The code is written to an empty temporary folder and run without a shell, with a time limit and bounded output
 // (`runOpenSCADProcess`), so what is left is ordinary geometry.
 
 /// Largest OpenSCAD source Studio runs from Claude.
 let scadSafetyMaximumBytes = 64 * 1024
 
 /// Words that make OpenSCAD read another file. Compared as whole identifiers outside comments and strings.
-let scadSafetyFileReadingWords = ["include", "use", "import", "surface"]
+let scadSafetyFileReadingWords = ["include", "use", "import", "surface", "dxf_linear_extrude", "dxf_rotate_extrude", "dxf_dim", "dxf_cross"]
+
+/// Folders a string mustn't name after a path separator (whole path segments, compared case-insensitively).
+let scadSafetySystemFolders = ["etc", "users", "home", "private", "var", "tmp", "system", "library", "applications", "volumes",
+                               "bin", "sbin", "usr", "dev", "opt", "cores", "network", "root", "proc", "windows"]
 
 /// File extensions a string literal mustn't end with: things OpenSCAD (or a later version of it) could read.
 let scadSafetyFileExtensions = ["stl", "scad", "dxf", "svg", "png", "dat", "off", "obj", "3mf", "amf", "csg", "json", "txt", "csv", "ttf", "otf"]
@@ -34,9 +39,14 @@ func scadSafetyProblem(_ code: String) -> String? {
         switch word {
         case "include", "use":
             return "Studio doesn’t run code that uses `\(word)`: everything must be in this one file. Write any library modules you need inline."
+        case _ where word.hasPrefix("dxf_"):
+            return "Studio doesn’t run code that uses `\(word)`, because it reads DXF files. Build the shape from OpenSCAD primitives instead."
         default:
             return "Studio doesn’t run code that calls `\(word)()`, because it reads files. Build the shape from OpenSCAD primitives instead."
         }
+    }
+    if scan.usesFileArgument {
+        return "Studio doesn’t run code with a `file =` argument or variable, because OpenSCAD reads files through it. Build the shape from OpenSCAD primitives, and give variables other names."
     }
     if let path = scan.strings.first(where: scadSafetyLooksLikePath) {
         let shown = path.count > 40 ? String(path.prefix(40)) + "…" : path
@@ -46,11 +56,16 @@ func scadSafetyProblem(_ code: String) -> String? {
 }
 
 /// True for text that names a file or folder: an absolute, home or relative path, a Windows drive or backslash path,
-/// or a name ending in a model, image, data or font file extension.
+/// a `/` followed anywhere by a system or home folder, a `~` or a `..` segment, or a name ending in a model, image,
+/// data or font file extension.
 func scadSafetyLooksLikePath(_ text: String) -> Bool {
     let trimmed = text.trimmingCharacters(in: .whitespaces)
     if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") || trimmed.hasPrefix("./") || trimmed.hasPrefix("../") { return true }
     if trimmed.contains("\\") || trimmed.contains("../") || trimmed.contains("/./") { return true }
+    let segments = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+    if segments.contains("..") { return true }
+    for segment in segments.dropFirst() where segment.hasPrefix("~") || scadSafetySystemFolders.contains(segment) { return true }
     if trimmed.range(of: #"^[A-Za-z]:[\\/]"#, options: .regularExpression) != nil { return true }
     if trimmed.lowercased().hasPrefix("file:") { return true }
     if let dot = trimmed.lastIndex(of: ".") {
@@ -65,8 +80,31 @@ struct ScadSafetyScan: Equatable {
     var identifiers: [String] = []
     /// String literals' contents (escapes resolved), in order.
     var strings: [String] = []
+    /// `file` is assigned or passed as a named argument (`file = …`, not `file == …`), even with comments in between.
+    var usesFileArgument = false
     /// Set when the code ends inside a comment or a string.
     var problem: String?
+}
+
+/// The character an OpenSCAD `\x`, `\u` or `\U` escape stands for and how many hex digits it used, or nil when the
+/// escape isn't well formed (`\x` takes two hex digits up to 7F, `\u` four and `\U` six).
+func scadSafetyHexEscape(_ kind: Unicode.Scalar, digits: ArraySlice<Unicode.Scalar>) -> (scalar: Unicode.Scalar, length: Int)? {
+    let length: Int
+    switch kind {
+    case "x": length = 2
+    case "u": length = 4
+    case "U": length = 6
+    default: return nil
+    }
+    guard digits.count >= length else { return nil }
+    var value: UInt32 = 0
+    for digit in digits.prefix(length) {
+        guard digit.isASCII, let nibble = UInt32(String(digit), radix: 16) else { return nil }
+        value = value * 16 + nibble
+    }
+    if kind == "x", value > 0x7F { return nil }
+    guard let scalar = Unicode.Scalar(value) else { return nil }
+    return (scalar, length)
 }
 
 /// Walks the code once, skipping `//` and `/* */` comments and reading string literals, so a word inside a comment or
@@ -74,6 +112,8 @@ struct ScadSafetyScan: Equatable {
 func scadSafetyScan(_ code: String) -> ScadSafetyScan {
     var scan = ScadSafetyScan()
     var seen = Set<String>()
+    /// The identifier just read, kept across whitespace and comments until the next token.
+    var previousIdentifier: String?
     let chars = Array(code.unicodeScalars)
     var index = 0
     func isIdentifierStart(_ c: Unicode.Scalar) -> Bool { c == "_" || c == "$" || (c.isASCII && CharacterSet.letters.contains(c)) }
@@ -81,6 +121,7 @@ func scadSafetyScan(_ code: String) -> ScadSafetyScan {
     while index < chars.count {
         let c = chars[index]
         let next: Unicode.Scalar? = index + 1 < chars.count ? chars[index + 1] : nil
+        if c == " " || c == "\t" || c == "\n" || c == "\r" { index += 1; continue }
         if c == "/", next == "/" {
             while index < chars.count, chars[index] != "\n", chars[index] != "\r" { index += 1 }
             continue
@@ -96,6 +137,7 @@ func scadSafetyScan(_ code: String) -> ScadSafetyScan {
             continue
         }
         if c == "\"" {
+            previousIdentifier = nil
             index += 1
             var text = String.UnicodeScalarView()
             var closed = false
@@ -109,8 +151,20 @@ func scadSafetyScan(_ code: String) -> ScadSafetyScan {
                     case "r": text.append("\r")
                     case "\"": text.append("\"")
                     case "\\": text.append("\\")
-                    // `\x41`, `°` and `\U01F600` stand for one character; any other escape is the character itself.
-                    case "x", "u", "U": text.append("?")
+                    case "x", "u", "U":
+                        // `\x2F` and its four-digit `\u` and six-digit `\U` forms stand for one character ("/"), so they are decoded
+                        // before the path check. One that isn't well formed is kept with its backslash, which the
+                        // path check refuses.
+                        if let decoded = scadSafetyHexEscape(escaped, digits: chars[(index + 2)...]) {
+                            text.append(decoded.scalar)
+                            index += 2 + decoded.length
+                        } else {
+                            text.append("\\")
+                            text.append(escaped)
+                            index += 2
+                        }
+                        continue
+                    // Any other escape is the character itself.
                     default: text.append(escaped)
                     }
                     index += 2
@@ -129,8 +183,11 @@ func scadSafetyScan(_ code: String) -> ScadSafetyScan {
             while index < chars.count, isIdentifierPart(chars[index]) { word.append(chars[index]); index += 1 }
             let name = String(word)
             if seen.insert(name).inserted { scan.identifiers.append(name) }
+            previousIdentifier = name
             continue
         }
+        if c == "=", previousIdentifier == "file", next != "=" { scan.usesFileArgument = true }
+        previousIdentifier = nil
         // `<path>` after include/use is caught by the word itself; anything else is ordinary code.
         index += 1
     }

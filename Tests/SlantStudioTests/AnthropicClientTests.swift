@@ -142,10 +142,13 @@ final class AnthropicRequestTests: XCTestCase {
         XCTAssertThrowsError(try client.urlRequest(for: AnthropicRequest(messages: []))) {
             guard case .notSent? = $0 as? AnthropicError else { return XCTFail("expected notSent") }
         }
-        let huge = String(repeating: "A", count: anthropicMaxRequestBytes)
-        XCTAssertThrowsError(try client.urlRequest(for: AnthropicRequest(messages: [.user(text: huge)]))) {
+        // Anthropic's 32 MB limit, checked with a smaller injected limit so the test doesn't build a 32 MB request.
+        XCTAssertEqual(anthropicMaxRequestBytes, 32 * 1024 * 1024)
+        let large = AnthropicRequest(messages: [.user(text: String(repeating: "A", count: 4_096))])
+        XCTAssertThrowsError(try client.urlRequest(for: large, maxBodyBytes: 4_096)) {
             guard case .notSent? = $0 as? AnthropicError else { return XCTFail("expected notSent") }
         }
+        XCTAssertNoThrow(try client.urlRequest(for: large, maxBodyBytes: 8_192))
     }
 }
 
