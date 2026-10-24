@@ -160,6 +160,9 @@ struct AccountSettingsTab: View {
             SellerAddressSettingsSection() // SellerAddressView.swift
 
             ShopifySettingsSection() // ShopifySettingsView.swift
+
+            AnthropicSettingsSection() // AnthropicSettingsView.swift
+            ImageSharingConsentSettingsSection() // ImageSharingConsent.swift
         }
         .formStyle(.grouped)
         .frame(width: 620, height: settingsTabHeight)
