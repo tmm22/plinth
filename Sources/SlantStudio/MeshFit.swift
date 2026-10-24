@@ -18,6 +18,7 @@ enum MeshFitError: LocalizedError, Equatable {
     case invalidPlinth(String)
     case tooManyTriangles
     case resultNotClosed
+    case addedZeroAreaTriangles
     case stopped
 
     var errorDescription: String? {
@@ -35,6 +36,8 @@ enum MeshFitError: LocalizedError, Equatable {
         case .invalidPlinth(let reason): return reason
         case .tooManyTriangles: return "The result would have more than 500,000 triangles, so it wasn’t saved."
         case .resultNotClosed: return "The result didn’t come out as a closed solid, so it wasn’t saved. Try a slightly different height."
+        case .addedZeroAreaTriangles:
+            return "The result would have more zero-area triangles than the model, so it wasn’t saved. Try a slightly different height, or repair the model first."
         case .stopped: return "Stopped. Nothing was saved."
         }
     }
@@ -90,12 +93,12 @@ func scaledToSizeCopyName(_ name: String, plan: ScaleToSizePlan) -> String {
     let size = String(format: "%g", (plan.targetMM * 100).rounded() / 100)
     let axis: String
     switch plan.axis {
-    case .longest: axis = "long"
-    case .x: axis = "wide"
-    case .y: axis = "deep"
-    case .z: axis = "tall"
+    case .longest: axis = ""
+    case .x: axis = " wide"
+    case .y: axis = " deep"
+    case .z: axis = " tall"
     }
-    return "\(meshFitBaseName(name))-\(size)mm-\(axis)"
+    return "\(meshFitCopyBaseName(name)) (scaled to \(size) mm\(axis))"
 }
 
 /// The library name without a model file extension, so suffixes don't follow ".stl".
@@ -140,7 +143,9 @@ let flatBaseDefaultMinimumContactMM2 = 100.0
 let flatBaseDefaultContactFraction = 0.15
 let flatBaseDefaultMaximumCutMM: Float = 5
 /// Shown with the flat-base and plinth tools; Slant doesn't publish its first-layer settings.
-let elephantFootNote = "The first layers of a print often spread slightly (“elephant’s foot”). If the bottom edge must be exact, add a 0.5 mm chamfer to it in your CAD tool."
+let elephantFootNote = "The first layers of a print often spread slightly (“elephant’s foot”), so the bottom edge may come out a little wider than the model."
+/// Shown with the plinth tool, whose bottom edge Studio chamfers.
+let plinthChamferNote = "The plinth’s bottom edge gets a 0.5 mm chamfer, so the first layers’ slight spread (“elephant’s foot”) stays within its outline."
 
 private func signedArea2D(_ a: SIMD2<Double>, _ b: SIMD2<Double>, _ c: SIMD2<Double>) -> Double {
     ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / 2
@@ -273,9 +278,12 @@ private let cutVertexClearance: Float = 0.0002
 /// The furthest the plane may move up to find that gap.
 private let cutMaximumNudge: Float = 0.1
 
-private func requireClosedSolid(_ mesh: STLMesh, isCancelled: () -> Bool) throws {
+/// The model's mesh check, once it is known to be a closed, outward-facing solid.
+@discardableResult
+private func requireClosedSolid(_ mesh: STLMesh, isCancelled: () -> Bool) throws -> MeshHealthReport {
     guard let report = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { throw MeshFitError.stopped }
     guard report.isClosed, report.isConsistentlyOriented, report.signedVolume > 0 else { throw MeshFitError.notClosedSolid }
+    return report
 }
 
 /// Cuts a closed, consistently oriented mesh with the plane z = minimum.z + `height` and keeps the part above.
@@ -448,6 +456,7 @@ func triangulatePlanarRegion(points: [SIMD2<Double>], loops: [[Int]], workLimit:
         }
         try triangles.append(contentsOf: clipEars(polygon, points: points, spend: spend, isCancelled: isCancelled))
     }
+    flipPlanarSlivers(&triangles, points: points)
 
     // Every triangle must be anticlockwise, and together they must cover exactly the region's area.
     var covered = 0.0
@@ -460,6 +469,60 @@ func triangulatePlanarRegion(points: [SIMD2<Double>], loops: [[Int]], workLimit:
     let scale = areas.map(abs).reduce(0, +)
     guard abs(covered - expected) <= max(1e-9, 1e-7 * scale) else { throw MeshFitError.capFailed }
     return triangles
+}
+
+/// Zero-area by the mesh check's rule, with a margin for the rounding to Float when the triangle is written.
+private func planarSliver(_ a: SIMD2<Double>, _ b: SIMD2<Double>, _ c: SIMD2<Double>) -> Bool {
+    let longest = max(simd_distance_squared(a, b), simd_distance_squared(b, c), simd_distance_squared(c, a))
+    return abs(2 * signedArea2D(a, b, c)) <= 10 * meshHealthDegenerateRatio * longest
+}
+
+/// Removes slivers ear clipping was left with (its last triangle has no choice) by flipping the sliver's longest edge
+/// with the triangle across it, when both new triangles are anticlockwise and not slivers themselves. Triangles are
+/// visited in index order and edges found through lookups only, so the result is deterministic.
+private func flipPlanarSlivers(_ triangles: inout [SIMD3<Int32>], points: [SIMD2<Double>]) {
+    func key(_ p: Int32, _ q: Int32) -> UInt64 { UInt64(UInt32(p)) << 32 | UInt64(UInt32(q)) }
+    func p(_ i: Int32) -> SIMD2<Double> { points[Int(i)] }
+    var owner: [UInt64: Int] = [:]
+    var shared = Set<UInt64>()
+    func register(_ t: Int) {
+        let v = triangles[t]
+        for (a, b) in [(v.x, v.y), (v.y, v.z), (v.z, v.x)] {
+            if owner[key(a, b)] != nil { shared.insert(key(a, b)) } else { owner[key(a, b)] = t }
+        }
+    }
+    for t in triangles.indices { register(t) }
+    for _ in 0..<3 {
+        var flipped = false
+        for t in triangles.indices {
+            let v = triangles[t]
+            guard planarSliver(p(v.x), p(v.y), p(v.z)) else { continue }
+            let corners = [v.x, v.y, v.z]
+            var j = 0, longest = -1.0
+            for k in 0..<3 {
+                let length = simd_distance_squared(p(corners[k]), p(corners[(k + 1) % 3]))
+                if length > longest { longest = length; j = k }
+            }
+            let u = corners[j], w = corners[(j + 1) % 3], m = corners[(j + 2) % 3]
+            // A repeated directed edge (only possible at a bridge's ends) is left alone.
+            guard !shared.contains(key(w, u)), let n = owner[key(w, u)], n != t else { continue }
+            let other = [triangles[n].x, triangles[n].y, triangles[n].z]
+            guard let r = other.first(where: { $0 != u && $0 != w }), r != m else { continue }
+            let first = SIMD3(u, r, m), second = SIMD3(r, w, m)
+            guard signedArea2D(p(u), p(r), p(m)) > 0, signedArea2D(p(r), p(w), p(m)) > 0,
+                  !planarSliver(p(u), p(r), p(m)), !planarSliver(p(r), p(w), p(m)) else { continue }
+            for old in [t, n] {
+                let o = triangles[old]
+                for (a, b) in [(o.x, o.y), (o.y, o.z), (o.z, o.x)] where owner[key(a, b)] == old { owner[key(a, b)] = nil }
+            }
+            triangles[t] = first
+            triangles[n] = second
+            register(t)
+            register(n)
+            flipped = true
+        }
+        if !flipped { break }
+    }
 }
 
 private func segmentsTouch(_ p1: SIMD2<Double>, _ p2: SIMD2<Double>, _ q1: SIMD2<Double>, _ q2: SIMD2<Double>) -> Bool {
@@ -543,9 +606,15 @@ private func clipEars(_ polygon: [Int], points: [SIMD2<Double>], spend: (Int) th
         grid[c.y * side + c.x].append(i)
     }
 
+    /// While true, ears that would be zero-area by the mesh check's rule (with a margin, since coordinates are rounded
+    /// to Float when written) are passed over, so the triangulation doesn't add slivers the model didn't have. Only a
+    /// full lap without any other ear allows one.
+    var avoidSlivers = true
+
     func isEar(_ i: Int) throws -> Bool {
         guard isConvex(i) else { return false }
         let a = position(prev[i]), b = position(i), c = position(next[i])
+        if avoidSlivers, planarSliver(a, b, c) { return false }
         let lo = cell(simd_min(a, simd_min(b, c))), hi = cell(simd_max(a, simd_max(b, c)))
         for y in lo.y...hi.y {
             for x in lo.x...hi.x {
@@ -577,9 +646,15 @@ private func clipEars(_ polygon: [Int], points: [SIMD2<Double>], spend: (Int) th
             prev[after] = before
             remaining -= 1
             failures = 0
+            avoidSlivers = true
             i = before
         } else {
             failures += 1
+            if failures > remaining, avoidSlivers {
+                // Only slivers are left to clip: allow one, then go back to avoiding them.
+                avoidSlivers = false
+                failures = 0
+            }
             // A full lap without an ear: the outline crosses itself.
             guard failures <= remaining else { throw MeshFitError.capFailed }
             i = next[i]
@@ -598,8 +673,9 @@ private func flattened(_ corners: [SIMD3<Float>]) -> [Float] {
     return floats
 }
 
-/// Writes the binary STL, parses it back and requires a closed, consistently oriented, outward-facing solid.
-private func checkedResult(_ corners: [SIMD3<Float>], cutHeight: Float, contact: Double,
+/// Writes the binary STL, parses it back and requires a closed, consistently oriented, outward-facing solid with no
+/// more zero-area triangles than the model had (`inputZeroArea`).
+private func checkedResult(_ corners: [SIMD3<Float>], cutHeight: Float, contact: Double, inputZeroArea: Int,
                            isCancelled: () -> Bool) throws -> MeshFitResult {
     guard corners.count / 3 <= STLMesh.maximumTriangles else { throw MeshFitError.tooManyTriangles }
     let assembled = try STLMesh.validated(flattened(corners))
@@ -607,8 +683,16 @@ private func checkedResult(_ corners: [SIMD3<Float>], cutHeight: Float, contact:
     let parsed = try STLMesh.parse(data)
     guard parsed.triangleCount == corners.count / 3 else { throw MeshFitError.resultNotClosed }
     guard let report = analyzeMeshHealth(parsed, isCancelled: isCancelled) else { throw MeshFitError.stopped }
-    guard report.isClosed, report.isConsistentlyOriented, report.signedVolume > 0 else { throw MeshFitError.resultNotClosed }
+    if let problem = meshFitResultProblem(report, inputZeroArea: inputZeroArea) { throw problem }
     return MeshFitResult(mesh: parsed, data: data, cutHeightMM: cutHeight, contactAreaMM2: contact)
+}
+
+/// Why a fit tool's result can't be saved: not a closed, consistently oriented, outward-facing solid, or more zero-area
+/// triangles than the model had. Nil when it can.
+func meshFitResultProblem(_ report: MeshHealthReport, inputZeroArea: Int) -> MeshFitError? {
+    guard report.isClosed, report.isConsistentlyOriented, report.signedVolume > 0 else { return .resultNotClosed }
+    guard report.degenerateTriangles <= inputZeroArea else { return .addedZeroAreaTriangles }
+    return nil
 }
 
 /// Cap triangles for a cut, facing down. The outline loops run the way the kept surface's open edges do; the cap
@@ -631,11 +715,11 @@ extension STLMesh {
     /// Cuts the model `cutHeightMM` above its lowest point and fills the cut, so it sits on a flat face. Needs a closed,
     /// outward-facing mesh. Coordinates are kept: the new base is at the cut's height, not moved to zero.
     func flatBaseCopy(cutHeightMM: Float, isCancelled: () -> Bool = { false }) throws -> MeshFitResult {
-        try requireClosedSolid(self, isCancelled: isCancelled)
+        let input = try requireClosedSolid(self, isCancelled: isCancelled)
         let cut = try planeCut(self, height: cutHeightMM, isCancelled: isCancelled)
         let cap = try capTriangles(cut, isCancelled: isCancelled)
         return try checkedResult(cut.kept + cap.corners, cutHeight: cut.height - minimum.z, contact: cap.area,
-                                 isCancelled: isCancelled)
+                                 inputZeroArea: input.degenerateTriangles, isCancelled: isCancelled)
     }
 }
 
@@ -655,6 +739,24 @@ struct PlinthSettings: Equatable, Codable, Sendable {
     var joinDepthMM: Float = 0.5
     /// Sides of a round plinth.
     static let segments = 64
+    /// The 45° chamfer round the plinth's bottom edge, against the first layers' spread.
+    static let bottomChamferMM: Float = 0.5
+}
+
+/// The plinth's outline moved in by `inset` on every side: the rectangle's corners move diagonally, and the round
+/// plinth's corners move towards its centre so each flat side moves in by `inset`.
+func plinthChamferOutline(_ outline: [SIMD2<Double>], shape: PlinthShape, inset: Double) -> [SIMD2<Double>] {
+    switch shape {
+    case .rectangular:
+        guard outline.count == 4 else { return outline }
+        return [outline[0] + SIMD2(inset, inset), outline[1] + SIMD2(-inset, inset),
+                outline[2] + SIMD2(-inset, -inset), outline[3] + SIMD2(inset, -inset)]
+    case .round:
+        guard !outline.isEmpty else { return outline }
+        let centre = outline.reduce(SIMD2<Double>(), +) / Double(outline.count)
+        let step = inset / cos(Double.pi / Double(outline.count))
+        return outline.map { centre + simd_normalize($0 - centre) * (simd_length($0 - centre) - step) }
+    }
 }
 
 func plinthSettingsProblem(_ settings: PlinthSettings) -> String? {
@@ -672,7 +774,7 @@ extension STLMesh {
         guard settings.joinDepthMM < (maximum.z - minimum.z) / 2 else {
             throw MeshFitError.invalidPlinth("Choose a join depth less than half the model’s height.")
         }
-        try requireClosedSolid(self, isCancelled: isCancelled)
+        let input = try requireClosedSolid(self, isCancelled: isCancelled)
         let cut = try planeCut(self, height: settings.joinDepthMM, isCancelled: isCancelled)
         let top = cut.height, bottom = cut.height - settings.thicknessMM
 
@@ -711,28 +813,49 @@ extension STLMesh {
         }
         var corners = cut.kept
         for t in topTriangles { corners.append(topPoint(t.x)); corners.append(topPoint(t.y)); corners.append(topPoint(t.z)) }
-        // Sides: each outline edge a → b as two outward-facing triangles.
+        // Sides: each outline edge a → b as two outward-facing triangles, down to where the bottom chamfer starts.
+        let chamfer = PlinthSettings.bottomChamferMM
+        let ledge = bottom + chamfer
         for i in 0..<n {
             let a = rim[i], b = rim[(i + 1) % n]
             let aTop = SIMD3(a.x, a.y, top), bTop = SIMD3(b.x, b.y, top)
-            let aBottom = SIMD3(a.x, a.y, bottom), bBottom = SIMD3(b.x, b.y, bottom)
-            corners.append(contentsOf: [aBottom, bBottom, bTop, aBottom, bTop, aTop])
+            let aLow = SIMD3(a.x, a.y, ledge), bLow = SIMD3(b.x, b.y, ledge)
+            corners.append(contentsOf: [aLow, bLow, bTop, aLow, bTop, aTop])
         }
-        // Underside: a fan over the convex outline, facing −Z.
+        // The 45° chamfer: the outline moved in by `chamfer` on every side at the very bottom, so the first layers'
+        // spread ("elephant's foot") stays inside the plinth's outline.
+        let foot = plinthChamferOutline(outline, shape: settings.shape, inset: Double(chamfer))
+            .map { SIMD2<Float>(Float($0.x), Float($0.y)) }
+        for i in 0..<n {
+            let a = rim[i], b = rim[(i + 1) % n], c = foot[i], d = foot[(i + 1) % n]
+            let aLow = SIMD3(a.x, a.y, ledge), bLow = SIMD3(b.x, b.y, ledge)
+            let cBottom = SIMD3(c.x, c.y, bottom), dBottom = SIMD3(d.x, d.y, bottom)
+            corners.append(contentsOf: [cBottom, dBottom, bLow, cBottom, bLow, aLow])
+        }
+        // Underside: a fan over the convex chamfered outline, facing −Z.
         for i in 1..<(n - 1) {
-            corners.append(contentsOf: [SIMD3(rim[0].x, rim[0].y, bottom), SIMD3(rim[i + 1].x, rim[i + 1].y, bottom),
-                                        SIMD3(rim[i].x, rim[i].y, bottom)])
+            corners.append(contentsOf: [SIMD3(foot[0].x, foot[0].y, bottom), SIMD3(foot[i + 1].x, foot[i + 1].y, bottom),
+                                        SIMD3(foot[i].x, foot[i].y, bottom)])
         }
+        let footPlanar = foot.map { SIMD2<Double>(Double($0.x), Double($0.y)) }
         var underside = 0.0
-        for i in 1..<(n - 1) { underside += signedArea2D(planar[0], planar[i], planar[i + 1]) }
-        let result = try checkedResult(corners, cutHeight: cut.height - minimum.z, contact: underside, isCancelled: isCancelled)
+        for i in 1..<(n - 1) { underside += signedArea2D(footPlanar[0], footPlanar[i], footPlanar[i + 1]) }
+        let result = try checkedResult(corners, cutHeight: cut.height - minimum.z, contact: underside,
+                                       inputZeroArea: input.degenerateTriangles, isCancelled: isCancelled)
         guard result.fitsBuildVolume else { throw MeshFitError.exceedsBuildVolume(largestMM: result.sizeMM.max()) }
         return result
     }
 }
 
-func flatBaseCopyName(_ name: String) -> String { "\(meshFitBaseName(name))-flat-base" }
-func plinthCopyName(_ name: String) -> String { "\(meshFitBaseName(name))-plinth" }
+/// "Owl (flat base)", in the style of the other round 6 copies ("(repaired)", "(print-ready)").
+func flatBaseCopyName(_ name: String) -> String { "\(meshFitCopyBaseName(name)) (flat base)" }
+func plinthCopyName(_ name: String) -> String { "\(meshFitCopyBaseName(name)) (plinth)" }
+
+/// The library name without a model file extension or surrounding spaces; "Model" when nothing is left.
+func meshFitCopyBaseName(_ name: String) -> String {
+    let base = meshFitBaseName(name).trimmingCharacters(in: .whitespacesAndNewlines)
+    return base.isEmpty ? "Model" : base
+}
 
 // MARK: - Ray index
 

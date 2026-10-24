@@ -1,7 +1,8 @@
 import SwiftUI
 
 // The Repair and simplify card in Improve for printing. Both tools run off the main actor, can be stopped, and save
-// their result as a new library copy through `importModel`; the model itself is never changed.
+// their result as a new library copy through `importModel`; the model itself is never changed. A result that fails the
+// mesh check its model passed is never saved (`meshToolMadeWorse`).
 
 /// Read from the detached worker, which does not inherit the UI task's cancellation.
 private final class MeshToolsCancelFlag: @unchecked Sendable {
@@ -214,12 +215,6 @@ struct MeshToolsCard: View {
             }
         }
 
-        Divider()
-        // Review for Printing with Claude (PrintReviewView.swift): only opens the sheet; nothing is sent from here.
-        Text("Claude can look at pictures and Studio’s measurements of this model and suggest steps from these tools. Nothing is sent until you ask, and nothing runs until you tick it.")
-            .font(.callout).foregroundStyle(.secondary)
-        Button("Review for Printing with Claude…") { store.beginPrintReview(model: model) }
-            .disabled(run.working)
     }
 
     private func start(_ kind: MeshToolKind, mesh: STLMesh) {
@@ -235,12 +230,19 @@ struct MeshToolsCard: View {
                         let result = try repairMesh(mesh, progress: progress, isCancelled: cancelled)
                         lines = meshRepairSummaryLines(result.summary)
                         output = result.summary.changed ? result.mesh : nil
+                        if output != nil, meshToolMadeWorse(before: result.summary.before, after: result.summary.after) {
+                            throw MeshToolError.madeWorse
+                        }
                     case .simplify(let target):
                         var options = MeshSimplifyOptions()
                         options.targetTriangles = target
                         let result = try simplifyMesh(mesh, options: options, progress: progress, isCancelled: cancelled)
                         lines = meshSimplifySummaryLines(result)
                         output = result.changed ? result.mesh : nil
+                        // A sound model never gets a copy that fails the check.
+                        if output != nil, meshToolMadeWorse(before: result.before, after: result.after) {
+                            throw MeshToolError.madeWorse
+                        }
                     }
                     guard let output else { return (lines, nil) }
                     if cancelled() { throw MeshToolError.cancelled }

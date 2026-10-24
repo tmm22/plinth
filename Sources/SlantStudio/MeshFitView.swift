@@ -421,7 +421,7 @@ struct MeshFitSheet: View {
                     Text("Enter each size in millimetres.").foregroundStyle(.orange)
                 }
                 Text("Adds a base under the whole model, joined into one solid, so tall or top-heavy figures stand steady. Needs a closed mesh.")
-                Text(elephantFootNote)
+                Text(plinthChamferNote)
             }
             .settingsFooterLayout()
         }

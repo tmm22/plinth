@@ -55,6 +55,8 @@ final class MeshHealthTests: XCTestCase {
         XCTAssertEqual(summary.title, "Not closed, 1 part")
         XCTAssertTrue(summary.details[0].hasPrefix("3 open edges"))
         XCTAssertTrue(summary.details[0].contains("Slicers may fill or skip gaps, so the print may not match the model."))
+        // Points to Studio's own tool first.
+        XCTAssertTrue(summary.details[0].contains("Repair & Save Copy, in Improve for printing"))
         XCTAssertFalse(summary.isClean)
         XCTAssertEqual(summary.line, "Mesh check: 1 note")
     }

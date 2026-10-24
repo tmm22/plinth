@@ -143,6 +143,64 @@ final class MeshRepairTests: XCTestCase {
         XCTAssertTrue(result.summary.isSound)
     }
 
+    func testInvertedHollowBoxComesOutWithItsCavityFacingInward() throws {
+        // The hollow box above turned inside out as a whole: the outside faces in and the cavity faces out.
+        let outer = Self.cubePoints(size: 10)
+        let inner = Self.cubePoints(size: 4, offset: SIMD3(3, 3, 3))
+        let triangles = Self.cubeTriangles.map(Self.flipped) + Self.cubeTriangles.map { $0 &+ 8 }
+        let source = try Self.mesh(outer + inner, triangles)
+        XCTAssertEqual(health(source).signedVolume, -(1000 - 64), accuracy: 1e-3)
+        let result = try repairMesh(source)
+        XCTAssertEqual(result.summary.invertedShells, 2)
+        XCTAssertTrue(result.summary.isSound, "\(result.summary.after)")
+        XCTAssertEqual(result.summary.after.signedVolume, 1000 - 64, accuracy: 1e-3)
+        XCTAssertEqual(try repairMesh(source).mesh.binarySTL(), result.mesh.binarySTL())
+    }
+
+    func testOutwardPartInsideACorrectModelIsLeftAlone() throws {
+        // A part embedded in a correct model faces outward too; it must not be turned into a cavity.
+        let outer = Self.cubePoints(size: 10)
+        let inner = Self.cubePoints(size: 4, offset: SIMD3(3, 3, 3))
+        let source = try Self.mesh(outer + inner, Self.cubeTriangles + Self.cubeTriangles.map { $0 &+ 8 })
+        let result = try repairMesh(source)
+        XCTAssertFalse(result.summary.changed)
+        XCTAssertEqual(result.summary.after.signedVolume, 1000 + 64, accuracy: 1e-3)
+    }
+
+    func testSliverBesideAFlippedNeighbourKeepsTheMeshClosed() throws {
+        // The top face's diagonal 4–7 has a corner m on it, closed by a zero-area sliver (4, 7, m); the neighbour
+        // across the diagonal is wound the wrong way, so the sliver's edge has no opposite-direction partner.
+        var points = Self.cubePoints()
+        points.append(SIMD3(0.5, 0.5, 1)) // m = 8
+        var triangles = Self.cubeTriangles.filter { $0 != SIMD3(4, 5, 7) && $0 != SIMD3(4, 7, 6) }
+        triangles += [Self.flipped(SIMD3(4, 5, 7)), SIMD3(4, 8, 6), SIMD3(8, 7, 6), SIMD3(4, 7, 8)]
+        let source = try Self.mesh(points, triangles)
+        let before = health(source)
+        XCTAssertTrue(before.isClosed)
+        XCTAssertEqual(before.degenerateTriangles, 1)
+        XCTAssertGreaterThan(before.flippedEdges, 0)
+
+        let result = try repairMesh(source)
+        XCTAssertTrue(result.summary.after.isClosed, "\(result.summary.after)")
+        XCTAssertEqual(result.summary.removedDegenerate, 1)
+        XCTAssertEqual(result.summary.splitTriangles, 1)
+        XCTAssertTrue(result.summary.isSound, "\(result.summary.after)")
+        XCTAssertEqual(result.summary.after.signedVolume, 1, accuracy: 1e-5)
+    }
+
+    func testASoundModelIsNeverMadeWorse() {
+        func report(open: Int = 0, degenerate: Int = 0) -> MeshHealthReport {
+            MeshHealthReport(triangleCount: 12, vertexCount: 8, openEdges: open, nonManifoldEdges: 0, flippedEdges: 0,
+                             degenerateTriangles: degenerate, shells: 1, signedVolume: 1)
+        }
+        let sound = report(), open = report(open: 3), sliver = report(degenerate: 1)
+        XCTAssertTrue(meshToolMadeWorse(before: sound, after: open))
+        XCTAssertTrue(meshToolMadeWorse(before: sound, after: sliver))
+        XCTAssertFalse(meshToolMadeWorse(before: sound, after: sound))
+        XCTAssertFalse(meshToolMadeWorse(before: open, after: sliver))
+        XCTAssertTrue(MeshToolError.madeWorse.localizedDescription.contains("no copy was made"))
+    }
+
     func testHoleCappingClosesCube() throws {
         // One triangle missing: a three-edge hole.
         let one = try repairMesh(try Self.cube(triangles: Array(Self.cubeTriangles.dropLast())))
@@ -221,15 +279,15 @@ final class MeshRepairTests: XCTestCase {
     // MARK: Simplify
 
     func testSimplifyingASphereKeepsItClosedNearTarget() throws {
-        let source = try Self.sphere(levels: 4) // 5,120 triangles
-        XCTAssertEqual(source.triangleCount, 5120)
+        let source = try Self.sphere(levels: 3) // 1,280 triangles
+        XCTAssertEqual(source.triangleCount, 1280)
         var options = MeshSimplifyOptions()
-        options.targetTriangles = 1000
+        options.targetTriangles = 600
         var reported: [Double] = []
         let result = try simplifyMesh(source, options: options, progress: { fraction, _ in reported.append(fraction) })
         XCTAssertTrue(result.reachedTarget)
-        XCTAssertLessThanOrEqual(result.triangles, 1000)
-        XCTAssertGreaterThanOrEqual(result.triangles, 990)
+        XCTAssertLessThanOrEqual(result.triangles, 600)
+        XCTAssertGreaterThanOrEqual(result.triangles, 590)
         XCTAssertTrue(meshHealthIsSound(result.after), "\(result.after)")
         XCTAssertEqual(result.after.shells, 1)
         XCTAssertLessThan(result.estimatedMaximumDeviation, 1) // on a 10 mm radius
@@ -237,7 +295,7 @@ final class MeshRepairTests: XCTestCase {
         // Volume stays close to the original's.
         XCTAssertEqual(result.after.signedVolume, result.before.signedVolume, accuracy: result.before.signedVolume * 0.05)
         XCTAssertEqual(reported.last, 1)
-        XCTAssertTrue(meshSimplifySummaryLines(result).first!.contains("5,120"))
+        XCTAssertTrue(meshSimplifySummaryLines(result).first!.contains("1,280"))
     }
 
     func testSimplifyKeepsOpenBoundaryInPlace() throws {

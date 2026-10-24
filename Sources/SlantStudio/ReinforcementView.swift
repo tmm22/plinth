@@ -49,6 +49,10 @@ struct ReinforcementCard: View {
         .sheet(isPresented: $reviewing) {
             if let mesh { ReinforcementReview(model: model, source: mesh) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .improveForPrintingOpenReinforce)) { note in
+            // Review for Printing's "Open Reinforce" link (PrintReviewView.swift).
+            if let id = note.object as? UUID, id == model.id { expanded = true }
+        }
     }
 }
 

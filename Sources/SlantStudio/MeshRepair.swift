@@ -15,6 +15,8 @@ enum MeshToolError: LocalizedError, Equatable {
     case empty
     case tooLarge
     case openedSurface
+    /// The input passed the mesh check and the result wouldn't.
+    case madeWorse
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +24,7 @@ enum MeshToolError: LocalizedError, Equatable {
         case .empty: return "Nothing would be left of this mesh, so no copy was made."
         case .tooLarge: return "The result would be larger than the 500,000-triangle preview limit, so no copy was made."
         case .openedSurface: return "Simplifying would leave gaps in this closed mesh, so no copy was made. Try a higher triangle count."
+        case .madeWorse: return "This model passes the mesh check, but the result wouldn’t, so no copy was made."
         }
     }
 }
@@ -34,6 +37,11 @@ typealias MeshToolProgress = (_ fraction: Double, _ stage: String) -> Void
 func meshHealthIsSound(_ report: MeshHealthReport) -> Bool {
     report.triangleCount > 0 && report.isClosed && report.isConsistentlyOriented && !report.isInsideOut
         && report.degenerateTriangles == 0
+}
+
+/// True when a tool's result fails the mesh check its input passed. Such a result is never saved as a copy.
+func meshToolMadeWorse(before: MeshHealthReport, after: MeshHealthReport) -> Bool {
+    meshHealthIsSound(before) && !meshHealthIsSound(after)
 }
 
 /// Bounds read from the coordinates themselves, since a hand-built `STLMesh` may carry placeholder bounds.
@@ -293,7 +301,10 @@ private struct RepairWork {
 
     /// Drops triangles with a repeated corner. A zero-area sliver whose middle corner sits on its long edge would open
     /// a crack if simply dropped, so the neighbour across that edge is split at the middle corner instead (as
-    /// `ReinforcementEngine` does for STL rounding).
+    /// `ReinforcementEngine` does for STL rounding), keeping the neighbour's own winding, which may not match yet. A
+    /// sliver is removed only once that split is done, or when its long edge has no neighbour (the surface is already
+    /// open there); one on an edge shared by more than two faces, or past the triangle limit, is left for the final
+    /// check to report, so removing it can never open a closed surface.
     mutating func removeDegenerate(_ summary: inout MeshRepairSummary) throws {
         for f in triangles.indices {
             let t = triangles[f]
@@ -302,16 +313,21 @@ private struct RepairWork {
         func zeroArea(_ t: SIMD3<Int32>) -> Bool { meshTriangleIsZeroArea(position(t.x), position(t.y), position(t.z)) }
         var slivers = triangles.indices.filter { alive[$0] && zeroArea(triangles[$0]) }
         guard !slivers.isEmpty else { return }
-        // First live owner of each directed edge; looked up only.
-        var owner: [UInt64: Int32] = [:]
-        func pack(_ p: Int32, _ q: Int32) -> UInt64 { UInt64(UInt32(p)) << 32 | UInt64(UInt32(q)) }
+        // Live triangles on each undirected edge, in the order they were added; looked up only.
+        var users: [UInt64: [Int32]] = [:]
+        func edge(_ p: Int32, _ q: Int32) -> UInt64 { meshDirectedEdgeKey(p, q) >> 1 }
         func register(_ f: Int) {
             let t = triangles[f]
-            for (p, q) in [(t.x, t.y), (t.y, t.z), (t.z, t.x)] where owner[pack(p, q)] == nil { owner[pack(p, q)] = Int32(f) }
+            for (p, q) in [(t.x, t.y), (t.y, t.z), (t.z, t.x)] { users[edge(p, q), default: []].append(Int32(f)) }
         }
         func unregister(_ f: Int) {
             let t = triangles[f]
-            for (p, q) in [(t.x, t.y), (t.y, t.z), (t.z, t.x)] where owner[pack(p, q)] == Int32(f) { owner[pack(p, q)] = nil }
+            for (p, q) in [(t.x, t.y), (t.y, t.z), (t.z, t.x)] { users[edge(p, q)]?.removeAll { $0 == Int32(f) } }
+        }
+        func remove(_ f: Int) {
+            unregister(f)
+            alive[f] = false
+            summary.removedDegenerate += 1
         }
         for f in triangles.indices where alive[f] { try check(f); register(f) }
         // Popped from the end, so slivers are handled in ascending triangle order.
@@ -330,24 +346,30 @@ private struct RepairWork {
                 if length > longest { longest = length; j = k }
             }
             let p = corners[j], q = corners[(j + 1) % 3], m = corners[(j + 2) % 3]
-            unregister(f)
-            alive[f] = false
-            summary.removedDegenerate += 1
-            guard let n32 = owner[pack(q, p)], alive[Int(n32)] else { continue }
-            let n = Int(n32)
-            let other = triangles[n]
-            let r = [other.x, other.y, other.z].first { $0 != p && $0 != q } ?? p
+            let neighbours = (users[edge(p, q)] ?? []).filter { $0 != Int32(f) && alive[Int($0)] }
+            // No neighbour: the surface is already open along the long edge, so dropping the sliver closes nothing.
+            if neighbours.isEmpty { remove(f); continue }
+            guard neighbours.count == 1 else { continue }
+            let n = Int(neighbours[0])
+            let other = [triangles[n].x, triangles[n].y, triangles[n].z]
+            let r = other.first { $0 != p && $0 != q } ?? p
             if r == m {
-                // The neighbour is the same sliver facing the other way: a zero-volume fold. Remove both.
-                unregister(n)
-                alive[n] = false
-                summary.removedDegenerate += 1
+                // The neighbour is the same sliver (either way round): a zero-volume fold. Remove both.
+                remove(f)
+                remove(n)
                 continue
             }
-            guard triangles.count < STLMesh.maximumTriangles * 2 else { continue }
+            guard triangles.count < STLMesh.maximumTriangles * 2,
+                  let start = (0..<3).first(where: { k in
+                      let u = other[k], v = other[(k + 1) % 3]
+                      return (u == p && v == q) || (u == q && v == p)
+                  }) else { continue }
+            // Split the neighbour at m along its own edge a → b, keeping its winding.
+            let a = other[start], b = other[(start + 1) % 3], c = other[(start + 2) % 3]
+            remove(f)
             unregister(n)
-            triangles[n] = SIMD3(q, m, r)
-            triangles.append(SIMD3(m, p, r))
+            triangles[n] = SIMD3(a, m, c)
+            triangles.append(SIMD3(m, b, c))
             alive.append(true)
             summary.splitTriangles += 1
             register(n)
@@ -704,9 +726,12 @@ private struct RepairWork {
 
     // MARK: Outward
 
-    /// Turns a closed, consistently wound patch outward when it encloses negative volume, unless it sits inside another
-    /// closed patch (a deliberate cavity), judged by bounds and up to eight of its corners. Open patches are left, and so
-    /// is any patch still unjudged once the containment tests reach their budget: a cavity is never turned by guesswork.
+    /// Orients each closed, consistently wound patch by where it sits. A patch inside no other closed patch faces
+    /// outward (positive volume). A patch inside others (a cavity, or a part inside a cavity) keeps the way it faces
+    /// relative to the innermost patch around it: it is turned only when that patch was, so a model that is inside out
+    /// as a whole, cavities included, comes out right, while a deliberate cavity or an embedded part in a correct model is
+    /// left alone. Containment is judged by bounds and up to eight of the patch's corners (ray parity). Open patches are
+    /// left, and so is any patch still unjudged once the tests reach their budget: nothing is turned by guesswork.
     mutating func orientOutward(_ summary: inout MeshRepairSummary) throws {
         let adjacency = try manifoldAdjacency()
         let groups = try patches(adjacency)
@@ -718,6 +743,9 @@ private struct RepairWork {
                 (Int(adjacency.start[Int(f)])..<Int(adjacency.start[Int(f) + 1])).allSatisfy { !adjacency.neighbours[$0].same }
             })
         }
+        let volumes = groups.indices.map { closed[$0] && consistent[$0] ? volume(groups[$0]) : 0 }
+        // Only a patch facing inward can start a turn; without one there is nothing to judge.
+        guard volumes.contains(where: { $0 < 0 }) else { return }
         func bounds(_ g: [Int32]) -> (SIMD3<Double>, SIMD3<Double>) {
             var low = SIMD3<Double>(repeating: .greatestFiniteMagnitude), high = -low
             for f in g { for id in [triangles[Int(f)].x, triangles[Int(f)].y, triangles[Int(f)].z] {
@@ -743,28 +771,50 @@ private struct RepairWork {
         }
         let allBounds = groups.map(bounds)
         var budget = 50_000_000 // ray–triangle tests
-        for g in groups.indices where closed[g] && consistent[g] {
+        // The closed patches around each patch, in index order; nil when the budget ran out before it was judged.
+        var containers = [[Int]?](repeating: [], count: groups.count)
+        for g in groups.indices where closed[g] {
             try check(g)
-            guard volume(groups[g]) < 0 else { continue }
             let corners = groups[g].map { triangles[Int($0)].x }
             let stride = max(1, corners.count / 8)
             let samples = Swift.stride(from: 0, to: corners.count, by: stride).prefix(8).map { position(corners[$0]) }
             let (low, high) = allBounds[g]
-            var nested = false
-            for h in groups.indices where h != g && closed[h] && !nested {
+            var around: [Int] = []
+            for h in groups.indices where h != g && closed[h] {
                 guard all(allBounds[h].0 .<= low), all(allBounds[h].1 .>= high) else { continue }
                 budget -= samples.count * groups[h].count
-                guard budget >= 0 else { nested = true; break }
+                guard budget >= 0 else { containers[g] = nil; break }
                 if isCancelled() { throw MeshToolError.cancelled }
                 var all = true
                 for point in samples where all { all = inside(point, groups[h]) }
-                nested = all
+                if all { around.append(h) }
             }
-            guard !nested else { continue }
+            if containers[g] != nil { containers[g] = around }
+        }
+        // Outermost first, so each patch's decision is known before the patches inside it are judged.
+        let order = groups.indices.filter { closed[$0] }.sorted {
+            let a = containers[$0]?.count ?? Int.max, b = containers[$1]?.count ?? Int.max
+            return a != b ? a < b : $0 < $1
+        }
+        var turned = [Bool](repeating: false, count: groups.count)
+        for g in order {
+            guard consistent[g], let around = containers[g] else { continue }
+            let turn: Bool
+            if around.isEmpty {
+                turn = volumes[g] < 0
+            } else {
+                // The innermost patch around this one: the one inside the most others (ties to the lowest index).
+                var parent = around[0]
+                for h in around.dropFirst() where (containers[h]?.count ?? -1) > (containers[parent]?.count ?? -1) { parent = h }
+                guard containers[parent] != nil else { continue }
+                turn = turned[parent]
+            }
+            guard turn else { continue }
             for f in groups[g] {
                 let t = triangles[Int(f)]
                 triangles[Int(f)] = SIMD3(t.x, t.z, t.y)
             }
+            turned[g] = true
             summary.flippedTriangles += groups[g].count
             summary.invertedShells += 1
         }

@@ -14,6 +14,32 @@ extension StudioStore {
     }
 }
 
+extension Notification.Name {
+    /// Posted with a library model's ID as the object: the inspector scrolls to that model's Reinforce card, which
+    /// expands. Carries nothing else.
+    static let improveForPrintingOpenReinforce = Notification.Name("SlantStudio.improveForPrintingOpenReinforce")
+}
+
+/// The first row of Improve for printing (STL models): it only opens the review sheet; nothing is sent from here.
+struct PrintReviewCard: View {
+    @EnvironmentObject var store: StudioStore
+    let model: LocalModel
+
+    var body: some View {
+        Card {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "sparkle.magnifyingglass").font(.title2).foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+                SectionHeading(title: "Review for printing",
+                               caption: "Claude looks at pictures and Studio’s measurements of this model and suggests steps from these tools. Nothing is sent until you ask, and nothing runs until you tick it.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Review for Printing with Claude…") { store.beginPrintReview(model: model) }
+            }
+        }
+    }
+}
+
 /// Read from detached work, which does not inherit the UI task's cancellation.
 private final class PrintReviewCancelFlag: @unchecked Sendable {
     private let lock = NSLock()
@@ -54,6 +80,9 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
     @Published private(set) var cost: AnthropicCostEstimate?
     @Published var ticked: Set<Int> = []
     @Published var run = RunState.idle
+    /// The ticked steps of the last run that saved a copy or found nothing to change. Run Selected Steps waits for a
+    /// different selection, so the same copy can't be saved twice.
+    @Published private(set) var lastRunSelection: Set<Int>?
 
     private var mesh: STLMesh?
     private var measureTask: Task<Void, Never>?
@@ -119,14 +148,16 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
                                            contextLines: printReviewContextLines(context))
     }
 
-    /// Ask Claude's estimated cost, worked out once: the request only changes when the measurements do.
-    private var estimate: String?
+    /// Ask Claude's estimated cost, worked out again only when the context sent with it changes.
+    private var estimate: (key: [String], text: String)?
     func estimatedCostText(context: PrintReviewContext) -> String? {
-        if let estimate { return estimate }
+        let key = printReviewContextLines(context)
+        if let estimate, estimate.key == key { return estimate.text }
         guard let pending = pendingRequest(context: context) else { return nil }
         let tokens = printReviewEstimatedInputTokens(pending, imageSizes: renders.map { ($0.image.pixelWidth, $0.image.pixelHeight) })
-        estimate = printReviewCostRangeText(inputTokens: tokens)
-        return estimate
+        let text = printReviewCostRangeText(inputTokens: tokens)
+        estimate = (key, text)
+        return text
     }
 
     func ask(context: PrintReviewContext, planContext: PrintReviewPlanContext, store: StudioStore) {
@@ -135,6 +166,7 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
         cost = nil
         ticked = []
         run = .idle
+        lastRunSelection = nil
         claudeTask = Task { [weak self] in
             var current = request
             var replies: [AnthropicMessage] = []
@@ -198,11 +230,16 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
 
     // MARK: Running the ticked steps (on this Mac)
 
+    /// True when Run Selected Steps would repeat the last run that saved a copy (or found nothing to change).
+    var selectionAlreadyRun: Bool { lastRunSelection == ticked }
+
     func runTicked(model: LocalModel, store: StudioStore) {
-        guard !isRunning, !isAsking, let mesh, let before, let plan else { return }
-        let steps = plan.steps.filter { ticked.contains($0.id) && $0.isRunnable }
+        guard !isRunning, !isAsking, !selectionAlreadyRun, let mesh, let before, let plan else { return }
+        let selection = ticked
+        let steps = plan.steps.filter { selection.contains($0.id) && $0.isRunnable }
             .compactMap { step in step.action.map { PrintReviewRunStep(number: step.id, action: $0) } }
         guard !steps.isEmpty else { return }
+        let materialID = store.filamentID.isEmpty ? nil : store.filamentID
         let flag = PrintReviewCancelFlag()
         runFlag = flag
         run = .running(0, "Starting…")
@@ -228,10 +265,14 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
             case .success(let value):
                 guard value.0.changed, let after = value.1 else {
                     self.run = .unchanged(value.0.lines)
+                    self.lastRunSelection = selection
                     return
                 }
                 let name = printReadyCopyName(model.name)
-                if Self.save(value.0.data, name: name, model: model, actions: steps.map(\.action), store: store) {
+                let records = printReadyCopyRecords(for: model, actions: steps.map(\.action), autoImprove: value.0.autoImprove,
+                                                    materialID: materialID)
+                if Self.save(value.0.data, name: name, model: model, records: records, store: store) {
+                    self.lastRunSelection = selection
                     self.run = .saved(name: name, lines: value.0.lines,
                                       comparison: printReviewComparisonLines(before: before, after: after))
                     store.activities.insert(Activity(title: "Print-ready copy",
@@ -253,19 +294,16 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
     }
 
     /// One library copy through `importModel`, from a temporary folder removed straight after.
-    private static func save(_ data: Data, name: String, model: LocalModel, actions: [PrintReviewAction], store: StudioStore) -> Bool {
+    private static func save(_ data: Data, name: String, model: LocalModel, records: PrintReadyCopyRecords, store: StudioStore) -> Bool {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(meshToolsTempFolderPrefix)\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let url = folder.appendingPathComponent(exportFileName(modelName: name, fileExtension: "stl"))
             try data.write(to: url, options: .atomic)
-            let details = sourceDetailsForCopy(of: model)
-            if printReadyCopyKeepsRecords(actions) {
-                return store.importModel(url, recipe: model.printRecipe, improvement: model.designImprovement, intent: model.partIntent,
-                                         reinforcement: model.reinforcement, autoImprovement: model.autoImprovement, sourceDetails: details)
-            }
-            return store.importModel(url, intent: model.partIntent, sourceDetails: details)
+            return store.importModel(url, recipe: records.recipe, improvement: records.improvement, intent: records.intent,
+                                     reinforcement: records.reinforcement, autoImprovement: records.autoImprovement,
+                                     sourceDetails: sourceDetailsForCopy(of: model))
         } catch {
             store.showError("The copy wasn’t saved: \(error.localizedDescription)")
             return false
@@ -283,12 +321,25 @@ struct PrintReviewSheet: View {
     @State private var consentRequest: ImageSharingConsentRequest?
     /// The model as it was when the sheet opened, so a rename or removal can't change what is reviewed.
     @State private var model: LocalModel?
+    /// "What is it for?" and "Real size", sent with the review. Memory only.
+    @State private var purpose = PrintReviewPurposeChoice.notSure
+    @State private var sizeAxis = MeshFitAxis.z
+    @State private var sizeText = ""
+    /// The context the current plan was asked with, for its steps' notes.
+    @State private var askedContext: PrintReviewContext?
+    /// True between this sheet's `beginSession` and `endSession`, so each is called once.
+    @State private var holdsClaudeSession = false
     let request: PrintReviewRequest
+
+    /// What is sent: the context passed in, with the seller's purpose and real size.
+    private var effectiveContext: PrintReviewContext {
+        printReviewEffectiveContext(request.context, purpose: purpose, sizeAxis: sizeAxis, sizeText: sizeText)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Review for Printing with Claude").font(.title2.weight(.bold))
+                Text("Review for printing").font(.title2.weight(.bold))
                 Text(model?.name ?? "This model is no longer in your library.")
                     .font(.callout).foregroundStyle(.secondary)
                 Text("Studio measures the model on this Mac first. Nothing is sent until you press Ask Claude, and nothing changes until you run the steps you tick.")
@@ -335,11 +386,39 @@ struct PrintReviewSheet: View {
         .frame(minWidth: 620, idealWidth: 700, minHeight: 560, idealHeight: 760)
         .imageSharingConsent($consentRequest)
         .onAppear {
+            if !holdsClaudeSession {
+                // The Claude key can't change while this sheet is open.
+                holdsClaudeSession = true
+                AnthropicConnection.shared.beginSession()
+            }
             guard model == nil, let found = store.localModels.first(where: { $0.id == request.modelID }) else { return }
             model = found
+            purpose = printReviewInitialPurpose(context: request.context, partIntent: found.partIntent)
+            if let size = printReviewSizeFromNote(request.context.intendedSizeNote) {
+                sizeAxis = size.axis
+                sizeText = String(format: "%g", (size.mm * 100).rounded() / 100)
+            }
             if found.supportsPreview { session.measure(url: found.url) }
         }
-        .onDisappear { session.cancelAll() }
+        .onDisappear {
+            session.cancelAll()
+            if holdsClaudeSession {
+                holdsClaudeSession = false
+                AnthropicConnection.shared.endSession()
+            }
+        }
+    }
+
+    /// Closes the review and takes the seller to this model's Reinforce card. Any run in progress stops unsaved.
+    private func openReinforce(_ model: LocalModel) {
+        session.cancelAll()
+        dismiss()
+        let id = model.id
+        if store.selectedLocalID != id, let current = store.localModels.first(where: { $0.id == id }) { store.select(current) }
+        // After the sheet has gone and the inspector shows the model.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            NotificationCenter.default.post(name: .improveForPrintingOpenReinforce, object: id)
+        }
     }
 
     // MARK: Measurements
@@ -366,7 +445,12 @@ struct PrintReviewSheet: View {
                     }
                     .textSelection(.enabled)
                 }
-                let contextLines = printReviewContextLines(request.context)
+                // Purpose and real size are fields in Ask Claude, so only the rest is listed here (and a size note
+                // Studio couldn't read into the fields).
+                let note = request.context.intendedSizeNote
+                let contextLines = printReviewContextLines(PrintReviewContext(
+                    origin: request.context.origin, intendedSizeNote: printReviewSizeFromNote(note) == nil ? note : nil,
+                    findings: request.context.findings))
                 if !contextLines.isEmpty {
                     Text("What Studio knows about it").font(.subheadline.weight(.semibold)).padding(.top, 4)
                     ForEach(Array(contextLines.enumerated()), id: \.offset) { _, line in
@@ -398,9 +482,50 @@ struct PrintReviewSheet: View {
     // MARK: Ask Claude
 
     private func planContext(model: LocalModel) -> PrintReviewPlanContext {
-        PrintReviewPlanContext(triangles: session.before?.triangles ?? 0, sizeMM: session.before?.sizeMM ?? .zero,
-                               scaleBlockedReason: meshFitEditBlockedReason(model, tool: .scale),
-                               baseBlockedReason: meshFitEditBlockedReason(model, tool: .flatBase))
+        let auto = printReviewAutoImproveSettings(model, purpose: purpose)
+        return PrintReviewPlanContext(triangles: session.before?.triangles ?? 0, sizeMM: session.before?.sizeMM ?? .zero,
+                                      scaleBlockedReason: meshFitEditBlockedReason(model, tool: .scale),
+                                      baseBlockedReason: meshFitEditBlockedReason(model, tool: .flatBase),
+                                      orientBlockedReason: printReviewOrientBlockedReason(model),
+                                      autoImprove: auto.0, autoImproveBlockedReason: auto.1)
+    }
+
+    /// "What is it for?" and "Real size": optional, prefilled, and sent with the review.
+    @ViewBuilder private var contextFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("What is it for?")
+                Picker("What is it for?", selection: $purpose) {
+                    ForEach(PrintReviewPurposeChoice.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden()
+                .accessibilityLabel("What is it for?")
+                .pickerStyle(.segmented)
+                .fixedSize()
+            }
+            HStack(spacing: 10) {
+                Text("Real size")
+                Picker("Side", selection: $sizeAxis) {
+                    ForEach(MeshFitAxis.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden()
+                .accessibilityLabel("Side of the real size")
+                .fixedSize()
+                TextField("Optional", text: $sizeText)
+                    .labelsHidden()
+                    .accessibilityLabel("Real size in millimetres")
+                    .frame(width: 80)
+                    .multilineTextAlignment(.trailing)
+                Text("mm").foregroundStyle(.secondary)
+            }
+            if let problem = printReviewSizeProblem(sizeText) {
+                Text(problem).font(.caption).foregroundStyle(.orange)
+            } else {
+                Text("Optional. With a real size, Claude can suggest scaling to it; without one it never guesses a size.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .disabled(session.isAsking || session.isRunning)
     }
 
     @ViewBuilder private func askSection(model: LocalModel) -> some View {
@@ -411,20 +536,27 @@ struct PrintReviewSheet: View {
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
                 Button("Open Settings") { store.requestSettings(.designTools) }
             } else {
-                Text(printReviewSendSummary(pictures: session.renders.count, hasContext: !printReviewContextLines(request.context).isEmpty))
+                contextFields
+                let context = effectiveContext
+                Text(printReviewSendSummary(pictures: session.renders.count, hasContext: !printReviewContextLines(context).isEmpty))
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if let estimate = session.estimatedCostText(context: request.context) {
-                    Text("Estimated cost: \(estimate), billed to your Anthropic account. If Claude doesn’t answer with a plan, Studio asks once more.")
+                if !session.renders.isEmpty {
+                    Text("The pictures show the whole model as it is, including any text on it, such as a buyer’s name on a personalised model.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if let estimate = session.estimatedCostText(context: context) {
+                    Text("Estimated cost: \(estimate), billed to your Anthropic account. The higher figure allows for the one follow-up Studio sends if Claude doesn’t answer with a plan.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 10) {
                     Button(session.plan == nil ? "Ask Claude" : "Ask Claude Again") {
-                        let context = request.context, planContext = planContext(model: model)
+                        let context = effectiveContext, planContext = planContext(model: model)
                         runWithImageSharingConsent(.anthropic, request: $consentRequest) {
+                            askedContext = context
                             session.ask(context: context, planContext: planContext, store: store)
                         }
                     }
-                    .disabled(session.isAsking || session.isRunning || session.before == nil)
+                    .disabled(session.isAsking || session.isRunning || session.before == nil || printReviewSizeProblem(sizeText) != nil)
                     if session.isAsking {
                         ProgressView().controlSize(.small)
                         if case .asking(let status) = session.claude {
@@ -495,7 +627,7 @@ struct PrintReviewSheet: View {
             } else {
                 Text("Nothing is ticked. Tick the steps you want: Studio runs them in this order on a copy and keeps your original.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                ForEach(plan.steps) { step in stepRow(step, before: before) }
+                ForEach(plan.steps) { step in stepRow(step, before: before, model: model) }
                 let selected = plan.steps.filter { session.ticked.contains($0.id) && $0.isRunnable }.compactMap(\.action)
                 ForEach(Array(printReviewSelectionNotes(selected, measurements: before).enumerated()), id: \.offset) { _, note in
                     Label(note, systemImage: "info.circle").font(.callout).fixedSize(horizontal: false, vertical: true)
@@ -512,7 +644,7 @@ struct PrintReviewSheet: View {
                 set: { on in if on { session.ticked.insert(id) } else { session.ticked.remove(id) } })
     }
 
-    @ViewBuilder private func stepRow(_ step: PrintReviewStep, before: PrintReviewMeasurements) -> some View {
+    @ViewBuilder private func stepRow(_ step: PrintReviewStep, before: PrintReviewMeasurements, model: LocalModel) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             if step.isRunnable {
                 Toggle(isOn: tickBinding(step.id)) {
@@ -528,7 +660,13 @@ struct PrintReviewSheet: View {
                 if case .manual(let text)? = step.action { Text(text).foregroundStyle(.primary) }
                 if !step.reason.isEmpty { Text("Claude: \(step.reason)").foregroundStyle(.secondary) }
                 if let action = step.action {
-                    Text(printReviewStudioNote(action, measurements: before, context: request.context)).foregroundStyle(.secondary)
+                    Text(printReviewStudioNote(action, measurements: before, context: askedContext ?? effectiveContext))
+                        .foregroundStyle(.secondary)
+                }
+                if case .manual(let text)? = step.action, printReviewMentionsReinforce(text) {
+                    Button("Open Reinforce") { openReinforce(model) }
+                        .disabled(session.isRunning)
+                        .help("Closes this review and opens Reinforce this part for this model")
                 }
                 if let problem = step.problem {
                     Label("Studio won’t run this: \(problem)", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -545,11 +683,14 @@ struct PrintReviewSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Button("Run Selected Steps") { session.runTicked(model: model, store: store) }
-                    .disabled(selectedCount == 0 || session.isRunning || session.isAsking || store.busy)
+                    .disabled(selectedCount == 0 || session.isRunning || session.isAsking || store.busy || session.selectionAlreadyRun)
                 if case .running(let fraction, let stage) = session.run {
                     ProgressView(value: fraction).frame(maxWidth: 160)
                     Text(stage).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Button("Stop") { session.stopRun() }
+                } else if session.selectionAlreadyRun {
+                    Text("Already run with these steps. Tick a different set to make another copy.")
+                        .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("Saves one copy, “\(printReadyCopyName(model.name))”.").font(.caption).foregroundStyle(.secondary)
                 }

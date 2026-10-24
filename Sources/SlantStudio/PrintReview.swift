@@ -5,10 +5,12 @@ import simd
 //
 // Studio measures a library model itself first (size, mesh check, wall thickness, flat base, overhangs, build volume)
 // and renders four views. Only after the seller presses Ask Claude are those pictures and numbers sent, with the
-// context another tool passed in (`PrintReviewContext`). Claude answers through one strict tool, `propose_plan`, made
-// only of Studio's own deterministic mesh tools plus "manual" advice. Studio validates every step, ticks none, and runs
-// only the ticked ones, in plan order, on an in-memory copy; one library copy is saved, or nothing when a step fails.
-// The model's name is never sent. Everything here is pure and deterministic.
+// context another tool passed in (`PrintReviewContext`), with the purpose and real size the seller gave in the sheet.
+// Claude answers through one strict tool, `propose_plan`, made only of Studio's own tools (repair, simplify, the Print
+// orientation tool's fixed turns, scale, flat base, plinth and Auto-improve) plus "manual" advice. Studio validates
+// every step, ticks none, and runs only the ticked ones, in plan order, on an in-memory copy; one library copy is saved,
+// or nothing when a step fails or the result is worse than the model. The model's name is never sent. Everything here
+// is pure and deterministic.
 
 // MARK: Overhangs
 
@@ -45,6 +47,41 @@ func overhangShare(_ mesh: STLMesh) -> OverhangShare {
     return OverhangShare(overhangAreaMM2: overhang, surfaceAreaMM2: surface)
 }
 
+/// Overhangs on less than this share of the surface count as minor: "checks found no problems" allows them.
+let printReviewOverhangLimit = 0.05
+
+extension OverhangShare {
+    /// Under `printReviewOverhangLimit` of the surface.
+    var isMinor: Bool { fraction < printReviewOverhangLimit }
+}
+
+// MARK: Turning the model
+
+/// The fixed turns the review can suggest (the Print orientation tool's standard placements), with the names Claude
+/// uses. "As placed" (`zUp`) isn't a step.
+let printReviewTurns: [(name: String, orientation: PrintOrientation)] = [
+    ("upside_down", .zDown), ("x_up", .xUp), ("x_down", .xDown), ("y_up", .yUp), ("y_down", .yDown)
+]
+
+/// "upside down", "on its side, +X side up", …
+func printReviewTurnLabel(_ orientation: PrintOrientation) -> String {
+    switch orientation {
+    case .zUp: return "as placed"
+    case .zDown: return "upside down"
+    case .xUp: return "on its side, +X side up"
+    case .xDown: return "on its side, +X side down"
+    case .yUp: return "on its side, +Y side up"
+    case .yDown: return "on its side, +Y side down"
+    case .face: return "on a flat face"
+    }
+}
+
+/// The overhang share the model would have if turned.
+struct PrintReviewTurnOverhang: Equatable, Sendable {
+    let orientation: PrintOrientation
+    let overhang: OverhangShare
+}
+
 // MARK: Measurements
 
 /// What Studio measured on this Mac. Shown before anything is sent, sent with the review, and measured again after
@@ -58,32 +95,45 @@ struct PrintReviewMeasurements: Equatable, Sendable {
     let wall: WallThicknessReport
     let flatBase: FlatBaseSuggestion
     let overhang: OverhangShare
+    /// The same check for each of `printReviewTurns`, in that order.
+    var turns: [PrintReviewTurnOverhang] = []
 
     var fitsBuildVolume: Bool { sizeMM.max() <= slantBuildVolumeMM }
     var isSound: Bool { meshHealthIsSound(health) }
     var bottomContactMM2: Double { flatBase.currentContactMM2 }
     var wallSummary: WallThicknessSummary { wallThicknessSummary(wall, origin: origin) }
-    /// "Studio's checks found no problems" may be said only when this is true.
+    /// "Studio's checks found no problems" may be said only when this is true: a sound mesh in one part, no walls
+    /// under 2 mm found, a flat base, minor overhangs at most, and a fit in the build volume.
     var checksFoundNoProblems: Bool {
-        isSound && health.shells == 1 && wallSummary.isClear && fitsBuildVolume && flatBase.alreadyFlat
+        isSound && health.shells == 1 && wallSummary.isClear && fitsBuildVolume && flatBase.alreadyFlat && overhang.isMinor
     }
 }
 
-/// Measures `mesh` for the review. Nil when cancelled.
-func measureForPrintReview(_ mesh: STLMesh, progress: (Double, String) -> Void = { _, _ in },
+/// What "Studio's checks found no problems" covers, said with it.
+let printReviewNoProblemsLine = "Studio’s checks found no problems: a closed mesh in one part, no walls under 2 mm found, a flat base, overhangs on under \(Int(printReviewOverhangLimit * 100))% of the surface, and it fits Slant’s 220 mm build volume."
+
+/// Measures `mesh` for the review. Nil when cancelled. `wallSamples` bounds the wall-thickness check (tests use fewer).
+func measureForPrintReview(_ mesh: STLMesh, wallSamples: Int = wallThicknessMaximumSamples,
+                           progress: (Double, String) -> Void = { _, _ in },
                            isCancelled: () -> Bool = { false }) -> PrintReviewMeasurements? {
     progress(0, "Checking the mesh…")
     guard let health = analyzeMeshHealth(mesh, isCancelled: isCancelled), !isCancelled() else { return nil }
     progress(0.1, "Measuring wall thickness…")
-    guard let wall = analyzeWallThickness(mesh, progress: { progress(0.1 + $0 * 0.75, "Measuring wall thickness…") },
+    guard let wall = analyzeWallThickness(mesh, maximumSamples: wallSamples,
+                                          progress: { progress(0.1 + $0 * 0.75, "Measuring wall thickness…") },
                                           isCancelled: isCancelled), !isCancelled() else { return nil }
     progress(0.85, "Measuring the base and overhangs…")
     let flat = mesh.flatBaseSuggestion()
     let overhang = overhangShare(mesh)
+    var turns: [PrintReviewTurnOverhang] = []
+    for turn in printReviewTurns {
+        if isCancelled() { return nil }
+        turns.append(PrintReviewTurnOverhang(orientation: turn.orientation, overhang: overhangShare(mesh.oriented(turn.orientation))))
+    }
     if isCancelled() { return nil }
     progress(1, "Measured")
     return PrintReviewMeasurements(sizeMM: mesh.maximum - mesh.minimum, origin: mesh.minimum, triangles: mesh.triangleCount,
-                                   health: health, wall: wall, flatBase: flat, overhang: overhang)
+                                   health: health, wall: wall, flatBase: flat, overhang: overhang, turns: turns)
 }
 
 private func mm(_ value: Float) -> String { String(format: "%.1f mm", value) }
@@ -133,8 +183,16 @@ func printReviewFactLines(_ m: PrintReviewMeasurements) -> [String] {
         lines.append("Flat base: removing up to \(mmValue(Double(flat.maximumCutMM))) mm doesn’t give \(Int(flat.targetContactMM2.rounded()).formatted()) mm² flat on the bed; a plinth may suit it better.")
     }
     lines.append(printReviewOverhangLine(m.overhang))
-    if m.checksFoundNoProblems { lines.append("Studio’s checks found no problems.") }
+    if let turns = printReviewTurnsLine(m) { lines.append(turns) }
+    if m.checksFoundNoProblems { lines.append(printReviewNoProblemsLine) }
     return lines
+}
+
+/// "If turned, overhangs would be: upside down 30%, …", or nil when the turns weren't measured.
+func printReviewTurnsLine(_ m: PrintReviewMeasurements) -> String? {
+    guard !m.turns.isEmpty else { return nil }
+    let list = m.turns.map { "\(printReviewTurnLabel($0.orientation)) \(percentLabel($0.overhang.fraction))" }
+    return "If turned, overhangs would be: \(list.joined(separator: "; ")) (as placed: \(percentLabel(m.overhang.fraction)))."
 }
 
 /// The context lines, bounded: what another tool or the seller said about this model.
@@ -164,8 +222,101 @@ func printReviewComparisonLines(before: PrintReviewMeasurements, after: PrintRev
     lines.append("Flat on the bed: \(Int(before.bottomContactMM2.rounded()).formatted()) mm² → \(Int(after.bottomContactMM2.rounded()).formatted()) mm²")
     lines.append("Overhangs: \(percentLabel(before.overhang.fraction)) → \(percentLabel(after.overhang.fraction)) of the surface")
     if !after.fitsBuildVolume { lines.append("Larger than Slant’s 220 mm build volume.") }
-    if after.checksFoundNoProblems { lines.append("Studio’s checks found no problems.") }
+    if after.checksFoundNoProblems { lines.append(printReviewNoProblemsLine) }
     return lines
+}
+
+// MARK: What the seller says about the model
+
+/// "What is it for?", asked before Ask Claude.
+enum PrintReviewPurposeChoice: String, CaseIterable, Identifiable, Sendable {
+    case display = "Display piece", functional = "Functional part", notSure = "Not sure"
+    var id: String { rawValue }
+}
+
+/// The choice to start with: what another tool passed in, else the model's saved part purpose, else Not sure.
+func printReviewInitialPurpose(context: PrintReviewContext, partIntent: PartIntent?) -> PrintReviewPurposeChoice {
+    if let said = context.purpose?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        if said.hasPrefix("display") { return .display }
+        if said.hasPrefix("functional") { return .functional }
+    }
+    guard let partIntent else { return .notSure }
+    return partIntent.purpose == .decorative ? .display : .functional
+}
+
+/// Reads a size note such as Generate a Replica's "Height should be 120 mm (typed by the seller)" or Studio's own
+/// "Height (Z) should be 120 mm …". Nil for anything else.
+func printReviewSizeFromNote(_ note: String?) -> (axis: MeshFitAxis, mm: Double)? {
+    guard let text = note?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !text.isEmpty else { return nil }
+    let axis: MeshFitAxis
+    if text.hasPrefix("height") { axis = .z }
+    else if text.hasPrefix("width") { axis = .x }
+    else if text.hasPrefix("depth") { axis = .y }
+    else if text.hasPrefix("longest") { axis = .longest }
+    else { return nil }
+    guard let range = text.range(of: " should be ") else { return nil }
+    let rest = text[range.upperBound...]
+    guard let end = rest.range(of: " mm") else { return nil }
+    guard let value = meshFitMillimetres(String(rest[..<end.lowerBound])) else { return nil }
+    return (axis, value)
+}
+
+/// "Height (Z) should be 120 mm (typed by the seller)".
+func printReviewSizeNote(axis: MeshFitAxis, mm: Double) -> String {
+    "\(axis.rawValue) should be \(mmValue(mm)) mm (typed by the seller)"
+}
+
+/// Why the typed real size can't be used, or nil (an empty field is fine: the size is optional).
+func printReviewSizeProblem(_ text: String) -> String? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    guard let value = meshFitMillimetres(trimmed) else { return "Enter the size in millimetres, such as 120 or 85.5." }
+    if value < 1 { return "Enter at least 1 mm." }
+    return nil
+}
+
+/// The context sent with the review: the seller's purpose and real size replace what was passed in. A size note that
+/// Studio couldn't read into the fields is kept while the size field is empty.
+func printReviewEffectiveContext(_ base: PrintReviewContext, purpose: PrintReviewPurposeChoice, sizeAxis: MeshFitAxis,
+                                 sizeText: String) -> PrintReviewContext {
+    var context = base
+    context.purpose = purpose == .notSure ? nil : purpose.rawValue
+    let trimmed = sizeText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if printReviewSizeProblem(trimmed) == nil, let value = meshFitMillimetres(trimmed) {
+        context.intendedSizeNote = printReviewSizeNote(axis: sizeAxis, mm: value)
+    } else if printReviewSizeFromNote(base.intendedSizeNote) != nil || !trimmed.isEmpty {
+        context.intendedSizeNote = nil
+    }
+    return context
+}
+
+/// The purpose Auto-improve works to: the model's own (as Optimise for purpose shows it), else a decorative part for a
+/// display piece, else Optimise for purpose's default, as the Auto-improve card does.
+func printReviewAutoImproveIntent(_ model: LocalModel, purpose: PrintReviewPurposeChoice) -> PartIntent {
+    if let saved = designEditIntent(model) { return saved }
+    return purpose == .display ? PartIntent(purpose: .decorative) : PartIntent()
+}
+
+/// Auto-improve's settings for this model, or why it can't run here.
+func printReviewAutoImproveSettings(_ model: LocalModel, purpose: PrintReviewPurposeChoice) -> (PrintReviewAutoImprove?, String?) {
+    if model.autoImprovement != nil { return (nil, "This copy has been auto-improved already.") }
+    let intent = printReviewAutoImproveIntent(model, purpose: purpose)
+    guard intent.isReady else {
+        return (nil, "Auto-improve needs the part’s main stress direction\(intent.purpose == .custom ? " and a description" : ""). Set it in Optimise for purpose, then review again.")
+    }
+    return (PrintReviewAutoImprove(intent: intent, keepPlacement: model.printRecipe != nil || model.requiresZUp), nil)
+}
+
+/// Why the review can't turn this model, or nil.
+func printReviewOrientBlockedReason(_ model: LocalModel) -> String? {
+    if model.requiresZUp { return "This copy has features that depend on its print layers, so it stays Z up." }
+    if model.printRecipe != nil { return "This copy already has a prepared placement. Turn the original instead." }
+    return nil
+}
+
+/// Manual advice that names Reinforce gets a link to that card.
+func printReviewMentionsReinforce(_ text: String) -> Bool {
+    text.range(of: "reinforce", options: .caseInsensitive) != nil
 }
 
 // MARK: Plan
@@ -181,31 +332,44 @@ struct PrintReviewRisk: Equatable, Sendable {
     let severity: PrintReviewSeverity
 }
 
+/// How Auto-improve runs in a review: the part's purpose, and whether it keeps the model's placement (a prepared or
+/// Z-up-locked copy) rather than choosing one for the purpose.
+struct PrintReviewAutoImprove: Equatable, Sendable {
+    let intent: PartIntent
+    let keepPlacement: Bool
+}
+
 /// A step Studio can run with its own tools, or advice it never runs.
 enum PrintReviewAction: Equatable, Sendable {
     case repair
     case simplify(target: Int)
+    /// One of `printReviewTurns`.
+    case orient(PrintOrientation)
     case scaleToSize(axis: MeshFitAxis, mm: Double)
     case flatBase(cutMM: Float)
     case plinth(PlinthSettings)
+    case autoImprove(PrintReviewAutoImprove)
     case manual(String)
 
     var toolName: String {
         switch self {
         case .repair: return "repair"
         case .simplify: return "simplify"
+        case .orient: return "orient"
         case .scaleToSize: return "scale_to_size"
         case .flatBase: return "flat_base"
         case .plinth: return "plinth"
+        case .autoImprove: return "auto_improve"
         case .manual: return "manual"
         }
     }
 
     var isManual: Bool { if case .manual = self { return true }; return false }
-    /// Repair and simplify keep the model's placement and edit records; the others change size or base.
+    /// Repair and simplify keep the model's placement and edit records, and Auto-improve keeps them as its own card
+    /// does; turning, scaling and bases change what those records describe.
     var keepsRecords: Bool {
         switch self {
-        case .repair, .simplify: return true
+        case .repair, .simplify, .autoImprove: return true
         default: return false
         }
     }
@@ -244,12 +408,17 @@ struct PrintReviewPlanContext: Equatable, Sendable {
     var scaleBlockedReason: String?
     /// `meshFitEditBlockedReason(model, tool: .flatBase)` (the same rule covers plinths).
     var baseBlockedReason: String?
+    /// `printReviewOrientBlockedReason(model)`.
+    var orientBlockedReason: String? = nil
+    /// `printReviewAutoImproveSettings(model, purpose:)`: the settings, or why Auto-improve can't run.
+    var autoImprove: PrintReviewAutoImprove? = nil
+    var autoImproveBlockedReason: String? = nil
 }
 
 let printReviewSimplifyRange = 2_000...20_000
 let printReviewMaximumSteps = 12
 let printReviewMaximumRisks = 12
-let printReviewToolNames = ["repair", "simplify", "scale_to_size", "flat_base", "plinth", "manual"]
+let printReviewToolNames = ["repair", "simplify", "orient", "scale_to_size", "flat_base", "plinth", "auto_improve", "manual"]
 
 /// One line of Claude's text, trimmed and bounded, for display.
 func printReviewText(_ value: AnthropicJSON?, limit: Int) -> String {
@@ -278,10 +447,12 @@ func printReviewStepTitle(_ action: PrintReviewAction) -> String {
     switch action {
     case .repair: return "Repair the mesh"
     case .simplify(let target): return "Simplify to \(target.formatted()) triangles"
+    case .orient(let orientation): return "Turn it \(printReviewTurnLabel(orientation))"
     case .scaleToSize(let axis, let value): return "Scale so the \(printReviewAxisName(axis)) is \(mmValue(value)) mm"
     case .flatBase(let cut): return "Flat base: remove \(mmValue(Double(cut))) mm from the bottom"
     case .plinth(let settings):
         return "\(settings.shape.rawValue) plinth, \(mmValue(Double(settings.marginMM))) mm margin, \(mmValue(Double(settings.thicknessMM))) mm thick"
+    case .autoImprove(let settings): return "Auto-improve as a \(settings.intent.purpose.rawValue.lowercased()) part"
     case .manual: return "Do this yourself"
     }
 }
@@ -290,15 +461,36 @@ private func printReviewToolTitle(_ tool: String) -> String {
     switch tool {
     case "repair": return "Repair the mesh"
     case "simplify": return "Simplify"
+    case "orient": return "Turn the model"
     case "scale_to_size": return "Scale to size"
     case "flat_base": return "Flat base"
     case "plinth": return "Plinth"
+    case "auto_improve": return "Auto-improve"
     default: return "Do this yourself"
     }
 }
 
-/// Reads Claude's `propose_plan` input. Every step is checked; a step with bad or out-of-range settings is kept with
-/// its problem (shown, never runnable), an unknown tool is left out with a note, and only the first of each tool runs.
+/// The model's size after a step, so later steps are checked against the size they will meet. Plinths are estimated
+/// (a round one is a little larger).
+private func printReviewSize(after action: PrintReviewAction, from size: SIMD3<Float>) -> SIMD3<Float> {
+    switch action {
+    case .orient(let orientation): return simd_abs(orientation.rotate(size))
+    case .scaleToSize(let axis, let value):
+        return (try? scaleToSizePlan(extentMM: size, axis: axis, targetMM: value))?.resultSizeMM ?? size
+    case .flatBase(let cut): return SIMD3(size.x, size.y, max(0, size.z - cut))
+    case .plinth(let settings):
+        let grow = 2 * settings.marginMM
+        let across = settings.shape == .round ? (size.x * size.x + size.y * size.y).squareRoot() + grow : 0
+        return SIMD3(max(size.x + grow, across), max(size.y + grow, across),
+                     size.z + settings.thicknessMM - settings.joinDepthMM)
+    default: return size
+    }
+}
+
+/// Reads Claude's `propose_plan` input. Every step is checked against the model as the runnable steps before it would
+/// leave it (size and triangles); a step with bad or out-of-range settings is kept with its problem (shown, never
+/// runnable), an unknown tool is left out with a note, and only the first of each tool runs. Auto-improve must be the
+/// last step that changes the model, and doesn't go with a turn (it places the part itself).
 func decodePrintReviewPlan(_ input: AnthropicJSON, context: PrintReviewPlanContext) -> PrintReviewPlan {
     var notes: [String] = []
     var risks: [PrintReviewRisk] = []
@@ -316,6 +508,8 @@ func decodePrintReviewPlan(_ input: AnthropicJSON, context: PrintReviewPlanConte
     var steps: [PrintReviewStep] = []
     var firstStepForTool: [String: Int] = [:]
     var baseStep: Int?
+    // The model as the runnable steps so far would leave it.
+    var current = context
     let rawSteps = input["steps"]?.arrayValue ?? []
     for raw in rawSteps {
         let tool = raw["tool"]?.stringValue ?? ""
@@ -332,19 +526,27 @@ func decodePrintReviewPlan(_ input: AnthropicJSON, context: PrintReviewPlanConte
         }
         let number = steps.count + 1
         let reason = printReviewText(raw["reason"], limit: 400)
-        let (action, ownProblem) = printReviewStepAction(tool: tool, raw: raw, context: context)
+        let (action, ownProblem) = printReviewStepAction(tool: tool, raw: raw, context: current)
         var problem = ownProblem
         if problem == nil, tool != "manual" {
             if let earlier = firstStepForTool[tool] {
                 problem = "Already in the plan as step \(earlier)."
+            } else if let earlier = firstStepForTool["auto_improve"] {
+                problem = "Step \(earlier) auto-improves the part, which has to come last: changing the model afterwards would spoil its treatments."
             } else if tool == "flat_base" || tool == "plinth", let earlier = baseStep {
                 problem = "Step \(earlier) already adds a base. Choose a flat base or a plinth, not both."
+            } else if tool == "auto_improve", let earlier = firstStepForTool["orient"] {
+                problem = "Step \(earlier) already turns the part, and Auto-improve places it for its purpose itself. Choose one."
             }
         }
         // Only a step that can run claims its tool, so a later valid step can stand in for an invalid one.
         if problem == nil, tool != "manual" {
             firstStepForTool[tool] = number
             if tool == "flat_base" || tool == "plinth" { baseStep = number }
+            if let action {
+                current.sizeMM = printReviewSize(after: action, from: current.sizeMM)
+                if case .simplify(let target) = action { current.triangles = min(current.triangles, target) }
+            }
         }
         steps.append(PrintReviewStep(id: number, tool: tool, title: action.map(printReviewStepTitle) ?? printReviewToolTitle(tool),
                                      action: action, reason: reason, problem: problem))
@@ -363,6 +565,21 @@ private func printReviewStepAction(tool: String, raw: AnthropicJSON, context: Pr
     switch tool {
     case "repair":
         return (.repair, nil)
+    case "orient":
+        guard let name = raw["turn"]?.stringValue, let turn = printReviewTurns.first(where: { $0.name == name }) else {
+            return (nil, "Claude didn’t say which way to turn it.")
+        }
+        let action = PrintReviewAction.orient(turn.orientation)
+        if let blocked = context.orientBlockedReason { return (action, blocked) }
+        return (action, nil)
+    case "auto_improve":
+        if let blocked = context.autoImproveBlockedReason { return (nil, blocked) }
+        guard let settings = context.autoImprove else { return (nil, "Auto-improve isn’t available for this model.") }
+        let action = PrintReviewAction.autoImprove(settings)
+        if context.triangles > meshToolsReinforceTriangleLimit {
+            return (action, "Auto-improve accepts up to \(meshToolsReinforceTriangleLimit.formatted()) triangles and the model will have \(context.triangles.formatted()) by then. Put a Simplify step before it.")
+        }
+        return (action, nil)
     case "simplify":
         guard let value = number("target_triangles") else { return (nil, "Claude didn’t give a target triangle count.") }
         guard value.rounded() == value, let target = Int(exactly: value) else { return (nil, "The target must be a whole number of triangles.") }
@@ -395,7 +612,9 @@ private func printReviewStepAction(tool: String, raw: AnthropicJSON, context: Pr
         guard value > 0, value <= 5 else { return (nil, "The cut must be more than 0 and at most 5 mm.") }
         let action = PrintReviewAction.flatBase(cutMM: Float(value))
         if let blocked = context.baseBlockedReason { return (action, blocked) }
-        if Float(value) >= context.sizeMM.z / 4 { return (action, "That would remove more than a quarter of the model’s height.") }
+        if Float(value) >= context.sizeMM.z / 4 {
+            return (action, "That would remove a quarter or more of the model’s height, which is \(mm(context.sizeMM.z)) at that point in the plan.")
+        }
         return (action, nil)
     case "plinth":
         let shapes: [String: PlinthShape] = ["round": .round, "rectangular": .rectangular]
@@ -454,26 +673,42 @@ func printReviewStudioNote(_ action: PrintReviewAction, measurements m: PrintRev
         return note + "."
     case .plinth:
         return "Studio: \(Int(m.bottomContactMM2.rounded()).formatted()) mm² flat on the bed now; the model is \(mm(m.sizeMM.z)) tall."
+    case .orient(let orientation):
+        guard let turned = m.turns.first(where: { $0.orientation == orientation }) else {
+            return "Studio: overhangs on \(percentLabel(m.overhang.fraction)) of the surface as placed."
+        }
+        return "Studio: overhangs on \(percentLabel(m.overhang.fraction)) of the surface as placed, \(percentLabel(turned.overhang.fraction)) turned this way. Check the flat base again after turning."
+    case .autoImprove(let settings):
+        var purpose = settings.intent.purpose.rawValue
+        if settings.intent.effectiveLoad != .unknown { purpose += ", main stress along \(settings.intent.effectiveLoad.rawValue.lowercased())" }
+        let placement = settings.keepPlacement ? "keeps the model’s current placement" : "places the part for that purpose"
+        return "Studio: uses the part’s purpose (\(purpose)); change it in Optimise for purpose. It \(placement), then adds only treatments that pass its checks, such as chamfers under ledges and fillets in inside corners."
     case .manual:
         return "Studio doesn’t run this. Do it yourself, then review the result again."
     }
 }
 
-/// Advice about the ticked steps before they run, such as a base on a mesh that isn't closed yet.
+/// Advice about the ticked steps before they run, such as a base on a mesh that isn't closed yet, or Auto-improve on
+/// a model with too many triangles.
 func printReviewSelectionNotes(_ actions: [PrintReviewAction], measurements m: PrintReviewMeasurements) -> [String] {
     var notes: [String] = []
-    guard !m.isSound else { return notes }
-    var repaired = false
+    var repaired = m.isSound
+    var triangles = m.triangles
     for action in actions {
         switch action {
         case .repair: repaired = true
+        case .simplify(let target):
+            if !repaired { notes.append("Simplify works best on a repaired mesh.") }
+            triangles = min(triangles, target)
         case .flatBase, .plinth:
             if !repaired {
                 notes.append("A flat base or plinth needs a closed mesh. Tick Repair the mesh as well (it runs first when it comes first in the plan), or the run will stop.")
                 return notes
             }
-        case .simplify:
-            if !repaired { notes.append("Simplify works best on a repaired mesh.") }
+        case .autoImprove:
+            if triangles > meshToolsReinforceTriangleLimit {
+                notes.append("Auto-improve accepts up to \(meshToolsReinforceTriangleLimit.formatted()) triangles. Tick a Simplify step before it, or the run will stop.")
+            }
         default: break
         }
     }
@@ -488,6 +723,15 @@ struct PrintReviewRunStep: Equatable, Sendable {
     let action: PrintReviewAction
 }
 
+/// What Auto-improve did in a run, for the copy's records.
+struct PrintReviewAutoImproveOutcome: Equatable, Sendable {
+    let intent: PartIntent
+    let orientation: PrintOrientation
+    let applied: [AutoImprovementStep]
+    let skipped: [String]
+    let manual: [String]
+}
+
 struct PrintReviewRunResult: Sendable {
     let mesh: STLMesh
     /// The binary STL to save.
@@ -496,12 +740,18 @@ struct PrintReviewRunResult: Sendable {
     let lines: [String]
     /// False when the result is byte-for-byte the input.
     let changed: Bool
+    /// Set when an Auto-improve step changed the model.
+    var autoImprove: PrintReviewAutoImproveOutcome? = nil
 }
 
 enum PrintReviewRunError: LocalizedError, Equatable {
     case cancelled
     case nothingToRun
     case step(number: Int, title: String, message: String)
+    /// The model passed the mesh check and the result wouldn't.
+    case madeWorse
+    /// The model fitted the build volume and the result wouldn't; its longest side.
+    case tooLarge(Float)
 
     var errorDescription: String? {
         switch self {
@@ -509,18 +759,25 @@ enum PrintReviewRunError: LocalizedError, Equatable {
         case .nothingToRun: return "Tick at least one step that Studio can run."
         case .step(let number, let title, let message):
             return "Step \(number) (\(title)) couldn’t be done, so the run stopped and nothing was saved. \(message)"
+        case .madeWorse:
+            return "This model passes the mesh check, but the result wouldn’t, so nothing was saved. Try fewer steps, or a higher Simplify target."
+        case .tooLarge(let longest):
+            return "The result would be \(String(format: "%.1f", longest)) mm on its longest side, larger than Slant’s 220 mm build volume, so nothing was saved."
         }
     }
 }
 
-/// Runs the steps in order on an in-memory copy with the wave-1 mesh tools. Deterministic: the same mesh and steps give
-/// the same bytes. Manual steps are never run. A failing step throws and nothing is returned.
+/// Runs the steps in order on an in-memory copy with Studio's mesh tools, Print orientation's fixed turns and
+/// Auto-improve. Deterministic: the same mesh and steps give the same bytes (Auto-improve's own time limit aside). Manual
+/// steps are never run. A failing step throws and nothing is returned, and so does a result that fails the mesh check
+/// or the build volume when the model passed it.
 func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, progress: MeshToolProgress = { _, _ in },
-                         isCancelled: () -> Bool = { false }) throws -> PrintReviewRunResult {
+                         isCancelled: @escaping @Sendable () -> Bool = { false }) throws -> PrintReviewRunResult {
     let runnable = steps.filter { !$0.action.isManual }
     guard !runnable.isEmpty else { throw PrintReviewRunError.nothingToRun }
     var mesh = original
     var lines: [String] = []
+    var autoImprove: PrintReviewAutoImproveOutcome?
     let share = 1 / Double(runnable.count)
     for (index, step) in runnable.enumerated() {
         if isCancelled() { throw PrintReviewRunError.cancelled }
@@ -530,6 +787,38 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
         progress(base, "Step \(step.number): \(title)…")
         do {
             switch step.action {
+            case .orient(let orientation):
+                let before = overhangShare(mesh)
+                mesh = mesh.oriented(orientation)
+                lines.append("\(title): overhangs \(percentLabel(before.fraction)) → \(percentLabel(overhangShare(mesh).fraction)) of the surface; now \(meshFitSizeLabel(mesh.maximum - mesh.minimum)).")
+            case .autoImprove(let settings):
+                let placement: PrintOrientation
+                if settings.keepPlacement {
+                    placement = .zUp
+                } else {
+                    guard let found = AutoImprover.orientation(for: mesh, intent: settings.intent, locked: false) else {
+                        throw StudioError("No flat-bed placement fits among the positions checked.")
+                    }
+                    placement = found
+                }
+                let result = try AutoImprover.improve(mesh, intent: settings.intent, orientation: placement, cancelled: isCancelled)
+                if result.changed {
+                    mesh = result.mesh
+                    autoImprove = PrintReviewAutoImproveOutcome(intent: settings.intent, orientation: result.orientation,
+                                                                applied: result.applied, skipped: result.skipped, manual: result.manual)
+                    let applied = result.applied.isEmpty ? "no treatments suited it" : result.applied.map(\.summary).joined(separator: "; ")
+                    lines.append("\(title): placed \(printReviewTurnLabel(result.orientation)); \(applied).")
+                } else {
+                    lines.append("\(title): no automatic changes suit this part.")
+                }
+            case .flatBase(let cut):
+                let height = mesh.maximum.z - mesh.minimum.z
+                guard cut < height / 4 else {
+                    throw StudioError("That would remove a quarter or more of the model’s height, which is \(String(format: "%.1f", height)) mm at that point.")
+                }
+                let result = try mesh.flatBaseCopy(cutHeightMM: cut, isCancelled: isCancelled)
+                mesh = result.mesh
+                lines.append("\(title): \(Int(result.contactAreaMM2.rounded()).formatted()) mm² now flat on the bed.")
             case .repair:
                 let result = try repairMesh(mesh, progress: stepProgress, isCancelled: isCancelled)
                 if result.summary.changed { mesh = result.mesh }
@@ -546,10 +835,6 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
                 let scaled = try mesh.scaledToSizeSTLData(axis: axis, targetMM: value)
                 mesh = try STLMesh.parse(scaled.data)
                 lines.append("\(title): \(meshFitSizeLabel(before)) → \(meshFitSizeLabel(scaled.plan.resultSizeMM)).")
-            case .flatBase(let cut):
-                let result = try mesh.flatBaseCopy(cutHeightMM: cut, isCancelled: isCancelled)
-                mesh = result.mesh
-                lines.append("\(title): \(Int(result.contactAreaMM2.rounded()).formatted()) mm² now flat on the bed.")
             case .plinth(let settings):
                 let result = try mesh.plinthCopy(settings, isCancelled: isCancelled)
                 mesh = result.mesh
@@ -568,8 +853,20 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
     }
     if isCancelled() { throw PrintReviewRunError.cancelled }
     let data = mesh.binarySTL()
+    let changed = data != original.binarySTL()
+    if changed {
+        // The copy must be no worse than the model: still sound if it was, and still within the build volume if it was.
+        progress(0.98, "Checking the result…")
+        guard let before = analyzeMeshHealth(original, isCancelled: isCancelled),
+              let after = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { throw PrintReviewRunError.cancelled }
+        if meshToolMadeWorse(before: before, after: after) { throw PrintReviewRunError.madeWorse }
+        let longest = (mesh.maximum - mesh.minimum).max()
+        if longest > slantBuildVolumeMM, (original.maximum - original.minimum).max() <= slantBuildVolumeMM {
+            throw PrintReviewRunError.tooLarge(longest)
+        }
+    }
     progress(1, "Done")
-    return PrintReviewRunResult(mesh: mesh, data: data, lines: lines, changed: data != original.binarySTL())
+    return PrintReviewRunResult(mesh: mesh, data: data, lines: lines, changed: changed, autoImprove: autoImprove)
 }
 
 /// "Name (print-ready)", without a model file extension.
@@ -579,10 +876,42 @@ func printReadyCopyName(_ name: String) -> String {
     return "\(base) (print-ready)"
 }
 
-/// The copy keeps the original's placement and edit records only when every step left size and base alone, as the
-/// Repair and simplify card does; otherwise it keeps the part's purpose and source details, as the fit tools do.
+/// The copy keeps the original's placement and edit records only when every step left size, base and placement alone
+/// (repair, simplify and Auto-improve, as their own cards do); otherwise it keeps the part's purpose and source
+/// details, as the fit tools do.
 func printReadyCopyKeepsRecords(_ actions: [PrintReviewAction]) -> Bool {
     actions.allSatisfy(\.keepsRecords)
+}
+
+/// The records a print-ready copy is saved with (`StudioStore.importModel`).
+struct PrintReadyCopyRecords: Equatable {
+    var recipe: PreparedPrintRecipe?
+    var improvement: DesignImprovementRecord?
+    var intent: PartIntent?
+    var reinforcement: ReinforcementRecord?
+    var autoImprovement: AutoImprovementRecord?
+}
+
+/// The original's records when every step keeps them; and when Auto-improve changed the copy, its record and placement
+/// as the Auto-improve card saves them.
+func printReadyCopyRecords(for model: LocalModel, actions: [PrintReviewAction], autoImprove: PrintReviewAutoImproveOutcome?,
+                           materialID: String?, now: Date = Date()) -> PrintReadyCopyRecords {
+    var records = PrintReadyCopyRecords(intent: model.partIntent)
+    let keeps = printReadyCopyKeepsRecords(actions)
+    if keeps {
+        records.recipe = model.printRecipe
+        records.improvement = model.designImprovement
+        records.reinforcement = model.reinforcement
+        records.autoImprovement = model.autoImprovement
+    }
+    if let auto = autoImprove {
+        records.autoImprovement = AutoImprovementRecord(sourceID: model.id, orientation: auto.orientation, applied: auto.applied,
+                                                        skipped: auto.skipped, manual: auto.manual, created: now)
+        records.recipe = records.recipe ?? PreparedPrintRecipe(sourceID: model.id, sourceName: model.name, intent: auto.intent,
+                                                               orientation: auto.orientation, materialID: materialID, created: now)
+        records.intent = auto.intent
+    }
+    return records
 }
 
 // MARK: Claude request
@@ -599,7 +928,8 @@ with settings nobody can see: assume about two perimeters (about 0.9 mm), low in
 
 You get four orthographic renders of the model as it is placed in its file (Z up; Front looks at the −Y side, Side \
 looks at the +X side, Top looks straight down, Three-quarter is from the front right, above) and Studio's own \
-measurements. Studio measured the mesh itself: trust its numbers over what the pictures suggest. Units are millimetres.
+measurements. Studio measured the mesh itself: trust its numbers over what the pictures suggest. Units are millimetres. \
+Thin-spot positions are measured from the model's lowest corner.
 
 Guidelines for parts that print well:
 - Load-bearing walls 2.0 mm or more, never under 1.0 mm; wall thicknesses in multiples of about 0.45 mm.
@@ -608,33 +938,49 @@ Guidelines for parts that print well:
 - Fillets where features meet (stress roots); loads along the layers (in X and Y), not across them.
 - Pins and posts 3–5 mm or more; embossed detail about 1 mm; printed fits 0.2–0.3 mm clearance per side.
 - PETG for heat (for example inside a car); PLA softens at about 55–60 °C.
+- Thin protrusions (tails, horns, blades, antennae, fingers) under about 3 mm across are likely to snap in printing, \
+when supports come off, or in the post. Flag them.
 
 Answer only by calling propose_plan, once. Studio runs a step only if the seller ticks it, on a copy, on this Mac. \
 Steps may use only these tools; set every field a step doesn't use to null:
 - repair: joins nearby vertices, removes zero-area, repeated and loose triangles, turns faces the right way and \
 closes small holes. Suggest it when Studio's mesh check needs repair.
-- simplify (target_triangles, 2000–20000): fewer triangles. Studio's Reinforce and Auto-improve tools accept up to \
-20,000. Only when the model has more triangles than the target.
-- scale_to_size (axis: longest, x, y or z; mm): scales evenly so that side measures mm. Only when the seller's \
-intended size is given, and then use exactly that size. Never guess a real-world size.
+- simplify (target_triangles, 2000–20000): fewer triangles. Suggest it only when the model has more than 20,000 \
+triangles and you also suggest auto_improve or advise Reinforce (both accept up to 20,000); otherwise detail is worth \
+keeping.
+- orient (turn: upside_down, x_up, x_down, y_up or y_down): turns the model onto another side (x_up puts the side \
+shown in the Side view on top; y_up puts the side facing away from the Front view on top). Studio lists the overhang \
+share for each turn: suggest the one that clearly reduces overhangs, if it still leaves a stable, flat base.
+- scale_to_size (axis: longest, x, y or z; mm): scales evenly so that side measures mm, as the model is at that point \
+in the plan. Only when the seller's intended size is given, and then use exactly that size. Never guess a real-world size.
 - flat_base (cut_mm, more than 0 and at most 5): cuts the bottom level and fills it so the model stands on a flat face. \
 Studio's suggested cut is in the measurements.
-- plinth (shape: round or rectangular; margin_mm 1–30; thickness_mm 1–20): a base under the whole model, for tall or \
-top-heavy figures. Choose a flat base or a plinth, not both.
-- manual (text): anything the other tools can't do, which the seller does elsewhere, for example "Use Reinforce in \
-Studio to add a gusset under the arm" or "Thicken the sword blade to 3 mm in your CAD app".
-Put steps in the order they should run: repair, then simplify, then scale, then the base, then manual advice. Leave \
-out steps that aren't needed; an empty list is fine.
+- plinth (shape: round or rectangular; margin_mm 1–30; thickness_mm 1–20): a base with a chamfered bottom edge under \
+the whole model, for tall or top-heavy figures. Choose a flat base or a plinth, not both.
+- auto_improve: Studio's Auto-improve places the part for its purpose (unless its placement is fixed) and adds only \
+treatments that pass its checks: bridging for counterbores, chamfers under ledges, walls matched to the line width \
+and fillets in inside corners. Accepts up to 20,000 triangles. It must be the last step that changes the model, and \
+it doesn't go with orient. Suggest it for functional parts.
+- manual (text): anything the tools above can't do, which the seller does elsewhere. Prefer Studio's own tools: \
+"Use Reinforce in Studio to add a gusset under the arm" or "Use Reinforce to add a rib along the handle" before \
+"Thicken the sword blade to 3 mm in your CAD app".
+Put steps in the order they should run: repair, simplify, orient, scale, the base, auto_improve, then manual advice. \
+Leave out steps that aren't needed; an empty list is fine.
 
 How to write:
 - You advise; you never change the model.
 - Never say a part is strong, approved, safe, guaranteed or won't break, and never give a strength percentage. Say \
 "likely weak point", "below the 2 mm guideline" and so on.
+- Quote Studio's numbers and positions when you use them, such as "walls of 0.8 mm about 40 mm up".
 - Say Studio's checks found no problems only when its measurements say so.
-- risks: specific parts you can see (such as "sword blade" or "left ear"), what may go wrong in printing, and a severity.
-- orientation: how to place it on the bed and why, in one or two sentences. These steps can't rotate the model; the \
-seller can use Studio's Print orientation tool.
+- risks: specific parts you can see (such as "sword blade" or "left ear"), what may go wrong, and a severity: high when \
+the print is likely to fail or the part to break in printing, shipping or normal use; medium for a likely weak point \
+or a visible flaw worth fixing first; low for something worth knowing that most prints survive.
+- orientation: how to place it on the bed and why, in one or two sentences, naming the turn with the fewest overhangs \
+when it differs from how the model is placed.
 - material_note: one or two sentences on material.
+- If the seller says it is a display piece, favour looks and standing steady; for a functional part, favour strength \
+along its loads.
 - Plain, short sentences in British English.
 """
 
@@ -669,9 +1015,11 @@ let printReviewPlanTool = AnthropicTool(
                 "items": [
                     "type": "object",
                     "properties": [
-                        "tool": ["type": "string", "enum": ["repair", "simplify", "scale_to_size", "flat_base", "plinth", "manual"]],
+                        "tool": ["type": "string", "enum": .array(printReviewToolNames.map { .string($0) })],
                         "reason": ["type": "string", "description": "Why, in one sentence."],
                         "target_triangles": ["anyOf": [["type": "integer"], ["type": "null"]], "description": "simplify: 2000 to 20000."],
+                        "turn": ["anyOf": [["type": "string", "enum": .array(printReviewTurns.map { .string($0.name) })], ["type": "null"]],
+                                 "description": "orient: which side goes up."],
                         "axis": ["anyOf": [["type": "string", "enum": ["longest", "x", "y", "z"]], ["type": "null"]],
                                  "description": "scale_to_size: the side to measure."],
                         "mm": printReviewNullableNumber.setting("description", to: "scale_to_size: that side's size in millimetres."),
@@ -681,7 +1029,7 @@ let printReviewPlanTool = AnthropicTool(
                         "thickness_mm": printReviewNullableNumber.setting("description", to: "plinth: 1 to 20."),
                         "text": ["anyOf": [["type": "string"], ["type": "null"]], "description": "manual: what the seller should do."]
                     ],
-                    "required": ["tool", "reason", "target_triangles", "axis", "mm", "cut_mm", "shape", "margin_mm", "thickness_mm", "text"],
+                    "required": ["tool", "reason", "target_triangles", "turn", "axis", "mm", "cut_mm", "shape", "margin_mm", "thickness_mm", "text"],
                     "additionalProperties": false
                 ]
             ],
@@ -735,7 +1083,7 @@ func printReviewUserText(viewTitles: [String], factLines: [String], contextLines
     } else {
         text += "What Studio knows about the model:\n" + contextLines.map { "- \($0)" }.joined(separator: "\n") + "\n\n"
     }
-    text += "Call propose_plan with your review."
+    text += "Quote Studio’s numbers where you rely on them. Call propose_plan with your review."
     return text
 }
 
@@ -749,9 +1097,10 @@ func printReviewAnthropicRequest(views: [PrintReviewRender], factLines: [String]
 }
 
 /// The one follow-up after a reply without a usable plan: the reply goes back unchanged, then an error result for each
-/// unusable call, or a reminder when there was no call. Effort medium. Nil after a refusal or a cut-off reply.
+/// unusable call, or a reminder when there was no call. Effort medium. Nil after a refusal, or a reply that can't join
+/// the conversation (`canJoinHistory`: cut off at max_tokens, the context window or any other early stop).
 func printReviewFollowUpRequest(_ previous: AnthropicRequest, reply: AnthropicMessage) -> AnthropicRequest? {
-    guard !reply.isRefusal, reply.stopReason != .maxTokens, !reply.historyContent.isEmpty else { return nil }
+    guard !reply.isRefusal, reply.canJoinHistory, !reply.historyContent.isEmpty else { return nil }
     var request = previous
     request.messages.append(.assistant(reply))
     let uses = reply.toolUses
@@ -789,6 +1138,9 @@ func printReviewReplyOutcome(_ reply: AnthropicMessage, context: PrintReviewPlan
     if reply.stopReason == .maxTokens {
         return .failed("Claude’s reply was cut off before the plan was finished, so nothing was kept.")
     }
+    if !reply.canJoinHistory {
+        return .failed("Claude’s reply stopped early, before the plan was finished, so nothing was kept.")
+    }
     let uses = reply.toolUsesToRun.filter { $0.name == printReviewToolName }
     if uses.count == 1, let use = uses.first, use.inputProblem == nil {
         return .plan(decodePrintReviewPlan(use.input, context: context))
@@ -824,16 +1176,22 @@ func printReviewEstimatedInputTokens(_ request: AnthropicRequest, imageSizes: [(
 
 /// Output tokens assumed for the estimate: thinking at high effort plus the plan.
 let printReviewEstimatedOutputTokens = 3_000...16_000
+/// Output tokens assumed for the one follow-up (medium effort).
+let printReviewFollowUpOutputTokens = 8_000
 
-/// "about $0.09–$0.36", for a request at list prices (the system prompt and tool counted as a cache write).
+/// "about $0.09–$0.80" at list prices. The low end is one answer; the high end is a long answer plus the one follow-up
+/// Studio may send, which carries the whole first exchange again.
 func printReviewCostRangeText(inputTokens: Int) -> String {
-    func estimate(_ output: Int) -> AnthropicCostEstimate {
+    func estimate(_ input: Int, _ output: Int) -> AnthropicCostEstimate {
         var usage = AnthropicUsage()
-        usage.inputTokens = inputTokens
+        usage.inputTokens = input
         usage.outputTokens = output
         return anthropicEstimatedCost(usage, model: anthropicDefaultModel)
     }
-    let low = estimate(printReviewEstimatedOutputTokens.lowerBound), high = estimate(printReviewEstimatedOutputTokens.upperBound)
+    let low = estimate(inputTokens, printReviewEstimatedOutputTokens.lowerBound)
+    let longest = printReviewEstimatedOutputTokens.upperBound
+    var high = estimate(inputTokens, longest)
+    high.usd += estimate(inputTokens + longest + 200, printReviewFollowUpOutputTokens).usd
     func dollars(_ value: Decimal) -> String {
         var rounded = Decimal(), input = value
         NSDecimalRound(&rounded, &input, 2, .up)
