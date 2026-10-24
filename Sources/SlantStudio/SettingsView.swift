@@ -160,6 +160,8 @@ struct AccountSettingsTab: View {
             SellerAddressSettingsSection() // SellerAddressView.swift
 
             ShopifySettingsSection() // ShopifySettingsView.swift
+
+            ImageTo3DSettingsSection() // ImageTo3DSettingsView.swift: Meshy / Tripo keys
         }
         .formStyle(.grouped)
         .frame(width: 620, height: settingsTabHeight)
