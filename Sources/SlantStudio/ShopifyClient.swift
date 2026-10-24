@@ -3,7 +3,7 @@ import Security
 
 // MARK: - Shopify connection
 //
-// A direct, optional link to the seller's own Shopify store, used only by Import Orders (From Shopify…) and Tracking
+// A direct, optional link to the seller's own Shopify store, used only by Import Orders (Fetch from Shopify) and Tracking
 // for Your Shop (Send Tracking to Shopify…). Only the store's own `*.myshopify.com` host is ever contacted. Two ways
 // in, both set up by the seller:
 //   - a Dev Dashboard app installed on their own store: its client ID and secret buy a short-lived (about 24 hour)
@@ -193,6 +193,10 @@ enum ShopifyError: LocalizedError, Equatable {
     case responseTooLarge
     /// No reply was read: timeout, lost connection and so on. Whether a mutation ran is unknown.
     case transport(String)
+    /// A mutation stopped before it was sent (its token couldn't be fetched, or it was stopped): Shopify did nothing.
+    case notSent(String)
+    /// The connected store isn't the one this task started with, so nothing was sent.
+    case shopChanged
 
     var errorDescription: String? {
         switch self {
@@ -226,6 +230,10 @@ enum ShopifyError: LocalizedError, Equatable {
             return "Shopify’s reply was larger than Studio reads, so it was ignored."
         case .transport(let message):
             return "Studio couldn’t reach Shopify: \(message)"
+        case .notSent(let message):
+            return message
+        case .shopChanged:
+            return "The Shopify connection changed in Settings, so Studio stopped. Nothing more was sent."
         }
     }
 }
@@ -241,7 +249,7 @@ func shopifyMutationOutcomeUnknown(_ error: Error) -> Bool {
         return codes.isEmpty || codes.contains("INTERNAL_SERVER_ERROR")
     case .transport?, .invalidResponse?, .responseTooLarge?:
         return true
-    case .notConnected?, .throttled?, .protectedCustomerData?, .tokenRefused?:
+    case .notConnected?, .throttled?, .protectedCustomerData?, .tokenRefused?, .notSent?, .shopChanged?:
         return false
     case nil:
         return !(error is CancellationError)
@@ -447,12 +455,21 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
     /// A mutation, sent exactly once. Waits beforehand if the bucket is low, but never resends: Shopify's
     /// `fulfillmentCreate` has no idempotency key, so a second send could fulfil twice.
     func mutate(_ mutation: String, variables: [String: Any], estimatedCost: Double = 10) async throws -> [String: Any] {
-        let wait = shopifyThrottleWait(cost: estimatedCost, status: lastThrottle)
-        if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
-        // A token that would expire within five minutes is replaced first, so the mutation isn't refused part-way.
-        if case .app = credential, let token, token.expires.timeIntervalSinceNow < 300 { self.token = nil }
+        let tokenValue: String
         do {
-            return try await send(mutation, variables: variables)
+            let wait = shopifyThrottleWait(cost: estimatedCost, status: lastThrottle)
+            if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            // A token that would expire within five minutes is replaced first, so the mutation isn't refused part-way.
+            if case .app = credential, let token, token.expires.timeIntervalSinceNow < 300 { self.token = nil }
+            // Fetched before the mutation goes out: a token request that fails or times out means nothing was sent.
+            tokenValue = try await accessTokenValue()
+        } catch is CancellationError {
+            throw ShopifyError.notSent("Stopped before anything was sent to Shopify.")
+        } catch {
+            throw ShopifyError.notSent("Not sent: Studio couldn’t get access to Shopify. \(shopifyRedacted(error.localizedDescription, secrets: secrets))")
+        }
+        do {
+            return try await send(mutation, variables: variables, token: tokenValue)
         } catch is CancellationError {
             // Cancelled on the way: Shopify may have acted, so it counts as unconfirmed, never as not sent.
             throw ShopifyError.transport("The request was cancelled before Shopify replied.")
@@ -492,9 +509,11 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
         }
     }
 
-    private func send(_ document: String, variables: [String: Any]) async throws -> [String: Any] {
+    /// `token`, when given, was fetched just before (mutations); otherwise the current one is used or fetched.
+    private func send(_ document: String, variables: [String: Any], token preparedToken: String? = nil) async throws -> [String: Any] {
         guard let url = shopifyGraphQLURL(shop: shop) else { throw ShopifyError.notConnected }
-        let tokenValue = try await accessTokenValue()
+        let tokenValue: String
+        if let preparedToken { tokenValue = preparedToken } else { tokenValue = try await accessTokenValue() }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -575,12 +594,24 @@ func shopifyInstallationScopes(_ data: [String: Any]) -> Set<String> {
     private var client: ShopifyClient?
     /// Tracking sends whose outcome wasn't confirmed this session, by Slant order ID. Memory only.
     @Published var unconfirmedTrackingSends: [String: Date] = [:]
+    /// Send Tracking to Shopify sheets open now. Each is tied to the store it opened with, so the store can't be
+    /// connected, replaced or disconnected under it.
+    @Published private(set) var openTrackingSheets = 0
 
     private init() {
         shop = UserDefaults.standard.string(forKey: Self.shopDefaultsKey).flatMap(shopifyShopDomain)
     }
 
     var isConfigured: Bool { shop != nil }
+
+    func trackingSheetOpened() { openTrackingSheets += 1 }
+    func trackingSheetClosed() { openTrackingSheets = max(0, openTrackingSheets - 1) }
+
+    /// Why Connect or Disconnect must wait, or nil: a Shopify request (a fetch, a check or a send) is running, or
+    /// Send Tracking to Shopify is open.
+    var connectionChangeBlockedReason: String? {
+        shopifyConnectionChangeBlockedReason(busy: busy, openTrackingSheets: openTrackingSheets)
+    }
 
     /// The client for the saved connection, reading the Keychain the first time.
     func currentClient() throws -> ShopifyClient {
@@ -595,6 +626,10 @@ func shopifyInstallationScopes(_ data: [String: Any]) -> Set<String> {
 
     /// Saves a connection that has just passed Test Connection, replacing any other.
     func save(shop: String, credential: ShopifyCredential, client: ShopifyClient) throws {
+        // Test Connection itself holds `busy`, so only an open tracking sheet stops the save here.
+        if openTrackingSheets > 0, let reason = shopifyConnectionChangeBlockedReason(busy: false, openTrackingSheets: openTrackingSheets) {
+            throw StudioError(reason)
+        }
         try ShopifyKeychainStore.save(ShopifyStoredConnection(shop: shop, credential: credential))
         UserDefaults.standard.set(shop, forKey: Self.shopDefaultsKey)
         self.client?.invalidate()
@@ -604,6 +639,7 @@ func shopifyInstallationScopes(_ data: [String: Any]) -> Set<String> {
 
     /// Deletes the Keychain item and forgets the shop and token.
     func disconnect() throws {
+        if let reason = connectionChangeBlockedReason { throw StudioError(reason) }
         try ShopifyKeychainStore.delete()
         UserDefaults.standard.removeObject(forKey: Self.shopDefaultsKey)
         client?.invalidate()
@@ -612,13 +648,33 @@ func shopifyInstallationScopes(_ data: [String: Any]) -> Set<String> {
     }
 }
 
+func shopifyConnectionChangeBlockedReason(busy: Bool, openTrackingSheets: Int) -> String? {
+    if openTrackingSheets > 0 { return "Close Send Tracking to Shopify first: it’s tied to the store it opened with." }
+    if busy { return "Wait for the current Shopify task to finish." }
+    return nil
+}
+
 /// What Test Connection found.
 struct ShopifyConnectionTest: Equatable {
     var shopName: String
     var scopes: ShopifyScopeSummary
+    /// Shopify's public name for the store's plan ("Basic", "Grow", …), when it said.
+    var planName: String? = nil
+    var partnerDevelopment = false
+
+    var customerDataLikelyWithheld: Bool {
+        shopifyPlanLikelyWithholdsCustomerData(planName: planName, partnerDevelopment: partnerDevelopment)
+    }
 }
 
-let shopifyTestQuery = "query StudioShop { shop { name myshopifyDomain } currentAppInstallation { accessScopes { handle } } }"
+/// `plan.publicDisplayName` replaces the deprecated `plan.displayName`.
+let shopifyTestQuery = "query StudioShop { shop { name myshopifyDomain plan { publicDisplayName partnerDevelopment } } currentAppInstallation { accessScopes { handle } } }"
+
+/// Test Connection's status line: the store, its plan and what Studio can do.
+func shopifyConnectionStatusLine(_ result: ShopifyConnectionTest) -> String {
+    let plan = result.planName.map { " (\($0) plan)" } ?? ""
+    return "Connected to \(result.shopName)\(plan). \(shopifyScopeStatusLine(result.scopes))"
+}
 
 /// Reads Test Connection's reply. The store must be the one the seller typed.
 func shopifyConnectionTest(_ data: [String: Any], expectedShop: String) throws -> ShopifyConnectionTest {
@@ -629,5 +685,9 @@ func shopifyConnectionTest(_ data: [String: Any], expectedShop: String) throws -
         throw ShopifyError.invalidResponse("Shopify answered for a different store (\(domain)).")
     }
     let name = ((shop["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    return ShopifyConnectionTest(shopName: name.isEmpty ? domain : name, scopes: shopifyScopeSummary(shopifyInstallationScopes(data)))
+    let plan = shop["plan"] as? [String: Any]
+    let planName = ((plan?["publicDisplayName"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return ShopifyConnectionTest(shopName: name.isEmpty ? domain : name, scopes: shopifyScopeSummary(shopifyInstallationScopes(data)),
+                                 planName: planName.isEmpty ? nil : String(planName.prefix(60)),
+                                 partnerDevelopment: (plan?["partnerDevelopment"] as? Bool) ?? false)
 }

@@ -43,7 +43,7 @@ let shopifySetupSteps = """
 3. Install the app on your store, then copy its client ID and secret from the app’s Settings.
 """
 
-/// Optional: the seller's own Shopify store, for Import Orders › From Shopify… and Send Tracking to Shopify….
+/// Optional: the seller's own Shopify store, for Import Orders › Fetch from Shopify and Send Tracking to Shopify….
 /// The credentials go to their own Keychain item; nothing is sent anywhere but the store's myshopify.com address.
 struct ShopifySettingsSection: View {
     @EnvironmentObject var store: StudioStore
@@ -66,9 +66,14 @@ struct ShopifySettingsSection: View {
                     Button("Test Connection") { testSaved() }
                         .disabled(connection.busy || testing)
                     Button("Disconnect…", role: .destructive) { confirmDisconnect = true }
-                        .disabled(connection.busy || testing)
+                        .disabled(connection.connectionChangeBlockedReason != nil || testing)
+                        .help(connection.connectionChangeBlockedReason ?? "Remove the Shopify details from this Mac")
                     Spacer()
                     if testing { ProgressView().controlSize(.small) }
+                }
+                if connection.openTrackingSheets > 0 {
+                    Text("Send Tracking to Shopify is open, so the store can’t be changed until it’s closed.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 TextField("Store address", text: $shopField, prompt: Text("your-store.myshopify.com"))
@@ -86,7 +91,7 @@ struct ShopifySettingsSection: View {
                 }
                 HStack {
                     Button("Connect & Test") { connect() }
-                        .disabled(shopifyShopDomain(shopField) == nil || connection.busy || testing)
+                        .disabled(shopifyShopDomain(shopField) == nil || connection.connectionChangeBlockedReason != nil || testing)
                     Spacer()
                     if testing { ProgressView().controlSize(.small) }
                 }
@@ -107,7 +112,7 @@ struct ShopifySettingsSection: View {
                     Text(shopifySetupSteps)
                     Text("Shopify shares customers’ names and addresses with custom apps on its Grow plan or higher.")
                 }
-                Text("Used by Import Orders › From Shopify… and Send Tracking to Shopify…. The details are kept in the macOS Keychain on this Mac, and Studio contacts only your store’s myshopify.com address.")
+                Text("Used by Import Orders › Fetch from Shopify and Send Tracking to Shopify…. The details are kept in the macOS Keychain on this Mac, and Studio contacts only your store’s myshopify.com address.")
                 Link("Shopify’s Guide to Dev Dashboard Apps", destination: URL(string: "https://help.shopify.com/en/manual/apps/app-types/custom-apps")!)
             }
             .settingsFooterLayout()
@@ -143,7 +148,7 @@ struct ShopifySettingsSection: View {
                 return
             }
             clientID = ""; clientSecret = ""; accessToken = ""; shopField = ""
-            status = "Connected to \(result.shopName). \(shopifyScopeStatusLine(result.scopes))"
+            show(result)
             store.activities.insert(Activity(title: "Connect Shopify", detail: "Connected", success: true), at: 0)
         } failure: {
             client.invalidate()
@@ -155,12 +160,16 @@ struct ShopifySettingsSection: View {
         problem = nil
         do {
             let client = try connection.currentClient()
-            run(client) { result in
-                status = "Connected to \(result.shopName). \(shopifyScopeStatusLine(result.scopes))"
-            } failure: {}
+            run(client) { result in show(result) } failure: {}
         } catch {
             problem = shopifyRedacted(error.localizedDescription)
         }
+    }
+
+    /// The store, its plan and scopes; on a plan that withholds customers' names and addresses, a warning too.
+    private func show(_ result: ShopifyConnectionTest) {
+        status = shopifyConnectionStatusLine(result)
+        problem = result.customerDataLikelyWithheld ? shopifyCustomerDataPlanAdvice : nil
     }
 
     /// The read-only shop query. Marks the connection busy, so a fetch or send can't start alongside.
@@ -181,7 +190,7 @@ struct ShopifySettingsSection: View {
     }
 
     private func disconnect() {
-        guard !connection.busy else { problem = "Wait for the current Shopify task to finish."; return }
+        if let reason = connection.connectionChangeBlockedReason { problem = reason; return }
         do {
             try connection.disconnect()
             status = nil

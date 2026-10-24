@@ -224,7 +224,9 @@ final class OrderImportTests: XCTestCase {
         let body = try XCTUnwrap(check.body)
         XCTAssertEqual(body["platformId"] as? String, "platform-1")
         let metadata = try XCTUnwrap(body["metadata"] as? [String: Any])
-        XCTAssertEqual(metadata as? [String: String], ["source": "shopify", "sourceOrderId": "#1001"])
+        // Shopify drafts also record their items for Send Tracking (ShopifyOrderMatching.swift); a CSV has no store.
+        XCTAssertEqual(metadata as? [String: String], ["source": "shopify", "sourceOrderId": "#1001",
+                                                       "sourceItems": #"[{"quantity":2,"sku":"TIDY"},{"quantity":1,"sku":"CLIP-2"}]"#])
         let items = try XCTUnwrap(body["items"] as? [[String: Any]])
         XCTAssertEqual(items.map { $0["quantity"] as? Int }, [2, 1])
         XCTAssertEqual(items.map { $0["publicFileServiceId"] as? String }, ["file-TIDY", "file-clip-2"])
