@@ -48,7 +48,7 @@ func overhangShare(_ mesh: STLMesh) -> OverhangShare {
 }
 
 /// Overhangs on less than this share of the surface count as minor: "checks found no problems" allows them.
-let printReviewOverhangLimit = 0.05
+let printReviewOverhangLimit = 0.02
 
 extension OverhangShare {
     /// Under `printReviewOverhangLimit` of the surface.

@@ -32,9 +32,9 @@ let replicaTriangleTarget = imageTo3DDefaultTriangleTarget
 let replicaDisplayTriangleTarget = 150_000
 /// A display piece is simplified only above this, well below the 500,000-triangle import limit.
 let replicaDisplayTriangleCeiling = 200_000
-/// "Checks found no problems" needs overhangs (faces down more steeply than 45° from vertical) on at most this
+/// "Checks found no problems" needs overhangs (faces down more steeply than 45° from vertical) on under this
 /// share of the surface: more usually needs supports or another orientation.
-let replicaOverhangShareLimit = 0.02
+let replicaOverhangShareLimit = printReviewOverhangLimit
 /// Repair or simplify may remove loose fragments and change the size; beyond this share Studio fits the size again.
 let replicaResizeTolerance = 0.001
 
@@ -642,16 +642,16 @@ func replicaSummaryLines(_ processed: ReplicaProcessed) -> [String] {
     return lines
 }
 
-/// Whether Studio's own checks found nothing: a sound mesh, no thin walls or small features, and overhangs on at
-/// most `replicaOverhangShareLimit` of the surface. Only then may the sheet say `replicaNoProblemsLine`.
+/// Whether Studio's own checks found nothing: a sound mesh, no thin walls or small features, and overhangs on under
+/// `replicaOverhangShareLimit` of the surface. Only then may the sheet say `replicaNoProblemsLine`.
 func replicaChecksFoundNoProblems(_ processed: ReplicaProcessed) -> Bool {
     meshHealthIsSound(processed.health)
         && (processed.wallThickness.map { wallThicknessSummary($0).isClear } ?? false)
-        && processed.overhang.fraction <= replicaOverhangShareLimit
+        && processed.overhang.isMinor
 }
 
 /// What "no problems" covers, so it isn't read as more than was checked.
-let replicaNoProblemsLine = "Studio’s checks found no problems: the mesh is closed, no walls are thinner than 2 mm, no small features were found, and at most \(Int(replicaOverhangShareLimit * 100))% of the surface overhangs more than 45°. Strength and fit aren’t checked."
+let replicaNoProblemsLine = "Studio’s checks found no problems: the mesh is closed, no walls are thinner than 2 mm, no small features were found, and under \(Int(replicaOverhangShareLimit * 100))% of the surface overhangs more than 45°. Strength and fit aren’t checked."
 
 /// Source details for the copy: where it came from, display-only. The date isn't recorded.
 func replicaSourceDetails(service: ImageTo3DService) -> ModelSourceDetails {

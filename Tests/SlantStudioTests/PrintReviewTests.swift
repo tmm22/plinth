@@ -108,7 +108,7 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertTrue(lines.contains { $0.hasPrefix("If turned, overhangs would be: upside down 0%;") })
         // Says what was checked, overhangs included.
         XCTAssertEqual(lines.last, printReviewNoProblemsLine)
-        XCTAssertTrue(printReviewNoProblemsLine.contains("overhangs on under 5% of the surface"))
+        XCTAssertTrue(printReviewNoProblemsLine.contains("overhangs on under 2% of the surface"))
     }
 
     func testOverhangsAboveTheLimitMeanTheChecksFoundSomething() throws {
@@ -117,8 +117,8 @@ final class PrintReviewTests: XCTestCase {
             PrintReviewMeasurements(sizeMM: sound.sizeMM, origin: sound.origin, triangles: sound.triangles, health: sound.health,
                                     wall: sound.wall, flatBase: sound.flatBase, overhang: overhang, turns: sound.turns)
         }
-        XCTAssertTrue(with(OverhangShare(overhangAreaMM2: 20, surfaceAreaMM2: 1000)).checksFoundNoProblems)
-        let steep = with(OverhangShare(overhangAreaMM2: 50, surfaceAreaMM2: 1000))
+        XCTAssertTrue(with(OverhangShare(overhangAreaMM2: 10, surfaceAreaMM2: 1000)).checksFoundNoProblems)
+        let steep = with(OverhangShare(overhangAreaMM2: 20, surfaceAreaMM2: 1000))
         XCTAssertFalse(steep.checksFoundNoProblems)
         XCTAssertFalse(printReviewFactLines(steep).contains(printReviewNoProblemsLine))
         XCTAssertFalse(printReviewComparisonLines(before: sound, after: steep).contains(printReviewNoProblemsLine))
