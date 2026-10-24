@@ -162,6 +162,7 @@ struct AccountSettingsTab: View {
             ShopifySettingsSection() // ShopifySettingsView.swift
 
             AnthropicSettingsSection() // AnthropicSettingsView.swift
+            ImageTo3DSettingsSection() // ImageTo3DSettingsView.swift: Meshy / Tripo keys
             ImageSharingConsentSettingsSection() // ImageSharingConsent.swift
         }
         .formStyle(.grouped)
