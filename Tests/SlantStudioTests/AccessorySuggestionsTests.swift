@@ -343,7 +343,7 @@ final class AccessorySuggestionsTests: XCTestCase {
     /// Regression: only the title and description used to be checked.
     func testEveryIdeaStringIsChecked() {
         let bases: [(String, AnthropicJSON)] = [
-            ("who_wants_it", "Parents of a newborn baby."), ("caution", "Keep away from the steering column."),
+            ("who_wants_it", "Parents of a newborn baby."), ("caution", "It clips onto the steering column."),
             ("hardware", ["2 × M3 screws", "Picatinny rail screw"])
         ]
         for (key, value) in bases {
@@ -366,35 +366,142 @@ final class AccessorySuggestionsTests: XCTestCase {
             let input = suggestionInput([ideaJSON("Cable Clip")])
             return input.setting("object", to: (input["object"] ?? .null).setting(key, to: value))
         }
-        let cases: [(String, AnthropicJSON)] = [("name", "Air pistol"), ("seen_text", "AR-15"), ("alternatives", ["Baby monitor"]),
-                                                ("features", ["Picatinny rail"]), ("evidence", "A rolling tray with a grinder.")]
+        // Weapons, drug items and children's products, by name or readable text, refuse the object.
+        let cases: [(String, AnthropicJSON)] = [("name", "Air pistol"), ("seen_text", "AR-15"), ("name", "Vape pen"),
+                                                ("name", "Baby monitor")]
         for (key, value) in cases {
             let set = accessorySuggestionsParse(object(key, value))
-            XCTAssertTrue(set.objectDenied, key)
+            XCTAssertTrue(set.objectDenied, "\(key) \(value)")
             XCTAssertNil(set.identification, key)
             XCTAssertTrue(set.ideas.isEmpty, key)
             guard case .objectDenied = accessorySuggestionOutcome(toolReply(object(key, value))) else { return XCTFail(key) }
         }
-        // Parts named innocently in an object's details don't refuse it.
-        let bicycle = object("features", ["Front fork", "Brake levers", "Steering head"])
-        XCTAssertFalse(accessorySuggestionsParse(bicycle).objectDenied)
+        // Other categories, features and evidence never refuse the object; a denied alternative is just dropped.
+        for (key, value) in [("name", AnthropicJSON.string("Bike helmet")), ("features", ["Picatinny rail", "Front fork"]),
+                             ("evidence", "A rolling tray with a grinder."), ("name", "Car steering wheel cover")] {
+            XCTAssertFalse(accessorySuggestionsParse(object(key, value)).objectDenied, "\(key) \(value)")
+        }
+        let alternatives = accessorySuggestionsParse(object("alternatives", ["Baby bottle", "Thermos", "Rifle scope"]))
+        XCTAssertEqual(alternatives.identification?.alternatives, ["Thermos"])
         // The seller's hint counts as what the object is.
         XCTAssertTrue(accessorySuggestionsParse(suggestionInput([ideaJSON("Cable Clip")]), hint: "My shotgun").objectDenied)
+        XCTAssertFalse(accessorySuggestionsParse(suggestionInput([ideaJSON("Cable Clip")]), hint: "Bike helmet").objectDenied)
         XCTAssertEqual(accessorySuggestBlockedReason(photoCount: 1, preparingPhotos: 0, claudeConfigured: true, suggesting: false,
                                                      designStarted: false, hint: "Baby car seat", ideaCount: 0, mode: .first),
                        accessoryObjectDeniedText)
+        XCTAssertNil(accessorySuggestBlockedReason(photoCount: 1, preparingPhotos: 0, claudeConfigured: true, suggesting: false,
+                                                   designStarted: false, hint: "Bike helmet", ideaCount: 0, mode: .first))
+    }
+
+    /// Regression: these ordinary objects used to be refused, or lose all their ideas.
+    func testOrdinaryObjectsKeepTheirIdeas() {
+        func reply(name: String, seenText: String = "", alternatives: [String] = [], ideas: [AnthropicJSON]) -> AccessorySuggestionSet {
+            var input = suggestionInput(ideas, name: name)
+            let object = (input["object"] ?? .null).setting("seen_text", to: .string(seenText))
+                .setting("alternatives", to: .array(alternatives.map { .string($0) }))
+            input = input.setting("object", to: object)
+            return accessorySuggestionsParse(input)
+        }
+        let helmet = reply(name: "Bike helmet", ideas: [ideaJSON("Helmet Wall Hook"), ideaJSON("Helmet Light Mount")])
+        XCTAssertEqual(helmet.ideas.count, 2)
+        let bottle = reply(name: "Sports water bottle", alternatives: ["Baby bottle", "Thermos flask"],
+                           ideas: [ideaJSON("Bottle Cage Adapter"), ideaJSON("Bottle Carry Clip")])
+        XCTAssertEqual(bottle.ideas.count, 2)
+        XCTAssertEqual(bottle.identification?.alternatives, ["Thermos flask"])
+        let dishwasher = reply(name: "Kitchen timer", seenText: "DISHWASHER SAFE", ideas: [ideaJSON("Timer Wall Mount")])
+        XCTAssertEqual(dishwasher.ideas.count, 1)
+        XCTAssertEqual(dishwasher.identification?.seenText, "DISHWASHER SAFE")
+        let glueGun = reply(name: "Hot glue gun", ideas: [
+            ideaJSON("Glue Gun Stand", measurements: [measurementJSON("Handle width", how: "Across the pistol-grip handle")]),
+            ideaJSON("Nozzle Rest", description: "A rest that holds the glue gun by its pistol grip.")])
+        XCTAssertEqual(glueGun.ideas.count, 2)
+        let wheel = reply(name: "Sim racing steering wheel", ideas: [
+            ideaJSON("Wheel Desk Clamp", description: "A desk clamp for the steering wheel base."),
+            ideaJSON("Button Box Mount", measurements: [measurementJSON("Rim thickness", how: "Across the steering wheel rim")])])
+        XCTAssertEqual(wheel.ideas.count, 2)
+        XCTAssertFalse(wheel.objectDenied)
+        // A real car's steering wheel isn't a game controller.
+        XCTAssertTrue(reply(name: "Car dashboard", ideas: [ideaJSON("Wheel Clamp", description: "A clamp for the steering wheel.")]).ideas.isEmpty)
+    }
+
+    func testProseNegationIsReadInCaptionsOnly() {
+        let kept = [
+            ideaJSON("Cable Clip", caution: "PLA isn't food-safe."),
+            ideaJSON("Magnet Board", caution: "Small magnets: not for children."),
+            ideaJSON("Pill Box Lid", caution: "This isn't a medical device."),
+            ideaJSON("Bag Hook", caution: "Not strong enough for heavy bags."),
+            ideaJSON("Desk Tidy", caution: "Keep away from the brake on a chair."),
+            ideaJSON("Pen Cup", measurements: [measurementJSON("Width", how: "Don't use a baby spoon to measure")])
+        ]
+        let set = accessorySuggestionsParse(suggestionInput(kept))
+        XCTAssertEqual(set.ideas.map(\.title), ["Cable Clip", "Magnet Board", "Pill Box Lid", "Bag Hook", "Desk Tidy", "Pen Cup"])
+        XCTAssertEqual(set.ideas[0].caution, "PLA isn't food-safe.", "A negated claim isn't blanked")
+        XCTAssertEqual(set.ideas[3].caution, "Not strong enough for heavy bags.")
+        // Negation must be in the same sentence and within a few words.
+        XCTAssertTrue(accessorySuggestionIsDenied("Not hard. Holds a baby bottle.", kind: .prose))
+        XCTAssertTrue(accessorySuggestionIsDenied("No supports needed and it holds the baby bottle upright.", kind: .prose))
+        // Titles and descriptions only excuse "not a/not for" before a medical word.
+        XCTAssertTrue(accessorySuggestionIsDenied("Not a Gun Holster"))
+        XCTAssertTrue(accessorySuggestionIsDenied("Isn't food-safe"))
+        XCTAssertFalse(accessorySuggestionIsDenied("Not a medical device"))
+        let titled = accessorySuggestionsParse(suggestionInput([ideaJSON("Not a Gun Holster"), ideaJSON("Lid", description: "A lid that is never food-safe.")]))
+        XCTAssertTrue(titled.ideas.isEmpty)
+        XCTAssertEqual(titled.leftOut, 2)
+    }
+
+    func testFalsePositivesAndBypasses() {
+        for survivor in ["Shotgun Mic Mount", "Shotgun Microphone Clip", "Surge Suppressor Bracket", "Impact Gun Holder", "Rivet Gun Rack",
+                         "Screw Gun Stand", "Blow Gun Hook", "Air Gun Hook for the Compressor", "Paint Gun Stand", "Temperature Gun Holster",
+                         "Temp Gun Case", "IR Temperature Gun Clip", "Foam Gun Holder", "Hot Glue Gun Stand", "Soldering Gun Rest",
+                         "Grease Gun Bracket", "Fork Mount Adapter", "Bike Fork Light Mount", "Tuning Fork Stand",
+                         "Silencer Box for Air Compressor", "Pistol Grip Glue Gun Stand", "Safety Glasses Holder", "Helmet Light Mount",
+                         "Knee Pad Case", "Face Shield Storage Box", "Straw Hat Hook", "Strawberry Planter", "Lid Organiser",
+                         "Two strong magnets hold it", "Kidney Shaped Pen Tray"] {
+            XCTAssertNil(accessorySuggestionDeniedCategory(survivor), "\(survivor) shouldn't be dropped")
+        }
+        let bypasses: [(String, String)] = [
+            ("Kids Tablet Stand", "children"), ("Toy Box for Your Kids", "children"), ("Child Lock for Cabinets", "children"),
+            ("Self-Defence Keychain", "weapons"), ("Self Defense Keyring", "weapons"), ("Kubotan Keyring", "weapons"),
+            ("Glock Holster", "weapons"), ("Sig Sauer Rail Cover", "weapons"), ("Smith & Wesson Grip", "weapons"),
+            ("Beretta Display Stand", "weapons"), ("Ruger Holster", "weapons"), ("Colt Grip Panel", "weapons"),
+            ("Carabiner Clip", "people and pets"), ("Step Stool", "people and pets"), ("Hammock Hook", "people and pets"),
+            ("Climbing Hold Set", "people and pets"),
+            ("Vape Pen Stand", "drugs"), ("Pre-Roll Case", "drugs"), ("Stash Box", "drugs"),
+            ("Dosing Funnel", "food contact"), ("Coffee Scoop", "food contact"), ("Measuring Scoop", "food contact"),
+            ("Pour-Over Dripper Stand", "food contact"), ("Spatula Rest", "food contact"), ("Food Container Lid", "food contact"),
+            ("Reusable Straw Case", "food contact"), ("Straw Cleaner", "food contact")
+        ]
+        for (text, category) in bypasses {
+            XCTAssertEqual(accessorySuggestionDeniedCategory(text), category, text)
+        }
     }
 
     // MARK: Claims
+
+    func testStrongAboutHardwareAndReliefClaims() {
+        for fact in ["Holds two strong magnets.", "Strong magnets keep it shut.", "Mount it with strong double-sided tape.",
+                     "Uses strong neodymium magnets.", "A relief map stand.", "Use 40% infill."] {
+            XCTAssertFalse(accessorySuggestionHasClaim(fact), fact)
+        }
+        for claim in ["A strong stand.", "Strong enough for a laptop.", "Stronger than the original.", "Relieves neck pain.",
+                      "Gives relief from wrist strain.", "Posture relief for gamers.", "95% success rate.", "Strength improved by 40 percent."] {
+            XCTAssertTrue(accessorySuggestionHasClaim(claim), claim)
+        }
+        let set = accessorySuggestionsParse(suggestionInput([
+            ideaJSON("Magnetic Lid", description: "A lid held shut by two strong magnets."),
+            ideaJSON("Wrist Rest", description: "A wrist rest that relieves wrist pain.")]))
+        XCTAssertEqual(set.ideas.map(\.title), ["Magnetic Lid"])
+        XCTAssertEqual(set.leftOut, 1)
+    }
 
     func testClaimsBlankCaptionsAndDropDescriptions() {
         for claim in ["It is safe for children.", "Food-safe when printed in PETG.", "Very strong design.", "FDA approved.",
                       "Guaranteed to last.", "Certified parts.", "A perfect fit.", "It fits perfectly.", "Our best-selling stand.",
                       "A bestseller.", "This sells well.", "Popular with gamers.", "Always in demand.", "High demand item.",
-                      "Fits 95% of models.", "Child-safe edges.", "Sturdy enough for daily use."] {
+                      "30% stronger than most.", "Child-safe edges.", "Sturdy enough for daily use."] {
             XCTAssertTrue(accessorySuggestionHasClaim(claim, includeSturdy: true), claim)
         }
-        for fine in ["A wide, stable base.", "A safe place to keep the remote.", "Rounded edges.", "Use PETG outdoors.", "Hold it with two screws."] {
+        for fine in ["A wide, stable base.", "A safe place to keep the remote.", "Rounded edges.", "Use PETG outdoors.", "Hold it with two screws.", "Fits 95% of models.", "Use 40% infill."] {
             XCTAssertFalse(accessorySuggestionHasClaim(fine, includeSturdy: true), fine)
         }
         XCTAssertFalse(accessorySuggestionHasClaim("A sturdy base with thick walls."), "Sturdy is a design intent in a description")
@@ -404,7 +511,7 @@ final class AccessorySuggestionsTests: XCTestCase {
             .setting("who_wants_it", to: "Popular with commuters.")
         let input = suggestionInput([captions, ideaJSON("Desk Stand", description: "A strong stand for the headphones."),
                                      ideaJSON("Wall Mount", description: "A sturdy wall mount.")], notes: "Sells well on Etsy.")
-            .setting("object", to: (suggestionInput([])["object"] ?? .null).setting("evidence", to: "95% sure it is headphones."))
+            .setting("object", to: (suggestionInput([])["object"] ?? .null).setting("evidence", to: "A popular pair of headphones."))
         let set = accessorySuggestionsParse(input)
         XCTAssertEqual(set.ideas.map(\.title), ["Cable Clip", "Wall Mount"])
         XCTAssertEqual(set.ideas[0].whoWantsIt, "")
@@ -446,12 +553,12 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertEqual(brief.measurements.map(\.label), ["Desk thickness", "headband WIDTH", "Ear cup depth"])
         XCTAssertEqual(brief.measurements[1].millimetres, "42.5", "A typed row is never replaced")
         XCTAssertEqual(brief.measurements[1].method, .estimate)
-        XCTAssertEqual(accessoryMeasurementGuidanceCaption(brief.measurements[1]), "Use calipers: Calipers across the top")
+        XCTAssertEqual(accessoryMeasurementGuidanceCaption(brief.measurements[1]), "Use calipers: across the top")
         XCTAssertFalse(brief.measurements[1].addedByIdea, "A row the seller typed stays theirs")
         XCTAssertEqual(brief.measurements[2].millimetres, "")
         XCTAssertEqual(brief.measurements[2].method, .ruler)
         XCTAssertTrue(brief.measurements[2].addedByIdea)
-        XCTAssertEqual(accessoryMeasurementGuidanceCaption(brief.measurements[2]), "Use a ruler: Ruler from front to back")
+        XCTAssertEqual(accessoryMeasurementGuidanceCaption(brief.measurements[2]), "Use a ruler: from front to back")
         XCTAssertEqual(accessoryMeasurementGuidanceHow(brief.measurements[2]), "Ruler from front to back")
         XCTAssertNil(accessoryMeasurementGuidanceCaption(brief.measurements[0]))
         // Applying it again adds nothing.
@@ -463,6 +570,33 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertEqual(accessoryMeasurementGuidanceCaption(estimated), "Estimate it: By eye")
         estimated.guidance?.method = .ruler
         XCTAssertEqual(accessoryMeasurementGuidanceCaption(estimated), "Use a ruler: By eye")
+    }
+
+    /// Regression: the caption used to repeat the tool ("Use calipers: Calipers across…").
+    func testCaptionDoesntRepeatTheTool() {
+        func caption(_ how: String, _ method: AccessoryMeasurementMethod) -> String? {
+            accessoryMeasurementGuidanceCaption(AccessoryMeasurement(label: "Gap", guidance: AccessoryMeasurementGuidance(label: "Gap", how: how, method: method)))
+        }
+        XCTAssertEqual(caption("Calipers across the top", .calipers), "Use calipers: across the top")
+        XCTAssertEqual(caption("With digital calipers, across the top", .calipers), "Use calipers: across the top")
+        XCTAssertEqual(caption("Using a ruler: from the floor", .ruler), "Use a ruler: from the floor")
+        XCTAssertEqual(caption("Tape measure around the post", .ruler), "Use a ruler: around the post")
+        XCTAssertEqual(caption("Across the widest point", .calipers), "Use calipers: Across the widest point")
+        XCTAssertEqual(caption("Ruler from the edge", .calipers), "Use calipers: Ruler from the edge", "Only the method's own tool is dropped")
+        XCTAssertEqual(caption("Calipers", .calipers), "Use calipers: Calipers", "Nothing left: the text stays")
+        XCTAssertTrue(accessorySuggestionSystemPrompt.contains("how without naming the tool (such as \"Across the widest point"))
+        XCTAssertFalse(accessorySuggestionSystemPrompt.contains("(such as \"Calipers across"))
+    }
+
+    func testFocusGoesToTheFirstRowTheIdeaAdded() {
+        var brief = AccessoryDesignBrief(description: "", measurements: [AccessoryMeasurement(label: "My own row", millimetres: "", method: .ruler)])
+        brief = accessoryBriefApplyingIdea(brief, idea: idea)
+        XCTAssertEqual(brief.measurements.map(\.label), ["My own row", "Headband width", "Ear cup depth"])
+        XCTAssertEqual(accessoryFirstIdeaRowToMeasure(brief), brief.measurements[1].id, "Never the seller's own empty row")
+        brief.measurements[1].millimetres = "42"
+        XCTAssertEqual(accessoryFirstIdeaRowToMeasure(brief), brief.measurements[2].id)
+        brief.measurements[2].millimetres = "20"
+        XCTAssertNil(accessoryFirstIdeaRowToMeasure(brief))
     }
 
     private let otherIdea = AccessoryIdea(title: "Cable Hook", description: "A hook that holds the cable under the desk.",
@@ -477,7 +611,7 @@ final class AccessorySuggestionsTests: XCTestCase {
         let b = accessoryBriefApplyingIdea(a, idea: otherIdea)
         XCTAssertEqual(b.description, otherIdea.description)
         XCTAssertEqual(b.measurements.map(\.label), ["Cable diameter", "HEADBAND width"])
-        XCTAssertEqual(accessoryMeasurementGuidanceCaption(b.measurements[1]), "Use a ruler: Ruler across the band")
+        XCTAssertEqual(accessoryMeasurementGuidanceCaption(b.measurements[1]), "Use a ruler: across the band")
         // A → A: unchanged.
         let again = accessoryBriefApplyingIdea(a, idea: idea)
         XCTAssertEqual(again.measurements.map(\.label), a.measurements.map(\.label))
@@ -488,7 +622,7 @@ final class AccessorySuggestionsTests: XCTestCase {
         let switched = accessoryBriefApplyingIdea(typed, idea: otherIdea)
         XCTAssertEqual(switched.measurements.map(\.label), ["Headband width", "Cable diameter"])
         XCTAssertEqual(switched.measurements[0].millimetres, "42")
-        XCTAssertEqual(accessoryMeasurementGuidanceCaption(switched.measurements[0]), "Use a ruler: Ruler across the band")
+        XCTAssertEqual(accessoryMeasurementGuidanceCaption(switched.measurements[0]), "Use a ruler: across the band")
         // A typed size on a row B doesn't need is still kept.
         var typedDepth = a
         typedDepth.measurements[1].millimetres = "20"
@@ -690,9 +824,25 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertEqual(accessorySuggestMode(ideaCount: 3, stale: false, attempted: true), .more)
         XCTAssertEqual(accessorySuggestMode(ideaCount: 3, stale: true, attempted: true), .again)
         XCTAssertEqual(AccessorySuggestMode.first.buttonTitle, "Suggest Accessories")
-        // With 12 ideas More Ideas can't add any, so Suggest Again (replace) is offered instead.
-        XCTAssertEqual(accessorySuggestMode(ideaCount: 12, stale: false, attempted: true), .again)
-        XCTAssertEqual(accessorySuggestMode(ideaCount: 11, stale: false, attempted: true), .more)
+        // With 12 ideas More Ideas stays in place, disabled, and a separate Suggest Again (replace) is offered.
+        XCTAssertEqual(accessorySuggestMode(ideaCount: 12, stale: false, attempted: true), .more)
+        XCTAssertTrue(accessoryOffersSeparateSuggestAgain(ideaCount: 12, mode: .more))
+        XCTAssertFalse(accessoryOffersSeparateSuggestAgain(ideaCount: 11, mode: .more))
+        XCTAssertFalse(accessoryOffersSeparateSuggestAgain(ideaCount: 12, mode: .again), "A stale list's own button already replaces")
+        XCTAssertEqual(accessorySuggestBlockedReason(photoCount: 1, preparingPhotos: 0, claudeConfigured: true, suggesting: false,
+                                                     designStarted: false, hint: "", ideaCount: 12, mode: .more),
+                       "12 ideas is the most Studio keeps.")
+        // Replacing ideas the seller paid for asks first.
+        XCTAssertTrue(accessorySuggestAgainNeedsConfirmation(ideaCount: 1))
+        XCTAssertFalse(accessorySuggestAgainNeedsConfirmation(ideaCount: 0))
+        XCTAssertTrue(accessoryReplaceIdeasMessage(ideaCount: 12).contains("replaces the 12 ideas you have"))
+        XCTAssertTrue(accessoryReplaceIdeasMessage(ideaCount: 1).contains("billed again"))
+        // An append while the list is folded opens it; a replacement doesn't.
+        let x = UUID(), y = UUID(), z = UUID()
+        XCTAssertTrue(accessoryShouldExpandIdeas(old: [x, y], new: [x, y, z]))
+        XCTAssertFalse(accessoryShouldExpandIdeas(old: [x, y], new: [z]))
+        XCTAssertFalse(accessoryShouldExpandIdeas(old: [], new: [x]))
+        XCTAssertFalse(accessoryShouldExpandIdeas(old: [x, y], new: [x, y]))
 
         func blocked(photos: Int = 1, preparing: Int = 0, configured: Bool = true, suggesting: Bool = false, started: Bool = false,
                      hint: Int = 0, ideas: Int = 0, mode: AccessorySuggestMode = .first) -> String? {
@@ -824,19 +974,25 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertFalse(againText.contains("already suggested"))
     }
 
-    func testADeniedObjectClearsTheIdeas() async {
-        let stub = StubClaude([.success(toolReply(suggestionInput([ideaJSON("Headphone Stand")]))),
-                               .success(toolReply(suggestionInput([ideaJSON("Cable Clip")], name: "Crossbow")))])
+    /// Regression: a refused reply on More Ideas used to throw away the ideas already held.
+    func testARefusedObjectDiscardsOnlyThatReply() async {
+        let stub = StubClaude([.success(toolReply(suggestionInput([ideaJSON("Headphone Stand")], name: "Headphones"))),
+                               .success(toolReply(suggestionInput([ideaJSON("Cable Clip")], name: "Crossbow"))),
+                               .success(toolReply(suggestionInput([ideaJSON("Desk Clip")], name: "Crossbow")))])
         let log = ActivityLog()
         let run = AccessorySuggestionRun(send: { request, _ in try stub.next(request) })
         run.suggest(photos: [photo], hint: "", inputs: inputs, append: false, log: log.record)
         await settle(run)
         run.suggest(photos: [photo], hint: "", inputs: inputs, append: true, log: log.record)
         await settle(run)
-        XCTAssertTrue(run.ideas.isEmpty)
-        XCTAssertNil(run.identification)
-        XCTAssertNil(run.suggestedFor)
+        XCTAssertEqual(run.ideas.map(\.title), ["Headphone Stand"])
+        XCTAssertEqual(run.identification?.name, "Headphones")
+        XCTAssertEqual(run.suggestedFor, inputs)
         XCTAssertEqual(run.message?.text, accessoryObjectDeniedText)
+        // Suggest Again with a refused reply doesn't remove them either.
+        run.suggest(photos: [photo], hint: "", inputs: inputs, append: false, log: log.record)
+        await settle(run)
+        XCTAssertEqual(run.ideas.map(\.title), ["Headphone Stand"])
         XCTAssertTrue(log.entries[1].detail.hasPrefix("Suggest accessories · Object not suggested · about $"))
         XCTAssertFalse(log.entries[1].detail.contains("Crossbow"))
     }

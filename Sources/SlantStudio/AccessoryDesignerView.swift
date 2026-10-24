@@ -105,9 +105,11 @@ struct AccessoryDesignerSheet: View {
     @State private var showAllIdeas = false
     /// "N of the idea's measurements weren't added", shown only while the rows and ideas are as they were.
     @State private var ideaNotice: AccessoryIdeaNotice?
-    /// Asks the form to scroll to Measurements (bumped by Use This Idea).
-    @State private var scrollToMeasurements = 0
+    /// The measurement row Use This Idea scrolls to (a ForEach row's own ID, which a grouped Form can scroll to).
+    @State private var scrollTarget: UUID?
     @FocusState private var focusedSize: UUID?
+    /// Suggest Again waiting for "Replace these ideas?".
+    @State private var confirmReplaceIdeas = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -196,16 +198,27 @@ struct AccessoryDesignerSheet: View {
     private var briefForm: some View {
         ScrollViewReader { proxy in
             briefFormContent
-                .onChange(of: scrollToMeasurements) {
-                    withAnimation { proxy.scrollTo(accessoryMeasurementsSectionID, anchor: .top) }
+                .onChange(of: scrollTarget) { _, target in
+                    guard let target else { return }
+                    withAnimation { proxy.scrollTo(target, anchor: .center) }
                 }
         }
         .onChange(of: brief.description) { _, description in
             // Clearing What to make lets go of the chosen idea.
             if description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { chosenIdea = nil }
         }
-        .onChange(of: suggestions.ideas.map(\.id)) {
+        .onChange(of: suggestions.ideas.map(\.id)) { old, new in
             chosenIdea = accessoryChosenIdeaAfterUpdate(chosenIdea, ideas: suggestions.ideas)
+            // More Ideas added some while the list was folded to the chosen idea: show them.
+            if accessoryShouldExpandIdeas(old: old, new: new) { showAllIdeas = true }
+        }
+        // Return keeps the ideas.
+        .confirmationDialog("Replace these ideas?", isPresented: $confirmReplaceIdeas, titleVisibility: .visible) {
+            Button("Suggest Again") { suggestAgainConfirmed() }
+            Button("Keep These Ideas", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(accessoryReplaceIdeasMessage(ideaCount: suggestions.ideas.count))
         }
     }
 
@@ -244,7 +257,6 @@ struct AccessoryDesignerSheet: View {
                     .disabled(brief.measurements.count >= accessoryMaximumMeasurements)
             } header: {
                 Text("Measurements")
-                    .id(accessoryMeasurementsSectionID)
             } footer: {
                 Text("A photo has no scale, so Claude takes every size from these. Say how you measured: Claude adds more clearance for a rough measurement.")
                     .settingsFooterLayout()
@@ -375,10 +387,17 @@ struct AccessoryDesignerSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     // Never the default button and no shortcut: every press is a billed request.
-                    Button(suggestMode.buttonTitle) { suggestTapped() }
+                    Button(suggestMode.buttonTitle) { suggestTapped(mode: suggestMode) }
                         .buttonStyle(.bordered)
                         .disabled(suggestBlockedReason != nil)
                         .help(suggestHelp)
+                    if accessoryOffersSeparateSuggestAgain(ideaCount: suggestions.ideas.count, mode: suggestMode) {
+                        // The list is full: More Ideas stays (disabled) and Suggest Again replaces, after asking.
+                        Button(AccessorySuggestMode.again.buttonTitle) { suggestTapped(mode: .again) }
+                            .buttonStyle(.bordered)
+                            .disabled(separateSuggestAgainBlockedReason != nil)
+                            .help("Replaces these ideas with a new set. One request, billed again; Studio asks first.")
+                    }
                     if let reason = suggestBlockedReason {
                         Text(reason).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
@@ -449,16 +468,42 @@ struct AccessoryDesignerSheet: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func suggestTapped() {
-        guard suggestBlockedReason == nil else { return }
-        // The same one-time consent as Start Design; Don't Send is the default.
-        runWithImageSharingConsent(.anthropic, request: $consentRequest) { beginSuggesting() }
+    /// The separate Suggest Again beside a full list: the same checks as a replacing press.
+    private var separateSuggestAgainBlockedReason: String? {
+        accessorySuggestBlockedReason(photoCount: photos.count, preparingPhotos: preparingPhotos, claudeConfigured: anthropic.isConfigured,
+                                      suggesting: suggestions.isWorking, designStarted: run != nil, hint: objectHint,
+                                      ideaCount: suggestions.ideas.count, mode: .again)
     }
 
-    private func beginSuggesting() {
-        guard suggestBlockedReason == nil else { return }
+    private func suggestTapped(mode: AccessorySuggestMode) {
+        if mode == .more {
+            guard suggestBlockedReason == nil else { return }
+            send(append: true)
+        } else {
+            guard separateSuggestAgainBlockedReason == nil else { return }
+            // Replacing ideas the seller already paid for asks first; Keep These Ideas is the default.
+            if accessorySuggestAgainNeedsConfirmation(ideaCount: suggestions.ideas.count) {
+                confirmReplaceIdeas = true
+            } else {
+                send(append: false)
+            }
+        }
+    }
+
+    private func suggestAgainConfirmed() {
+        guard separateSuggestAgainBlockedReason == nil else { return }
+        send(append: false)
+    }
+
+    /// The same one-time consent as Start Design; Don't Send is the default.
+    private func send(append: Bool) {
+        runWithImageSharingConsent(.anthropic, request: $consentRequest) { beginSuggesting(append: append) }
+    }
+
+    private func beginSuggesting(append: Bool) {
+        guard (append ? suggestBlockedReason : separateSuggestAgainBlockedReason) == nil else { return }
         suggestions.suggest(photos: photos.map(\.image), hint: objectHint, inputs: currentSuggestionInputs,
-                            append: suggestMode == .more, log: logSuggestion)
+                            append: append, log: logSuggestion)
     }
 
     private func useIdea(_ idea: AccessoryIdea) {
@@ -473,10 +518,10 @@ struct AccessoryDesignerSheet: View {
         startProblem = nil
         ideaNotice = leftOut == 0 ? nil
             : AccessoryIdeaNotice(leftOut: leftOut, measurements: brief.measurements, ideaIDs: suggestions.ideas.map(\.id))
-        // Take the seller to the sizes still to measure.
-        scrollToMeasurements += 1
-        let firstEmpty = brief.measurements.first { $0.millimetres.trimmingCharacters(in: .whitespaces).isEmpty && !$0.label.isEmpty }?.id
-        DispatchQueue.main.async { focusedSize = firstEmpty }
+        // Take the seller to the first size the idea still needs (never a row they added themselves).
+        let target = accessoryFirstIdeaRowToMeasure(brief)
+        scrollTarget = target ?? brief.measurements.first?.id
+        DispatchQueue.main.async { focusedSize = target }
     }
 
     /// The chosen idea's context for the design, kept after the seller edits What to make (they refined the idea; their

@@ -135,7 +135,7 @@ proprietary part, or tolerances finer than about ±0.2 mm.
 seller should test a print first).
 - Photos have no scale, so list the measurements the seller must take for each idea: only those the design needs, \
 usually 1–5. Each has a short, concrete label (such as "Headband width at the top"), where and how to measure it in \
-how (such as "Calipers across the widest point, with the ear cushions on"), and the tool in method: "calipers", \
+how without naming the tool (such as "Across the widest point, with the ear cushions on"), and the tool in method: "calipers", \
 "ruler" or "estimate". When two ideas need the same size, use exactly the same label for it, so a size the seller \
 has typed carries across.
 - Put anything the seller should know about an idea in caution, such as "Fit depends on the case; measure with the \
@@ -215,7 +215,7 @@ let accessorySuggestTool = AnthropicTool(
                                 "type": "object",
                                 "properties": [
                                     "label": accessoryStringSchema("Short and concrete, such as \"Headband width at the top\"."),
-                                    "how": accessoryStringSchema("Where and how to measure it."),
+                                    "how": accessoryStringSchema("Where and how to measure it, without naming the tool (that goes in method)."),
                                     "method": ["type": "string", "enum": ["calipers", "ruler", "estimate"], "description": "The tool the seller should use."]
                                 ],
                                 "required": ["label", "how", "method"],
@@ -303,7 +303,17 @@ func accessorySuggestionRequest(photos: [PreparedImage], hint: String, avoidTitl
 // MARK: The deny list
 
 /// Word separators: whitespace (including no-break spaces) and every dash, such as U+2011 and en dashes.
-private let accessorySeparator = #"[\s\p{Pd}  ]"#
+private let accessorySeparator = #"[\s\p{Pd}\x{00A0}\x{202F}]"#
+
+/// Where a piece of Claude's text sits, which decides how negation is read.
+enum AccessoryTextKind: Sendable {
+    /// Titles, descriptions, hardware and measurement labels: only "not a", "not an" or "not for" right before a
+    /// medical word excuses it, so "Not a Gun Holster" is still caught.
+    case label
+    /// Cautions, how-to text, notes, evidence and who-wants-it: a match a few words after "not", "isn't", "never",
+    /// "no", "don't", "avoid" or "keep away from" in the same sentence doesn't count ("PLA isn't food-safe").
+    case prose
+}
 
 /// One category Studio never suggests, as phrases. Each phrase matches as whole words, ignoring case, with any
 /// separators (or none) between its words and an optional plural, so "food-safe", "food safe" and "foodsafe" all match.
@@ -312,60 +322,75 @@ struct AccessoryDenyCategory: Sendable {
     let phrases: [String]
     /// Extra patterns, written as regular expressions.
     var patterns: [String] = []
-    /// Also checked against the object's features and evidence. Off where an object's parts are named innocently
-    /// ("front fork", "brake lever", "steering wheel"), so bicycles and car dashboards aren't refused.
-    var appliesToObjectDetails = false
-    /// A match right after "not a", "not an" or "not for" doesn't count ("not a medical device").
-    var ignoresNegation = false
+    /// An object whose name, readable text or hint falls in this category gets no ideas at all.
+    var refusesObject = false
+    /// "not a", "not an" or "not for" right before the word excuses it, even in a title ("not a medical device").
+    var ignoresLabelNegation = false
 }
 
-let accessorySuggestionDenyCategories: [AccessoryDenyCategory] = [
-    AccessoryDenyCategory(name: "weapons", phrases: [
-        "gun", "firearm", "pistol", "rifle", "shotgun", "handgun", "revolver", "ammo", "ammunition", "suppressor",
-        "silencer", "weapon", "trigger guard", "trigger assembly", "picatinny", "m-lok", "airsoft", "crossbow", "taser",
-        "stun gun", "brass knuckles", "knuckle duster", "gun holster", "pistol holster", "knife sheath", "switchblade",
-        "magazine loader", "mag loader", "ar-15", "ak-47"
-    ], appliesToObjectDetails: true),
-    AccessoryDenyCategory(name: "children", phrases: [
-        "baby", "babies", "infant", "toddler", "child car seat", "infant car seat", "baby car seat", "crib", "baby gate",
-        "pacifier", "teether", "high chair", "child-proof", "child safety"
-    ], patterns: [
-        #"\bfor"# + accessorySeparator + #"+(?:kids|children)\b"#,
-        #"\b(?:kids|kid|child|children)['’]s?(?=\W|$)"#
-    ], appliesToObjectDetails: true),
-    AccessoryDenyCategory(name: "people and pets", phrases: [
-        "pet harness", "dog harness", "cat harness", "leash", "muzzle", "dog collar", "pet collar", "cat collar"
-    ]),
-    AccessoryDenyCategory(name: "protective gear", phrases: [
-        "helmet", "protective gear", "face shield", "safety glasses", "knee pad"
-    ]),
-    AccessoryDenyCategory(name: "vehicle controls", phrases: [
-        "brake", "steering", "gas pedal", "brake pedal", "throttle", "seat belt"
-    ]),
-    AccessoryDenyCategory(name: "food contact", phrases: [
-        "food-safe", "food-grade", "dishwasher-safe", "utensil", "spoon", "fork", "cookie cutter", "drinking cup",
-        "drinking straw", "baby bottle"
-    ]),
-    AccessoryDenyCategory(name: "medical", phrases: [
-        "medical", "orthotic", "prosthetic", "splint", "knee brace", "wrist brace", "back brace", "ankle brace", "neck brace"
-    ], ignoresNegation: true),
-    AccessoryDenyCategory(name: "drugs", phrases: [
-        "bong", "herb grinder", "weed grinder", "rolling tray", "dab rig", "dab tool", "one-hitter"
-    ], appliesToObjectDetails: true)
-]
+let accessorySuggestionDenyCategories: [AccessoryDenyCategory] = {
+    let s = accessorySeparator
+    return [
+        AccessoryDenyCategory(name: "weapons", phrases: [
+            "gun", "firearm", "pistol", "rifle", "shotgun", "handgun", "revolver", "ammo", "ammunition", "suppressor",
+            "weapon", "trigger guard", "trigger assembly", "picatinny", "m-lok", "airsoft", "crossbow", "taser",
+            "stun gun", "brass knuckles", "knuckle duster", "gun holster", "pistol holster", "knife sheath", "switchblade",
+            "magazine loader", "mag loader", "ar-15", "ak-47", "self-defence", "self-defense", "kubotan",
+            "glock", "sig sauer", "smith & wesson", "smith and wesson", "beretta", "ruger", "colt"
+        ], refusesObject: true),
+        AccessoryDenyCategory(name: "children", phrases: [
+            "baby", "babies", "infant", "toddler", "kids", "child car seat", "infant car seat", "baby car seat", "crib",
+            "baby gate", "pacifier", "teether", "high chair", "child-proof", "child safety", "child lock"
+        ], patterns: [
+            #"\bfor"# + s + #"+(?:(?:your|the)"# + s + #"+)?children\b"#,
+            #"\b(?:kids|kid|child|children)['’]s?(?=\W|$)"#
+        ], refusesObject: true),
+        AccessoryDenyCategory(name: "people and pets", phrases: [
+            "pet harness", "dog harness", "cat harness", "leash", "muzzle", "dog collar", "pet collar", "cat collar",
+            "carabiner", "step stool", "hammock", "climbing hold"
+        ]),
+        AccessoryDenyCategory(name: "protective gear", phrases: [
+            "helmet", "protective gear", "face shield", "safety glasses", "knee pad"
+        ]),
+        AccessoryDenyCategory(name: "vehicle controls", phrases: [
+            "brake", "steering", "gas pedal", "brake pedal", "throttle", "seat belt"
+        ]),
+        AccessoryDenyCategory(name: "food contact", phrases: [
+            "food-safe", "food-grade", "dishwasher-safe", "utensil", "spoon", "fork", "cookie cutter", "drinking cup",
+            "drinking straw", "baby bottle", "dosing funnel", "coffee scoop", "measuring scoop", "dripper", "spatula",
+            "food container lid"
+        ], patterns: [
+            // A straw for drinking, not a straw hat or bale.
+            #"\bstraws?\b(?!"# + s + #"*(?:hats?|bales?|baskets?|dolls?|colou?r))"#
+        ]),
+        AccessoryDenyCategory(name: "medical", phrases: [
+            "medical", "orthotic", "prosthetic", "splint", "knee brace", "wrist brace", "back brace", "ankle brace", "neck brace"
+        ], ignoresLabelNegation: true),
+        AccessoryDenyCategory(name: "drugs", phrases: [
+            "bong", "herb grinder", "weed grinder", "rolling tray", "dab rig", "dab tool", "one-hitter", "vape", "pre-roll",
+            "stash box"
+        ], refusesObject: true)
+    ]
+}()
 
-/// Ordinary things whose names contain a denied word, removed before the check: tools called guns, gunmetal, forks
-/// that aren't cutlery, and storage for a helmet or a lead ("Helmet Hook", "Hook for Your Helmet").
+/// Ordinary things whose names contain a denied word, removed before the check: tools called guns, gunmetal, a
+/// pistol-grip handle, shotgun microphones, surge suppressors, forks that aren't cutlery, and storage for protective
+/// gear or a lead ("Helmet Hook", "Helmet Light Mount", "Safety Glasses Holder", "Hook for Your Helmet").
 private let accessorySuggestionExceptionPatterns: [String] = {
     let s = accessorySeparator
-    let storage = #"(?:hooks?|hangers?|mounts?|stands?|holders?|racks?|shelf|shelves|storage|organi[sz]ers?)"#
+    let storage = #"(?:hooks?|hangers?|mounts?|stands?|holders?|racks?|shelf|shelves|storage|organi[sz]ers?|cases?|box(?:es)?|trays?)"#
+    let gear = #"(?:helmets?|protective"# + s + #"+gear|face"# + s + #"*shields?|safety"# + s + #"+glasses|knee"# + s + #"*pads?|leash(?:es)?)"#
+    let tools = #"(?:hot"# + s + #"+glue|glue|heat|nail|massage|caulk|caulking|staple|spray|tape|label|price|solder|soldering|grease|impact|rivet|screw|blow|air|paint|ir"# + s + #"+temperature|temperature|temp|foam)"#
     return [
-        #"\b(?:hot"# + s + #"+glue|glue|heat|nail|massage|caulk|caulking|staple|spray|tape|label|price|solder|soldering|grease)"# + s + #"+guns?\b"#,
+        #"\b"# + tools + s + #"+guns?\b"#,
         #"\bgun"# + s + #"*metal\b"#,
+        #"\bpistol"# + s + #"*grips?\b"#,
+        #"\bshotgun"# + s + #"+(?:mics?|microphones?)\b"#,
+        #"\bsurge"# + s + #"+suppressors?\b"#,
         #"\b(?:tuning|bike|bicycle|front|rear|suspension)"# + s + #"+forks?\b"#,
-        #"\bfork"# + s + #"+crowns?\b"#,
-        #"\b(?:helmets?|leash(?:es)?)"# + s + #"+"# + storage + #"\b"#,
-        #"\b"# + storage + s + #"+for"# + s + #"+(?:(?:a|an|the|your)"# + s + #"+)?(?:(?:bike|bicycle|motorcycle|cycling|dog)"# + s + #"+)?(?:helmets?|leash(?:es)?)\b"#
+        #"\bfork"# + s + #"+(?:crowns?|mounts?)\b"#,
+        #"\b"# + gear + s + #"+(?:[a-z]+"# + s + #"+)?"# + storage + #"\b"#,
+        #"\b"# + storage + s + #"+for"# + s + #"+(?:(?:a|an|the|your)"# + s + #"+)?(?:(?:bike|bicycle|motorcycle|cycling|dog)"# + s + #"+)?"# + gear + #"\b"#
     ]
 }()
 
@@ -373,6 +398,12 @@ private let accessorySuggestionExceptionRegexes = accessorySuggestionExceptionPa
     // Force-unwrapped: fixed patterns, covered by tests.
     try! NSRegularExpression(pattern: $0, options: [.caseInsensitive])
 }
+
+/// A sim-racing wheel is a game controller, not a vehicle's steering: ideas for one skip the vehicle-controls check.
+private let accessorySimRacingRegex = try! NSRegularExpression(
+    pattern: #"\b(?:sim(?:ulator)?"# + accessorySeparator + #"*racing|racing"# + accessorySeparator + #"+(?:sim(?:ulator)?|wheel)|(?:gaming|game|pc|console)"#
+        + accessorySeparator + #"+(?:steering"# + accessorySeparator + #"+)?wheel)"#,
+    options: [.caseInsensitive])
 
 private func accessoryDenyPhrasePattern(_ phrase: String) -> String {
     phrase.split(whereSeparator: { $0 == " " || $0 == "-" })
@@ -387,25 +418,44 @@ private let accessorySuggestionDenyRegexes: [(category: AccessoryDenyCategory, r
         return (category, try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive]))
     }
 
-private let accessoryNegationRegex = try! NSRegularExpression(
+private let accessoryLabelNegationRegex = try! NSRegularExpression(
     pattern: #"\bnot"# + accessorySeparator + #"+(?:a|an|for)"# + accessorySeparator + #"*$"#, options: [.caseInsensitive])
 
-/// The category the text falls in, or nil. `objectDetails` checks only the categories that apply to an object's
-/// features and evidence.
-func accessorySuggestionDeniedCategory(_ text: String, objectDetails: Bool = false) -> String? {
+private let accessoryProseNegationWords: Set<String> = ["not", "isn't", "isnt", "aren't", "never", "no", "don't", "dont",
+                                                         "doesn't", "won't", "can't", "cannot", "avoid", "avoids"]
+
+/// Whether the text right before a match negates it: for prose, a negation word among the four words before it in the
+/// same sentence, or "keep away from"; for labels, "not a", "not an" or "not for" right before it.
+private func accessoryIsNegated(before: String, kind: AccessoryTextKind) -> Bool {
+    switch kind {
+    case .label:
+        let tail = String(before.suffix(24))
+        return accessoryLabelNegationRegex.firstMatch(in: tail, range: NSRange(tail.startIndex..., in: tail)) != nil
+    case .prose:
+        let sentence = before.split(omittingEmptySubsequences: false, whereSeparator: { ".!?;".contains($0) }).last ?? ""
+        let lowered = String(sentence).lowercased().replacingOccurrences(of: "’", with: "'")
+        if lowered.range(of: #"keep\s+away\s+from\s+(?:\S+\s+){0,3}$"#, options: .regularExpression) != nil { return true }
+        let words = lowered.split(whereSeparator: { !($0.isLetter || $0 == "'") }).suffix(4).map(String.init)
+        return words.contains(where: accessoryProseNegationWords.contains)
+    }
+}
+
+/// The category the text falls in, or nil. `skipping` leaves categories out; `refusingOnly` checks only the
+/// categories that refuse an object.
+func accessorySuggestionDeniedCategory(_ text: String, kind: AccessoryTextKind = .label, skipping: Set<String> = [],
+                                       refusingOnly: Bool = false) -> String? {
     var stripped = text
     for regex in accessorySuggestionExceptionRegexes {
         stripped = regex.stringByReplacingMatches(in: stripped, range: NSRange(stripped.startIndex..., in: stripped), withTemplate: " ")
     }
     let range = NSRange(stripped.startIndex..., in: stripped)
     let ns = stripped as NSString
-    for (category, regex) in accessorySuggestionDenyRegexes where !objectDetails || category.appliesToObjectDetails {
+    for (category, regex) in accessorySuggestionDenyRegexes
+    where !skipping.contains(category.name) && (!refusingOnly || category.refusesObject) {
         for match in regex.matches(in: stripped, range: range) {
-            if category.ignoresNegation {
-                let before = ns.substring(to: match.range.location)
-                let tail = String(before.suffix(24))
-                if accessoryNegationRegex.firstMatch(in: tail, range: NSRange(tail.startIndex..., in: tail)) != nil { continue }
-            }
+            let before = ns.substring(to: match.range.location)
+            if kind == .prose, accessoryIsNegated(before: before, kind: .prose) { continue }
+            if category.ignoresLabelNegation, accessoryIsNegated(before: before, kind: .label) { continue }
             return category.name
         }
     }
@@ -413,8 +463,13 @@ func accessorySuggestionDeniedCategory(_ text: String, objectDetails: Bool = fal
 }
 
 /// True when the text names something Studio doesn't suggest.
-func accessorySuggestionIsDenied(_ text: String) -> Bool {
-    accessorySuggestionDeniedCategory(text) != nil
+func accessorySuggestionIsDenied(_ text: String, kind: AccessoryTextKind = .label) -> Bool {
+    accessorySuggestionDeniedCategory(text, kind: kind) != nil
+}
+
+/// True when the object's name, readable text or the seller's hint is a weapon, a drug item or a children's product.
+func accessoryObjectIsRefused(_ text: String) -> Bool {
+    accessorySuggestionDeniedCategory(text, refusingOnly: true) != nil
 }
 
 /// What Studio says when the object (or the seller's hint) is one it doesn't suggest accessories for.
@@ -422,15 +477,20 @@ let accessoryObjectDeniedText = "Studio doesn’t suggest accessories for this k
 
 // MARK: The claim check
 
-/// Claims Claude mustn't make: safety, strength, approval, a perfect fit, demand or sales, and percentages. Kept apart
-/// from the deny list: a claim blanks a caption, or drops an idea whose title or description makes it.
+/// Claims Claude mustn't make: safety, strength, approval, a perfect fit, demand or sales, health relief, and a
+/// percentage next to strength or success words. Kept apart from the deny list: a claim blanks a caption, or drops an
+/// idea whose title or description makes it.
 private let accessoryClaimRegex: NSRegularExpression = {
     let s = accessorySeparator
+    let percent = #"\d+(?:[.,]\d+)?"# + s + #"*(?:%|per"# + s + #"*cent\b)"#
+    let strength = #"(?:strong(?:er|est)?|strength|stiffer|tougher|durab\w*|success\w*)"#
+    let pain = #"(?:pain|aches?|posture|strain|tension)"#
     let patterns = [
         #"\b(?:food|child|kid|pet|baby|dishwasher|microwave)"# + s + #"*safe\b"#,
         #"\b(?:is|are|it['’]s)"# + s + #"+(?:completely"# + s + #"+|totally"# + s + #"+|perfectly"# + s + #"+)?safe\b"#,
         #"\bsafe"# + s + #"+(?:for|to|around|with)\b"#,
-        #"\bstrong(?:er|est)?\b"#,
+        // "Strong" about the part, not about the magnets or tape it uses.
+        #"\bstrong(?:er|est)?\b(?!\W+(?:\w+\W+){0,2}(?:magnets?|tape|adhesive|glue|velcro|neodymium))"#,
         #"\b(?:approved|guaranteed?|certified)\b"#,
         #"\bperfect"# + s + #"+fit\b"#,
         #"\bfits?"# + s + #"+perfectly\b"#,
@@ -438,7 +498,10 @@ private let accessoryClaimRegex: NSRegularExpression = {
         #"\bsells"# + s + #"+well\b"#,
         #"\bpopular\b"#,
         #"\b(?:in|high)"# + s + #"+demand\b"#,
-        #"\d+(?:[.,]\d+)?"# + s + #"*(?:%|per"# + s + #"*cent\b)"#
+        #"\b"# + strength + #"\W+(?:\w+\W+){0,3}"# + percent,
+        percent + #"\W+(?:\w+\W+){0,3}"# + strength + #"\b"#,
+        #"\brelie(?:f|ve|ves|ving)\b\W+(?:\w+\W+){0,3}"# + pain + #"\b"#,
+        #"\b"# + pain + #"\W+(?:\w+\W+){0,3}relie(?:f|ve|ves|ving)\b"#
     ]
     return try! NSRegularExpression(pattern: patterns.joined(separator: "|"), options: [.caseInsensitive])
 }()
@@ -446,17 +509,26 @@ private let accessoryClaimRegex: NSRegularExpression = {
 private let accessorySturdyRegex = try! NSRegularExpression(pattern: #"\bsturd(?:y|ier|iest)\b"#, options: [.caseInsensitive])
 
 /// True when the text makes a claim. "Sturdy" counts only in captions (`includeSturdy`): in a description it is a
-/// design intent, such as "a sturdy base with thick walls", rather than a promise to the buyer, and dropping every
-/// such idea would lose many ordinary ones. "Strong" always counts.
-func accessorySuggestionHasClaim(_ text: String, includeSturdy: Bool = false) -> Bool {
+/// design intent, such as "a sturdy base with thick walls". "Strong" counts when it describes the part ("a strong
+/// stand", "strong enough"), not the magnets or tape it uses. In prose a negated claim ("not strong enough for heavy
+/// bags") doesn't count.
+func accessorySuggestionHasClaim(_ text: String, includeSturdy: Bool = false, kind: AccessoryTextKind = .label) -> Bool {
     let range = NSRange(text.startIndex..., in: text)
-    if accessoryClaimRegex.firstMatch(in: text, range: range) != nil { return true }
-    return includeSturdy && accessorySturdyRegex.firstMatch(in: text, range: range) != nil
+    let ns = text as NSString
+    var regexes = [accessoryClaimRegex]
+    if includeSturdy { regexes.append(accessorySturdyRegex) }
+    for regex in regexes {
+        for match in regex.matches(in: text, range: range) {
+            if kind == .prose, accessoryIsNegated(before: ns.substring(to: match.range.location), kind: .prose) { continue }
+            return true
+        }
+    }
+    return false
 }
 
 /// A caption without claims: the text, or empty when it makes one.
 private func accessoryClaimFree(_ text: String) -> String {
-    accessorySuggestionHasClaim(text, includeSturdy: true) ? "" : text
+    accessorySuggestionHasClaim(text, includeSturdy: true, kind: .prose) ? "" : text
 }
 
 // MARK: Validation
@@ -474,11 +546,12 @@ private func accessorySuggestionStrings(_ value: AnthropicJSON?, limit: Int, cou
 
 /// Claude's suggest_accessories input, validated.
 /// - Every string is clipped to one line; unknown values get a neutral default (likely, snug, calipers).
-/// - The object is checked against the deny list (its name, text, alternatives and the seller's hint against the whole
-///   list; its features and evidence against the categories that apply to them). A denied object gives no ideas and
-///   no identification.
+/// - The object is refused (no ideas, no identification) only when its name, readable text or the seller's hint is a
+///   weapon, a drug item or a children's product. Its features and evidence are never checked; a denied alternative is
+///   just dropped from the alternatives. A sim-racing wheel's ideas skip the vehicle-controls check.
 /// - Ideas without a title or description are dropped. An idea is left out (and counted) when any of its strings is on
-///   the deny list, or its title or description makes a claim; a caption with a claim is blanked.
+///   the deny list (prose read with negation), or its title or description makes a claim; a caption with a claim is
+///   blanked.
 /// - Duplicates (by title, ignoring case, and against `existingTitles`) are dropped, then at most
 ///   `accessorySuggestionMaximumIdeasPerReply` kept, each with at most 6 measurements (unnamed or repeated ones
 ///   dropped) and 8 hardware items.
@@ -486,14 +559,16 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
     let object = input["object"]
     let name = accessorySuggestionLine(object?["name"]?.stringValue, limit: 100)
     let seenText = accessorySuggestionLine(object?["seen_text"]?.stringValue, limit: 120)
-    let alternatives = accessorySuggestionStrings(object?["alternatives"], limit: 100, count: accessorySuggestionMaximumAlternatives)
-    let features = accessorySuggestionStrings(object?["features"], limit: 100, count: accessorySuggestionMaximumFeatures)
-    let evidence = accessorySuggestionLine(object?["evidence"]?.stringValue, limit: 300)
-    let whatItIs = [name, seenText, accessorySuggestionLine(hint, limit: accessoryObjectHintMaximumLength)] + alternatives
-    if whatItIs.contains(where: accessorySuggestionIsDenied)
-        || (features + [evidence]).contains(where: { accessorySuggestionDeniedCategory($0, objectDetails: true) != nil }) {
+    let cleanHint = accessorySuggestionLine(hint, limit: accessoryObjectHintMaximumLength)
+    if [name, seenText, cleanHint].contains(where: accessoryObjectIsRefused) {
         return AccessorySuggestionSet(identification: nil, ideas: [], notes: "", leftOut: 0, objectDenied: true)
     }
+    let alternatives = accessorySuggestionStrings(object?["alternatives"], limit: 100, count: accessorySuggestionMaximumAlternatives)
+        .filter { !accessorySuggestionIsDenied($0) }
+    let features = accessorySuggestionStrings(object?["features"], limit: 100, count: accessorySuggestionMaximumFeatures)
+    let evidence = accessorySuggestionLine(object?["evidence"]?.stringValue, limit: 300)
+    let simRacing = [name, cleanHint].contains { accessorySimRacingRegex.firstMatch(in: $0, range: NSRange($0.startIndex..., in: $0)) != nil }
+    let skipping: Set<String> = simRacing ? ["vehicle controls"] : []
     let identification = AccessoryObjectIdentification(
         name: name, seenText: seenText,
         alternatives: Array(alternatives.prefix(accessorySuggestionMaximumAlternatives)),
@@ -521,9 +596,11 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
                 how: accessorySuggestionLine(item["how"]?.stringValue, limit: 300),
                 method: item["method"]?.stringValue.flatMap(AccessoryMeasurementMethod.init(rawValue:)) ?? .calipers))
         }
-        let everything = [title, description, whoWantsIt, caution] + hardware + measurements.flatMap { [$0.label, $0.how] }
-        if everything.contains(where: accessorySuggestionIsDenied)
-            || accessorySuggestionHasClaim(title) || accessorySuggestionHasClaim(description) {
+        let labelTexts = [title, description] + hardware + measurements.map(\.label)
+        let proseTexts = [whoWantsIt, caution] + measurements.map(\.how)
+        let denied = labelTexts.contains { accessorySuggestionDeniedCategory($0, kind: .label, skipping: skipping) != nil }
+            || proseTexts.contains { accessorySuggestionDeniedCategory($0, kind: .prose, skipping: skipping) != nil }
+        if denied || accessorySuggestionHasClaim(title) || accessorySuggestionHasClaim(description) {
             leftOut += 1
             continue
         }
@@ -544,7 +621,7 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
 /// What a reply gave, before it is merged into the sheet's ideas.
 enum AccessorySuggestionReplyOutcome: Equatable, Sendable {
     case suggestions(AccessorySuggestionSet)
-    /// The object is one Studio doesn't suggest for: the sheet drops every idea and the identification.
+    /// The object is one Studio doesn't suggest for: this reply gives no ideas and no identification.
     case objectDenied
     /// Nothing usable; the text says why. Everything Claude wrote is discarded.
     case declined(String)
@@ -742,8 +819,11 @@ struct AccessoryIdeaNotice: Equatable, Sendable {
     }
 }
 
-/// The Measurements section's scroll target in the brief form.
-let accessoryMeasurementsSectionID = "accessory-measurements"
+/// The row Use This Idea focuses (and scrolls to): the first row the idea added that still has no size. Rows the
+/// seller added are never chosen; nil when the idea added none.
+func accessoryFirstIdeaRowToMeasure(_ brief: AccessoryDesignBrief) -> UUID? {
+    brief.measurements.first { $0.addedByIdea && accessoryTrimmed($0.millimetres).isEmpty }?.id
+}
 
 /// "Now measure: Headband width, Ear cup depth": the idea's measurements still without a size, or nil.
 func accessoryNowMeasureText(_ brief: AccessoryDesignBrief, idea: AccessoryIdea) -> String? {
@@ -763,12 +843,22 @@ func accessoryMeasurementGuidanceHow(_ row: AccessoryMeasurement) -> String? {
 
 /// The caption under a measurement row, as advice naming the tool, such as "Use calipers: across the widest point",
 /// so a seller without that tool knows to change How measured.
+/// A leading tool word that repeats the method ("Calipers across the top", "With a ruler, from…") is dropped.
 func accessoryMeasurementGuidanceCaption(_ row: AccessoryMeasurement) -> String? {
     guard let how = accessoryMeasurementGuidanceHow(row), let method = row.guidance?.method else { return nil }
+    let tool: String
     switch method {
-    case .calipers: return "Use calipers: \(how)"
-    case .ruler: return "Use a ruler: \(how)"
-    case .estimate: return "Estimate it: \(how)"
+    case .calipers: tool = #"(?:digital\s+)?cal(?:l)?ipers?"#
+    case .ruler: tool = #"(?:ruler|tape(?:\s+measure)?|measuring\s+tape)"#
+    case .estimate: tool = #"estimate"#
+    }
+    let leading = #"^(?:(?:with|using|use)\s+)?(?:(?:a|the|your)\s+)?"# + tool + #"\b[\s,:;\-–—]*"#
+    var advice = how.replacingOccurrences(of: leading, with: "", options: [.regularExpression, .caseInsensitive])
+    if advice.isEmpty { advice = how }
+    switch method {
+    case .calipers: return "Use calipers: \(advice)"
+    case .ruler: return "Use a ruler: \(advice)"
+    case .estimate: return "Estimate it: \(advice)"
     }
 }
 
@@ -797,10 +887,10 @@ func accessoryIdeasStaleReason(suggestedFor: AccessorySuggestionInputs?, current
 enum AccessorySuggestMode: Equatable, Sendable {
     /// Nothing asked yet.
     case first
-    /// After a request that gave nothing, when the ideas are stale, or when the list is full: a new set replaces any
-    /// held ideas.
+    /// After a request that gave nothing, or when the ideas are stale: a new set replaces any held ideas (after
+    /// asking, when there are any).
     case again
-    /// Ideas are held, current and fewer than 12: new ones are appended.
+    /// Ideas are held and current: new ones are appended (disabled at 12, beside a separate Suggest Again).
     case more
 
     var buttonTitle: String {
@@ -813,9 +903,33 @@ enum AccessorySuggestMode: Equatable, Sendable {
 }
 
 func accessorySuggestMode(ideaCount: Int, stale: Bool, attempted: Bool) -> AccessorySuggestMode {
-    if ideaCount > 0 { return stale || ideaCount >= accessorySuggestionMaximumIdeas ? .again : .more }
+    if ideaCount > 0 { return stale ? .again : .more }
     return attempted ? .again : .first
 }
+
+/// At 12 ideas More Ideas is disabled and a separate Suggest Again (replace) is offered beside it.
+func accessoryOffersSeparateSuggestAgain(ideaCount: Int, mode: AccessorySuggestMode) -> Bool {
+    mode == .more && ideaCount >= accessorySuggestionMaximumIdeas
+}
+
+/// Suggest Again asks "Replace these ideas?" first (Keep These Ideas is the default) whenever it would replace ideas
+/// the seller already paid for.
+func accessorySuggestAgainNeedsConfirmation(ideaCount: Int) -> Bool {
+    ideaCount > 0
+}
+
+/// "Replace these ideas?": what the confirmation says.
+func accessoryReplaceIdeasMessage(ideaCount: Int) -> String {
+    let ideas = ideaCount == 1 ? "the idea you have" : "the \(ideaCount) ideas you have"
+    return "Suggest Again asks Claude for a new set, which is billed again, and replaces \(ideas). An idea already in What to make stays there."
+}
+
+/// When an append adds ideas while one is chosen (and the list folded), the list opens so the new ones show.
+func accessoryShouldExpandIdeas(old: [UUID], new: [UUID]) -> Bool {
+    !old.isEmpty && new.count > old.count && old.allSatisfy(new.contains)
+}
+
+let accessoryIdeasFullText = "\(accessorySuggestionMaximumIdeas) ideas is the most Studio keeps."
 
 /// Why the suggest button is disabled, or nil. OpenSCAD isn't needed for suggestions.
 func accessorySuggestBlockedReason(photoCount: Int, preparingPhotos: Int, claudeConfigured: Bool, suggesting: Bool,
@@ -826,8 +940,8 @@ func accessorySuggestBlockedReason(photoCount: Int, preparingPhotos: Int, claude
     if photoCount < 1 { return "Add a photo of the object first." }
     if preparingPhotos > 0 { return "Preparing photos…" }
     if hint.count > accessoryObjectHintMaximumLength { return "Keep What is it? to \(accessoryObjectHintMaximumLength) characters or fewer." }
-    if accessorySuggestionIsDenied(hint) { return accessoryObjectDeniedText }
-    if mode == .more, ideaCount >= accessorySuggestionMaximumIdeas { return "Studio keeps up to \(accessorySuggestionMaximumIdeas) ideas." }
+    if accessoryObjectIsRefused(hint) { return accessoryObjectDeniedText }
+    if mode == .more, ideaCount >= accessorySuggestionMaximumIdeas { return accessoryIdeasFullText }
     return nil
 }
 
@@ -946,7 +1060,7 @@ func accessorySuggestionActivityDetail(status: String?, ideas: Int?, cost: Anthr
 
     /// Sends one request. `append` (More Ideas) keeps the held ideas and the first identification, and asks Claude to
     /// avoid the held titles; otherwise a successful reply replaces them. A failed reply never removes ideas already
-    /// held; a denied object removes them all.
+    /// held, and neither does a refused object (only that reply's ideas are discarded).
     func suggest(photos: [PreparedImage], hint: String, inputs: AccessorySuggestionInputs, append: Bool, log: @escaping Log) {
         guard task == nil, !closing, !photos.isEmpty else { return }
         if append, ideas.count >= accessorySuggestionMaximumIdeas { return }
@@ -1024,11 +1138,7 @@ func accessorySuggestionActivityDetail(status: String?, ideas: Int?, cost: Anthr
         case .unusable(let text):
             finish(text, problem: true, status: "No usable ideas", ideas: nil, cost: replyCost, mayBeBilled: false, log: log)
         case .objectDenied:
-            ideas = []
-            identification = nil
-            notes = ""
-            leftOut = 0
-            suggestedFor = nil
+            // Only this reply's ideas are discarded; ideas already held (checked when they came) stay.
             finish(accessoryObjectDeniedText, problem: true, status: "Object not suggested", ideas: nil, cost: replyCost,
                    mayBeBilled: false, log: log)
         case .suggestions(let set):
