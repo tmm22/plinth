@@ -130,11 +130,15 @@ func tripoBalance(_ root: [String: Any]?) -> ImageTo3DBalance? {
     return ImageTo3DBalance(service: .tripo, credits: balance, frozen: frozen.flatMap { $0.isFinite ? $0 : nil })
 }
 
-/// The error for a Tripo reply that isn't a success: a non-2xx status, or a 2xx with a non-zero `code`.
+/// The error for a Tripo reply that isn't a success: a non-2xx status, or a 2xx with a non-zero `code`. Tripo's codes
+/// are read only on a 2xx or a plain 4xx: a 5xx, 408, 409 or redirect keeps its HTTP status whatever the body says,
+/// so a create that got one stays an unknown outcome (`imageTo3DCreateOutcomeUnknown`).
 func tripoError(status: Int, body: Data, retryAfter: String?, secrets: [String]) -> ImageTo3DError {
     let root = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
     let code = (root?["code"] as? NSNumber)?.intValue
     let message = imageTo3DServiceMessage(from: body, secrets: secrets)
+    let codesApply = (200..<300).contains(status) || ((400..<500).contains(status) && status != 408 && status != 409)
+    guard codesApply else { return .http(service: .tripo, status: status, code: code, message: message) }
     if code == 2010 { return .paymentRequired(service: .tripo, message: message) }
     if status == 429 || code == 1007 || code == 2000 {
         return .rateLimited(service: .tripo, retryAfter: imageTo3DRetryAfterSeconds(retryAfter))
@@ -212,11 +216,14 @@ struct TripoClient: ImageTo3DProvider {
         return await create("/v3/models/convert", json: tripoConvertBody(taskID: status.taskID, options: options), knownTaskID: status.taskID)
     }
 
-    /// Only a conversion's output is printable: by its extension, or the requested format when the link has none.
+    /// Only a conversion's output is printable. Its link is taken by its extension when that names STL or 3MF, else
+    /// whatever https link Tripo returned for the conversion is taken as the requested format: signed CDN links needn't
+    /// end in `.stl`. The caller checks the downloaded content (`imageTo3DDetectedFormat`, then parsing).
     func modelLink(in status: ImageTo3DTaskStatus, kind: ImageTo3DTaskKind, preferred: ImageTo3DOutputFormat) -> ImageTo3DModelLink? {
         guard kind == .conversion else { return nil }
         if let link = imageTo3DPrintableLink(status.modelURLs, preferred: preferred) { return link }
-        return status.modelURLs["model"].map { ImageTo3DModelLink(url: $0, format: preferred) }
+        let key = status.modelURLs["model"] != nil ? "model" : status.modelURLs.keys.sorted().first
+        return key.flatMap { status.modelURLs[$0] }.map { ImageTo3DModelLink(url: $0, format: preferred) }
     }
 
     func download(_ url: URL, into folder: URL, fileName: String) async throws -> URL {

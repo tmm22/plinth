@@ -63,6 +63,9 @@ final class ReplicaGeneratorTests: XCTestCase {
     }
 
     private func size(_ axis: ReplicaSizeAxis, _ mm: Double) -> ReplicaSize { ReplicaSize(axis: axis, millimetres: mm) }
+    /// Wall-thickness samples for the pipeline tests: enough to find the walls of these simple shapes, far fewer than
+    /// the app's 20,000, so the suite stays quick.
+    private let samples = 300
 
     // MARK: Inputs
 
@@ -100,10 +103,10 @@ final class ReplicaGeneratorTests: XCTestCase {
         XCTAssertNil(replicaNameProblem("Dragon figure"))
         XCTAssertEqual(replicaCopyName("  Dragon "), "Dragon (replica)")
         XCTAssertEqual(replicaCopyName("..hidden"), "hidden (replica)")
-        XCTAssertEqual(replicaCopyName("Dragon", upright: true), "Dragon (replica, upright)")
-        let longest = String(repeating: "x", count: maximumModelNameLength - replicaUprightNameSuffix.count)
+        let longest = String(repeating: "x", count: maximumModelNameLength - replicaNameSuffix.count)
         XCTAssertNil(replicaNameProblem(longest))
-        XCTAssertNil(modelNameProblem(replicaCopyName(longest, upright: true)), "the saved name stays within the library's limit")
+        XCTAssertNotNil(replicaNameProblem(longest + "x"))
+        XCTAssertNil(modelNameProblem(replicaCopyName(longest)), "the saved name stays within the library's limit")
         XCTAssertNil(replicaInputs(name: "", axis: .height, sizeText: "100", purpose: .display))
         XCTAssertNil(replicaInputs(name: "Cat", axis: .height, sizeText: "", purpose: .display))
         XCTAssertEqual(replicaInputs(name: " Cat ", axis: .height, sizeText: "100", purpose: .functional),
@@ -116,13 +119,48 @@ final class ReplicaGeneratorTests: XCTestCase {
     }
 
     func testOptionsAndCostWithoutAKey() {
-        let meshy = replicaGenerationOptions(for: .meshy)
+        let meshy = replicaGenerationOptions(for: .meshy, purpose: .functional)
         XCTAssertEqual(meshy.targetTriangles, 20_000)
         XCTAssertEqual(meshy.format, .stl)
         XCTAssertTrue(meshy.originAtBottom)
-        XCTAssertFalse(replicaGenerationOptions(for: .tripo).originAtBottom, "Studio places the model itself; the option costs Tripo credits")
+        XCTAssertFalse(replicaGenerationOptions(for: .tripo, purpose: .functional).originAtBottom,
+                       "Studio places the model itself; the option costs Tripo credits")
         XCTAssertEqual(replicaCostEstimate(service: .meshy).credits, meshyImageTo3DMeshOnlyCredits)
         XCTAssertEqual(replicaCostEstimate(service: .tripo).credits, tripoImageToModelCredits + tripoConvertBasicCredits)
+        XCTAssertEqual(replicaCostEstimate(service: .tripo, purpose: .display), replicaCostEstimate(service: .tripo, purpose: .functional),
+                       "the triangle budget doesn't change the published price")
+    }
+
+    func testDisplayPiecesKeepTheirDetail() {
+        // A display piece asks for far more triangles, within both services' documented maximums.
+        let meshy = replicaGenerationOptions(for: .meshy, purpose: .display)
+        let tripo = replicaGenerationOptions(for: .tripo, purpose: .display)
+        XCTAssertEqual(meshy.targetTriangles, 150_000)
+        XCTAssertEqual(meshyImageTo3DBody(imageDataURI: "data:", options: meshy)["target_polycount"] as? Int, 150_000)
+        XCTAssertEqual(tripoImageToModelBody(fileToken: "f", options: tripo)["face_limit"] as? Int, 150_000)
+        XCTAssertLessThanOrEqual(replicaDisplayTriangleTarget, meshyPolycountRange.upperBound)
+        XCTAssertLessThanOrEqual(replicaDisplayTriangleTarget, tripoFaceLimitRange.upperBound)
+        // Studio simplifies a display piece only above its ceiling, well under the import limit; a functional part
+        // still goes down to Reinforce's limit.
+        XCTAssertEqual(ReplicaPurpose.display.triangleCeiling, 200_000)
+        XCTAssertLessThan(ReplicaPurpose.display.triangleCeiling, STLMesh.maximumTriangles)
+        XCTAssertEqual(ReplicaPurpose.functional.requestedTriangles, meshToolsReinforceTriangleLimit)
+        XCTAssertEqual(ReplicaPurpose.functional.triangleCeiling, meshToolsReinforceTriangleLimit)
+        XCTAssertTrue(replicaFunctionalPartWarning.contains("isn’t dimensionally accurate"))
+        XCTAssertTrue(replicaFunctionalPartWarning.contains("Design an Accessory from a Photo"))
+    }
+
+    func testDetailedReplicaPointsToSimplify() throws {
+        let small = try processReplicaModel(MeshRepairTests.cube(size: 1).binarySTL(), size: size(.height, 20), wallThicknessSamples: 50)
+        // 20,004 triangles: the cube's twelve, many times over (only the count matters for the summary).
+        let many = try STLMesh.validated(Array(repeating: small.mesh.vertices, count: 1_667).flatMap { $0 })
+        let detailed = ReplicaProcessed(mesh: many, stlData: Data(), size: small.size, upAxis: .z, originalTriangles: many.triangleCount,
+                                        health: small.health, wallThickness: small.wallThickness, overhang: small.overhang,
+                                        changes: [], steps: [])
+        let lines = replicaSummaryLines(detailed)
+        XCTAssertTrue(lines.contains { $0.contains("Reinforce and Auto-improve need 20,000 triangles or fewer") && $0.contains("Simplify & Save Copy") },
+                      "\(lines)")
+        XCTAssertFalse(replicaSummaryLines(small).contains { $0.contains("Simplify") })
     }
 
     func testBlockedReasonsInOrder() {
@@ -144,7 +182,7 @@ final class ReplicaGeneratorTests: XCTestCase {
     func testPipelineScalesPlacesAndChecksInOrder() throws {
         // Services send metres (probably): a 2 cm cube far from the origin.
         let mesh = try MeshRepairTests.cube(size: 0.02, offset: SIMD3(3, -4, 1))
-        let result = try processReplicaModel(mesh.binarySTL(), format: .stl, size: size(.height, 40))
+        let result = try processReplicaModel(mesh.binarySTL(), size: size(.height, 40), wallThicknessSamples: samples)
         XCTAssertEqual(result.steps, [.read, .scale, .repair, .check])
         XCTAssertEqual(result.extentMM.z, 40, accuracy: 0.001)
         XCTAssertEqual(result.mesh.minimum.z, 0, accuracy: 0.0001, "base on the bed")
@@ -153,18 +191,32 @@ final class ReplicaGeneratorTests: XCTestCase {
         XCTAssertEqual(result.originalTriangles, 12)
         XCTAssertEqual(try STLMesh.parse(result.stlData).triangleCount, 12)
         XCTAssertTrue(result.changes.first?.hasPrefix("Scaled to Height 40 mm") == true)
-        XCTAssertTrue(replicaChecksFoundNoProblems(result), "a 40 mm solid cube has no thin walls")
+        XCTAssertTrue(replicaChecksFoundNoProblems(result), "a 40 mm solid cube has no thin walls and no overhangs")
+        XCTAssertEqual(result.overhang.overhangAreaMM2, 0, "its base lies on the bed")
         let lines = replicaSummaryLines(result)
         XCTAssertEqual(lines.first, "Size: 40.0 × 40.0 × 40.0 mm (width × depth × height).")
         XCTAssertEqual(lines[1], "12 triangles.")
         XCTAssertTrue(lines.contains { $0.hasPrefix("Mesh check: closed and consistent") })
+        XCTAssertTrue(lines.contains { $0.hasPrefix("Overhangs: no downward faces") })
+    }
+
+    func testOverhangsStopTheNoProblemsLine() throws {
+        // A solid ball has no thin walls and a closed mesh, but its underside overhangs well past 45°.
+        let ball = try processReplicaModel(MeshRepairTests.sphere(levels: 2, radius: 1).binarySTL(), size: size(.longest, 40),
+                                           wallThicknessSamples: samples)
+        XCTAssertTrue(meshHealthIsSound(ball.health))
+        XCTAssertGreaterThan(ball.overhang.fraction, replicaOverhangShareLimit)
+        XCTAssertFalse(replicaChecksFoundNoProblems(ball), "overhangs count as a problem")
+        XCTAssertTrue(replicaSummaryLines(ball).contains { $0.hasPrefix("Overhangs:") && $0.contains("supports") })
+        XCTAssertTrue(replicaNoProblemsLine.contains("overhangs"), "the line says what was checked")
+        XCTAssertTrue(replicaNoProblemsLine.contains("Strength and fit aren’t checked"))
     }
 
     func testPipelineRunsTwiceToTheSameBytes() throws {
-        let sphere = try MeshRepairTests.sphere(levels: 3, radius: 0.05)
+        let sphere = try MeshRepairTests.sphere(levels: 2, radius: 0.05)
         let data = sphere.binarySTL()
-        let first = try processReplicaModel(data, format: .stl, size: size(.longest, 60), triangleTarget: 300)
-        let second = try processReplicaModel(data, format: .stl, size: size(.longest, 60), triangleTarget: 300)
+        let first = try processReplicaModel(data, size: size(.longest, 60), triangleTarget: 150, wallThicknessSamples: samples)
+        let second = try processReplicaModel(data, size: size(.longest, 60), triangleTarget: 150, wallThicknessSamples: samples)
         XCTAssertEqual(first.stlData, second.stlData)
         XCTAssertEqual(first.changes, second.changes)
         XCTAssertTrue(first.steps.contains(.simplify))
@@ -177,27 +229,28 @@ final class ReplicaGeneratorTests: XCTestCase {
 
     func testSimplifySkippedAtOrUnderTheTarget() throws {
         let sphere = try MeshRepairTests.sphere(levels: 2, radius: 1)
-        let result = try processReplicaModel(sphere.binarySTL(), format: .stl, size: size(.width, 30), triangleTarget: sphere.triangleCount)
+        let result = try processReplicaModel(sphere.binarySTL(), size: size(.width, 30), triangleTarget: sphere.triangleCount,
+                                             wallThicknessSamples: samples)
         XCTAssertFalse(result.steps.contains(.simplify))
     }
 
     func testUprightTurnsYUpToZUpKeepingFacesOutward() throws {
         // Y-up: 1 wide, 3 tall (Y), 2 deep (Z).
         let mesh = try box(SIMD3(1, 3, 2))
-        let result = try processReplicaModel(mesh.binarySTL(), format: .stl, size: size(.height, 30), upAxis: .y)
+        let result = try processReplicaModel(mesh.binarySTL(), size: size(.height, 30), upAxis: .y, wallThicknessSamples: samples)
         XCTAssertEqual(result.steps, [.read, .turnUpright, .scale, .repair, .check])
         XCTAssertEqual(result.extentMM.x, 10, accuracy: 0.001)
         XCTAssertEqual(result.extentMM.y, 20, accuracy: 0.001)
         XCTAssertEqual(result.extentMM.z, 30, accuracy: 0.001)
         XCTAssertTrue(meshHealthIsSound(result.health), "a rotation keeps the faces pointing outward")
         XCTAssertEqual(result.upAxis, .y)
-        let again = try processReplicaModel(mesh.binarySTL(), format: .stl, size: size(.height, 30), upAxis: .y)
+        let again = try processReplicaModel(mesh.binarySTL(), size: size(.height, 30), upAxis: .y, wallThicknessSamples: samples)
         XCTAssertEqual(result.stlData, again.stlData)
     }
 
     func testTooLargeForTheBuildVolumeSaysProcessAgain() throws {
         let tall = try box(SIMD3(1, 1, 4))
-        XCTAssertThrowsError(try processReplicaModel(tall.binarySTL(), format: .stl, size: size(.width, 100))) { error in
+        XCTAssertThrowsError(try processReplicaModel(tall.binarySTL(), size: size(.width, 100))) { error in
             guard case ReplicaProcessingError.exceedsBuildVolume(let wanted, let longest)? = error as? ReplicaProcessingError else {
                 return XCTFail("\(error)")
             }
@@ -213,7 +266,7 @@ final class ReplicaGeneratorTests: XCTestCase {
         let tetraPoints: [SIMD3<Float>] = [SIMD3(50, 0, 0), SIMD3(50.1, 0, 0), SIMD3(50, 0.1, 0), SIMD3(50, 0, 0.1)]
         let tetra: [SIMD3<Int32>] = [SIMD3(0, 2, 1), SIMD3(0, 1, 3), SIMD3(0, 3, 2), SIMD3(1, 2, 3)]
         let combined = try STLMesh.validated(cube.vertices + meshSoup(points: tetraPoints, triangles: tetra))
-        let result = try processReplicaModel(combined.binarySTL(), format: .stl, size: size(.width, 30))
+        let result = try processReplicaModel(combined.binarySTL(), size: size(.width, 30), wallThicknessSamples: samples)
         XCTAssertTrue(result.steps.contains(.resize), "\(result.steps)")
         XCTAssertEqual(result.extentMM.x, 30, accuracy: 0.01)
         XCTAssertEqual(result.mesh.triangleCount, 12)
@@ -222,11 +275,14 @@ final class ReplicaGeneratorTests: XCTestCase {
     }
 
     func testUnreadableAndCancelledRunsSaveNothing() throws {
-        XCTAssertThrowsError(try processReplicaModel(Data("not a model".utf8), format: .stl, size: size(.height, 40))) { error in
+        XCTAssertThrowsError(try processReplicaModel(Data("not a model".utf8), size: size(.height, 40))) { error in
             guard case ReplicaProcessingError.unreadable? = error as? ReplicaProcessingError else { return XCTFail("\(error)") }
         }
+        XCTAssertThrowsError(try replicaReadModel(Data("glTF\u{2}\0\0\0".utf8))) { error in
+            XCTAssertTrue(error.localizedDescription.contains("isn’t an STL or 3MF"), error.localizedDescription)
+        }
         let cube = try MeshRepairTests.cube(size: 1)
-        XCTAssertThrowsError(try processReplicaModel(cube.binarySTL(), format: .stl, size: size(.height, 40), isCancelled: { true })) { error in
+        XCTAssertThrowsError(try processReplicaModel(cube.binarySTL(), size: size(.height, 40), isCancelled: { true })) { error in
             XCTAssertEqual(error as? MeshToolError, .cancelled)
         }
     }
@@ -255,18 +311,27 @@ final class ReplicaGeneratorTests: XCTestCase {
     }
 
     func testGeneratingAgainNeedsConfirmationAfterPossibleSpend() {
-        XCTAssertFalse(replicaGenerateNeedsConfirmation(lastStop: nil, modelAlreadyMade: false))
-        XCTAssertFalse(replicaGenerateNeedsConfirmation(lastStop: stop(.notSent, taskID: nil, resume: false), modelAlreadyMade: false))
-        XCTAssertFalse(replicaGenerateNeedsConfirmation(lastStop: stop(.cancelled, taskID: nil, resume: false), modelAlreadyMade: false),
+        XCTAssertFalse(replicaGenerateNeedsConfirmation(lastStop: nil, modelAlreadyMade: false, earlierUnconfirmed: false))
+        XCTAssertFalse(replicaGenerateNeedsConfirmation(lastStop: stop(.notSent, taskID: nil, resume: false), modelAlreadyMade: false,
+                                                        earlierUnconfirmed: false))
+        XCTAssertFalse(replicaGenerateNeedsConfirmation(lastStop: stop(.cancelled, taskID: nil, resume: false), modelAlreadyMade: false,
+                                                        earlierUnconfirmed: false),
                        "stopped before anything was sent")
-        XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: stop(.outcomeUnknown, resume: false), modelAlreadyMade: false))
-        XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: stop(.timedOut), modelAlreadyMade: false))
-        XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: nil, modelAlreadyMade: true))
-        let message = replicaGenerateAgainMessage(lastStop: stop(.outcomeUnknown, resume: false), estimate: replicaCostEstimate(service: .meshy))
+        XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: stop(.outcomeUnknown, resume: false), modelAlreadyMade: false, earlierUnconfirmed: false))
+        XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: stop(.timedOut), modelAlreadyMade: false, earlierUnconfirmed: false))
+        XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: nil, modelAlreadyMade: true, earlierUnconfirmed: false))
+        XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: nil, modelAlreadyMade: false, earlierUnconfirmed: true),
+                      "an unconfirmed request from an earlier sheet asks too")
+        let message = replicaGenerateAgainMessage(lastStop: stop(.outcomeUnknown, resume: false), modelAlreadyMade: false, earlierNotice: nil,
+                                                  estimate: replicaCostEstimate(service: .meshy))
         XCTAssertTrue(message.contains("task t1"))
         XCTAssertTrue(message.contains("About 20 Meshy credits"))
-        XCTAssertTrue(replicaGenerateAgainMessage(lastStop: nil, estimate: replicaCostEstimate(service: .tripo)).contains("Process Again"))
-        let switched = replicaGenerateAgainMessage(lastStop: stop(.timedOut), estimate: replicaCostEstimate(service: .tripo))
+        XCTAssertTrue(replicaGenerateAgainMessage(lastStop: nil, modelAlreadyMade: true, earlierNotice: nil,
+                                                  estimate: replicaCostEstimate(service: .tripo)).contains("Process Again"))
+        XCTAssertTrue(replicaGenerateAgainMessage(lastStop: nil, modelAlreadyMade: false, earlierNotice: "Earlier notice.",
+                                                  estimate: replicaCostEstimate(service: .tripo)).hasPrefix("Earlier notice. Generating again"))
+        let switched = replicaGenerateAgainMessage(lastStop: stop(.timedOut), modelAlreadyMade: false, earlierNotice: nil,
+                                                   estimate: replicaCostEstimate(service: .tripo))
         XCTAssertTrue(switched.hasPrefix("Meshy may already"), "names the service the earlier request went to")
         XCTAssertTrue(switched.contains("Tripo credits"), "and prices the new one")
         XCTAssertEqual(replicaCreditsNote(stop(.notSent, taskID: nil, resume: false)), "No credits were spent.")
@@ -338,7 +403,7 @@ final class ReplicaGeneratorTests: XCTestCase {
         control.requestStop()  // pressed while the create is on its way
         let box = ResultBox<Result<ImageTo3DGeneratedModel, ImageTo3DStop>>()
         let task = Task<Void, Never> {
-            let result = await runImageTo3DGeneration(provider: client, image: self.jpeg, options: replicaGenerationOptions(for: .meshy),
+            let result = await runImageTo3DGeneration(provider: client, image: self.jpeg, options: replicaGenerationOptions(for: .meshy, purpose: .functional),
                                                       sleep: replicaInterruptibleSleep(control, base: { _ in }),
                                                       makeFolder: { try self.makeFolder() },
                                                       progress: { control.report($0) })
@@ -362,7 +427,7 @@ final class ReplicaGeneratorTests: XCTestCase {
         control.requestStop()
         let box = ResultBox<Result<ImageTo3DGeneratedModel, ImageTo3DStop>>()
         let task = Task<Void, Never> {
-            box.set(await runImageTo3DGeneration(provider: client, image: self.jpeg, options: replicaGenerationOptions(for: .meshy),
+            box.set(await runImageTo3DGeneration(provider: client, image: self.jpeg, options: replicaGenerationOptions(for: .meshy, purpose: .functional),
                                                  sleep: replicaInterruptibleSleep(control, base: { _ in }),
                                                  makeFolder: { try self.makeFolder() }, progress: { control.report($0) }))
         }
@@ -381,10 +446,10 @@ final class ReplicaGeneratorTests: XCTestCase {
         let finished = #"{"id":"t1","status":"SUCCEEDED","progress":100,"model_urls":{"stl":"https://assets.meshy.ai/t1/model.stl"}}"#
         let transport = ReplicaScriptedTransport([(202, #"{"result":"t1"}"#), (200, finished)], modelData: cube.binarySTL())
         let result = await runImageTo3DGeneration(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), image: jpeg,
-                                                  options: replicaGenerationOptions(for: .meshy), sleep: { _ in },
+                                                  options: replicaGenerationOptions(for: .meshy, purpose: .functional), sleep: { _ in },
                                                   makeFolder: { try self.makeFolder() })
         guard case .success(let model) = result else { return XCTFail("\(result)") }
-        let processed = try processReplicaModel(Data(contentsOf: model.fileURL), format: model.format, size: size(.height, 25))
+        let processed = try processReplicaModel(Data(contentsOf: model.fileURL), size: size(.height, 25), wallThicknessSamples: samples)
         XCTAssertEqual(processed.extentMM.z, 25, accuracy: 0.001)
         XCTAssertEqual(transport.posts, 1)
     }
@@ -425,5 +490,219 @@ final class ReplicaGeneratorTests: XCTestCase {
         let running = ImageTo3DProgress(stage: .generating, taskID: "t1", state: .running, percent: 40)
         XCTAssertEqual(replicaProgressLine(running, service: .tripo, stopping: true), "Tripo: generating the model (40%) — stopping…")
         XCTAssertEqual(replicaProgressLine(nil, service: .tripo, stopping: true), "Tripo: sending to the service — stopping once Tripo answers…")
+    }
+
+    // MARK: Resume, close and session records
+
+    func testResumeNotesSayWhatIsCharged() {
+        let tripoWaiting = ImageTo3DStop(reason: .timedOut, stage: .generating, service: .tripo, taskID: "g1", detail: "",
+                                         resumePoint: ImageTo3DResumePoint(sourceTaskID: "g1", sourceKind: .generation, conversionTaskID: nil))
+        let note = replicaResumeNote(tripoWaiting, action: .keepWaiting)
+        XCTAssertFalse(note.contains("Nothing new is made or charged"), "Tripo's conversion is still to be sent")
+        XCTAssertTrue(note.contains("about \(tripoConvertBasicCredits) Tripo credits"), note)
+        let converting = ImageTo3DStop(reason: .timedOut, stage: .converting, service: .tripo, taskID: "c1", detail: "",
+                                       resumePoint: ImageTo3DResumePoint(sourceTaskID: "g1", sourceKind: .generation, conversionTaskID: "c1"))
+        XCTAssertTrue(replicaResumeNote(converting, action: .keepWaiting).contains("Nothing new is made or charged"))
+        XCTAssertTrue(replicaResumeNote(stop(.timedOut), action: .keepWaiting).contains("Nothing new is made or charged"), "Meshy makes STL itself")
+        XCTAssertTrue(replicaResumeNote(stop(.conversionRefused, stage: .converting), action: .tryConversionAgain).contains("costs about"))
+    }
+
+    func testCloseAsksAfterAPossibleSpend() {
+        XCTAssertNil(replicaCloseWarning(hasUnsavedModel: false, lastStop: nil, service: .meshy))
+        XCTAssertNil(replicaCloseWarning(hasUnsavedModel: false, lastStop: stop(.notSent, taskID: nil, resume: false), service: .meshy))
+        XCTAssertEqual(replicaCloseWarning(hasUnsavedModel: true, lastStop: nil, service: .meshy)?.confirmTitle, "Close Without Saving")
+        let unknown = replicaCloseWarning(hasUnsavedModel: false, lastStop: stop(.outcomeUnknown, resume: false), service: .meshy)
+        XCTAssertNotNil(unknown, "an unknown create may have spent credits")
+        XCTAssertTrue(unknown?.message.contains("task t1") == true)
+        let waiting = replicaCloseWarning(hasUnsavedModel: false, lastStop: stop(.timedOut), service: .meshy)
+        XCTAssertTrue(waiting?.message.contains("can’t Keep Waiting") == true, waiting?.message ?? "")
+    }
+
+    @MainActor func testUnconfirmedRequestsLastTheSessionAndAreConfirmedByDelivery() {
+        let connection = makeTestConnection()
+        XCTAssertNil(connection.rememberUnconfirmed(stop(.notSent, taskID: nil, resume: false)), "nothing was spent")
+        XCTAssertNil(connection.rememberUnconfirmed(stop(.cancelled, taskID: nil, resume: false)), "stopped before sending")
+        XCTAssertNil(connection.rememberUnconfirmed(stop(.taskEnded(.failed), resume: false)), "nothing to duplicate")
+        let time = Date(timeIntervalSince1970: 0)
+        let unknown = ImageTo3DStop(reason: .outcomeUnknown, stage: .sending, service: .tripo, taskID: nil, detail: "")
+        let first = connection.rememberUnconfirmed(unknown, at: time)
+        XCTAssertNotNil(first)
+        XCTAssertTrue(connection.hasUnconfirmedRequests)
+        connection.rememberUnconfirmed(stop(.timedOut), at: time)
+        connection.rememberUnconfirmed(stop(.statusUnreadable), at: time)
+        XCTAssertEqual(connection.unconfirmedRequests.count, 2, "a later stop of the same task replaces its record")
+        let notice = replicaUnconfirmedNotice(connection.unconfirmedRequests, overflowed: false, timeText: { _ in "09:00" })
+        XCTAssertEqual(notice, "Studio couldn’t confirm what happened to Meshy at 09:00 (task t1) and Tripo at 09:00 this session. They may have spent credits, and a finished model may be waiting there: check each service’s dashboard before generating again.")
+        XCTAssertTrue(replicaUnconfirmedNotice(connection.unconfirmedRequests, overflowed: false, excluding: first,
+                                               timeText: { _ in "09:00" })?.contains("check Meshy’s dashboard") == true)
+        connection.confirmDelivered(service: .meshy, sourceTaskID: "t1")
+        XCTAssertEqual(connection.unconfirmedRequests.map(\.service), [.tripo], "an unknown create is never confirmed by another task")
+        for index in 0..<imageTo3DUnconfirmedRequestLimit {
+            connection.rememberUnconfirmed(ImageTo3DStop(reason: .timedOut, stage: .generating, service: .meshy, taskID: "x\(index)", detail: ""))
+        }
+        XCTAssertEqual(connection.unconfirmedRequests.count, imageTo3DUnconfirmedRequestLimit)
+        XCTAssertTrue(connection.unconfirmedRequestsOverflowed)
+        for index in 0..<imageTo3DUnconfirmedRequestLimit { connection.confirmDelivered(service: .meshy, sourceTaskID: "x\(index)") }
+        XCTAssertTrue(connection.unconfirmedRequests.isEmpty)
+        XCTAssertTrue(connection.hasUnconfirmedRequests, "a record that dropped off keeps the guard")
+        XCTAssertTrue(replicaUnconfirmedNotice([], overflowed: true)?.contains("earlier requests") == true)
+    }
+
+    // MARK: The sheet's session
+
+    @MainActor private func waitFor(_ session: ReplicaGeneratorSession, _ phases: [ReplicaGeneratorSession.Phase],
+                                    file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !phases.contains(session.phase) {
+            guard Date() < deadline else { return XCTFail("still \(session.phase)", file: file, line: line) }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    @MainActor private func makeTestConnection() -> ImageTo3DConnection {
+        ImageTo3DConnection(defaults: UserDefaults(suiteName: "replica-tests-\(UUID().uuidString)")!)
+    }
+
+    private var cat: ReplicaInputs { ReplicaInputs(name: "Cat", size: size(.height, 25), purpose: .functional) }
+    private let meshyFinished = #"{"id":"t1","status":"SUCCEEDED","progress":100,"model_urls":{"stl":"https://assets.meshy.ai/t1/model.stl"}}"#
+
+    @MainActor func testSessionGeneratesDownloadsProcessesThenSavesOnce() async throws {
+        // Regression: the session used to stay in "generating" for ever after a successful download.
+        let transport = ReplicaScriptedTransport([(202, #"{"result":"t1"}"#), (200, meshyFinished)],
+                                                 modelData: try MeshRepairTests.cube(size: 0.05).binarySTL())
+        let connection = makeTestConnection()
+        let host = ReplicaTestHost()
+        let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        session.start(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), image: jpeg, inputs: cat, host: host)
+        XCTAssertEqual(session.phase, .generating)
+        try await waitFor(session, [.processed, .stopped, .processingFailed])
+        XCTAssertEqual(session.phase, .processed, "\(String(describing: session.lastStop)) \(session.processingProblem ?? "")")
+        XCTAssertEqual(Double(session.processed?.extentMM.z ?? 0), 25, accuracy: 0.001)
+        XCTAssertTrue(host.imported.isEmpty, "nothing is saved before the seller has seen it")
+        XCTAssertTrue(session.hasUnsavedModel)
+        XCTAssertEqual(connection.activeWork, 0)
+
+        // Which way is up: processed again from memory, free.
+        session.process(inputs: cat, upAxis: .y)
+        XCTAssertEqual(session.phase, .processing)
+        try await waitFor(session, [.processed, .processingFailed])
+        XCTAssertEqual(session.processed?.upAxis, .y)
+        XCTAssertEqual(transport.posts, 1, "processing again sends nothing")
+        XCTAssertEqual(transport.downloads.count, 1)
+
+        let changed = ReplicaInputs(name: "Cat", size: size(.height, 30), purpose: .functional)
+        XCTAssertFalse(session.canSave(changed), "a result made from other details isn't saved")
+        session.save(inputs: changed, host: host)
+        XCTAssertTrue(host.imported.isEmpty)
+
+        session.save(inputs: cat, host: host)
+        XCTAssertEqual(session.phase, .saved)
+        XCTAssertEqual(host.imported, ["Cat (replica).stl"])
+        XCTAssertEqual(session.savedModelIDs.count, 1)
+        XCTAssertFalse(session.hasUnsavedModel)
+        XCTAssertEqual(host.activities.last?.success, true)
+        session.save(inputs: cat, host: host)
+        session.process(inputs: cat, upAxis: .z)
+        XCTAssertEqual(host.imported.count, 1, "one copy only")
+        XCTAssertEqual(session.phase, .saved)
+        XCTAssertTrue(connection.unconfirmedRequests.isEmpty)
+    }
+
+    @MainActor func testSessionRemembersAnUnknownCreateForTheNextSheet() async throws {
+        let transport = ReplicaScriptedTransport([(503, #"{"message":"busy"}"#)])
+        let connection = makeTestConnection()
+        let host = ReplicaTestHost()
+        let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        session.start(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), image: jpeg, inputs: cat, host: host)
+        try await waitFor(session, [.stopped])
+        XCTAssertEqual(session.lastStop?.reason, .outcomeUnknown)
+        XCTAssertNil(session.lastStop.flatMap(replicaResumeAction(for:)))
+        XCTAssertEqual(connection.unconfirmedRequests.count, 1)
+        XCTAssertEqual(session.lastStopRecordID, connection.unconfirmedRequests.first?.id)
+        XCTAssertNil(replicaUnconfirmedNotice(connection.unconfirmedRequests, overflowed: false, excluding: session.lastStopRecordID),
+                     "the stop view already explains it")
+        XCTAssertNotNil(replicaCloseWarning(hasUnsavedModel: session.hasUnsavedModel, lastStop: session.lastStop, service: session.service))
+        session.cancelAll()
+
+        // A newly opened sheet: nothing of its own, but Generate still asks, and the notice names the request.
+        let next = ReplicaGeneratorSession(connection: connection)
+        XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: next.lastStop, modelAlreadyMade: next.generated != nil,
+                                                       earlierUnconfirmed: connection.hasUnconfirmedRequests))
+        XCTAssertTrue(replicaUnconfirmedNotice(connection.unconfirmedRequests, overflowed: false)?.contains("Meshy at") == true)
+        XCTAssertEqual(transport.posts, 1)
+    }
+
+    @MainActor func testClosingMidCreateIsRemembered() async throws {
+        let transport = ReplicaHangingTransport()
+        let connection = makeTestConnection()
+        let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        session.start(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), image: jpeg, inputs: cat, host: ReplicaTestHost())
+        let deadline = Date().addingTimeInterval(10)
+        while !transport.started, Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertTrue(transport.started)
+        session.cancelAll()  // the sheet closed while the create was on its way
+        while connection.unconfirmedRequests.isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertEqual(connection.unconfirmedRequests.count, 1, "the create may have gone through")
+        XCTAssertEqual(connection.unconfirmedRequests.first?.service, .meshy)
+        XCTAssertNil(connection.unconfirmedRequests.first?.taskID)
+        XCTAssertEqual(connection.activeWork, 0)
+    }
+
+    @MainActor func testDownloadedFileIsCheckedByItsContent() async throws {
+        let transport = ReplicaScriptedTransport([(202, #"{"result":"t1"}"#), (200, meshyFinished)], modelData: Data("glTF\u{2}\0\0\0rest".utf8))
+        let connection = makeTestConnection()
+        let host = ReplicaTestHost()
+        let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        session.start(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), image: jpeg, inputs: cat, host: host)
+        try await waitFor(session, [.stopped, .processed, .processingFailed])
+        XCTAssertEqual(session.phase, .stopped)
+        XCTAssertEqual(session.lastStop?.reason, .downloadFailed)
+        XCTAssertEqual(session.lastStop.flatMap(replicaResumeAction(for:)), .tryDownloadAgain, "paid for, so it can be fetched again")
+        XCTAssertEqual(connection.unconfirmedRequests.count, 1)
+        XCTAssertNil(session.generated)
+        XCTAssertEqual(host.activities.last?.success, false)
+        session.cancelAll()
+    }
+
+    func testTripoLinkWithoutAnExtensionIsAccepted() {
+        let client = TripoClient(apiKey: "tsk_secretkey1", transport: ReplicaScriptedTransport([]))
+        let status = ImageTo3DTaskStatus(taskID: "c1", state: .succeeded, modelURLs: ["bin": URL(string: "https://cdn.tripo3d.ai/o/abc.bin")!])
+        XCTAssertEqual(client.modelLink(in: status, kind: .conversion, preferred: .stl)?.format, .stl)
+        XCTAssertNil(client.modelLink(in: status, kind: .generation, preferred: .stl), "a generation is GLB only")
+        XCTAssertEqual(imageTo3DDetectedFormat(Data([0x50, 0x4B, 0x03, 0x04, 0])), .threeMF)
+        XCTAssertNil(imageTo3DDetectedFormat(Data("glTF".utf8)))
+        XCTAssertNil(imageTo3DDetectedFormat(Data()))
+        XCTAssertEqual(imageTo3DDetectedFormat(Data("solid x\n".utf8)), .stl)
+    }
+}
+
+/// Stands in for the store: records imports by file name (the file must be a readable STL when imported) and Activity.
+@MainActor private final class ReplicaTestHost: ReplicaLibraryHost {
+    private(set) var imported: [String] = []
+    private(set) var activities: [Activity] = []
+
+    func addReplicaActivity(_ activity: Activity) { activities.append(activity) }
+
+    func importReplica(_ url: URL, intent: PartIntent?, sourceDetails: ModelSourceDetails) -> UUID? {
+        guard (try? STLMesh.parse(Data(contentsOf: url))) != nil else { return nil }
+        imported.append(url.lastPathComponent)
+        return UUID()
+    }
+}
+
+/// A create that never answers until it is cancelled.
+private final class ReplicaHangingTransport: ImageTo3DTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var didStart = false
+    var started: Bool { lock.withLock { didStart } }
+
+    func send(_ request: URLRequest) async throws -> ImageTo3DHTTPReply {
+        lock.withLock { didStart = true }
+        try await Task.sleep(nanoseconds: 30_000_000_000)
+        throw ImageTo3DError.transport("No reply")
+    }
+
+    func download(_ url: URL, into folder: URL, fileName: String, maxBytes: Int64) async throws -> URL {
+        throw ImageTo3DError.downloadRefused("Not used")
     }
 }
