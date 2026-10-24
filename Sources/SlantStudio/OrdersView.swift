@@ -1180,6 +1180,13 @@ struct OrdersView: View {
         }
         .onChange(of: store.orderFilter) { _, _ in watchFocus = nil }
         .onChange(of: store.orderSearchActive) { _, active in if active { watchFocus = nil } }
+        // A clicked order notification (OrderWatch.swift). Taken after the publisher's change has landed.
+        .onReceive(OrderWatch.shared.$selectionRequest) { request in
+            guard let request else { return }
+            Task { @MainActor in
+                if OrderWatch.shared.consumeSelection(request) { selectOrderFromNotification(request.orderID) }
+            }
+        }
         .onChange(of: store.ordersExportRequest) { _, _ in
             // File › Export Orders…, which the store only forwards when nothing modal is shown.
             // Search can hide every loaded order; say so rather than doing nothing silently.
@@ -1235,19 +1242,22 @@ struct OrdersView: View {
         }
     }
 
-    /// The banner's Show: reloads the newest orders (as the checks read them, so every changed order is on the page),
-    /// clearing any search or filter (Needs Attention too) like Show All Orders, then lists the changed orders. They
-    /// count as seen only once the reload actually ran and succeeded: a refused, failed or skipped reload (another
-    /// request running) leaves the banner as it was.
+    /// The banner's Show: reloads the newest orders, clearing any search or filter (Needs Attention too) like Show All
+    /// Orders, reads changed orders that aren't on that page by ID (`reloadOrdersIncludingWatched`), then lists the
+    /// changed orders. Only those listed count as seen, and only once the reload actually ran and succeeded: a refused,
+    /// failed or skipped reload (another request running) leaves the banner as it was.
     func showWatchedChanges(_ ids: Set<String>) {
         guard !store.busy else { return }
         Task {
-            guard await store.applyOrderFilter(OrderFilter()) else { return }
+            // Newest change first, so the orders read by ID (older than the reloaded page) are the latest changes.
+            let ordered = OrderWatch.shared.unseenChanges.map(\.id).filter(ids.contains)
+            guard await store.reloadOrdersIncludingWatched(ordered) else { return }
             needsAttentionOnly = false
             search = ""
             sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
-            OrderWatch.shared.acknowledge(ids: ids)
             let present = Set(ids.filter { id in store.orders.contains { $0.id == id } })
+            // Only the changes now listed count as seen; one that couldn't be read stays in the banner.
+            OrderWatch.shared.acknowledge(ids: present)
             watchFocus = present.isEmpty ? nil : present
             if present.count == 1, let id = present.first, selection != id {
                 selection = id
@@ -1265,6 +1275,18 @@ struct OrdersView: View {
             store.orders[index] = record
         }
         if selection == orderID { detail = order }
+    }
+
+    /// A clicked order notification: selects the order (OrderWatch has made sure it is loaded), ending a local search,
+    /// Needs Attention or Show focus that hides it. A lookup's results are left alone: clearing it would reload.
+    func selectOrderFromNotification(_ id: String) {
+        guard store.orders.contains(where: { $0.id == id }) else { return }
+        if !listRecords.contains(where: { $0.id == id }) {
+            watchFocus = nil
+            needsAttentionOnly = false
+            if !store.orderSearchActive { search = "" }
+        }
+        if selection == id { load(id) } else { selection = id }
     }
 
     // MARK: Order detail extras hooks (OrderDetailExtras.swift)

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 // MARK: - Opening models from Finder
 
@@ -47,7 +48,8 @@ func queuedImportNote(count: Int) -> String? {
         scheduleDrain()
     }
 
-    private func revealMainWindow() {
+    /// Also used by order notification clicks (OrderWatch.swift).
+    func revealMainWindow() {
         // A hidden app's windows report not visible, which would look like a closed window and open a second one.
         if NSApp.isHidden { NSApp.unhide(nil) }
         // The Settings window can become main too, but files never import into it.
@@ -103,6 +105,12 @@ let mainWindowID = "main"
 
 /// Receives Open With, double-click and Dock-icon drops. Imports copy the file into the library, as the Import panel does.
 final class SlantStudioAppDelegate: NSObject, NSApplicationDelegate {
+    /// The notification delegate must be set before launch finishes, so a click on an order notification that launched
+    /// the app is delivered (OrderWatch.swift holds it until the window and store exist).
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        if orderWatchNotificationsAvailable() { UNUserNotificationCenter.current().delegate = OrderWatchNotificationDelegate.shared }
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated { ExternalModelOpenQueue.shared.enqueue(urls) }
     }

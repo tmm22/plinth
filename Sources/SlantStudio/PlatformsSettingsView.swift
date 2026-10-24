@@ -602,8 +602,12 @@ struct PlatformComposerView: View {
             Form {
                 Section {
                     TextField("Name", text: $draft.name, prompt: Text("My print shop"))
-                    TextField("Application address", text: $draft.url, prompt: Text("https://yourstore.com"))
+                    // Slant calls this the platform's application URL; for most sellers it is where they sell.
+                    TextField("Shop address", text: $draft.url, prompt: Text("https://www.etsy.com/shop/YourShopName"))
                     TextField("Description", text: $draft.description, prompt: Text("Optional"))
+                } footer: {
+                    Text("Where you sell, starting with https://: your Etsy shop page, your Shopify store or your own website.")
+                        .settingsFooterLayout()
                 }
                 Section {
                     DisclosureGroup("Advanced") {
