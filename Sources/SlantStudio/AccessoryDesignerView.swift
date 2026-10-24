@@ -66,16 +66,19 @@ func accessoryFitSizeLines(_ fitSizes: [AccessoryFitSize]) -> [String] {
         : fitSizes.map(accessoryFitSizeText)
 }
 
-/// Studio's checks of the fit-test piece, for the seller.
+/// Studio's checks of the fit-test piece, for the seller, each saying what was actually checked.
 func accessoryFitTestCheckLines(_ piece: AccessoryFitTestPiece) -> [String] {
     let size = piece.facts.sizeMM
     let check = piece.check
-    var lines = ["Size: \(String(format: "%.1f", size.x)) × \(String(format: "%.1f", size.y)) × \(String(format: "%.1f", size.z)) mm (W × D × H)"]
-    if let share = check.volumeShare { lines.append("About \(percentLabel(share)) of the part’s material") }
+    var lines = ["Size: \(String(format: "%.1f", size.x)) × \(String(format: "%.1f", size.y)) × \(String(format: "%.1f", size.z)) mm (W × D × H), \(accessoryFitTestHeightText(check))"]
+    if let share = check.volumeShare { lines.append("Volume: \(accessoryShareLabel(share)) of the part’s") }
     if check.passes {
-        lines.append("One closed solid on the bed, smaller than the part")
+        lines.append("One closed solid on the bed, no side longer than the part’s and under half its volume")
         if check.partFitSizeCount > 0 {
-            lines.append(check.partFitSizeCount == 1 ? "Has the part’s fit size" : "Has all \(check.partFitSizeCount) of the part’s fit sizes")
+            lines.append("Its code reports the same fit sizes as the part (\(check.partFitSizeCount) of \(check.partFitSizeCount)); check the Fit Test preview shows the slot or hole.")
+        }
+        if check.overhang.overhangAreaMM2 > 0, check.overhang.fraction >= accessoryOverhangNotableShare {
+            lines.append("Overhangs: \(percentLabel(check.overhang.fraction)) of its surface faces down more steeply than 45°; it may need supports")
         }
         if check.isLargerThanNeeded {
             lines.append("Larger than it needs to be: you can ask Claude to cut it down to just the part that must fit")
@@ -87,23 +90,40 @@ func accessoryFitTestCheckLines(_ piece: AccessoryFitTestPiece) -> [String] {
     return lines
 }
 
+/// Under the piece's checks: what Studio does and doesn't check.
+let accessoryFitTestChecksCaption = "Studio checks only the piece’s size, volume and the fit sizes its code reports, not that its shape matches the part’s fit region."
+
 /// Shown with a passing fit-test piece. It never promises a fit.
-let accessoryFitTestPrintAdvice = "Print this first and check it against the real object; if it fits, print the whole part. If it’s tight or loose, tell Claude by how much in a note."
+let accessoryFitTestPrintAdvice = "Print this first and check it against the real object; Order a Sample to Me… in Models can print it. Save Template… too: if the piece is tight or loose, change Fit clearance in Personalise from Template, or tell Claude by how much while this window is open."
+
+/// After Save Fit Test to Library.
+let accessoryFitTestSavedText = "Saved. In Models, Order a Sample to Me… prints it."
 
 /// Why there is no fit-test piece to print, for a design that has something to fit (it echoed fit sizes or declared
 /// `fit_test`); nil when a passing piece exists or there is nothing to fit.
 func accessoryNoFitTestLines(_ render: AccessoryRender) -> [String]? {
     guard render.passingFitTest == nil, !render.facts.fitSizes.isEmpty || render.facts.fitTestDeclaration != .none else { return nil }
+    if render.facts.fitTestDeclaration == .none {
+        return ["No fit-test piece: print the whole part to check the fit, or ask Claude in a note to add a fit-test piece."]
+    }
     var lines = ["No fit-test piece: print the whole part to check the fit."]
     switch render.fitTest {
     case .made(let piece)?:
         lines.append("Studio’s fit-test piece didn’t pass its checks: " + piece.check.problems.joined(separator: " "))
     case .failed?:
         lines.append("OpenSCAD couldn’t make the fit-test piece.")
+    case .stopped?:
+        lines.append("The fit-test piece was stopped before it was made.")
     case nil:
         break
     }
     return lines
+}
+
+/// The note field's placeholder: once a passing fit-test piece exists, it invites the fit-test result.
+func accessoryNotePlaceholder(finished: Bool, hasPassingFitTest: Bool) -> String {
+    if hasPassingFitTest { return "Fit-test result, such as “the slot was 0.3 mm too tight”" }
+    return finished ? "Ask for changes, such as “make the lip 2 mm taller”" : "Tell Claude how to continue"
 }
 
 /// Under Claude's photo comparison: it is Claude's reading of the pictures, not a measurement.
@@ -893,7 +913,8 @@ private struct AccessoryDesignRunView: View {
             default:
                 if run.canSendNote {
                     TextField("Note to Claude", text: $note,
-                              prompt: Text(run.phase == .finished ? "Ask for changes, such as “make the lip 2 mm taller”" : "Tell Claude how to continue"),
+                              prompt: Text(accessoryNotePlaceholder(finished: run.phase == .finished,
+                                                            hasPassingFitTest: (run.finish?.render ?? run.latestRender)?.passingFitTest != nil)),
                               axis: .vertical)
                         .lineLimit(1...4)
                         .labelsHidden()
@@ -1005,6 +1026,8 @@ private struct AccessoryDesignRunView: View {
                         Text(line).font(.callout).foregroundStyle(piece.check.passes ? Color.primary : Color.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    Text(accessoryFitTestChecksCaption).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.top, 4)
                 .accessibilityElement(children: .contain)
@@ -1060,6 +1083,8 @@ private struct AccessoryDesignRunView: View {
                     }
                 }
             }
+            // The fit-test piece comes first, as the advice says to print it first.
+            fitTestSaveSection(finish)
             TextField("Library name", text: $libraryName)
                 .accessibilityLabel("Library name")
             HStack {
@@ -1074,7 +1099,6 @@ private struct AccessoryDesignRunView: View {
                         .disabled(saving || libraryNameProblem != nil)
                 }
             }
-            fitTestSaveSection(finish)
             if let message = saveProblem ?? libraryNameProblem {
                 Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1126,17 +1150,17 @@ private struct AccessoryDesignRunView: View {
     private func saveToLibrary(_ finish: AccessoryFinish) {
         guard !saving, libraryNameProblem == nil, !savedRenderIDs.contains(finish.render.id) else { return }
         save(stl: finish.render.stl, name: libraryName.trimmingCharacters(in: .whitespacesAndNewlines), id: finish.render.id,
-             activityDetail: "Saved a new model")
+             activityDetail: "Saved a new model", status: "Saved “\(libraryName.trimmingCharacters(in: .whitespacesAndNewlines))” to your library.")
     }
 
     private func saveFitTestToLibrary(_ piece: AccessoryFitTestPiece) {
         guard !saving, piece.check.passes, !savedRenderIDs.contains(piece.id) else { return }
         save(stl: piece.stl, name: accessoryFitTestLibraryName(libraryName: libraryName), id: piece.id,
-             activityDetail: "Saved a fit-test piece")
+             activityDetail: "Saved a fit-test piece", status: accessoryFitTestSavedText)
     }
 
     /// Writes the STL to a temporary folder and adds it to the library through `importModel`. Sends nothing.
-    private func save(stl: Data, name: String, id: UUID, activityDetail: String) {
+    private func save(stl: Data, name: String, id: UUID, activityDetail: String, status: String) {
         saving = true
         saveProblem = nil
         let fileName = exportFileName(modelName: name, fileExtension: "stl")
@@ -1157,7 +1181,7 @@ private struct AccessoryDesignRunView: View {
                 // importModel shows its own alert when copying into the library fails.
                 guard store.importModel(url) else { saveProblem = "The design couldn’t be added to your library."; return }
                 savedRenderIDs.insert(id)
-                saveStatus = "Saved “\(name)” to your library."
+                saveStatus = status
                 store.activities.insert(Activity(title: "Design an accessory", detail: activityDetail, success: true), at: 0)
             case .failure(let error):
                 saveProblem = error.localizedDescription

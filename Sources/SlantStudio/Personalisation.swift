@@ -302,9 +302,20 @@ func scadTemplateParameters(_ source: String) -> ScadTemplate {
         case .number(let text): kind = .number; value = text
         case .boolean(let flag): kind = .boolean; value = flag ? "true" : "false"
         }
-        let trailing = parts.lineComment.map { $0.trimmingCharacters(in: .whitespaces) }
-        var parameter = ScadParameter(name: assignment.name, kind: kind, defaultValue: value, description: pendingDescription,
-                                      group: group, line: offset + 1)
+        var trailing = parts.lineComment.map { $0.trimmingCharacters(in: .whitespaces) }
+        var trailingDescription: String?
+        // `// [0:0.05:1] Fit clearance per side (mm)`: a constraint, then a description (the form Design an Accessory
+        // asks Claude to write). The bracket is used only when it reads as a constraint on its own.
+        if let text = trailing, text.hasPrefix("["), let close = text.firstIndex(of: "]") {
+            let bracket = String(text[...close])
+            let rest = text[text.index(after: close)...].trimmingCharacters(in: .whitespaces)
+            if !rest.isEmpty, scadConstraint(bracket, kind: kind) != nil {
+                trailing = bracket
+                trailingDescription = String(rest.prefix(300))
+            }
+        }
+        var parameter = ScadParameter(name: assignment.name, kind: kind, defaultValue: value,
+                                      description: pendingDescription ?? trailingDescription, group: group, line: offset + 1)
         switch trailing.flatMap({ scadConstraint($0, kind: kind) }) {
         case .choices(let choices)?:
             parameter.choices = choices
