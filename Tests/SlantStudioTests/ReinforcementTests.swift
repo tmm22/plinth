@@ -36,20 +36,58 @@ final class ReinforcementTests: XCTestCase {
             XCTAssertEqual(original.subtracting(edited).signedVolume, 0, accuracy: 0.001)
         }
     }
-    func testCellsAreEnclosedAndPreserveSkin() throws {
+    func testClosedVoidTreatmentsAreWithdrawn() throws {
+        // Cells and the shell gap always leave a closed void, which Slant bills as an extra body.
         let source = try block()
-        let settings = ReinforcementSettings(kind: .cells, offset: SIMD3(repeating: 5), size: SIMD3(repeating: 10))
+        for kind in [ReinforcementKind.cells, .shell] {
+            XCTAssertTrue(kind.isWithdrawn)
+            XCTAssertFalse(ReinforcementKind.offered.contains(kind))
+            let settings = ReinforcementSettings(kind: kind, offset: SIMD3(repeating: 5), size: SIMD3(repeating: 10))
+            XCTAssertThrowsError(try ReinforcementEngine.preview(source, settings: settings)) {
+                XCTAssertEqual($0.localizedDescription, reinforcementClosedVoidWithdrawal)
+            }
+            XCTAssertThrowsError(try ReinforcementEngine.suggestPosition(source, settings: settings))
+            XCTAssertEqual(kind.explanation, reinforcementClosedVoidWithdrawal)
+        }
+        XCTAssertTrue(ReinforcementKind.offered.contains(.internalWalls))
+        XCTAssertTrue(reinforcementClosedVoidWithdrawal.contains("Internal walls"))
+    }
+
+    func testShellCheckRefusesClosedVoids() throws {
+        XCTAssertNil(reinforcementShellGrowthProblem(before: 1, after: 1))
+        XCTAssertNil(reinforcementShellGrowthProblem(before: 2, after: 1))
+        let problem = try XCTUnwrap(reinforcementShellGrowthProblem(before: 1, after: 2))
+        XCTAssertTrue(problem.contains("extra body"), problem)
+        // A block with a sealed cavity has two shells: the cavity's surface is its own.
+        let voided = try ReinforcementEngine.stl(cube20.subtracting(.cube(center: Vector(10,10,10), size: Vector(6,6,6))).makeWatertight())
+        XCTAssertEqual(try ReinforcementEngine.shellCounts(try block(), [try block()], { false }).after, 1)
+        XCTAssertThrowsError(try ReinforcementEngine.shellCounts(try block(), [voided], { false }))
+        XCTAssertEqual(reinforcementShellLine(before: 1, after: 1, split: false), "Separate shells: 1 before · 1 after")
+    }
+
+    func testInternalWallsTreatmentCutsSlotsThroughTheBed() throws {
+        let source = try ReinforcementEngine.stl(.cube(center: Vector(20,20,10), size: Vector(40,40,20)))
+        let settings = ReinforcementSettings(kind: .internalWalls)
         let result = try ReinforcementEngine.preview(source, settings: settings)
-        XCTAssertGreaterThan(result.removedVolume, 0)
+        try assertPreserved(result, source)
         XCTAssertEqual(result.addedVolume, 0)
-        XCTAssertEqual(result.mesh.minimum, source.minimum)
-        XCTAssertEqual(result.mesh.maximum, source.maximum)
-        XCTAssertNotNil(result.originalSection)
+        XCTAssertEqual(result.removedVolume, 6 * 0.25 * 35 * 17.75, accuracy: 0.01)
+        XCTAssertEqual(result.shellsBefore, 1); XCTAssertEqual(result.shellsAfter, 1)
+        XCTAssertTrue(try XCTUnwrap(result.detail).hasPrefix("Adds internal walls"))
         XCTAssertNotNil(result.proposedSection)
-        var outside = settings
-        outside.offset.x = 0.5
-        XCTAssertThrowsError(try ReinforcementEngine.preview(source, settings: outside))
-        XCTAssertThrowsError(try ReinforcementEngine.preview(tray(), settings: settings))
+        XCTAssertTrue(ReinforcementKind.internalWalls.keepsZUp)
+        XCTAssertFalse(ReinforcementKind.internalWalls.isExperimental)
+        XCTAssertThrowsError(try ReinforcementEngine.suggestPosition(source, settings: settings))
+        // Keep-clear regions are left uncut.
+        var guarded = settings
+        guarded.protectedRegions = [ReinforcementBox(offset: SIMD3(0, 0, 0), size: SIMD3(40, 20, 20))]
+        let kept = try ReinforcementEngine.preview(source, settings: guarded)
+        XCTAssertEqual(try occupied(kept.mesh, .cube(center: Vector(20,10,10), size: Vector(40,20,20))), 16000, accuracy: 0.01)
+        XCTAssertLessThan(kept.removedVolume, result.removedVolume)
+        // A part too thin for slots says why.
+        XCTAssertThrowsError(try ReinforcementEngine.preview(tray(), settings: settings)) {
+            XCTAssertEqual($0.localizedDescription, InternalWallsSkipReason.noRegionThickEnough.message)
+        }
     }
     func testFloatingNoOpOutOfBoundsAndProtectedRegionsAreRejected() throws {
         let source = try tray()
@@ -107,29 +145,27 @@ final class ReinforcementTests: XCTestCase {
     }
     private func occupied(_ mesh: STLMesh, _ probe: Mesh) throws -> Double { try mesh.reinforcementSolid().intersection(probe).signedVolume }
 
-    func testShellGapIsEnclosedAndRejectedNearSurface() throws {
-        let source = try block()
-        let settings = ReinforcementSettings(kind: .shell, offset: SIMD3(repeating: 4), size: SIMD3(repeating: 12))
-        let result = try ReinforcementEngine.preview(source, settings: settings)
-        try assertPreserved(result, source)
-        // A 0.2 mm wide, 12 mm tall gap around a 12 × 12 mm outline.
-        XCTAssertEqual(result.removedVolume, 12*12*12 - 11.6*11.6*12, accuracy: 0.05)
-        XCTAssertEqual(result.addedVolume, 0)
-        XCTAssertEqual(try occupied(result.mesh, .cube(center: Vector(10,10,10), size: Vector(10,10,10))), 1000, accuracy: 0.01)
-        var exposed = settings; exposed.offset.x = 0.5
-        XCTAssertThrowsError(try ReinforcementEngine.preview(source, settings: exposed))
-        XCTAssertNoThrow(try ReinforcementEngine.suggestPosition(source, settings: settings))
-    }
-    func testHoleRingKeepsBoreAndNeedsAnExistingBore() throws {
+    func testHoleRingOpensThroughTheBedAndKeepsBore() throws {
         let bore = Mesh.cylinder(radius: 1.6, height: 30, slices: 32).rotated(by: Rotation(pitch: .halfPi)).translated(by: Vector(10,10,10))
         let source = try exportedOnce(cube20.subtracting(bore))
-        let settings = ReinforcementSettings(kind: .holeRing, offset: SIMD3(4,4,4), size: SIMD3(12,12,12), boreDiameter: 3.17)
+        let settings = ReinforcementSettings(kind: .holeRing, offset: SIMD3(4,4,0), size: SIMD3(12,12,12), boreDiameter: 3.17)
         let result = try ReinforcementEngine.preview(source, settings: settings)
         try assertPreserved(result, source)
         XCTAssertGreaterThan(result.removedVolume, 1)
+        XCTAssertEqual(result.shellsAfter, result.shellsBefore, "The ring opens through the bed face, so it is no separate shell")
         let core = Mesh.cylinder(radius: 1.5, height: 30, slices: 32).rotated(by: Rotation(pitch: .halfPi)).translated(by: Vector(10,10,10))
         XCTAssertEqual(try occupied(result.mesh, core), 0, accuracy: 0.001)
+        // The gap is open at the bed face and closed by the cover at its top.
+        let ring = Float(3.17) / 2 / cos(Float.pi / 48) + settings.thickness + settings.gapWidth / 2
+        XCTAssertFalse(ReinforcementEngine.containsMaterial(SIMD3(10 + ring, 10, 0.1), in: result.mesh))
+        XCTAssertFalse(ReinforcementEngine.containsMaterial(SIMD3(10 + ring, 10, 11.9), in: result.mesh))
+        XCTAssertTrue(ReinforcementEngine.containsMaterial(SIMD3(10 + ring, 10, 12.1), in: result.mesh))
         XCTAssertThrowsError(try ReinforcementEngine.preview(block(), settings: settings), "No bore to ring")
+        // A ring that starts above the bed would be a closed void.
+        var raised = settings; raised.offset.z = 4
+        XCTAssertThrowsError(try ReinforcementEngine.preview(source, settings: raised)) {
+            XCTAssertTrue($0.localizedDescription.contains("position Z to 0"), $0.localizedDescription)
+        }
     }
     func testTeardropRaisesHoleRoofOnly() throws {
         // Horizontal 4 mm hole along X at y = z = 10.
@@ -209,7 +245,7 @@ final class ReinforcementTests: XCTestCase {
         XCTAssertThrowsError(try ReinforcementEngine.preview(source, settings: outside), "Pins break through the top")
     }
     func testNewTreatmentsKeepZUpAndLegacySettingsDecode() throws {
-        for kind in [ReinforcementKind.shell, .holeRing, .teardrop, .bridge, .overhang, .thicken] {
+        for kind in [ReinforcementKind.shell, .holeRing, .teardrop, .bridge, .overhang, .thicken, .internalWalls] {
             let record = ReinforcementRecord(sourceID: UUID(), settings: ReinforcementSettings(kind: kind), addedVolumeMM3: 0, removedVolumeMM3: 0, created: Date())
             XCTAssertTrue(record.requiresZUp, kind.rawValue)
         }
@@ -230,15 +266,13 @@ final class ReinforcementTests: XCTestCase {
         let open = STLMesh(vertices: Array(source.vertices.dropLast(9)), minimum: source.minimum, maximum: source.maximum)
         XCTAssertThrowsError(try open.reinforcementSolid())
     }
-    func testSuggestionsFindAttachedRibAndEnclosedCells() throws {
+    func testSuggestionsFindAttachedRibAndRefuseCells() throws {
         let source = try tray()
         let settings = ReinforcementSettings(size: SIMD3(8,8,8))
         let suggestion = try ReinforcementEngine.suggestPosition(source, settings: settings)
         XCTAssertNoThrow(try ReinforcementEngine.preview(source, settings: suggestion))
         let cells = ReinforcementSettings(kind: .cells, size: SIMD3(8,8,8))
-        let solid = try block()
-        let cellPosition = try ReinforcementEngine.suggestPosition(solid, settings: cells)
-        XCTAssertNoThrow(try ReinforcementEngine.preview(solid, settings: cellPosition))
+        XCTAssertThrowsError(try ReinforcementEngine.suggestPosition(block(), settings: cells), "Withdrawn: cells leave closed voids")
     }
     func testReversedFaceAndDuplicateShellAreRejected() throws {
         let source = try block()

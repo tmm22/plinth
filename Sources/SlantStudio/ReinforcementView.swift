@@ -25,13 +25,13 @@ struct ReinforcementCard: View {
                     } else if let failure {
                         Text(failure).font(.callout).foregroundStyle(.secondary)
                     } else if mesh != nil {
-                        Text("Add ribs, gussets, collars, fillets or overhang chamfers; match thin walls to line width; add teardrop holes or counterbore bridging; or split the part with alignment pins. Gap and cell treatments are saved as experimental test copies.")
+                        Text("Add internal walls that open through the bed face, ribs, gussets, collars, fillets or overhang chamfers; match thin walls to line width; add teardrop holes or counterbore bridging; or split the part with alignment pins. The hole-wall ring gap is saved as an experimental test copy.")
                             .font(.callout).foregroundStyle(.secondary)
                         Button("Review Reinforcement…") { reviewing = true }.disabled(store.busy)
                     } else { ProgressView("Loading reinforcement tools…") }
                 }.fixedSize(horizontal: false, vertical: true).padding(.top, 12)
             } label: {
-                SectionHeading(title: "Reinforce this part", caption: model.reinforcement == nil ? "Add ribs, gussets and other features you place and preview" : "Reinforcement copy · View details")
+                SectionHeading(title: "Reinforce this part", caption: model.reinforcement == nil ? "Add internal walls, ribs, gussets and other features you preview" : "Reinforcement copy · View details")
             }.studioDisclosureStyle()
         }
         .task(id: expanded) {
@@ -74,6 +74,8 @@ private struct ReinforcementReview: View {
     @State private var generation = UUID()
 
     private var current: Bool { preview != nil && previewSettings == settings }
+    /// A copy never has more separate shells than its source: a new one is a closed void Slant bills as a body.
+    private var shellsHeld: Bool { preview.map { $0.shellsAfter <= $0.shellsBefore } ?? false }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -84,41 +86,46 @@ private struct ReinforcementReview: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Picker("Treatment", selection: $settings.kind) {
-                        ForEach(ReinforcementKind.allCases) { Text($0.rawValue).tag($0) }
+                        ForEach(ReinforcementKind.offered) { Text($0.rawValue).tag($0) }
                     }
                     Text(settings.kind.explanation).font(.callout).foregroundStyle(.secondary)
-                    DisclosureGroup("Placement and dimensions · mm") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Positions are measured from the model’s minimum X, Y and Z. Local dimensions rotate with the selected direction. Slightly overlap the surfaces to join.")
-                                .font(.callout).foregroundStyle(.secondary)
-                            vectorFields("Position", value: $settings.offset)
-                            vectorFields("Local size", value: $settings.size)
-                            Picker("Direction", selection: $settings.orientation) {
-                                ForEach(PrintOrientation.allCases) { Text($0.label).tag($0) }
-                            }.disabled(settings.kind.keepsZUp)
-                            Picker("Turn about Z", selection: $settings.quarterTurns) {
-                                ForEach(0..<4, id: \.self) { Text("\($0 * 90)°").tag($0) }
-                            }.pickerStyle(.segmented)
-                            if settings.kind.keepsZUp { Text("This treatment depends on the print layers, so it faces Z up. Prepare the print orientation before adding it.").font(.caption).foregroundStyle(.secondary) }
-                            if let label = settings.kind.thicknessLabel {
-                                HStack { Text(label); numberField($settings.thickness).frame(width: 90) }
-                            }
-                            if let label = settings.kind.boreLabel {
-                                HStack { Text(label); numberField($settings.boreDiameter).frame(width: 90) }
-                            }
-                            if settings.kind == .shell || settings.kind == .holeRing {
-                                HStack { Text("Gap width"); numberField($settings.gapWidth).frame(width: 90) }
-                            }
-                            if settings.kind == .bridge {
-                                HStack { Text("Layer height (estimate)"); numberField($settings.layerHeight).frame(width: 90) }
-                            }
-                            if settings.kind == .thicken {
-                                HStack { Text("Estimated line width"); numberField($settings.lineWidth).frame(width: 90) }
-                            }
-                            Text(String(format: "Model envelope: %.2f × %.2f × %.2f mm", source.maximum.x-source.minimum.x, source.maximum.y-source.minimum.y, source.maximum.z-source.minimum.z))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }.padding(.top, 10)
-                    }.studioDisclosureStyle()
+                    if settings.kind == .internalWalls {
+                        Text(String(format: "Model envelope: %.2f × %.2f × %.2f mm · Slots cover the whole part; no placement is needed", source.maximum.x-source.minimum.x, source.maximum.y-source.minimum.y, source.maximum.z-source.minimum.z))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        DisclosureGroup("Placement and dimensions · mm") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Positions are measured from the model’s minimum X, Y and Z. Local dimensions rotate with the selected direction. Slightly overlap the surfaces to join.")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                vectorFields("Position", value: $settings.offset)
+                                vectorFields("Local size", value: $settings.size)
+                                Picker("Direction", selection: $settings.orientation) {
+                                    ForEach(PrintOrientation.allCases) { Text($0.label).tag($0) }
+                                }.disabled(settings.kind.keepsZUp)
+                                Picker("Turn about Z", selection: $settings.quarterTurns) {
+                                    ForEach(0..<4, id: \.self) { Text("\($0 * 90)°").tag($0) }
+                                }.pickerStyle(.segmented)
+                                if settings.kind.keepsZUp { Text("This treatment depends on the print layers, so it faces Z up. Prepare the print orientation before adding it.").font(.caption).foregroundStyle(.secondary) }
+                                if let label = settings.kind.thicknessLabel {
+                                    HStack { Text(label); numberField($settings.thickness).frame(width: 90) }
+                                }
+                                if let label = settings.kind.boreLabel {
+                                    HStack { Text(label); numberField($settings.boreDiameter).frame(width: 90) }
+                                }
+                                if settings.kind == .shell || settings.kind == .holeRing {
+                                    HStack { Text("Gap width"); numberField($settings.gapWidth).frame(width: 90) }
+                                }
+                                if settings.kind == .bridge {
+                                    HStack { Text("Layer height (Slant prints 0.2 mm)"); numberField($settings.layerHeight).frame(width: 90) }
+                                }
+                                if settings.kind == .thicken {
+                                    HStack { Text("Estimated line width"); numberField($settings.lineWidth).frame(width: 90) }
+                                }
+                                Text(String(format: "Model envelope: %.2f × %.2f × %.2f mm", source.maximum.x-source.minimum.x, source.maximum.y-source.minimum.y, source.maximum.z-source.minimum.z))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }.padding(.top, 10)
+                        }.studioDisclosureStyle()
+                    }
                     DisclosureGroup("Keep-clear regions (\(settings.protectedRegions.count))") {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Protect space for mating parts, electronics, tools or movement. Neither added nor removed material may enter these regions.")
@@ -136,7 +143,9 @@ private struct ReinforcementReview: View {
                         }.padding(.top, 10)
                     }.studioDisclosureStyle()
                     HStack {
-                        Button("Suggest Position") { suggestPosition() }.disabled(working)
+                        if settings.kind != .internalWalls {
+                            Button("Suggest Position") { suggestPosition() }.disabled(working)
+                        }
                         Button(working ? "Preparing Preview…" : "Update Preview") { updatePreview() }.disabled(working)
                         if working { ProgressView().controlSize(.small); Button("Stop") { cancelPreview() } }
                         Spacer()
@@ -156,9 +165,20 @@ private struct ReinforcementReview: View {
                         Text("Prepare each part’s print orientation separately, then request a Slant quote for both.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if current, let preview {
+                        if let detail = preview.detail {
+                            Text(detail).font(.callout).foregroundStyle(.secondary)
+                        }
                         Text(String(format: "Geometry: +%.1f mm³ added · %.1f mm³ removed · Overall envelope preserved", preview.addedVolume, preview.removedVolume))
                             .font(.callout).foregroundStyle(.secondary)
                         Text("Geometry volume is not a filament or strength estimate. Request a new Slant quote for this copy.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if settings.kind == .internalWalls {
+                            Text("The slicer’s walls round each slot use more filament: in a live Slant estimate, slots like these added about 27% to a 40 × 40 × 20 mm block’s price.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if current, let preview {
+                        Text(reinforcementShellLine(before: preview.shellsBefore, after: preview.shellsAfter, split: preview.secondPart != nil))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(20).fixedSize(horizontal: false, vertical: true)
@@ -177,7 +197,7 @@ private struct ReinforcementReview: View {
                     Spacer()
                     Button(settings.kind.isExperimental ? "Save Experimental Test Copy" : settings.kind == .split ? "Save Two Part Copies" : "Apply to New Copy") { save() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!current || !confirmed || (settings.kind.isExperimental && !experimentalConfirmed) || working || saving || store.busy)
+                        .disabled(!current || !confirmed || (settings.kind.isExperimental && !experimentalConfirmed) || working || saving || store.busy || !shellsHeld)
                 }
             }.padding(20).disabled(saving)
         }
@@ -255,7 +275,7 @@ private struct ReinforcementReview: View {
         }
     }
     private func save() {
-        guard current, let preview, confirmed, !settings.kind.isExperimental || experimentalConfirmed else { return }
+        guard current, let preview, confirmed, !settings.kind.isExperimental || experimentalConfirmed, shellsHeld, !settings.kind.isWithdrawn else { return }
         saving = true
         do {
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -276,4 +296,9 @@ private struct ReinforcementReview: View {
         } catch { store.showError(error.localizedDescription) }
         saving = false
     }
+}
+
+/// Reinforce's shell check line, such as "Separate shells: 1 before · 1 after".
+func reinforcementShellLine(before: Int, after: Int, split: Bool) -> String {
+    split ? "Separate shells: \(before) before · at most \(after) in each part after" : "Separate shells: \(before) before · \(after) after"
 }

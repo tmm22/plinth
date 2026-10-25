@@ -11,6 +11,7 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case thicken = "Match wall to line width"
     case teardrop = "Teardrop hole roof"
     case bridge = "Counterbore bridging layers"
+    case internalWalls = "Internal walls"
     case shell = "Internal shell gap · experimental"
     case holeRing = "Hole-wall ring gap · experimental"
     case cells = "Internal cells · experimental"
@@ -23,19 +24,24 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .mount: return "Adds a collar around an existing clear bore. The bore is checked before applying; no hole is drilled."
         case .fillet: return "Adds a rounded transition along an inside junction. Place its two flat sides into the adjoining surfaces."
         case .overhang: return "Fills under a flat downward ledge with a 45° slope so it prints without supports. Put the region’s local −Y side into the wall and its top into the ledge; turn about Z to face another wall."
-        case .thicken: return "Measures the wall through the region centre along local Y and thickens its +Y side to the next whole number of extrusion lines, avoiding weak gap fill. Line width is an estimate; Slant’s actual width is not published to the app."
+        case .thicken: return "Measures the wall through the region centre along local Y and thickens its +Y side to the next whole number of extrusion lines, avoiding weak gap fill. Slant publishes 1 mm walls, 25% infill and 0.2 mm layers, but not its line width, so the width here is an estimate."
         case .teardrop: return "Adds a 45° point to the top of an existing horizontal hole along local X so it prints without sagging or supports. This enlarges the hole at the top; use only where the top of the hole is not fit-critical."
         case .bridge: return "For a counterbore that opens downward, cuts two single-layer steps into its ceiling so each layer bridges between solid edges. Set position Z at the ceiling and the region footprint to the counterbore diameter. Slightly reduces the screw-head bearing area."
-        case .shell: return "Cuts a thin closed vertical gap just inside the region boundary. The slicer prints perimeters on both sides of it, adding internal walls without changing the outside. Too narrow a gap may be merged by the slicer; validate a Slant print before production."
-        case .holeRing: return "Cuts a thin closed ring-shaped gap around an existing vertical bore so the slicer prints extra perimeters around the hole. The bore itself is unchanged. Validate a Slant print before production."
-        case .cells: return "Creates four enclosed cavities with sloping roofs to introduce internal perimeter boundaries. This removes material; strength improvement is unverified. Save a test copy and validate a Slant print before production."
+        case .internalWalls: return "Cuts thin \(String(format: "%.2f", internalWallsSlotWidthMM)) mm slots up from the bed face into thick, solid regions, at least \(Int(internalWallsClearanceMM)) mm from every other surface. Slant’s slicer prints its 1 mm walls round each slot, which adds internal walls where the part would otherwise be 25% infill. Every slot opens through the bed face, so the part stays one body. Applies to the whole part, which must stand on a flat face at its lowest point; keep-clear regions are left uncut. Uses more filament, so request a new Slant quote."
+        case .shell, .cells: return reinforcementClosedVoidWithdrawal
+        case .holeRing: return "Cuts a thin ring-shaped gap around an existing vertical bore, from the bed face up, so the slicer prints extra perimeters around the hole. The gap opens through the bed face, so the part stays one body: start the region at position Z 0. The bore itself is unchanged. Validate a Slant print before production."
         case .split: return "Cuts the part on the region’s local mid-height plane into two copies with matching blind holes for two alignment pins. Each half can then be prepared in its own best orientation. Assemble with dowels or printed pins and adhesive; the joint is weaker than solid material, so keep it away from peak loads."
         }
     }
     /// Features whose printability or perimeter behaviour depends on the layers running in local XY.
-    var keepsZUp: Bool { [.cells, .shell, .holeRing, .teardrop, .bridge, .overhang, .thicken].contains(self) }
+    var keepsZUp: Bool { [.cells, .shell, .holeRing, .teardrop, .bridge, .overhang, .thicken, .internalWalls].contains(self) }
     var isExperimental: Bool { [.cells, .shell, .holeRing].contains(self) }
-    var removesMaterial: Bool { [.cells, .shell, .holeRing, .teardrop, .bridge].contains(self) }
+    var removesMaterial: Bool { [.cells, .shell, .holeRing, .teardrop, .bridge, .internalWalls].contains(self) }
+    /// Treatments that always leave a closed void inside the part. Slant bills each closed void as an extra body, so
+    /// they are no longer offered or previewed; the cases stay so earlier copies' records still read.
+    var isWithdrawn: Bool { [.shell, .cells].contains(self) }
+    /// The treatments the picker offers.
+    static var offered: [ReinforcementKind] { allCases.filter { !$0.isWithdrawn } }
     var thicknessLabel: String? {
         switch self {
         case .rib, .gusset, .fillet: return "Web thickness"
@@ -45,7 +51,7 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .holeRing: return "Wall between hole and gap"
         case .teardrop: return "Material kept above the point"
         case .split: return "Wall around each pin hole"
-        case .overhang, .thicken, .bridge: return nil
+        case .overhang, .thicken, .bridge, .internalWalls: return nil
         }
     }
     var boreLabel: String? {
@@ -68,9 +74,19 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .overhang: return "overhang-chamfer"
         case .thicken: return "matched-wall"
         case .split: return "part"
+        case .internalWalls: return "internal-walls"
         default: return "reinforced"
         }
     }
+}
+
+/// Why the closed gap and cell treatments are no longer offered.
+let reinforcementClosedVoidWithdrawal = "No longer offered: this treatment leaves a closed gap inside the part, and Slant charges each closed gap or cavity as an extra body (about $0.39 each in a live Slant estimate). Use Internal walls, whose slots open through the bed face."
+
+/// The shell check's refusal: a copy with more separate shells than its source has a closed void (or a new loose piece).
+func reinforcementShellGrowthProblem(before: Int, after: Int) -> String? {
+    guard after > before else { return nil }
+    return "This change would leave \(after - before == 1 ? "a closed gap or a loose piece" : "closed gaps or loose pieces") inside the part (\(before) separate \(before == 1 ? "shell" : "shells") before, \(after) after). Slant charges each one as an extra body, so no copy can be saved."
 }
 
 struct ReinforcementBox: Codable, Equatable, Sendable, Identifiable {
@@ -152,6 +168,12 @@ struct ReinforcementPreview: Sendable {
     let proposedSection: STLMesh?
     let addedVolume: Double
     let removedVolume: Double
+    /// Separate shells (connected surfaces) in the source and in the copy; for a split, the larger part's count.
+    /// A copy never has more than its source.
+    var shellsBefore = 0
+    var shellsAfter = 0
+    /// Internal walls only: the engine's summary line.
+    var detail: String? = nil
     /// Split only: the second saved part, and both parts separated for display.
     var secondPart: STLMesh? = nil
     var exploded: STLMesh? = nil
@@ -513,6 +535,10 @@ enum ReinforcementEngine {
         case .bridge:
             let steps = try bridgeSteps(settings)
             return steps[0].union(steps[1]).makeWatertight()
+        case .internalWalls:
+            // Display only: one nominal slot. Previews run the internal walls engine over the whole part.
+            let w = internalWallsSlotWidthMM
+            return box(SIMD3((s.x - w) / 2, 0, 0), SIMD3(w, s.y, s.z))
         case .shell:
             let g = settings.gapWidth
             guard (0.05...1).contains(g), s.x > 2*g + 1.2, s.y > 2*g + 1.2 else { throw StudioError("Use a gap of 0.05–1 mm and a region that leaves at least 1.2 mm inside the gap.") }
@@ -607,6 +633,10 @@ enum ReinforcementEngine {
 
     /// Bounded geometric starting-position search. Fit and intended load still require user review.
     static func suggestPosition(_ source: STLMesh, settings: ReinforcementSettings, cancelled: @escaping @Sendable () -> Bool = { false }) throws -> ReinforcementSettings {
+        guard !settings.kind.isWithdrawn else { throw StudioError(reinforcementClosedVoidWithdrawal) }
+        guard settings.kind != .internalWalls else {
+            throw StudioError("Internal walls cover the whole part, so they need no position. Choose Update Preview.")
+        }
         guard !manualOnly.contains(settings.kind) else {
             throw StudioError("Suggest position is not available for this treatment. Position it on the existing hole, wall or cut location, then preview.")
         }
@@ -676,6 +706,8 @@ enum ReinforcementEngine {
         let deadline = Date().addingTimeInterval(20)
         let stop: @Sendable () -> Bool = { cancelled() || Date() > deadline }
         func check() throws { if stop() { throw StudioError("Preview stopped. Try a simpler mesh or a smaller region.") } }
+        guard !settings.kind.isWithdrawn else { throw StudioError(reinforcementClosedVoidWithdrawal) }
+        if settings.kind == .internalWalls { return try internalWallsPreview(source, settings: settings, cancelled: cancelled) }
         let original = try solid ?? source.reinforcementSolid()
         var local = try tool(settings)
         var expectedAddition: Double?
@@ -705,6 +737,8 @@ enum ReinforcementEngine {
         let s = settings.size, t = settings.thickness
         var result: Mesh
         var conservedOverlap: Double?
+        // What is cut away; the ring gap's cut runs on below the bed face so it opens through it.
+        var cut = feature
         if settings.kind.removesMaterial {
             switch settings.kind {
             case .cells, .shell:
@@ -714,11 +748,17 @@ enum ReinforcementEngine {
                     ? "Place the cell region inside solid material with the chosen thickness of material around it. Existing cavities and exterior surfaces stay clear."
                     : "Place the shell region inside solid material with the chosen cover around it, so the gap stays closed.", stop)
             case .holeRing:
+                // A ring closed inside the part would be a separate body on Slant's bill, so it starts at the bed face.
+                guard settings.offset.z == 0 else {
+                    throw StudioError("Set position Z to 0, so the ring gap starts at the bed face and opens through it. A gap closed inside the part prints as a separate body, which Slant charges for.")
+                }
                 let radius = clearanceRadius(settings.boreDiameter)
                 try requireClear(inWorld(boreClearance(settings, inset: 0.0001)), in: original, "Align the region with an existing clear vertical bore of this diameter.", stop)
                 let outer = radius + t + settings.gapWidth + t
-                try requireSolid(inWorld(annulus(inner: radius + 0.02, outer: outer, z0: -t, z1: s.z + t, center: SIMD2(s.x/2, s.y/2))), in: original,
-                                 "Leave solid material around the bore for the gap and its cover, including the chosen thickness above and below. A larger existing bore than nominated also fails this check.", stop)
+                try requireSolid(inWorld(annulus(inner: radius + 0.02, outer: outer, z0: 0.001, z1: s.z + t, center: SIMD2(s.x/2, s.y/2))), in: original,
+                                 "Leave solid material around the bore from the bed face up, for the gap and the chosen thickness of cover above it. A larger existing bore than nominated, or a bore that doesn’t reach the bed face, also fails this check.", stop)
+                let inner = radius + t
+                cut = inWorld(annulus(inner: inner, outer: inner + settings.gapWidth, z0: -1, z1: s.z, center: SIMD2(s.x/2, s.y/2)))
             case .teardrop:
                 let r = settings.boreDiameter / 2
                 try requireClear(inWorld(cylinderX(radius: r * 0.95, length: s.x, center: SIMD2(s.y/2, s.z/2))), in: original,
@@ -759,8 +799,8 @@ enum ReinforcementEngine {
                 }
                 result = stage
             } else {
-                conservedOverlap = original.intersection(feature, isCancelled: stop).signedVolume
-                result = original.subtracting(feature, isCancelled: stop)
+                conservedOverlap = original.intersection(cut, isCancelled: stop).signedVolume
+                result = original.subtracting(cut, isCancelled: stop)
             }
         } else {
             if settings.kind == .mount {
@@ -830,13 +870,61 @@ enum ReinforcementEngine {
               try bodyCount(output) <= bodyCount(original) else {
             throw StudioError("The proposed copy cannot preserve the envelope and connected bodies. Adjust its placement.")
         }
+        let shells = try shellCounts(source, [output], stop)
         // Section through the feature, along world X. Display only; never used for saving.
         let cutX = Float(feature.bounds.center.x)
         let sectionBox = box(source.minimum-SIMD3(repeating: 1), SIMD3(cutX-source.minimum.x+1,extent.y+2,extent.z+2))
         let beforeSection = original.intersection(sectionBox, isCancelled: stop)
         let afterSection = stitched.intersection(sectionBox, isCancelled: stop)
         try check()
-        return ReinforcementPreview(mesh: output, originalSection: try? stl(beforeSection), proposedSection: try? stl(afterSection), addedVolume: added, removedVolume: removed, solid: stitched)
+        return ReinforcementPreview(mesh: output, originalSection: try? stl(beforeSection), proposedSection: try? stl(afterSection), addedVolume: added, removedVolume: removed,
+                                    shellsBefore: shells.before, shellsAfter: shells.after, solid: stitched)
+    }
+
+    /// Separate shells in the source and the most in any output, by the mesh check's vertex connectivity. A closed void
+    /// is its own shell, which the positive-volume body count above can't see; Slant bills it as an extra body.
+    static func shellCounts(_ source: STLMesh, _ outputs: [STLMesh], _ stop: () -> Bool) throws -> (before: Int, after: Int) {
+        func shells(_ mesh: STLMesh) throws -> Int {
+            guard let report = analyzeMeshHealth(mesh, isCancelled: stop) else { throw StudioError("Preview stopped. Try a simpler mesh or a smaller region.") }
+            return report.shells
+        }
+        let before = try shells(source)
+        let after = try outputs.map(shells).max() ?? 0
+        if let problem = reinforcementShellGrowthProblem(before: before, after: after) { throw StudioError(problem) }
+        return (before, after)
+    }
+
+    /// Internal walls over the whole part, through `internalWallsCopy`. Keep-clear regions are left uncut.
+    private static func internalWallsPreview(_ source: STLMesh, settings: ReinforcementSettings, cancelled: @escaping @Sendable () -> Bool) throws -> ReinforcementPreview {
+        guard settings.protectedRegions.count <= 8 else { throw StudioError("Use up to eight keep-clear regions.") }
+        var options = InternalWallsOptions()
+        options.keepClear = settings.protectedRegions.map {
+            InternalWallsKeepClearBox(low: source.minimum + $0.offset, high: source.minimum + $0.offset + $0.size)
+        }
+        let deadline = Date().addingTimeInterval(60)
+        let result: InternalWallsResult
+        do {
+            result = try internalWallsCopy(of: source, options: options, isCancelled: { cancelled() || Date() > deadline })
+        } catch InternalWallsError.stopped {
+            throw StudioError("Preview stopped. Try a simpler mesh.")
+        }
+        guard let mesh = result.mesh else { throw StudioError(result.skipped?.message ?? InternalWallsSkipReason.resultFailedChecks.message) }
+        if let problem = reinforcementShellGrowthProblem(before: result.shellsBefore, after: result.shellsAfter) { throw StudioError(problem) }
+        // A cutaway across the slots at the middle of the part. Display only, and only where Euclid can read the mesh.
+        var sections: (STLMesh, STLMesh)?
+        if source.triangleCount <= 20_000, mesh.triangleCount <= 20_000, let original = try? source.reinforcementSolid(), let copy = try? mesh.reinforcementSolid() {
+            var size = source.maximum - source.minimum + SIMD3(repeating: 2)
+            let axis = result.axis == .y ? 1 : 0
+            size[axis] = (source.maximum[axis] - source.minimum[axis]) / 2 + 1
+            let keep = box(source.minimum - SIMD3(repeating: 1), size)
+            let stop: @Sendable () -> Bool = { cancelled() || Date() > deadline }
+            if let before = try? stl(original.intersection(keep, isCancelled: stop)), let after = try? stl(copy.intersection(keep, isCancelled: stop)), !stop() {
+                sections = (before, after)
+            }
+        }
+        return ReinforcementPreview(mesh: mesh, originalSection: sections?.0, proposedSection: sections?.1, addedVolume: 0,
+                                    removedVolume: result.removedVolumeMM3, shellsBefore: result.shellsBefore, shellsAfter: result.shellsAfter,
+                                    detail: internalWallsSummary(result))
     }
 
     private static func bodyCount(_ mesh: Mesh) -> Int { mesh.submeshes.filter { $0.signedVolume > 0.001 }.count }
@@ -877,6 +965,7 @@ enum ReinforcementEngine {
         guard try bodyCount(first) <= bodyCount(original), try bodyCount(second) <= bodyCount(original) else {
             throw StudioError("This cut separates the part into more than two pieces. Move the cut plane.")
         }
+        let shells = try shellCounts(source, [first, second], stop)
         let removed = max(0, original.signedVolume - lower.signedVolume - upper.signedVolume)
         // Display only: separate the halves along the cut normal.
         let gap = settings.rotate(SIMD3(0, 0, 1)) * ((source.maximum - source.minimum).max() * 0.25 + 2)
@@ -885,6 +974,7 @@ enum ReinforcementEngine {
             shown += [second.vertices[i] + gap.x, second.vertices[i+1] + gap.y, second.vertices[i+2] + gap.z]
         }
         let exploded = try STLMesh.parse(STLMesh(vertices: shown, minimum: .zero, maximum: .one).binarySTL())
-        return ReinforcementPreview(mesh: first, originalSection: nil, proposedSection: nil, addedVolume: 0, removedVolume: removed, secondPart: second, exploded: exploded)
+        return ReinforcementPreview(mesh: first, originalSection: nil, proposedSection: nil, addedVolume: 0, removedVolume: removed,
+                                    shellsBefore: shells.before, shellsAfter: shells.after, secondPart: second, exploded: exploded)
     }
 }
