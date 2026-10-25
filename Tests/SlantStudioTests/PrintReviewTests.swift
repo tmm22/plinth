@@ -135,7 +135,7 @@ final class PrintReviewTests: XCTestCase {
                        "re-orienting only an obviously wrong upload", "Not published: the line width, the tolerances Slant holds and which slicer it uses",
                        "mostly sparse infill", "One connected body", "about $0.39 each", "a cavity open to the outside is not",
                        "about 0.25 mm wide", "at least about 20 mm on a side", "Slant allows 50°; 45° leaves a margin",
-                       "Studio's assumed 0.45 mm lines", "Never say a part is strong"] {
+                       "a whole number of 0.5 mm lines (Slant's 1 mm walls are about 2 lines)", "Never say a part is strong"] {
             XCTAssertTrue(prompt.contains(phrase), phrase)
         }
         for gone in ["nobody can see", "two perimeters", "low infill", "multiples of about 0.45 mm", "matched to the line width"] {

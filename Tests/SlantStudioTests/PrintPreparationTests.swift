@@ -14,10 +14,10 @@ final class PrintPreparationTests: XCTestCase {
         let ledge = Mesh.cube(center: Vector(10, 10, 17.5), size: Vector(20, 10, 5))
         return try exported(wall.union(ledge))
     }
-    /// 20 mm tray with 2 mm walls: the full Auto-improve matches its walls and fillets its inside corners.
+    /// 20 mm tray with 1.8 mm walls: the full Auto-improve matches its walls and fillets its inside corners.
     private func tray() throws -> STLMesh {
         let cube = Mesh.cube(center: Vector(10, 10, 10), size: Vector(20, 20, 20))
-        return try exported(cube.subtracting(Mesh.cube(center: Vector(10, 10, 12), size: Vector(16, 16, 20))))
+        return try exported(cube.subtracting(Mesh.cube(center: Vector(10, 10, 12), size: Vector(16.4, 16.4, 20))))
     }
     private func input(walls: Bool = true, intent: PartIntent? = nil) -> PrintPreparationInput {
         PrintPreparationInput(sourceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!, sourceName: "Part",

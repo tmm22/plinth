@@ -6,9 +6,9 @@ import simd
 final class AutoImproveTests: XCTestCase {
     private let cube20 = Mesh.cube(center: Vector(10,10,10), size: Vector(20,20,20))
     private func exported(_ mesh: Mesh) throws -> STLMesh { try ReinforcementEngine.stl(mesh.makeWatertight()) }
-    /// 20 mm tray with 2 mm walls and floor, open at the top.
+    /// 20 mm tray with 1.8 mm walls and a 2 mm floor, open at the top.
     private func tray() throws -> STLMesh {
-        try exported(cube20.subtracting(Mesh.cube(center: Vector(10,10,12), size: Vector(16,16,20))))
+        try exported(cube20.subtracting(Mesh.cube(center: Vector(10,10,12), size: Vector(16.4,16.4,20))))
     }
     private func kinds(_ result: AutoImprovementResult) -> [ReinforcementKind] { result.applied.map(\.settings.kind) }
     private func assertClosedAndEnveloped(_ result: AutoImprovementResult, _ source: STLMesh, file: StaticString = #filePath, line: UInt = #line) throws {
@@ -22,7 +22,7 @@ final class AutoImproveTests: XCTestCase {
         let source = try tray()
         let result = try AutoImprover.improve(source, intent: PartIntent(purpose: .bracket, load: .x), orientation: .zUp)
         try assertClosedAndEnveloped(result, source)
-        // 2 mm walls become five 0.45 mm lines on the inside only.
+        // 1.8 mm walls become four 0.5 mm lines (2 mm) on the inside only.
         XCTAssertEqual(kinds(result).filter { $0 == .thicken }.count, 4, "\(result.skipped)")
         XCTAssertEqual(kinds(result).filter { $0 == .fillet }.count, 8, "\(result.skipped)")
         XCTAssertTrue(result.skipped.isEmpty, "\(result.skipped)")
@@ -32,14 +32,15 @@ final class AutoImproveTests: XCTestCase {
         for p in points where ReinforcementEngine.containsMaterial(p, in: source) {
             XCTAssertTrue(ReinforcementEngine.containsMaterial(p, in: result.mesh), "Material removed at \(p)")
         }
-        // Inner faces gain a quarter line; the outside stays where it was.
-        XCTAssertTrue(ReinforcementEngine.containsMaterial(SIMD3(2.2, 10, 10), in: result.mesh))
-        XCTAssertFalse(ReinforcementEngine.containsMaterial(SIMD3(2.3, 10, 10), in: result.mesh))
+        // Inner faces gain 0.2 mm, to 2 mm; the outside stays where it was.
+        XCTAssertFalse(ReinforcementEngine.containsMaterial(SIMD3(1.95, 10, 10), in: source))
+        XCTAssertTrue(ReinforcementEngine.containsMaterial(SIMD3(1.95, 10, 10), in: result.mesh))
+        XCTAssertFalse(ReinforcementEngine.containsMaterial(SIMD3(2.05, 10, 10), in: result.mesh))
         for outside in [SIMD3<Float>(-0.05, 10, 10), SIMD3(10, 20.05, 10), SIMD3(10, 10, 20.05)] {
             XCTAssertFalse(ReinforcementEngine.containsMaterial(outside, in: result.mesh))
         }
         // The vertical inside corner is rounded.
-        XCTAssertTrue(ReinforcementEngine.containsMaterial(SIMD3(2.35, 2.35, 10), in: result.mesh))
+        XCTAssertTrue(ReinforcementEngine.containsMaterial(SIMD3(2.2, 2.2, 10), in: result.mesh))
         XCTAssertTrue(result.changed)
     }
 
@@ -77,6 +78,53 @@ final class AutoImproveTests: XCTestCase {
         let found = AutoImprover.candidates(.overhang, in: deep, intent: PartIntent())
         XCTAssertTrue(found.candidates.isEmpty)
         XCTAssertTrue(found.manual.contains { $0.contains("too deep") }, "\(found.manual)")
+    }
+
+    func testLedgeWithLessHeightBelowGetsAChamferWithinFiftyDegrees() throws {
+        // A 10 mm ledge with 9 mm below it: too little for 45°, enough for Slant's 50° (8.4 mm).
+        let wall = Mesh.cube(center: Vector(10,2.5,7), size: Vector(20,5,14))
+        let ledge = Mesh.cube(center: Vector(10,10,11.5), size: Vector(20,10,5))
+        let source = try exported(wall.union(ledge))
+        let found = AutoImprover.candidates(.overhang, in: source, intent: PartIntent())
+        XCTAssertEqual(found.candidates.count, 1, "\(found.manual)")
+        // As tall as fits, 0.1 mm clear of the bed: 8.9 mm, about 48°.
+        XCTAssertTrue(found.candidates[0].summary.hasSuffix("10.0 mm ledge along X at Z 9.0, 48° slope"), found.candidates[0].summary)
+        let result = try AutoImprover.improve(source, intent: PartIntent(), orientation: .zUp, profile: .fitSafe)
+        try assertClosedAndEnveloped(result, source)
+        XCTAssertEqual(kinds(result), [.overhang], "\(result.skipped)")
+        XCTAssertEqual(result.applied[0].addedVolumeMM3, 890, accuracy: 60)
+        XCTAssertTrue(ReinforcementEngine.containsMaterial(SIMD3(10, 6, 6), in: result.mesh))
+        XCTAssertFalse(ReinforcementEngine.containsMaterial(SIMD3(10, 14, 2), in: result.mesh))
+        XCTAssertGreaterThan(result.mesh.minimum.z, -0.0001)
+
+        // 8 mm below a 10 mm ledge is steeper than 50°: reported, not changed.
+        let short = try exported(Mesh.cube(center: Vector(10,2.5,6.5), size: Vector(20,5,13)).union(.cube(center: Vector(10,10,10.5), size: Vector(20,10,5))))
+        let shortFound = AutoImprover.candidates(.overhang, in: short, intent: PartIntent())
+        XCTAssertTrue(shortFound.candidates.isEmpty)
+        XCTAssertTrue(shortFound.manual.contains { $0.contains("too little height below it for a chamfer within Slant’s 50° overhang limit") }, "\(shortFound.manual)")
+    }
+
+    func testOverhangToolSlopesAcrossTheFullDepthOnlyWithinFiftyDegrees() throws {
+        var settings = ReinforcementSettings(kind: .overhang)
+        settings.size = SIMD3(10, 10, 9)
+        XCTAssertEqual(abs(try ReinforcementEngine.tool(settings).signedVolume), 450, accuracy: 0.5, "Full depth, 9 mm tall")
+        settings.size = SIMD3(10, 10, 10)
+        XCTAssertEqual(abs(try ReinforcementEngine.tool(settings).signedVolume), 500, accuracy: 0.5, "45°")
+        settings.size = SIMD3(10, 10, 8)
+        XCTAssertEqual(abs(try ReinforcementEngine.tool(settings).signedVolume), 320, accuracy: 0.5, "Steeper than 50°: the 45° wedge of its height")
+        settings.size = SIMD3(10, 8, 10)
+        XCTAssertEqual(abs(try ReinforcementEngine.tool(settings).signedVolume), 320, accuracy: 0.5, "Taller than deep: 45°")
+    }
+
+    func testWallMatchingRoundsToHalfMillimetreLines() throws {
+        XCTAssertEqual(AutoImprover.lineWidth, 0.5)
+        let found = AutoImprover.candidates(.thicken, in: try tray(), intent: PartIntent())
+        XCTAssertEqual(found.candidates.count, 4)
+        XCTAssertTrue(found.candidates.allSatisfy { $0.summary.contains("1.80 mm wall facing") && $0.summary.hasSuffix("thickened to 2.00 mm") && $0.settings.lineWidth == 0.5 },
+                      "\(found.candidates.map(\.summary))")
+        // A 2 mm wall is already four whole lines.
+        let even = try exported(cube20.subtracting(Mesh.cube(center: Vector(10,10,12), size: Vector(16,16,20))))
+        XCTAssertTrue(AutoImprover.candidates(.thicken, in: even, intent: PartIntent()).candidates.isEmpty)
     }
 
     func testPlainBlockChangesNothingAndPointsToEdgeTreatments() throws {

@@ -23,7 +23,7 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .gusset: return "Adds a triangular web between adjoining surfaces, with a sloping top."
         case .mount: return "Adds a collar around an existing clear bore. The bore is checked before applying; no hole is drilled."
         case .fillet: return "Adds a rounded transition along an inside junction. Place its two flat sides into the adjoining surfaces."
-        case .overhang: return "Fills under a flat downward ledge with a 45° slope so it prints without supports. Put the region’s local −Y side into the wall and its top into the ledge; turn about Z to face another wall."
+        case .overhang: return "Fills under a flat downward ledge with a 45° slope (up to Slant’s 50° when the region is a little shorter than it is deep) so it prints without supports. Put the region’s local −Y side into the wall and its top into the ledge; turn about Z to face another wall."
         case .thicken: return "Measures the wall through the region centre along local Y and thickens its +Y side to the next whole number of extrusion lines, avoiding weak gap fill. Slant publishes 1 mm walls, 25% infill and 0.2 mm layers, but not its line width, so the width here is an estimate."
         case .teardrop: return "Adds a 45° point to the top of an existing horizontal hole along local X so it prints without sagging or supports. This enlarges the hole at the top; use only where the top of the hole is not fit-critical."
         case .bridge: return "For a counterbore that opens downward, cuts two single-layer steps into its ceiling so each layer bridges between solid edges. Set position Z at the ceiling and the region footprint to the counterbore diameter. Slightly reduces the screw-head bearing area."
@@ -521,7 +521,12 @@ enum ReinforcementEngine {
             guard d / 2 >= 0.6, outer - innerRadius >= t else { throw StudioError("Leave at least the chosen thickness around the existing bore.") }
             return annulus(inner: innerRadius, outer: outer, z0: 0, z1: s.z, center: center)
         case .overhang:
-            // Wall on local −Y, ledge underside at the region top; the 45° face points down and outward.
+            // Wall on local −Y, ledge underside at the region top; the 45° face points down and outward. A region a
+            // little shorter than it is deep, down to `overhangChamferMinimumRise` of its depth, gets one face across
+            // its full depth instead, no steeper than Slant's 50°.
+            if s.z < s.y, s.z >= s.y * overhangChamferMinimumRise {
+                return prism([SIMD2(0, 0), SIMD2(s.y, s.z), SIMD2(0, s.z)], width: s.x)
+            }
             let leg = min(s.y, s.z)
             return prism([SIMD2(0, s.z-leg), SIMD2(leg, s.z), SIMD2(0, s.z)], width: s.x)
         case .thicken:
