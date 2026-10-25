@@ -1,32 +1,52 @@
 import SwiftUI
 import simd
 
-/// Rigid, right-handed rotations: the source axis listed becomes the build Z axis.
-enum PrintOrientation: Hashable, CaseIterable, Identifiable, Codable, Sendable {
+/// Rigid, right-handed rotations: the source axis listed becomes the build Z axis. `turned` follows a placement with a
+/// turn about the build Z axis (counter-clockwise seen from above), which lines up faces drawn at an angle with X and Y.
+indirect enum PrintOrientation: Hashable, CaseIterable, Identifiable, Codable, Sendable {
     case zUp, zDown, xUp, xDown, yUp, yDown
     case face(SIMD3<Float>)
+    case turned(PrintOrientation, degrees: Float)
     static let allCases: [PrintOrientation] = [.zUp, .zDown, .xUp, .xDown, .yUp, .yDown]
     private static let names = ["zUp", "zDown", "xUp", "xDown", "yUp", "yDown"]
+    private struct Turn: Codable {
+        let base: PrintOrientation
+        let zTurnDegrees: Float
+    }
     var id: String {
-        if case .face(let n) = self { return "face-\(n.x)-\(n.y)-\(n.z)" }
-        return Self.names[Self.allCases.firstIndex(of: self)!]
+        switch self {
+        case .face(let n): return "face-\(n.x)-\(n.y)-\(n.z)"
+        case .turned(let base, let degrees): return "\(base.id)-turn-\(degrees)"
+        default: return Self.names[Self.allCases.firstIndex(of: self)!]
+        }
     }
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let name = try? container.decode(String.self), let index = Self.names.firstIndex(of: name) {
             self = Self.allCases[index]
-        } else {
-            let n = try container.decode(SIMD3<Float>.self)
+        } else if let n = try? container.decode(SIMD3<Float>.self) {
             guard n.x.isFinite, n.y.isFinite, n.z.isFinite, abs(simd_length(n) - 1) < 0.0001 else {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid face normal")
             }
             self = .face(n)
+        } else {
+            let turn = try container.decode(Turn.self)
+            guard turn.zTurnDegrees.isFinite, turn.zTurnDegrees != 0, abs(turn.zTurnDegrees) <= 180 else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid turn about Z")
+            }
+            if case .turned = turn.base {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Nested turn about Z")
+            }
+            self = .turned(turn.base, degrees: turn.zTurnDegrees)
         }
     }
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-        if case .face(let normal) = self { try container.encode(normal) }
-        else { try container.encode(id) }
+        switch self {
+        case .face(let normal): try container.encode(normal)
+        case .turned(let base, let degrees): try container.encode(Turn(base: base, zTurnDegrees: degrees))
+        default: try container.encode(id)
+        }
     }
     var label: String {
         switch self {
@@ -37,7 +57,26 @@ enum PrintOrientation: Hashable, CaseIterable, Identifiable, Codable, Sendable {
         case .xDown: return "Side · X down"
         case .yUp: return "Side · Y up"
         case .yDown: return "Side · Y down"
+        case .turned(let base, let degrees): return "\(base.label) · turned \(printPlacementTurnDegreesLabel(degrees)) about Z"
         }
+    }
+    /// The placement without its turn about Z.
+    var base: PrintOrientation {
+        if case .turned(let base, _) = self { return base }
+        return self
+    }
+    /// The turn about Z after the placement, in degrees counter-clockwise seen from above; 0 when there is none.
+    var zTurnDegrees: Float {
+        if case .turned(_, let degrees) = self { return degrees }
+        return 0
+    }
+    /// This placement followed by a further turn about Z. Turns combine, so a turn is never nested in another.
+    func turned(byDegrees degrees: Float) -> PrintOrientation {
+        var total = zTurnDegrees + degrees
+        guard total.isFinite else { return self }
+        total = total.truncatingRemainder(dividingBy: 360)
+        if total > 180 { total -= 360 } else if total <= -180 { total += 360 }
+        return total == 0 ? base : .turned(base, degrees: total)
     }
     func rotate(_ p: SIMD3<Float>) -> SIMD3<Float> {
         switch self {
@@ -48,6 +87,12 @@ enum PrintOrientation: Hashable, CaseIterable, Identifiable, Codable, Sendable {
         case .xDown: return SIMD3(p.z, p.y, -p.x)
         case .yUp: return SIMD3(p.x, -p.z, p.y)
         case .yDown: return SIMD3(p.x, p.z, -p.y)
+        case .turned(let base, let degrees):
+            let q = base.rotate(p)
+            // In Double, so the same angle always gives the same rotation.
+            let radians = Double(degrees) * .pi / 180
+            let c = Float(cos(radians)), s = Float(sin(radians))
+            return SIMD3(q.x * c - q.y * s, q.x * s + q.y * c, q.z)
         }
     }
 }
@@ -70,17 +115,50 @@ enum PrintLoadAxis: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
-struct OrientationAssessment: Identifiable, Sendable {
+/// Bed contact Studio looks for: the flat-base tool's target, the smaller of 100 mm² and 15% of the footprint.
+func placementMinimumContactMM2(footprintMM2: Float) -> Float {
+    max(min(Float(flatBaseDefaultMinimumContactMM2), footprintMM2 * Float(flatBaseDefaultContactFraction)), 0.000001)
+}
+/// The centre of mass must sit at least this far inside the outline of what touches the bed.
+let placementTipMarginMM: Float = 1
+/// Taller than this many times the contact's smallest width counts as slender on the bed.
+let placementSlenderRatio: Float = 3
+/// Slant prints overhangs to 50° from vertical; Studio's own overhang measure and chamfers use 45°, a margin.
+let slantOverhangLimitDegrees: Float = 50
+
+struct OrientationAssessment: Identifiable, Equatable, Sendable {
     let orientation: PrintOrientation
     let size: SIMD3<Float>
     let contactArea: Float
     let overhangArea: Float
     let surfaceArea: Float
     var contactWidth: Float? = nil
+    /// How far inside the convex outline of the bed contact the centre of mass sits, seen from above (negative:
+    /// outside it). Nil when not measured.
+    var tipMarginMM: Float? = nil
+    /// The smallest width of the bed contact's convex outline. Nil when not measured.
+    var contactHullWidth: Float? = nil
+    /// Downward area steeper than Slant's 50° (`slantOverhangLimitDegrees`), beside `overhangArea`'s 45°.
+    var steepOverhangArea: Float = 0
     var id: String { orientation.id }
     var fits: Bool { size.max() <= slantBuildVolumeMM }
     var contactRatio: Float { contactArea / max(size.x * size.y, 0.000001) }
     var hasFlatContact: Bool { contactArea.isFinite && contactArea > 0.000001 }
+    var minimumContactMM2: Float { placementMinimumContactMM2(footprintMM2: size.x * size.y) }
+    /// At least the flat-base tool's target touches the bed.
+    var meetsMinimumContact: Bool { hasFlatContact && contactArea >= minimumContactMM2 }
+    /// The centre of mass sits outside, or within `placementTipMarginMM` of the edge of, what touches the bed.
+    var centreOfMassNearEdge: Bool { tipMarginMM.map { $0 < placementTipMarginMM } ?? false }
+    /// Taller than `placementSlenderRatio` times the contact's smallest width.
+    var slenderOnBed: Bool { contactHullWidth.map { size.z > placementSlenderRatio * $0 } ?? false }
+    var tippingProne: Bool { centreOfMassNearEdge || slenderOnBed }
+    /// Added to the score: tipping-prone placements score worse, and one whose centre of mass is outside its contact
+    /// worse still. Unmeasured figures add nothing.
+    var tippingPenalty: Float {
+        var penalty: Float = tippingProne ? 1.5 : 0
+        if let margin = tipMarginMM, margin < 0 { penalty += 3 }
+        return penalty
+    }
     var slendernessPenalty: Float {
         let width = min(contactWidth ?? sqrt(max(contactArea, 0)), sqrt(max(contactArea, 0)))
         let ratio = size.z / max(width, 0.000001)
@@ -95,7 +173,68 @@ struct OrientationAssessment: Identifiable, Sendable {
         let strengthWeight: Float = priority == .strength ? 4 : (priority == .balanced ? 1 : 0.25)
         return support * (priority == .economy ? 5 : 3) + height * 0.25 + contactPenalty * 0.5
             + slendernessPenalty * 0.75 + crossLayer * strengthWeight + (fits ? 0 : 100) + (contactArea > 0 ? 0 : 10)
+            + tippingPenalty
     }
+}
+
+/// The convex hull of `points`, counter-clockwise without repeated or collinear points (monotone chain).
+func placementConvexHull(_ points: [SIMD2<Double>]) -> [SIMD2<Double>] {
+    let sorted = points.sorted { $0.x != $1.x ? $0.x < $1.x : $0.y < $1.y }
+    var unique: [SIMD2<Double>] = []
+    unique.reserveCapacity(sorted.count)
+    for p in sorted where unique.last != p { unique.append(p) }
+    guard unique.count >= 3 else { return unique }
+    func cross(_ o: SIMD2<Double>, _ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double {
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    }
+    var lower: [SIMD2<Double>] = [], upper: [SIMD2<Double>] = []
+    for p in unique {
+        while lower.count >= 2, cross(lower[lower.count - 2], lower[lower.count - 1], p) <= 0 { lower.removeLast() }
+        lower.append(p)
+    }
+    for p in unique.reversed() {
+        while upper.count >= 2, cross(upper[upper.count - 2], upper[upper.count - 1], p) <= 0 { upper.removeLast() }
+        upper.append(p)
+    }
+    return Array(lower.dropLast() + upper.dropLast())
+}
+
+/// How far `point` is inside a counter-clockwise convex `hull`; negative outside it, by its distance to the outline.
+/// Nil when the hull has no area.
+func placementHullMargin(_ point: SIMD2<Double>, hull: [SIMD2<Double>]) -> Double? {
+    guard hull.count >= 3 else { return nil }
+    var inside = true
+    var nearest = Double.infinity
+    for i in hull.indices {
+        let a = hull[i], b = hull[(i + 1) % hull.count], ab = b - a
+        let length = simd_length(ab)
+        guard length > 0 else { continue }
+        if ab.x * (point.y - a.y) - ab.y * (point.x - a.x) < 0 { inside = false }
+        let t = simd_clamp(simd_dot(point - a, ab) / (length * length), 0, 1)
+        nearest = min(nearest, simd_distance(point, a + ab * t))
+    }
+    guard nearest.isFinite else { return nil }
+    return inside ? nearest : -nearest
+}
+
+/// The smallest width of a counter-clockwise convex `hull` (rotating calipers); 0 for fewer than 3 points.
+func placementHullWidth(_ hull: [SIMD2<Double>]) -> Double {
+    let n = hull.count
+    guard n >= 3 else { return 0 }
+    func distance(_ i: Int, _ j: Int) -> Double {
+        let a = hull[i], ab = hull[(i + 1) % n] - a, p = hull[j % n]
+        let length = simd_length(ab)
+        return length > 0 ? abs(ab.x * (p.y - a.y) - ab.y * (p.x - a.x)) / length : 0
+    }
+    var best = Double.infinity
+    var j = 1
+    for i in 0..<n {
+        if j <= i { j = i + 1 }
+        var steps = 0
+        while steps < n, distance(i, j + 1) >= distance(i, j) { j += 1; steps += 1 }
+        best = min(best, distance(i, j))
+    }
+    return best.isFinite ? best : 0
 }
 
 extension STLMesh {
@@ -151,37 +290,110 @@ extension STLMesh {
     }
 
     func orientationAssessments() -> [OrientationAssessment] {
-        placementCandidates().map { orientation in
-            let mesh = oriented(orientation)
-            var surface: Float = 0, contact: Float = 0, overhang: Float = 0
-            // Numerical coplanarity tolerance, not an adhesion or manufacturing tolerance.
-            let tolerance: Float = 0.0001
-            var contactLow = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
-            var contactHigh = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
-            for i in stride(from: 0, to: mesh.vertices.count, by: 9) {
-                func point(_ j: Int) -> SIMD3<Float> {
-                    SIMD3(mesh.vertices[i + j], mesh.vertices[i + j + 1], mesh.vertices[i + j + 2])
-                }
-                let a = point(0), b = point(3), c = point(6)
-                let cross = simd_cross(b - a, c - a)
-                let length = simd_length(cross)
-                guard length > 0 else { continue }
-                let area = length / 2
-                surface += area
-                if max(a.z, max(b.z, c.z)) <= tolerance && abs(cross.z / length) >= 0.999999 {
-                    contact += abs(cross.z) / 2
-                    for p in [a, b, c] {
-                        contactLow = simd_min(contactLow, SIMD2(p.x, p.y))
-                        contactHigh = simd_max(contactHigh, SIMD2(p.x, p.y))
-                    }
-                } else if cross.z / length < -0.7071068 {
-                    overhang += area
-                }
+        placementCandidates().map { orientationAssessment($0) }
+    }
+
+    /// Bed contact, overhangs, centre of mass and contact outline for one placement.
+    func orientationAssessment(_ orientation: PrintOrientation) -> OrientationAssessment {
+        let mesh = oriented(orientation)
+        var surface: Float = 0, contact: Float = 0, overhang: Float = 0, steep: Float = 0
+        // Numerical coplanarity tolerance, not an adhesion or manufacturing tolerance.
+        let tolerance: Float = 0.0001
+        // A face at angle α from vertical has a normal pointing down by sin α.
+        let steepLimit = Float(sin(Double(slantOverhangLimitDegrees) * .pi / 180))
+        var contactLow = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
+        var contactHigh = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+        var contactPoints: [SIMD2<Double>] = []
+        // Volume-weighted centre of mass from signed tetrahedra; the surface centroid stands in for an open mesh.
+        var volume = 0.0, moment = SIMD3<Double>.zero, areaMoment = SIMD3<Double>.zero, areaSum = 0.0
+        for i in stride(from: 0, to: mesh.vertices.count, by: 9) {
+            func point(_ j: Int) -> SIMD3<Float> {
+                SIMD3(mesh.vertices[i + j], mesh.vertices[i + j + 1], mesh.vertices[i + j + 2])
             }
-            return OrientationAssessment(orientation: orientation, size: mesh.maximum, contactArea: contact,
-                                         overhangArea: overhang, surfaceArea: surface,
-                                         contactWidth: contact > 0 ? (contactHigh - contactLow).min() : 0)
+            let a = point(0), b = point(3), c = point(6)
+            let da = SIMD3<Double>(a), db = SIMD3<Double>(b), dc = SIMD3<Double>(c)
+            let tetrahedron = simd_dot(da, simd_cross(db, dc)) / 6
+            if tetrahedron.isFinite { volume += tetrahedron; moment += (da + db + dc) * (tetrahedron / 4) }
+            let cross = simd_cross(b - a, c - a)
+            let length = simd_length(cross)
+            guard length > 0 else { continue }
+            let area = length / 2
+            surface += area
+            if area.isFinite { areaSum += Double(area); areaMoment += (da + db + dc) * (Double(area) / 3) }
+            if max(a.z, max(b.z, c.z)) <= tolerance && abs(cross.z / length) >= 0.999999 {
+                contact += abs(cross.z) / 2
+                for p in [a, b, c] {
+                    contactLow = simd_min(contactLow, SIMD2(p.x, p.y))
+                    contactHigh = simd_max(contactHigh, SIMD2(p.x, p.y))
+                    contactPoints.append(SIMD2(Double(p.x), Double(p.y)))
+                }
+            } else if cross.z / length < -0.7071068 {
+                overhang += area
+                if cross.z / length < -steepLimit { steep += area }
+            }
         }
+        var tipMargin: Float?, hullWidth: Float?
+        if contact > 0 {
+            let hull = placementConvexHull(contactPoints)
+            hullWidth = Float(placementHullWidth(hull))
+            let span = Double(max(mesh.maximum.max(), 0.001))
+            let centre: SIMD3<Double>? = abs(volume) > 1e-9 * span * span * span ? moment / volume
+                : (areaSum > 0 ? areaMoment / areaSum : nil)
+            if let centre, centre.x.isFinite, centre.y.isFinite {
+                // A contact without area (points on a line) leaves the part balanced on an edge.
+                tipMargin = placementHullMargin(SIMD2(centre.x, centre.y), hull: hull).map { Float($0) } ?? -0.000001
+            }
+        }
+        return OrientationAssessment(orientation: orientation, size: mesh.maximum, contactArea: contact,
+                                     overhangArea: overhang, surfaceArea: surface,
+                                     contactWidth: contact > 0 ? (contactHigh - contactLow).min() : 0,
+                                     tipMarginMM: tipMargin, contactHullWidth: hullWidth, steepOverhangArea: steep)
+    }
+
+    /// The turn about Z, in degrees counter-clockwise from above, that lines up this (placed) mesh's largest
+    /// vertical faces with X and Y: the area-weighted dominant horizontal normal direction, folded to a quarter turn,
+    /// then refined to the exact direction of the largest group of faces near it. Nil when no direction dominates or
+    /// the faces already line up. The smaller turn is returned (−45° to 45°); equal groups go to the smaller angle.
+    func zAlignmentTurnDegrees() -> Float? {
+        var c = 0.0, s = 0.0, vertical = 0.0, total = 0.0
+        var faces: [(angle: Double, area: Double)] = []
+        for i in stride(from: 0, to: vertices.count, by: 9) {
+            let a = SIMD3<Double>(Double(vertices[i]), Double(vertices[i + 1]), Double(vertices[i + 2]))
+            let b = SIMD3<Double>(Double(vertices[i + 3]), Double(vertices[i + 4]), Double(vertices[i + 5]))
+            let d = SIMD3<Double>(Double(vertices[i + 6]), Double(vertices[i + 7]), Double(vertices[i + 8]))
+            let cross = simd_cross(b - a, d - a)
+            let length = simd_length(cross)
+            guard length > 0, length.isFinite else { continue }
+            let area = length / 2, n = cross / length
+            total += area
+            let horizontal = (n.x * n.x + n.y * n.y).squareRoot()
+            // Within about 3° of vertical.
+            guard horizontal > 0.9986 else { continue }
+            let angle = atan2(n.y, n.x)
+            vertical += area
+            c += area * cos(4 * angle); s += area * sin(4 * angle)
+            if abs(n.z) < 0.0001 { faces.append((zAlignmentFold(angle), area)) }
+        }
+        guard total > 0, vertical >= 0.05 * total, (c * c + s * s).squareRoot() >= 0.3 * vertical else { return nil }
+        let estimate = atan2(s, c) / 4
+        // Groups of faces within 0.0006° of each other, within 1° of the estimate (wrapping at ±45°).
+        let window = Double.pi / 180, bin = 0.00001
+        var groups: [Int64: (area: Double, best: Double, bestArea: Double)] = [:]
+        for face in faces {
+            var gap = face.angle - estimate
+            if gap > .pi / 4 { gap -= .pi / 2 } else if gap < -.pi / 4 { gap += .pi / 2 }
+            guard abs(gap) <= window else { continue }
+            let key = Int64((face.angle / bin).rounded())
+            var group = groups[key] ?? (0, face.angle, 0)
+            group.area += face.area
+            if face.area > group.bestArea { group.best = face.angle; group.bestArea = face.area }
+            groups[key] = group
+        }
+        guard let chosen = groups.keys.sorted().max(by: { groups[$0]!.area < groups[$1]!.area }) .map({ groups[$0]! }),
+              chosen.area >= 0.25 * vertical else { return nil }
+        let turn = -chosen.best * 180 / .pi
+        guard abs(turn) >= Double(placementTurnMinimumDegrees) else { return nil }
+        return Float(turn)
     }
 
     func binarySTL() -> Data {
@@ -247,16 +459,105 @@ struct PreparedPrintRecipe: Codable, Equatable, Sendable {
     let created: Date
 }
 
+/// The best placement for `intent`. Placements that don't fit or have no flat face on the bed are never chosen; among
+/// the rest, those with the minimum bed contact (`meetsMinimumContact`) are preferred, and only when none has it is
+/// the best of all chosen (`PrintPlacementChoice.smallBedContact` flags it).
 func preferredOrientation(_ assessments: [OrientationAssessment], intent: PartIntent) -> OrientationAssessment? {
     guard intent.isReady else { return nil }
     // Reject unusable placements rather than allowing a penalty to be outweighed.
-    return assessments.filter { $0.fits && $0.hasFlatContact && $0.surfaceArea.isFinite && $0.surfaceArea > 0 }.min {
+    let usable = assessments.filter { $0.fits && $0.hasFlatContact && $0.surfaceArea.isFinite && $0.surfaceArea > 0 }
+    let pool = usable.contains(where: \.meetsMinimumContact) ? usable.filter(\.meetsMinimumContact) : usable
+    return pool.min {
         let lhs = $0.score(priority: intent.purpose.priority, load: intent.effectiveLoad)
         let rhs = $1.score(priority: intent.purpose.priority, load: intent.effectiveLoad)
         if lhs == rhs {
             return (PrintOrientation.allCases.firstIndex(of: $0.orientation) ?? 6) < (PrintOrientation.allCases.firstIndex(of: $1.orientation) ?? 6)
         }
         return lhs < rhs
+    }
+}
+
+/// Turns smaller than this are left alone: the faces already line up.
+let placementTurnMinimumDegrees: Float = 0.01
+
+/// An angle in radians folded into a quarter turn, (−45°, 45°].
+func zAlignmentFold(_ angle: Double) -> Double {
+    var folded = angle.truncatingRemainder(dividingBy: .pi / 2)
+    if folded > .pi / 4 { folded -= .pi / 2 } else if folded <= -.pi / 4 { folded += .pi / 2 }
+    return folded
+}
+
+/// "23°", or "under 1°".
+func printPlacementTurnDegreesLabel(_ degrees: Float) -> String {
+    let whole = Int(abs(degrees).rounded())
+    return whole == 0 ? "under 1°" : "\(whole)°"
+}
+
+/// The placement Studio chose, any turn about Z after it, and what to tell the seller about it.
+struct PrintPlacementChoice: Equatable, Sendable {
+    /// The chosen placement before the turn; its contact and overhang figures don't change with the turn.
+    let assessment: OrientationAssessment
+    /// Counter-clockwise from above, −45° to 45°; 0 when not turned.
+    let zTurnDegrees: Float
+    /// The placement including the turn, ready for `STLMesh.oriented`.
+    var orientation: PrintOrientation { assessment.orientation.turned(byDegrees: zTurnDegrees) }
+    /// Less than the minimum bed contact touches the bed, because no placement had it.
+    var smallBedContact: Bool { !assessment.meetsMinimumContact }
+    var tippingProne: Bool { assessment.tippingProne }
+    /// One line each for the turn, a small bed contact and a tipping risk, in that order.
+    var lines: [String] {
+        [printPlacementTurnLine(zTurnDegrees), smallBedContact ? printPlacementSmallContactLine(assessment) : nil,
+         printPlacementTippingLine(assessment)].compactMap { $0 }
+    }
+}
+
+func printPlacementTurnLine(_ degrees: Float) -> String? {
+    degrees == 0 ? nil : "Turned \(printPlacementTurnDegreesLabel(degrees)) about Z to line up its faces."
+}
+
+func printPlacementSmallContactLine(_ assessment: OrientationAssessment) -> String {
+    guard assessment.hasFlatContact else {
+        return "No flat face touches the bed. Add a flat base or plinth in Size and base."
+    }
+    return String(format: "Small bed contact: about %.0f mm² touches the bed, under the %.0f mm² Studio looks for. Add a flat base or plinth in Size and base.",
+           assessment.contactArea, assessment.minimumContactMM2)
+}
+
+/// Why the placement could tip, or nil.
+func printPlacementTippingLine(_ assessment: OrientationAssessment) -> String? {
+    if let margin = assessment.tipMarginMM, margin < 0 {
+        return "Could tip: its centre of mass is beyond the edge of what touches the bed. A plinth or a wider flat base helps it stay put."
+    }
+    if assessment.centreOfMassNearEdge {
+        return "Could tip: its centre of mass is close to the edge of what touches the bed. A plinth or a wider flat base helps it stay put."
+    }
+    if assessment.slenderOnBed, let width = assessment.contactHullWidth {
+        return String(format: "Tall and narrow on the bed: about %.0f mm tall on a contact %.1f mm wide. Slant uses no brims, so a plinth or a wider base helps it stay put.",
+                      assessment.size.z, width)
+    }
+    return nil
+}
+
+/// The preferred placement (`preferredOrientation`), then, when `allowTurn`, a turn about Z that lines up its largest
+/// vertical faces with X and Y (`zAlignmentTurnDegrees`), kept only if the turned part still fits the build volume.
+/// Locked or kept placements pass `allowTurn: false`.
+func printPlacement(_ assessments: [OrientationAssessment], in mesh: STLMesh, intent: PartIntent,
+                    allowTurn: Bool) -> PrintPlacementChoice? {
+    guard let best = preferredOrientation(assessments, intent: intent) else { return nil }
+    return PrintPlacementChoice(assessment: best, zTurnDegrees: allowTurn ? mesh.placementTurnDegrees(after: best.orientation) : 0)
+}
+
+extension STLMesh {
+    func printPlacement(intent: PartIntent, allowTurn: Bool = true) -> PrintPlacementChoice? {
+        SlantStudio.printPlacement(orientationAssessments(), in: self, intent: intent, allowTurn: allowTurn)
+    }
+
+    /// The turn about Z that lines up this mesh's faces once placed in `orientation`, or 0 when there is none or the
+    /// turned part wouldn't fit Slant's build volume.
+    func placementTurnDegrees(after orientation: PrintOrientation) -> Float {
+        guard let found = oriented(orientation).zAlignmentTurnDegrees(),
+              oriented(orientation.turned(byDegrees: found)).maximum.max() <= slantBuildVolumeMM else { return 0 }
+        return found
     }
 }
 
@@ -270,8 +571,12 @@ struct PrintOrientationCard: View {
     @State private var preparing = false
     @State private var loaded = false
     @State private var expanded = false
+    /// Turns about Z by placement ID, measured with the assessments (none for locked or kept placements).
+    @State private var turns: [String: Float] = [:]
 
-    private var best: OrientationAssessment? { preferredOrientation(assessments, intent: intent) }
+    private var best: PrintPlacementChoice? {
+        preferredOrientation(assessments, intent: intent).map { PrintPlacementChoice(assessment: $0, zTurnDegrees: turns[$0.id] ?? 0) }
+    }
 
     var body: some View {
         Card {
@@ -299,6 +604,7 @@ struct PrintOrientationCard: View {
                                 }.padding(.top, 8)
                             }.studioDisclosureStyle()
                             Text(intent.explanation).font(.callout).foregroundStyle(.secondary)
+                            ForEach(best.lines, id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
                             Button(preparing ? "Preparing…" : "Optimise & Save Copy") { prepareCopy(mesh, orientation: best.orientation) }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(store.busy || preparing)
@@ -307,7 +613,7 @@ struct PrintOrientationCard: View {
                         }
                         materialAdvice
                         DisclosureGroup("How optimisation works") {
-                            Text("Compares standard placements and up to 24 additional face directions without changing shape, dimensions, holes or clearances. Uses your chosen material. Slant prints a part in the placement it is uploaded in, re-orienting only an obviously wrong upload, so this choice decides which way the layers run. Slant’s settings are fixed (0.2 mm layers, 1 mm walls, 25% infill, overhangs up to 50°); its tolerances aren’t published, and this is not a mechanical simulation.")
+                            Text("Compares standard placements and up to 24 additional face directions, preferring ones with enough flat contact and a centre of mass well inside it, then turns the part about Z so faces drawn at an angle line up with the print axes. Shape, dimensions, holes and clearances don’t change. Uses your chosen material. Slant prints a part in the placement it is uploaded in, re-orienting only an obviously wrong upload, so this choice decides which way the layers run. Slant’s settings are fixed (0.2 mm layers, 1 mm walls, 25% infill, overhangs up to 50°); its tolerances aren’t published, and this is not a mechanical simulation.")
                                 .font(.callout).foregroundStyle(.secondary).padding(.top, 8)
                         }.studioDisclosureStyle()
                     } else {
@@ -323,20 +629,29 @@ struct PrintOrientationCard: View {
         .task(id: model.id) {
             loaded = false
             intent = model.partIntent ?? PartIntent()
-            mesh = nil; assessments = []; failure = nil
+            mesh = nil; assessments = []; failure = nil; turns = [:]
             guard model.supportsPreview, model.printRecipe == nil else { return }
             let url = model.url
             let keepCellRoofsUp = model.requiresZUp
+            // A locked or kept placement keeps its way round as well as its way up.
+            let mayTurn = !model.requiresZUp && model.keepsPlacement != true
             let result = await Task.detached(priority: .userInitiated) {
                 Result {
                     let mesh = try STLMesh.read(from: url)
                     let assessments = mesh.orientationAssessments().filter { !keepCellRoofsUp || $0.orientation == .zUp }
-                    return (mesh, assessments)
+                    var turns: [String: Float] = [:]
+                    if mayTurn {
+                        for assessment in assessments where assessment.fits && assessment.hasFlatContact {
+                            if Task.isCancelled { break }
+                            turns[assessment.id] = mesh.placementTurnDegrees(after: assessment.orientation)
+                        }
+                    }
+                    return (mesh, assessments, turns)
                 }
             }.value
             guard !Task.isCancelled else { return }
             switch result {
-            case .success(let value): mesh = value.0; assessments = value.1
+            case .success(let value): mesh = value.0; assessments = value.1; turns = value.2
             case .failure(let error): failure = error.localizedDescription
             }
             loaded = true

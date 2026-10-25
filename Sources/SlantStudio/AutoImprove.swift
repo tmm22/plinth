@@ -31,6 +31,11 @@ struct AutoImprovementResult: Sendable {
     var changed: Bool { !applied.isEmpty || orientation != .zUp }
 }
 
+/// tan 40°, rounded up: an overhang chamfer this tall per millimetre of depth slopes at just under Slant's 50° from
+/// vertical (49.97°). The overhang tool uses it for regions shorter than they are deep; Auto-improve's ledge rule
+/// lets a ledge qualify with this much height below it.
+let overhangChamferMinimumRise: Float = 0.84
+
 struct AutoCandidate: Sendable {
     let settings: ReinforcementSettings
     let summary: String
@@ -56,14 +61,24 @@ enum AutoImprover {
 
     static let maximumLedgeDepth: Float = 15
     static let maximumFillets = 12
-    /// Studio's assumed extrusion line width for wall matching. Slant publishes 1 mm walls (about 2 lines) and a
-    /// 0.4 mm nozzle, but not its line width, so this is an assumption, not Slant's figure.
-    static let lineWidth: Float = 0.45
+    /// The line width wall matching rounds to. Slant publishes 1 mm walls of about 2 lines (and a 0.4 mm nozzle),
+    /// so about 0.5 mm a line; it doesn't publish the width itself. A wall of whole 0.5 mm lines prints without gap
+    /// fill: 0.65–1 mm walls reach Slant's 1 mm, and 1.5–2 mm walls reach 2 mm, where both sides' 2-line walls meet.
+    static let lineWidth: Float = 0.5
+    /// A chamfer under a ledge needs at least this much height per millimetre of depth: tan 40°, rounded up, so its
+    /// slope stays within Slant's 50° overhang limit. Chamfers are 45° wherever the height allows.
+    static let minimumLedgeRise: Float = overhangChamferMinimumRise
 
-    /// Prepared or Z-up-locked copies keep their axes; others use the purpose-based placement.
+    /// Prepared or Z-up-locked copies keep their axes; others use the purpose-based placement, turned about Z to line
+    /// up faces drawn at an angle (`printPlacement`).
     static func orientation(for mesh: STLMesh, intent: PartIntent, locked: Bool) -> PrintOrientation? {
-        if locked { return .zUp }
-        return preferredOrientation(mesh.orientationAssessments(), intent: intent)?.orientation
+        placement(for: mesh, intent: intent, locked: locked)?.orientation
+    }
+
+    /// The placement with its turn and flags. Locked copies get their own placement, unturned, with its flags.
+    static func placement(for mesh: STLMesh, intent: PartIntent, locked: Bool) -> PrintPlacementChoice? {
+        if locked { return PrintPlacementChoice(assessment: mesh.orientationAssessment(.zUp), zTurnDegrees: 0) }
+        return mesh.printPlacement(intent: intent, allowTurn: true)
     }
 
     /// Which treatments a run may apply. The Auto-improve card uses `.full`. The automatic print-ready copy uses
@@ -178,32 +193,37 @@ enum AutoImprover {
                 manual.append("\(label) is too deep for an automatic chamfer. Use supports, or redesign it in CAD.")
                 continue
             }
-            guard z - mesh.minimum.z >= depth else {
-                manual.append("\(label) has too little height below it for a 45° chamfer.")
+            // 45° where the height below allows it; otherwise as tall as fits, keeping 0.1 mm clear of the bed, and
+            // never steeper than Slant's 50° (`minimumLedgeRise`).
+            let below = z - mesh.minimum.z
+            guard below >= depth * minimumLedgeRise else {
+                manual.append("\(label) has too little height below it for a chamfer within Slant’s 50° overhang limit.")
                 continue
             }
+            let rise = below >= depth ? depth : max(depth * minimumLedgeRise, below - 0.1)
             // Only free cantilevered ledges: the wedge must sit entirely in open space.
             let wedge: [(Float, Float)] = [(0.1, 0.1), (0.5, 0.1), (0.85, 0.05), (0.1, 0.5), (0.05, 0.85)]
             let clear = [Float(0.1), 0.5, 0.9].allSatisfy { u in
                 let base = run.point(at: run.start + (run.end - run.start) * u)
-                return wedge.allSatisfy { !ReinforcementEngine.containsMaterial(base + n * ($0.0 * depth) - up * ($0.1 * depth), in: mesh) }
+                return wedge.allSatisfy { !ReinforcementEngine.containsMaterial(base + n * ($0.0 * depth) - up * ($0.1 * rise), in: mesh) }
             }
             guard clear, let (orientation, turns) = frame(y: n, z: up) else { continue }
-            let ends = trimmed(run, probe: n * (0.3 * depth) - up * (0.3 * depth), in: mesh)
+            let ends = trimmed(run, probe: n * (0.3 * depth) - up * (0.3 * rise), in: mesh)
             func placed(overlap: Float) -> ReinforcementSettings {
                 var settings = ReinforcementSettings(kind: .overhang)
                 settings.orientation = orientation
                 settings.quarterTurns = turns
-                settings.size = SIMD3(ends.end - ends.start, depth + overlap, depth + overlap)
+                settings.size = SIMD3(ends.end - ends.start, depth + overlap, rise + overlap)
                 var low = SIMD3<Float>.zero
                 low[run.axis] = ends.start
                 let wall = run.coordinate(of: n)
                 low[n.axisIndex] = n.isPositive ? wall - overlap : wall - depth
-                low.z = z - depth
+                low.z = z - rise
                 settings.offset = low - mesh.minimum
                 return settings
             }
-            result.append(AutoCandidate(settings: placed(overlap: 0.2), summary: "Overhang chamfer · \(label)", alternatives: [placed(overlap: 0.27)]))
+            let slope = rise < depth ? String(format: ", %.0f° slope", atan(depth / rise) * 180 / .pi) : ""
+            result.append(AutoCandidate(settings: placed(overlap: 0.2), summary: "Overhang chamfer · \(label)\(slope)", alternatives: [placed(overlap: 0.27)]))
         }
         return (result, manual)
     }

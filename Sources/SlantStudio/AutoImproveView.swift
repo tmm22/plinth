@@ -63,7 +63,7 @@ struct AutoImproveCard: View {
                             Text(note).font(.callout).foregroundStyle(.secondary)
                         }
                     } else {
-                        Text("Places the part for its purpose, then adds what its shape needs: bridging for counterbores, chamfers under ledges, thin walls thickened on the inside to whole lines (assuming 0.45 mm lines; Slant publishes 1 mm walls but not its line width) and fillets in inside corners. Each change is checked and skipped if it fails. Ribs, gussets, collars, teardrop holes and splits are never automatic; add them in Reinforce this part.")
+                        Text("Places the part for its purpose, turned about Z to line up faces drawn at an angle, then adds what its shape needs: bridging for counterbores, chamfers under ledges, thin walls thickened on the inside to whole 0.5 mm lines (Slant’s 1 mm walls are about 2 lines; it doesn’t publish its line width) and fillets in inside corners. Each change is checked and skipped if it fails. Ribs, gussets, collars, teardrop holes and splits are never automatic; add them in Reinforce this part.")
                             .font(.callout).foregroundStyle(.secondary)
                         Text(purposeLine).font(.caption).foregroundStyle(.secondary)
                         if ready {

@@ -73,6 +73,7 @@ func printReviewTurnLabel(_ orientation: PrintOrientation) -> String {
     case .yUp: return "on its side, +Y side up"
     case .yDown: return "on its side, +Y side down"
     case .face: return "on a flat face"
+    case .turned(let base, let degrees): return "\(printReviewTurnLabel(base)), turned \(printPlacementTurnDegreesLabel(degrees)) about Z"
     }
 }
 
@@ -989,7 +990,7 @@ Studio's suggested cut is in the measurements.
 the whole model, for tall or top-heavy figures. Choose a flat base or a plinth, not both.
 - auto_improve: Studio's Auto-improve places the part for its purpose (unless its placement is fixed) and adds only \
 treatments that pass its checks: bridging for counterbores, chamfers under ledges, thin walls thickened on the \
-inside to a whole number of Studio's assumed 0.45 mm lines, and fillets in inside corners. Accepts up to 20,000 triangles. It must be the last step that changes the model, and \
+inside to a whole number of 0.5 mm lines (Slant's 1 mm walls are about 2 lines), and fillets in inside corners. Accepts up to 20,000 triangles. It must be the last step that changes the model, and \
 it doesn't go with orient. Suggest it for functional parts.
 - manual (text): anything the tools above can't do, which the seller does elsewhere. Prefer Studio's own tools: \
 "Use Reinforce in Studio to add a gusset under the arm" or "Use Reinforce to add a rib along the handle" before \
