@@ -19,9 +19,9 @@ final class PrintPreparationTests: XCTestCase {
         let cube = Mesh.cube(center: Vector(10, 10, 10), size: Vector(20, 20, 20))
         return try exported(cube.subtracting(Mesh.cube(center: Vector(10, 10, 12), size: Vector(16.4, 16.4, 20))))
     }
-    private func input(walls: Bool = true, intent: PartIntent? = nil) -> PrintPreparationInput {
+    private func input(walls: Bool = true, intent: PartIntent? = nil, chamfer: Bool = true) -> PrintPreparationInput {
         PrintPreparationInput(sourceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!, sourceName: "Part",
-                              savedIntent: intent, internalWalls: walls)
+                              savedIntent: intent, internalWalls: walls, bottomChamfer: chamfer)
     }
     private let fixedDate = Date(timeIntervalSince1970: 1_800_000_000)
 
@@ -31,12 +31,19 @@ final class PrintPreparationTests: XCTestCase {
         let name = "PrintPreparationTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
-        XCTAssertEqual(PrintPreparationSettings(defaults: defaults), PrintPreparationSettings(enabled: true, internalWalls: true))
+        XCTAssertEqual(PrintPreparationSettings(defaults: defaults), PrintPreparationSettings(enabled: true, internalWalls: true, bottomChamfer: true))
         defaults.set(false, forKey: printPreparationInternalWallsDefaultsKey)
         XCTAssertEqual(PrintPreparationSettings(defaults: defaults), PrintPreparationSettings(enabled: true, internalWalls: false))
+        defaults.set(false, forKey: printPreparationBottomChamferDefaultsKey)
+        XCTAssertEqual(PrintPreparationSettings(defaults: defaults), PrintPreparationSettings(enabled: true, internalWalls: false, bottomChamfer: false))
         defaults.set(false, forKey: printPreparationEnabledDefaultsKey)
         XCTAssertFalse(PrintPreparationSettings(defaults: defaults).enabled)
-        XCTAssertEqual(PrintPreparationSettings(), PrintPreparationSettings(enabled: true, internalWalls: true))
+        XCTAssertEqual(PrintPreparationSettings(), PrintPreparationSettings(enabled: true, internalWalls: true, bottomChamfer: true))
+        // The footer lists the steps and says pockets are never filled automatically.
+        XCTAssertTrue(printPreparationSettingsFooter.contains("0.4 mm chamfer round the bottom edge"))
+        XCTAssertTrue(printPreparationSettingsFooter.contains("never fills hidden pockets"))
+        XCTAssertTrue(printPreparationSettingsFooter.contains("turned square"))
+        XCTAssertTrue(printPreparationBottomChamferCaption.contains("Hole entries keep their size"))
         // No strength claim in the caption; the dated, sized price finding is there.
         XCTAssertFalse(printPreparationInternalWallsCaption.lowercased().contains("strong"))
         XCTAssertTrue(printPreparationInternalWallsCaption.contains("25 Oct 2026"))
@@ -104,16 +111,25 @@ final class PrintPreparationTests: XCTestCase {
 
     func testStepPlanOrderLimitsAndReasons() {
         let sound = printPreparationPlan(triangles: 1_000, meshSound: true, internalWallsOn: true)
-        XCTAssertEqual(sound.map(\.step), [.repair, .orientation, .treatments, .internalWalls])
-        XCTAssertEqual(sound.map(\.decision), [.skip(printPreparationRepairNotNeeded), .run, .run, .run])
+        // The bottom chamfer runs before the internal walls, so the walls are planned against the finished surface.
+        XCTAssertEqual(sound.map(\.step), [.repair, .orientation, .treatments, .bottomChamfer, .internalWalls])
+        XCTAssertEqual(sound.map(\.decision), [.skip(printPreparationRepairNotNeeded), .run, .run, .run, .run])
         let broken = printPreparationPlan(triangles: 1_000, meshSound: false, internalWallsOn: true)
         XCTAssertEqual(broken.first?.decision, .run)
         let large = printPreparationPlan(triangles: meshToolsReinforceTriangleLimit + 1, meshSound: true, internalWallsOn: true)
         XCTAssertEqual(large[2].decision, .skip(printPreparationTreatmentsTooLarge))
-        XCTAssertEqual(large[3].decision, .run, "Internal walls go up to the library's limit")
+        XCTAssertEqual(large[3].decision, .run, "The bottom chamfer goes up to the library's limit")
+        XCTAssertEqual(large[4].decision, .run, "Internal walls go up to the library's limit")
         XCTAssertEqual(printPreparationPlan(triangles: meshToolsReinforceTriangleLimit, meshSound: true, internalWallsOn: true)[2].decision, .run)
         let off = printPreparationPlan(triangles: 1_000, meshSound: true, internalWallsOn: false)
-        XCTAssertEqual(off[3].decision, .skip(printPreparationWallsOff))
+        XCTAssertEqual(off[4].decision, .skip(printPreparationWallsOff))
+        XCTAssertEqual(off[3].decision, .run)
+        let chamferOff = printPreparationPlan(triangles: 1_000, meshSound: true, internalWallsOn: true, bottomChamferOn: false)
+        XCTAssertEqual(chamferOff[3].decision, .skip(printPreparationChamferOff))
+        XCTAssertEqual(chamferOff[4].decision, .run)
+        guard case .skip(let chamferReason) = printPreparationDecision(.bottomChamfer, triangles: bottomChamferMaximumTriangles + 1,
+                                                                        meshSound: true, internalWallsOn: true) else { return XCTFail() }
+        XCTAssertTrue(chamferReason.contains("too many"), chamferReason)
         guard case .skip(let reason) = printPreparationDecision(.internalWalls, triangles: internalWallsMaximumTriangles + 1,
                                                                  meshSound: true, internalWallsOn: true) else { return XCTFail() }
         XCTAssertTrue(reason.contains("too many"), reason)
@@ -179,11 +195,12 @@ final class PrintPreparationTests: XCTestCase {
 
     func testBlockGetsInternalWallsAndARecord() throws {
         let source = try block(40, 40, 20)
-        let result = try preparePrintReadyCopy(source, input: input(), now: fixedDate)
+        // A functional saved purpose: slots through thick regions as well as the targeted kinds.
+        let result = try preparePrintReadyCopy(source, input: input(intent: PartIntent(purpose: .enclosure)), now: fixedDate)
         XCTAssertNil(result.blocked)
         XCTAssertTrue(result.changed)
         let record = result.record
-        XCTAssertEqual(record.steps.map(\.step), [.repair, .orientation, .treatments, .internalWalls])
+        XCTAssertEqual(record.steps.map(\.step), [.repair, .orientation, .treatments, .bottomChamfer, .internalWalls])
         XCTAssertEqual(record.sourceID, input().sourceID)
         XCTAssertEqual(record.sourceName, "Part")
         XCTAssertEqual(record.created, fixedDate)
@@ -191,11 +208,13 @@ final class PrintPreparationTests: XCTestCase {
         XCTAssertTrue(record.treatments.isEmpty)
         let walls = try XCTUnwrap(record.internalWalls)
         XCTAssertGreaterThan(walls.slots, 0)
+        XCTAssertEqual(walls.bulkSlots, walls.slots)
         XCTAssertGreaterThan(walls.removedVolumeMM3, 0)
         XCTAssertLessThanOrEqual(walls.removedFraction, internalWallsMaximumRemovedFraction)
-        XCTAssertEqual(record.appliedSteps.map(\.step), [.internalWalls])
-        XCTAssertTrue(printPreparationAppliedLines(record)[0].hasPrefix("Internal walls: Adds internal walls"))
-        XCTAssertTrue(printPreparationCaption(record).contains("slots"))
+        XCTAssertGreaterThan(try XCTUnwrap(walls.estimatedExtraMaterialFraction), 0)
+        XCTAssertEqual(record.appliedSteps.map(\.step), [.bottomChamfer, .internalWalls])
+        XCTAssertTrue(printPreparationAppliedLines(record)[1].hasPrefix("Internal walls: Adds internal walls"))
+        XCTAssertTrue(printPreparationCaption(record).contains("slots in thick regions"), printPreparationCaption(record))
         // Never a strength claim or percentage of strength.
         for line in printPreparationAppliedLines(record) + printPreparationSkippedLines(record) + [printPreparationCaption(record)] {
             for word in ["stronger", "strong ", "guaranteed", "approved", "safe"] {
@@ -223,8 +242,8 @@ final class PrintPreparationTests: XCTestCase {
     }
 
     func testNothingToChangeMakesNoCopy() throws {
-        // Already flat, no ledges, internal walls off.
-        let result = try preparePrintReadyCopy(try block(40, 40, 10), input: input(walls: false), now: fixedDate)
+        // Already flat, no ledges, internal walls and the bottom chamfer off.
+        let result = try preparePrintReadyCopy(try block(40, 40, 10), input: input(walls: false, chamfer: false), now: fixedDate)
         XCTAssertFalse(result.changed)
         XCTAssertNil(result.mesh)
         XCTAssertNil(result.data)

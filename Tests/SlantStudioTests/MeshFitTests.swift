@@ -398,6 +398,30 @@ final class MeshFitTests: XCTestCase {
         XCTAssertNil(index.firstHit(from: SIMD3(50, 5, 10), along: SIMD3(0, 0, -1)))
     }
 
+    /// An axis-aligned ray lying exactly in a box face's plane (here x = 0 and x = 10, and y = 10) used to compute
+    /// 0 × ∞ in the slab test and drop that box, missing the hit along the edge.
+    func testRayIndexKeepsRaysInABoxFacePlane() throws {
+        let slab = try box(SIMD3(10, 10, 2))
+        let index = try XCTUnwrap(TriangleRayIndex(slab))
+        for origin in [SIMD3<Float>(10, 5, 10), SIMD3(0, 5, 10), SIMD3(5, 10, 10), SIMD3(10, 10, 10)] {
+            let hit = try XCTUnwrap(index.firstHit(from: origin, along: SIMD3(0, 0, -1)), "\(origin)")
+            XCTAssertEqual(hit.distance, 8, accuracy: 1e-5)
+            XCTAssertEqual(hit.normal, SIMD3(0, 0, 1))
+        }
+        // Along X, in the plane y = 0 and the plane z = 2.
+        XCTAssertEqual(try XCTUnwrap(index.firstHit(from: SIMD3(-5, 0, 1), along: SIMD3(1, 0, 0))).distance, 5, accuracy: 1e-5)
+        XCTAssertEqual(try XCTUnwrap(index.firstHit(from: SIMD3(-5, 4, 2), along: SIMD3(1, 0, 0))).distance, 5, accuracy: 1e-5)
+        // Negative zero components behave the same.
+        XCTAssertEqual(try XCTUnwrap(index.firstHit(from: SIMD3(10, 5, 10), along: SIMD3(-0.0, -0.0, -1))).distance, 8, accuracy: 1e-5)
+        // Just outside the plane still misses, as before.
+        XCTAssertNil(index.firstHit(from: SIMD3(10.001, 5, 10), along: SIMD3(0, 0, -1)))
+        XCTAssertNil(index.firstHit(from: SIMD3(5, -0.001, 10), along: SIMD3(0, 0, -1)))
+        // So every wall-thickness sample on a box is measured, including those on its edges.
+        let report = try XCTUnwrap(analyzeWallThickness(try box(SIMD3(40, 40, 20)), maximumSamples: 2_000))
+        XCTAssertEqual(report.measuredCount, report.sampleCount)
+        XCTAssertEqual(report.thinnestMM, 20)
+    }
+
     func testBandLabels() {
         XCTAssertEqual(wallThicknessBandLabel(ThicknessBand(lowerMM: 1, upperMM: 1.5, fraction: 0.034)), "1.0–1.5 mm · 3%")
         XCTAssertEqual(wallThicknessBandLabel(ThicknessBand(lowerMM: 3, upperMM: nil, fraction: 0.004)), "3.0 mm or more · under 1%")

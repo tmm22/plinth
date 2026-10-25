@@ -367,7 +367,8 @@ final class BottomChamferTests: XCTestCase {
 
     // MARK: Hash seeds and timing
 
-    /// Run only as a subprocess by the test below: writes both tools' output hashes to the named file.
+    /// Run only as a subprocess by `PrintPreparationFixesTests.testPipelineBytesMatchAcrossHashSeeds`, which runs this
+    /// with a fixed and a random hash seed side by side: writes both tools' output hashes to the named file.
     func testHashSeedProbeWritesGeometryHashes() throws {
         guard let out = ProcessInfo.processInfo.environment["SLANT_R11_GEOMETRY_HASH_OUT"] else { return }
         try Self.geometryDigest().write(toFile: out, atomically: true, encoding: .utf8)
@@ -383,38 +384,6 @@ final class BottomChamferTests: XCTestCase {
             .subtracting(pocket).makeWatertight())).mesh
         let filled = try XCTUnwrap(try fillHiddenPocketsCopy(of: pocketSource).data)
         return [chamfer, filled].map { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }.joined(separator: " ")
-    }
-
-    /// The same models give the same bytes whatever the process's hash seed: two runs of this test bundle, one with
-    /// `SWIFT_DETERMINISTIC_HASHING=1` and one with a random seed, against this process's own result.
-    func testGeometryBytesMatchAcrossHashSeeds() throws {
-        guard ProcessInfo.processInfo.environment["SLANT_R11_GEOMETRY_HASH_OUT"] == nil else { return }
-        let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
-        guard FileManager.default.isExecutableFile(atPath: xcrun.path) else { throw XCTSkip("xcrun isn't available") }
-        let bundle = Bundle(for: Self.self).bundlePath
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioR11HashSeed-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        func hash(deterministic: Bool) throws -> String {
-            let out = folder.appendingPathComponent(deterministic ? "fixed.txt" : "random.txt").path
-            var environment = ProcessInfo.processInfo.environment
-            environment["SLANT_R11_GEOMETRY_HASH_OUT"] = out
-            if deterministic { environment["SWIFT_DETERMINISTIC_HASHING"] = "1" } else { environment.removeValue(forKey: "SWIFT_DETERMINISTIC_HASHING") }
-            let process = Process()
-            process.executableURL = xcrun
-            process.arguments = ["xctest", "-XCTest", "SlantStudioTests.BottomChamferTests/testHashSeedProbeWritesGeometryHashes", bundle]
-            process.environment = environment
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            let deadline = Date().addingTimeInterval(180)
-            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
-            if process.isRunning { process.terminate(); XCTFail("The subprocess didn't finish") }
-            return try String(contentsOfFile: out, encoding: .utf8)
-        }
-        let local = try Self.geometryDigest()
-        XCTAssertEqual(try hash(deterministic: true), local)
-        XCTAssertEqual(try hash(deterministic: false), local)
     }
 
     /// Opt-in timing (set MESH_TOOLS_BENCH=1; best run in release) on ring-shaped prisms of about 20,000, 100,000 and

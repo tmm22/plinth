@@ -943,28 +943,58 @@ struct TriangleRayIndex: Sendable {
     func firstHit(from origin: SIMD3<Float>, along direction: SIMD3<Float>, minimumDistance: Float = 0,
                   skipping: Int = -1) -> Hit? {
         let inverse = SIMD3<Float>(1 / direction.x, 1 / direction.y, 1 / direction.z)
+        // Axes the ray doesn't move along. Their slab is all or nothing: the ray is inside it for its whole length
+        // when the origin lies within the box on that axis, edges included, and never otherwise. Computing it as
+        // (bound − origin) × ∞ gives NaN (0 × ∞) for an origin exactly in a box face's plane, which `simd_min` and
+        // `simd_max` replace with the other bound's ±∞, so that box used to be dropped.
+        let stillX = direction.x == 0, stillY = direction.y == 0, stillZ = direction.z == 0
+        let ox = origin.x, oy = origin.y, oz = origin.z, ix = inverse.x, iy = inverse.y, iz = inverse.z
+        // fmin and fmax, as `simd_min` and `simd_max` work lane by lane: a NaN gives way to the other value. Written out
+        // with the slab test because the generic SIMD operators are slow in unoptimised builds.
+        func smaller(_ a: Float, _ b: Float) -> Float { a.isNaN ? b : (b.isNaN ? a : (b < a ? b : a)) }
+        func larger(_ a: Float, _ b: Float) -> Float { a.isNaN ? b : (b.isNaN ? a : (b > a ? b : a)) }
         var best = Float.infinity, bestTriangle = -1
-        var stack = [Int](repeating: 0, count: 64)
-        var depth = 1
-        stack[0] = 0
-        while depth > 0 {
-            depth -= 1
-            let node = stack[depth]
-            // Slab test; NaN from 0 × ∞ fails the comparisons, so a ray along a box face is kept by min/max below.
-            let t0 = (low[node] - origin) * inverse, t1 = (high[node] - origin) * inverse
-            let near = simd_reduce_max(simd_min(t0, t1)), far = simd_reduce_min(simd_max(t0, t1))
-            guard !(near > far), !(far < minimumDistance), !(near > best) else { continue }
-            if start[node] >= 0 {
-                for k in Int(start[node])..<Int(start[node] + extra[node]) {
-                    let t = Int(order[k])
-                    guard t != skipping, let distance = intersect(t, origin, direction),
-                          distance > minimumDistance, distance < best || (distance == best && t < bestTriangle) else { continue }
-                    best = distance
-                    bestTriangle = t
+        // A stack on the stack, not the heap: this runs for every query.
+        withUnsafeTemporaryAllocation(of: Int.self, capacity: 64) { stack in
+            var depth = 1
+            stack[0] = 0
+            while depth > 0 {
+                depth -= 1
+                let node = stack[depth]
+                // Slab test, inclusive at the box faces.
+                let lo = low[node], hi = high[node]
+                var near = -Float.infinity, far = Float.infinity
+                if stillX {
+                    guard ox >= lo.x, ox <= hi.x else { continue }
+                } else {
+                    let t0 = (lo.x - ox) * ix, t1 = (hi.x - ox) * ix
+                    near = larger(near, smaller(t0, t1)); far = smaller(far, larger(t0, t1))
                 }
-            } else if depth + 2 <= stack.count {
-                stack[depth] = Int(extra[node]); stack[depth + 1] = node + 1
-                depth += 2
+                if stillY {
+                    guard oy >= lo.y, oy <= hi.y else { continue }
+                } else {
+                    let t0 = (lo.y - oy) * iy, t1 = (hi.y - oy) * iy
+                    near = larger(near, smaller(t0, t1)); far = smaller(far, larger(t0, t1))
+                }
+                if stillZ {
+                    guard oz >= lo.z, oz <= hi.z else { continue }
+                } else {
+                    let t0 = (lo.z - oz) * iz, t1 = (hi.z - oz) * iz
+                    near = larger(near, smaller(t0, t1)); far = smaller(far, larger(t0, t1))
+                }
+                guard !(near > far), !(far < minimumDistance), !(near > best) else { continue }
+                if start[node] >= 0 {
+                    for k in Int(start[node])..<Int(start[node] + extra[node]) {
+                        let t = Int(order[k])
+                        guard t != skipping, let distance = intersect(t, origin, direction),
+                              distance > minimumDistance, distance < best || (distance == best && t < bestTriangle) else { continue }
+                        best = distance
+                        bestTriangle = t
+                    }
+                } else if depth + 2 <= stack.count {
+                    stack[depth] = Int(extra[node]); stack[depth + 1] = node + 1
+                    depth += 2
+                }
             }
         }
         guard bestTriangle >= 0 else { return nil }

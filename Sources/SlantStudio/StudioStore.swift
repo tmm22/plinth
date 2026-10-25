@@ -71,6 +71,9 @@ struct LocalModel: Codable, Identifiable {
     var inheritsZUpLock: Bool?
     /// Set on a saved replica, whose way up the seller chose in Which way is up?: preparation never re-places it.
     var keepsPlacement: Bool?
+    /// Set on a Fill Hidden Pockets copy (HiddenPocketsView.swift): an edited copy for the licence advisory. Nil for
+    /// anything else; older libraries load without it.
+    var filledPockets: Bool?
     var url: URL { URL(fileURLWithPath: filePath) }
     /// Copies whose features depend on the print layers must stay Z up. A print-ready copy was placed on its bed face
     /// and may have slots opening through it, so it stays as placed, and so do its further copies.
@@ -521,6 +524,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var selectedLocalID: UUID?
     /// Automatic preparation of new STL models for printing (PrintPreparation.swift).
     let printPreparationQueue = PrintPreparationQueue()
+    /// Fill Hidden Pockets, the seller's own request (HiddenPocketsView.swift).
+    let hiddenPocketsFill = HiddenPocketsFillRun()
     @Published var files: [Record] = []
     @Published var platforms: [Record] = []
     @Published var filaments: [Record] = []
@@ -730,8 +735,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     /// `importModel`, returning the new model's ID. `selectsAndShows: false` adds it without changing the selection
     /// or the screen, for copies saved in the background; `insertingBefore` places it next to that model (else first).
+    /// `keepsPlacement` carries a replica's chosen way up to a further copy; `filledPockets` marks a Fill Hidden Pockets
+    /// copy.
     @discardableResult
-    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil) -> UUID? {
+    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil, keepsPlacement: Bool = false, filledPockets: Bool = false) -> UUID? {
         let ext = url.pathExtension.lowercased()
         guard ["stl", "obj", "3mf"].contains(ext) else {
             showError("Slant Studio accepts STL, OBJ, and 3MF models.")
@@ -748,7 +755,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                                    partIntent: recipe?.intent ?? intent, printRecipe: recipe, designImprovement: improvement, reinforcement: reinforcement, autoImprovement: autoImprovement,
                                    sourceDetails: sourceDetails?.isEmpty == false ? sourceDetails : nil,
                                    printPreparation: printPreparation, inheritsZUpLock: inheritsZUpLock ? true : nil,
-                                   keepsPlacement: origin == .replica ? true : nil)
+                                   keepsPlacement: origin == .replica || keepsPlacement ? true : nil,
+                                   filledPockets: filledPockets ? true : nil)
             localModels.insert(model, at: neighbour.flatMap { id in localModels.firstIndex { $0.id == id } } ?? 0)
             if selectsAndShows { select(model) }
             saveModels()

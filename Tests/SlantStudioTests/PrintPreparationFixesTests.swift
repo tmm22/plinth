@@ -143,7 +143,7 @@ final class PrintPreparationFixesTests: XCTestCase {
         XCTAssertNotNil(printPreparationKeptPlacementReason(LocalModel(name: "R", filePath: "/tmp/r.stl", printRecipe: recipe), origin: nil))
         let plan = printPreparationPlan(triangles: 100, meshSound: true, internalWallsOn: true, decorative: true, keptPlacement: "Kept")
         XCTAssertEqual(plan[1].decision, .skip("Kept"))
-        XCTAssertEqual(plan[3].decision, .skip(printPreparationWallsDecorative))
+        XCTAssertEqual(plan[4].decision, .skip(printPreparationWallsDecorative))
         XCTAssertTrue(printPreparationSetPurposeNote.contains("Make Print-Ready Copy"))
         XCTAssertTrue(printPreparationPlacementIntent(saved: nil).note.contains("Make Print-Ready Copy"))
     }
@@ -173,12 +173,21 @@ final class PrintPreparationFixesTests: XCTestCase {
     // MARK: 4, 9, 11. Price, thin walls and cautions
 
     func testCopyTextsPriceCautionsAndThinAreas() throws {
-        let result = try preparePrintReadyCopy(try ledgedBase(), input: input(), now: fixedDate)
+        // A functional saved purpose, so the base gets slots through its thick region.
+        let result = try preparePrintReadyCopy(try ledgedBase(), input: input(intent: PartIntent(purpose: .enclosure)), now: fixedDate)
         let record = result.record
         XCTAssertNil(result.blocked)
         XCTAssertGreaterThan(record.chamferCount, 0, "\(record.steps)")
-        XCTAssertNotNil(record.internalWalls, "\(record.steps)")
-        XCTAssertEqual(printPreparationPriceLine(record), printPreparationWallsPriceNote)
+        let walls = try XCTUnwrap(record.internalWalls, "\(record.steps)")
+        // Studio's own filament estimate, beside Slant's dated figure.
+        let fraction = try XCTUnwrap(walls.estimatedExtraMaterialFraction)
+        let price = printPreparationPriceLine(record)
+        XCTAssertTrue(price.hasPrefix("Studio estimates \(printPreparationPercentText(fraction)) more filament"), price)
+        XCTAssertTrue(price.contains("Slant’s price is likely higher"), price)
+        XCTAssertTrue(price.contains("(25 Oct 2026)"), price)
+        var undated = record
+        undated.internalWalls?.estimatedExtraMaterialFraction = nil
+        XCTAssertEqual(printPreparationPriceLine(undated), printPreparationWallsPriceNote)
         XCTAssertTrue(printPreparationWallsPriceNote.contains("(25 Oct 2026)"))
         XCTAssertTrue(printPreparationCautions(record).contains(printPreparationChamferCaution))
         XCTAssertNotNil(record.thinAreasUnder1MM)
@@ -325,46 +334,90 @@ final class PrintPreparationFixesTests: XCTestCase {
 
     // MARK: Determinism across hash seeds
 
+    /// A ledged base (a chamfer under the ledge) with a round through-hole (a hole ring) and a thick base (slots and
+    /// the bottom-edge chamfer): every step of the round 11 pipeline runs on it.
+    private static func round11Part() throws -> STLMesh {
+        let hole = Mesh.cylinder(radius: 2, height: 30, slices: 24).rotated(by: Rotation(pitch: .halfPi)).translated(by: Vector(32, 8, 4))
+        let base = Mesh.cube(center: Vector(20, 20, 4), size: Vector(40, 40, 8))
+        let pillar = Mesh.cube(center: Vector(20, 20, 16), size: Vector(20, 20, 16))
+        let ledge = Mesh.cube(center: Vector(20, 35, 21.5), size: Vector(20, 10, 3))
+        return try repairMesh(ReinforcementEngine.stl(base.union(pillar).union(ledge).subtracting(hole).makeWatertight())).mesh
+    }
+    private static let round11Input = PrintPreparationInput(sourceID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                                                            sourceName: "Part", savedIntent: PartIntent(purpose: .enclosure),
+                                                            internalWalls: true)
+
+    private static func round11Result() throws -> PrintPreparationResult {
+        try preparePrintReadyCopy(try round11Part(), input: round11Input, now: Date(timeIntervalSince1970: 1_800_000_000))
+    }
+
+    static func pipelineDigest() throws -> String {
+        SHA256.hash(data: try XCTUnwrap(try round11Result().data)).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Run only as a subprocess by the test below: writes the pipeline's output hash to the named file.
     func testHashSeedProbeWritesPipelineHash() throws {
         guard let out = ProcessInfo.processInfo.environment["SLANT_PIPELINE_HASH_OUT"] else { return }
-        let result = try preparePrintReadyCopy(try ledgedBase(), input: input(), now: fixedDate)
-        let digest = SHA256.hash(data: try XCTUnwrap(result.data)).map { String(format: "%02x", $0) }.joined()
-        try digest.write(toFile: out, atomically: true, encoding: .utf8)
+        try Self.pipelineDigest().write(toFile: out, atomically: true, encoding: .utf8)
     }
 
-    /// The same model gives the same bytes whatever the process's hash seed: two runs of this test bundle, one with
-    /// `SWIFT_DETERMINISTIC_HASHING=1` and one with a random seed, against this process's own result.
+    /// The same models give the same bytes whatever the process's hash seed. One run of this test bundle with
+    /// `SWIFT_DETERMINISTIC_HASHING=1` and one with a random seed, side by side, each running the round 11 probes (the
+    /// whole print-ready pipeline here, internal walls of every kind, the bottom chamfer and Fill Hidden Pockets),
+    /// against this process's own results.
     func testPipelineBytesMatchAcrossHashSeeds() throws {
-        guard ProcessInfo.processInfo.environment["SLANT_PIPELINE_HASH_OUT"] == nil else { return }
+        // Here, the part runs every step but repair (its source is already repaired), with a ring and slots.
+        var record: PrintPreparationRecord?
+        let localPipeline: () throws -> String = {
+            let result = try Self.round11Result()
+            record = result.record
+            return SHA256.hash(data: try XCTUnwrap(result.data)).map { String(format: "%02x", $0) }.joined()
+        }
+        let probes: [(variable: String, test: String, local: () throws -> String)] = [
+            ("SLANT_PIPELINE_HASH_OUT", "PrintPreparationFixesTests/testHashSeedProbeWritesPipelineHash", localPipeline),
+            ("SLANT_WALLS_HASH_OUT", "InternalWallsKindsTests/testHashSeedProbeWritesWallsHash", InternalWallsKindsTests.wallsDigest),
+            ("SLANT_R11_GEOMETRY_HASH_OUT", "BottomChamferTests/testHashSeedProbeWritesGeometryHashes", BottomChamferTests.geometryDigest),
+        ]
+        guard probes.allSatisfy({ ProcessInfo.processInfo.environment[$0.variable] == nil }) else { return }
         let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
         guard FileManager.default.isExecutableFile(atPath: xcrun.path) else { throw XCTSkip("xcrun isn't available") }
         let bundle = Bundle(for: Self.self).bundlePath
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioHashSeed-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        func hash(deterministic: Bool) throws -> String {
-            let out = folder.appendingPathComponent(deterministic ? "fixed.txt" : "random.txt").path
+        func launch(deterministic: Bool) throws -> Process {
             var environment = ProcessInfo.processInfo.environment
-            environment["SLANT_PIPELINE_HASH_OUT"] = out
+            for probe in probes {
+                environment[probe.variable] = folder.appendingPathComponent("\(deterministic ? "fixed" : "random")-\(probe.variable).txt").path
+            }
             if deterministic { environment["SWIFT_DETERMINISTIC_HASHING"] = "1" } else { environment.removeValue(forKey: "SWIFT_DETERMINISTIC_HASHING") }
             let process = Process()
             process.executableURL = xcrun
-            process.arguments = ["xctest", "-XCTest", "SlantStudioTests.PrintPreparationFixesTests/testHashSeedProbeWritesPipelineHash", bundle]
+            process.arguments = ["xctest", "-XCTest", probes.map { "SlantStudioTests.\($0.test)" }.joined(separator: ","), bundle]
             process.environment = environment
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             try process.run()
-            let deadline = Date().addingTimeInterval(180)
-            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
-            if process.isRunning { process.terminate(); XCTFail("The subprocess didn't finish") }
-            return try String(contentsOfFile: out, encoding: .utf8)
+            return process
         }
-        let here = try preparePrintReadyCopy(try ledgedBase(), input: input(), now: fixedDate)
-        let local = SHA256.hash(data: try XCTUnwrap(here.data)).map { String(format: "%02x", $0) }.joined()
-        let fixed = try hash(deterministic: true), random = try hash(deterministic: false)
-        XCTAssertEqual(fixed, local)
-        XCTAssertEqual(random, local)
+        // Both runs go side by side while this process works out its own results.
+        let fixed = try launch(deterministic: true), random = try launch(deterministic: false)
+        defer { for process in [fixed, random] where process.isRunning { process.terminate() } }
+        let local = try probes.map { try $0.local() }
+        XCTAssertEqual(record?.appliedSteps.map(\.step), [.treatments, .bottomChamfer, .internalWalls], "\(String(describing: record?.steps))")
+        XCTAssertEqual(record?.internalWalls?.holeRings, 1)
+        XCTAssertGreaterThan(record?.internalWalls?.bulkSlots ?? 0, 0)
+        let deadline = Date().addingTimeInterval(180)
+        for process in [fixed, random] {
+            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+            if process.isRunning { process.terminate(); XCTFail("The subprocess didn't finish") }
+        }
+        for (probe, expected) in zip(probes, local) {
+            for mode in ["fixed", "random"] {
+                let file = folder.appendingPathComponent("\(mode)-\(probe.variable).txt").path
+                XCTAssertEqual(try String(contentsOfFile: file, encoding: .utf8), expected, "\(probe.test), \(mode) seed")
+            }
+        }
     }
 
     // MARK: 12–15

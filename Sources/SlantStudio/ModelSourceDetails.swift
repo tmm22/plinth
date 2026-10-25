@@ -158,7 +158,7 @@ func sourceDetailsForCopy(of model: LocalModel, fromFile: ModelSourceDetails = M
 /// True for a library copy one of the Improve for printing tools changed.
 func modelIsEditedCopy(_ model: LocalModel) -> Bool {
     model.printRecipe != nil || model.designImprovement != nil || model.reinforcement != nil || model.autoImprovement != nil
-        || model.printPreparation != nil || model.inheritsZUpLock == true
+        || model.printPreparation != nil || model.inheritsZUpLock == true || model.filledPockets == true
 }
 
 // MARK: - Inspector panel

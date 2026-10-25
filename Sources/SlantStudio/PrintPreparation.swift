@@ -3,10 +3,12 @@ import AppKit
 import simd
 
 // Prepare new models for printing: after a new STL enters the library, Studio makes one separate "(print-ready)"
-// copy with fit-safe changes only — repair when needed, placement on the bed, bridging layers and chamfers under free
-// ledges, and internal walls — and keeps the original unchanged. Fillets and wall matching, which take space from
-// inside corners and cavities, are added only after the seller confirms nothing on the part has to fit. The seller can
-// also ask for a copy of any STL with Make Print-Ready Copy.
+// copy with fit-safe changes only — repair when needed, placement on the bed (turned square about Z), bridging layers
+// and chamfers under free ledges, a 0.4 mm bottom-edge chamfer, and internal walls planned for the part's saved
+// purpose — then measures overhangs, thin walls, print advisories and hidden pockets on the copy, and keeps the
+// original unchanged. Hidden pockets are reported, never filled automatically: Fill Hidden Pockets is the seller's.
+// Fillets and wall matching, which take space from inside corners and cavities, are added only after the seller
+// confirms nothing on the part has to fit. The seller can also ask for a copy of any STL with Make Print-Ready Copy.
 //
 // Everything here is local: nothing is uploaded or sent to any service, and no keyboard shortcut starts it.
 // The pipeline is pure and deterministic (each step walks meshes in index order, and a run cut short by a time limit
@@ -14,31 +16,36 @@ import simd
 
 // MARK: - Settings
 
-/// Settings › Design Tools › Prepare new models for printing. Both are plain preferences, on by default.
+/// Settings › Design Tools › Prepare new models for printing. All are plain preferences, on by default.
 let printPreparationEnabledDefaultsKey = "prepareNewModelsForPrinting"
 let printPreparationInternalWallsDefaultsKey = "prepareNewModelsAddInternalWalls"
+let printPreparationBottomChamferDefaultsKey = "prepareNewModelsBottomChamfer"
 /// Only that the one-time notice was dismissed is stored.
 let printPreparationNoticeDismissedDefaultsKey = "prepareNewModelsNoticeDismissed"
 
 struct PrintPreparationSettings: Equatable, Sendable {
     var enabled = true
     var internalWalls = true
+    var bottomChamfer = true
 
     /// A missing (never set) preference reads as on.
-    init(enabled: Bool = true, internalWalls: Bool = true) {
+    init(enabled: Bool = true, internalWalls: Bool = true, bottomChamfer: Bool = true) {
         self.enabled = enabled
         self.internalWalls = internalWalls
+        self.bottomChamfer = bottomChamfer
     }
 
     init(defaults: UserDefaults) {
         enabled = defaults.object(forKey: printPreparationEnabledDefaultsKey) as? Bool ?? true
         internalWalls = defaults.object(forKey: printPreparationInternalWallsDefaultsKey) as? Bool ?? true
+        bottomChamfer = defaults.object(forKey: printPreparationBottomChamferDefaultsKey) as? Bool ?? true
     }
 }
 
-let printPreparationInternalWallsCaption = "Thin slots open through the base make Slant’s printer add walls inside the part. In one Slant estimate for a 40 × 40 × 20 mm block (25 Oct 2026), this added about 27% to the price."
+let printPreparationInternalWallsCaption = "Rings round holes and slots through pins and thin sections, open through the base, make Slant’s printer add walls there. Slots through thick regions are added only for parts whose saved purpose is functional: in one Slant estimate for a 40 × 40 × 20 mm block (25 Oct 2026), they added about 27% to the price."
+let printPreparationBottomChamferCaption = "Keeps the first layer’s spread inside the part’s outline. Hole entries keep their size."
 let printPreparationChamferCaution = "Chamfers fill the space under overhanging ledges: check any ledge something hooks or slides under."
-let printPreparationSettingsFooter = "When you import an STL, open one from Finder, save an STL copy of an OBJ or 3MF, or save a replica, Studio makes a separate “(print-ready)” copy: it repairs the mesh if needed, places the part on the bed with the fewest overhangs, adds bridging layers over counterbores and chamfers under free ledges and, if chosen, internal walls. It never changes the original, never uploads or sends anything, and never adds fillets or thickens walls, which can change how parts fit; the copy offers those separately. \(printPreparationChamferCaution) Personalised models, designed accessories and copies made by Studio’s tools are left alone; use Make Print-Ready Copy in a model’s More menu for any of them."
+let printPreparationSettingsFooter = "When you import an STL, open one from Finder, save an STL copy of an OBJ or 3MF, or save a replica, Studio makes a separate “(print-ready)” copy. In order, it repairs the mesh if needed; places the part on the bed with the fewest overhangs, turned square to the printer’s axes; adds bridging layers over counterbores and chamfers under free ledges; adds a 0.4 mm chamfer round the bottom edge, if chosen; and adds internal walls, if chosen: rings round holes and slots through pins and thin sections, plus slots through thick regions for parts whose saved purpose is functional. It then lists overhangs, thin walls and other print risks on the copy. It never changes the original, never uploads or sends anything, never fills hidden pockets (the copy offers Fill Hidden Pockets), and never adds fillets or thickens walls, which can change how parts fit; the copy offers those separately. \(printPreparationChamferCaution) Personalised models, designed accessories and copies made by Studio’s tools are left alone; use Make Print-Ready Copy in a model’s More menu for any of them."
 let printPreparationNoticeText = "Studio now makes a print-ready copy of each new STL. Change this in Settings › Design Tools."
 
 /// The one-time notice shows once an automatic copy is saved, until the seller dismisses it.
@@ -161,14 +168,18 @@ func printPreparationStatusKeepingCopy(_ status: PrintPreparationStatus, previou
 
 // MARK: - Step plan
 
+/// In the order they run. The bottom chamfer runs before the internal walls, so the walls are planned against the
+/// finished surface: every ring and slot keeps its full clearance from the chamfer, and the chamfer never meets a
+/// ring's inner island, which it would otherwise take for an outer edge and cut into.
 enum PrintPreparationStep: String, Codable, CaseIterable, Sendable {
-    case repair, orientation, treatments, internalWalls
+    case repair, orientation, treatments, bottomChamfer, internalWalls
 
     var title: String {
         switch self {
         case .repair: return "Repair"
         case .orientation: return "Placement"
         case .treatments: return "Bridging and chamfers"
+        case .bottomChamfer: return "Bottom-edge chamfer"
         case .internalWalls: return "Internal walls"
         }
     }
@@ -182,14 +193,16 @@ enum PrintPreparationDecision: Equatable, Sendable {
 let printPreparationRepairNotNeeded = "Not needed: the mesh check passed."
 let printPreparationTreatmentsTooLarge = "Skipped: this model has more than \(meshToolsReinforceTriangleLimit.formatted()) triangles, the limit for bridging and chamfers. Simplify a copy, then use Auto-improve."
 let printPreparationWallsOff = "Off in Settings › Design Tools."
+let printPreparationChamferOff = printPreparationWallsOff
 let printPreparationWallsDecorative = "Skipped for a decorative part: internal walls add filament and cost, and a display piece carries no load."
 let printPreparationScaleFirst = "This model is under 3 mm across, so it may have been exported in another unit. Scale it first, then use Make Print-Ready Copy."
 
 /// Whether each step runs, checked against the mesh as it stands when that step is reached (repair can change the
 /// triangle count). Steps always run in `PrintPreparationStep.allCases` order: repair, placement, bridging and chamfers,
-/// then internal walls, which need the bed face down.
+/// the bottom-edge chamfer, then internal walls; the last two need the bed face down.
 func printPreparationDecision(_ step: PrintPreparationStep, triangles: Int, meshSound: Bool, internalWallsOn: Bool,
-                              decorative: Bool = false, keptPlacement: String? = nil) -> PrintPreparationDecision {
+                              decorative: Bool = false, keptPlacement: String? = nil,
+                              bottomChamferOn: Bool = true) -> PrintPreparationDecision {
     switch step {
     case .repair:
         return meshSound ? .skip(printPreparationRepairNotNeeded) : .run
@@ -197,6 +210,9 @@ func printPreparationDecision(_ step: PrintPreparationStep, triangles: Int, mesh
         return keptPlacement.map { .skip($0) } ?? .run
     case .treatments:
         return triangles > meshToolsReinforceTriangleLimit ? .skip(printPreparationTreatmentsTooLarge) : .run
+    case .bottomChamfer:
+        guard bottomChamferOn else { return .skip(printPreparationChamferOff) }
+        return triangles > bottomChamferMaximumTriangles ? .skip("Skipped: " + BottomChamferSkipReason.tooManyTriangles.message) : .run
     case .internalWalls:
         guard internalWallsOn else { return .skip(printPreparationWallsOff) }
         guard !decorative else { return .skip(printPreparationWallsDecorative) }
@@ -205,10 +221,11 @@ func printPreparationDecision(_ step: PrintPreparationStep, triangles: Int, mesh
 }
 
 func printPreparationPlan(triangles: Int, meshSound: Bool, internalWallsOn: Bool, decorative: Bool = false,
-                          keptPlacement: String? = nil) -> [(step: PrintPreparationStep, decision: PrintPreparationDecision)] {
+                          keptPlacement: String? = nil,
+                          bottomChamferOn: Bool = true) -> [(step: PrintPreparationStep, decision: PrintPreparationDecision)] {
     PrintPreparationStep.allCases.map {
         ($0, printPreparationDecision($0, triangles: triangles, meshSound: meshSound, internalWallsOn: internalWallsOn,
-                                      decorative: decorative, keptPlacement: keptPlacement))
+                                      decorative: decorative, keptPlacement: keptPlacement, bottomChamferOn: bottomChamferOn))
     }
 }
 
@@ -263,13 +280,102 @@ struct PrintPreparationStepRecord: Codable, Equatable, Sendable {
     var lines: [String]
 }
 
-/// Internal-wall figures, from `InternalWallsResult`.
+/// Internal-wall figures, from `InternalWallsResult`. `slots` counts every slot (pin, thin-section and thick-region);
+/// rings are counted apart.
 struct PrintPreparationWalls: Codable, Equatable, Sendable {
     var slots: Int
     var totalLengthMM: Double
     var removedVolumeMM3: Double
     var removedFraction: Double
     var spacingMM: Double
+    var holeRings = 0
+    var pinSlots = 0
+    var thinSlots = 0
+    var bulkSlots = 0
+    /// Studio's estimate of the extra filament, as a share of the part's (`InternalWallsResult`); nil when not measured.
+    var estimatedExtraMaterialFraction: Double?
+    var addedSurfaceAreaMM2: Double?
+
+    init(slots: Int, totalLengthMM: Double, removedVolumeMM3: Double, removedFraction: Double, spacingMM: Double,
+         holeRings: Int = 0, pinSlots: Int = 0, thinSlots: Int = 0, bulkSlots: Int? = nil,
+         estimatedExtraMaterialFraction: Double? = nil, addedSurfaceAreaMM2: Double? = nil) {
+        self.slots = slots; self.totalLengthMM = totalLengthMM; self.removedVolumeMM3 = removedVolumeMM3
+        self.removedFraction = removedFraction; self.spacingMM = spacingMM
+        self.holeRings = holeRings; self.pinSlots = pinSlots; self.thinSlots = thinSlots
+        self.bulkSlots = bulkSlots ?? max(0, slots - pinSlots - thinSlots)
+        self.estimatedExtraMaterialFraction = estimatedExtraMaterialFraction; self.addedSurfaceAreaMM2 = addedSurfaceAreaMM2
+    }
+
+    init(_ result: InternalWallsResult) {
+        self.init(slots: result.slotCount, totalLengthMM: result.totalSlotLengthMM, removedVolumeMM3: result.removedVolumeMM3,
+                  removedFraction: result.removedFraction, spacingMM: Double(result.spacingMM),
+                  holeRings: result.count(of: .holeRing), pinSlots: result.count(of: .pinSlot),
+                  thinSlots: result.count(of: .thinSlot), bulkSlots: result.count(of: .bulkSlot),
+                  estimatedExtraMaterialFraction: result.estimatedExtraMaterialFraction,
+                  addedSurfaceAreaMM2: result.addedSurfaceAreaMM2)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case slots, totalLengthMM, removedVolumeMM3, removedFraction, spacingMM, holeRings, pinSlots, thinSlots, bulkSlots
+        case estimatedExtraMaterialFraction, addedSurfaceAreaMM2
+    }
+
+    /// Records from before round 11 have only slots in thick regions, so their slots read as those.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        slots = try c.decode(Int.self, forKey: .slots)
+        totalLengthMM = (try? c.decode(Double.self, forKey: .totalLengthMM)) ?? 0
+        removedVolumeMM3 = (try? c.decode(Double.self, forKey: .removedVolumeMM3)) ?? 0
+        removedFraction = (try? c.decode(Double.self, forKey: .removedFraction)) ?? 0
+        spacingMM = (try? c.decode(Double.self, forKey: .spacingMM)) ?? 0
+        holeRings = max(0, (try? c.decode(Int.self, forKey: .holeRings)) ?? 0)
+        pinSlots = max(0, (try? c.decode(Int.self, forKey: .pinSlots)) ?? 0)
+        thinSlots = max(0, (try? c.decode(Int.self, forKey: .thinSlots)) ?? 0)
+        bulkSlots = max(0, (try? c.decode(Int.self, forKey: .bulkSlots)) ?? max(0, slots - pinSlots - thinSlots))
+        estimatedExtraMaterialFraction = (try? c.decode(Double.self, forKey: .estimatedExtraMaterialFraction)).flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        addedSurfaceAreaMM2 = (try? c.decode(Double.self, forKey: .addedSurfaceAreaMM2)).flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+    }
+
+    /// "1 hole ring, 2 pin slots": the kinds made, in planning order.
+    var kindsList: [String] {
+        [(InternalWallsKind.holeRing, holeRings), (.pinSlot, pinSlots), (.thinSlot, thinSlots), (.bulkSlot, bulkSlots)]
+            .filter { $0.1 > 0 }.map { $0.0.label($0.1) }
+    }
+}
+
+/// The bottom-edge chamfer's figures, from `BottomChamferResult`.
+struct PrintPreparationChamfer: Codable, Equatable, Sendable {
+    var sizeMM: Double
+    var outlineLengthMM: Double
+    var removedVolumeMM3: Double
+    var keptHoleEntries: Int
+}
+
+/// Overhang shares of the copy's outer shape as placed (before its internal walls, whose slot ceilings bridge):
+/// steeper than Studio's 45° (`printPreparationOverhangReportDegrees`) and past Slant's 50°.
+struct PrintPreparationOverhangs: Codable, Equatable, Sendable {
+    var share45: Double
+    var share50: Double
+}
+
+/// One print advisory (`PrintAdvisory`): its kind's raw value and its line.
+struct PrintPreparationAdvisoryRecord: Codable, Equatable, Sendable {
+    var kind: String
+    var message: String
+}
+
+/// Saved advisories are capped at `printAdvisoryMaximumCount`, each line at this many characters.
+let printPreparationAdvisoryMaximumLength = 400
+
+/// Hidden pockets on the finished copy (`HiddenPocketsReport`). The pipeline never fills them; a count of zero means
+/// the copy was checked and has none.
+struct PrintPreparationPockets: Codable, Equatable, Sendable {
+    var count: Int
+    /// Shells inside the pockets, which a fill removes too.
+    var shellsInside: Int
+    var addedVolumeMM3: Double
+    /// The bodies a fill would remove, each one Slant bills.
+    var removableBodies: Int { count + shellsInside }
 }
 
 /// Read for a record whose source ID is damaged: matches no model.
@@ -289,16 +395,27 @@ struct PrintPreparationRecord: Codable, Equatable, Sendable {
     var notes: [String]
     /// Separate areas under 1 mm thick on the copy (advisory; nil when not measured).
     var thinAreasUnder1MM: Int?
+    /// Round 11, all nil or empty on older records.
+    var bottomChamfer: PrintPreparationChamfer?
+    var overhangs: PrintPreparationOverhangs?
+    /// At most `printAdvisoryMaximumCount`, in `PrintAdvisoryKind` order.
+    var advisories: [PrintPreparationAdvisoryRecord]
+    var hiddenPockets: PrintPreparationPockets?
 
     init(sourceID: UUID, sourceName: String, created: Date, steps: [PrintPreparationStepRecord], orientation: PrintOrientation,
-         treatments: [AutoImprovementStep], internalWalls: PrintPreparationWalls?, notes: [String], thinAreasUnder1MM: Int? = nil) {
+         treatments: [AutoImprovementStep], internalWalls: PrintPreparationWalls?, notes: [String], thinAreasUnder1MM: Int? = nil,
+         bottomChamfer: PrintPreparationChamfer? = nil, overhangs: PrintPreparationOverhangs? = nil,
+         advisories: [PrintPreparationAdvisoryRecord] = [], hiddenPockets: PrintPreparationPockets? = nil) {
         self.sourceID = sourceID; self.sourceName = sourceName; self.created = created; self.steps = steps
         self.orientation = orientation; self.treatments = treatments; self.internalWalls = internalWalls; self.notes = notes
         self.thinAreasUnder1MM = thinAreasUnder1MM
+        self.bottomChamfer = bottomChamfer; self.overhangs = overhangs
+        self.advisories = printPreparationCappedAdvisories(advisories); self.hiddenPockets = hiddenPockets
     }
 
     private enum CodingKeys: String, CodingKey {
         case sourceID, sourceName, created, steps, orientation, treatments, internalWalls, notes, thinAreasUnder1MM
+        case bottomChamfer, overhangs, advisories, hiddenPockets
     }
 
     /// Lenient: never throws, because models.json loads as a whole and a damaged record must not stop the library
@@ -314,12 +431,29 @@ struct PrintPreparationRecord: Codable, Equatable, Sendable {
         internalWalls = try? c?.decode(PrintPreparationWalls.self, forKey: .internalWalls)
         notes = (try? c?.decode([String].self, forKey: .notes)) ?? []
         thinAreasUnder1MM = try? c?.decode(Int.self, forKey: .thinAreasUnder1MM)
+        bottomChamfer = try? c?.decode(PrintPreparationChamfer.self, forKey: .bottomChamfer)
+        overhangs = try? c?.decode(PrintPreparationOverhangs.self, forKey: .overhangs)
+        advisories = printPreparationCappedAdvisories((try? c?.decode([PrintPreparationAdvisoryRecord].self, forKey: .advisories)) ?? [])
+        hiddenPockets = (try? c?.decode(PrintPreparationPockets.self, forKey: .hiddenPockets)).flatMap {
+            $0.count >= 0 && $0.shellsInside >= 0 ? $0 : nil
+        }
     }
 
     var appliedSteps: [PrintPreparationStepRecord] { steps.filter(\.applied) }
     var skippedSteps: [PrintPreparationStepRecord] { steps.filter { !$0.applied } }
     var chamferCount: Int { treatments.filter { $0.settings.kind == .overhang }.count }
     var bridgeCount: Int { treatments.filter { $0.settings.kind == .bridge }.count }
+    /// The turn about Z the placement added, in degrees counter-clockwise from above; 0 when not turned.
+    var zTurnDegrees: Float { orientation.zTurnDegrees }
+}
+
+/// At most `printAdvisoryMaximumCount` advisories, each line at most `printPreparationAdvisoryMaximumLength`
+/// characters, empty lines dropped.
+func printPreparationCappedAdvisories(_ advisories: [PrintPreparationAdvisoryRecord]) -> [PrintPreparationAdvisoryRecord] {
+    Array(advisories.lazy
+        .filter { !$0.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        .map { PrintPreparationAdvisoryRecord(kind: String($0.kind.prefix(40)), message: String($0.message.prefix(printPreparationAdvisoryMaximumLength))) }
+        .prefix(printAdvisoryMaximumCount))
 }
 
 /// The outcome saved on the original, so the inspector can say what happened and the model is never prepared twice
@@ -355,9 +489,68 @@ let printPreparationPriceNote = "Slant’s price for this copy may differ: get a
 let printPreparationWallsPriceNote = "Internal walls use more filament, so Slant’s price is likely higher: about 27% more in one Slant estimate for a 40 × 40 × 20 mm block (25 Oct 2026). Get an estimate for both before choosing."
 let printPreparationTookTooLong = "Preparation stopped: it took too long, so no copy was made. Try Make Print-Ready Copy again."
 
-/// The price line for a copy: the internal-walls note when slots were cut, otherwise the general note.
+/// "about 4%", "under 1%": a share as a whole percentage.
+func printPreparationPercentText(_ fraction: Double) -> String {
+    let percent = (fraction * 100).rounded()
+    return percent < 1 ? "under 1%" : "about \(Int(percent))%"
+}
+
+/// The price line for a copy: with internal walls, Studio's own estimate of the extra filament beside Slant's dated
+/// figure, or the older dated note when there is no estimate; otherwise the general note.
 func printPreparationPriceLine(_ record: PrintPreparationRecord) -> String {
-    record.internalWalls == nil ? printPreparationPriceNote : printPreparationWallsPriceNote
+    guard let walls = record.internalWalls else { return printPreparationPriceNote }
+    guard let fraction = walls.estimatedExtraMaterialFraction, fraction > 0 else { return printPreparationWallsPriceNote }
+    return "Studio estimates \(printPreparationPercentText(fraction)) more filament for the internal walls; Slant’s price is likely higher. In one Slant estimate for a 40 × 40 × 20 mm block (25 Oct 2026), slots through thick regions added about 27% to the price. Get an estimate for both before choosing."
+}
+
+/// The copy's "steeper than 45°" share leaves out faces at 45° itself: the bottom-edge chamfer and the chamfers under
+/// ledges are built at exactly 45°, and rounding can tip their normals a hair past it.
+let printPreparationOverhangReportDegrees = 45.1
+
+/// The copy's overhangs as placed: Studio's 45° measure and Slant's 50° limit.
+func printPreparationOverhangLine(_ overhangs: PrintPreparationOverhangs) -> String {
+    if overhangs.share45 <= 0 { return "Overhangs: none steeper than 45° as placed." }
+    let past50 = overhangs.share50 <= 0 ? "none past Slant’s 50° limit" : "\(printPreparationPercentText(overhangs.share50)) past Slant’s 50° limit"
+    return "Overhangs: \(printPreparationPercentText(overhangs.share45)) of the surface steeper than 45° as placed; \(past50)."
+}
+
+/// "2 hidden pockets: Slant would bill each as a separate body (about $0.78 extra, test on 25 Oct 2026).", or nil
+/// when there are none. The cost is `removableBodies` × `hiddenPocketBodyChargeUSD`, an estimate from Slant's price on
+/// `hiddenPocketBodyChargeDate`. Never says filling makes a part stronger.
+func hiddenPocketsLine(count: Int, shellsInside: Int) -> String? {
+    guard count > 0 else { return nil }
+    let pockets = count == 1 ? "1 hidden pocket" : "\(count.formatted()) hidden pockets"
+    let inside = shellsInside > 0 ? (shellsInside == 1 ? ", with 1 loose part inside" : ", with \(shellsInside.formatted()) loose parts inside") : ""
+    let each = count == 1 && shellsInside == 0 ? "it" : "each"
+    let cost = hiddenPocketsCostText(Decimal(count + shellsInside) * hiddenPocketBodyChargeUSD)
+    return "\(pockets)\(inside): Slant would bill \(each) as a separate body (about \(cost) extra, test on \(hiddenPocketBodyChargeDate))."
+}
+
+func hiddenPocketsLine(_ report: HiddenPocketsReport) -> String? {
+    hiddenPocketsLine(count: report.count, shellsInside: report.shellsInsidePockets)
+}
+
+func hiddenPocketsLine(_ pockets: PrintPreparationPockets) -> String? {
+    hiddenPocketsLine(count: pockets.count, shellsInside: pockets.shellsInside)
+}
+
+/// The copy's panel lists up to this many advisories inline; more go in a collapsed "Print checks" list.
+let printPreparationAdvisoriesShownInline = 3
+
+/// The copy's advisories to show: at most `printAdvisoryMaximumCount` lines.
+func printPreparationAdvisoryLines(_ record: PrintPreparationRecord) -> [String] {
+    record.advisories.map(\.message)
+}
+
+/// An applied placement step's lines already cover a small bed contact and a tipping risk on the placed part, so the
+/// advisories for the same kinds are left out of the record (pass nil to keep them); the others are kept, at most
+/// `printAdvisoryMaximumCount`.
+func printPreparationAdvisoryRecords(_ advisories: [PrintAdvisory], placement: PrintPlacementChoice?) -> [PrintPreparationAdvisoryRecord] {
+    printPreparationCappedAdvisories(advisories.compactMap { advisory in
+        if advisory.kind == .smallBedContact, placement?.smallBedContact == true { return nil }
+        if advisory.kind == .tipping, placement?.tippingProne == true { return nil }
+        return PrintPreparationAdvisoryRecord(kind: advisory.kind.rawValue, message: advisory.message)
+    })
 }
 
 /// Cautions for the copy's panel: the chamfer caution when chamfers were added, and thin areas.
@@ -384,13 +577,17 @@ func printPreparationCaption(_ record: PrintPreparationRecord) -> String {
     for step in record.appliedSteps {
         switch step.step {
         case .repair: parts.append("repaired")
-        case .orientation: parts.append("placed for printing")
+        case .orientation:
+            parts.append(record.zTurnDegrees == 0 ? "placed for printing"
+                         : "placed for printing (turned \(printPlacementTurnDegreesLabel(record.zTurnDegrees)) about Z)")
         case .treatments:
             if record.bridgeCount > 0 { parts.append(record.bridgeCount == 1 ? "1 bridging layer" : "\(record.bridgeCount) bridging layers") }
             if record.chamferCount > 0 { parts.append(record.chamferCount == 1 ? "1 chamfer" : "\(record.chamferCount) chamfers") }
+        case .bottomChamfer:
+            parts.append("bottom-edge chamfer")
         case .internalWalls:
-            let slots = record.internalWalls?.slots ?? 0
-            parts.append(slots == 1 ? "internal walls (1 slot)" : "internal walls (\(slots) slots)")
+            let kinds = record.internalWalls?.kindsList ?? []
+            parts.append(kinds.isEmpty ? "internal walls" : "internal walls (\(kinds.joined(separator: ", ")))")
         }
     }
     guard !parts.isEmpty else { return "Original preserved" }
@@ -426,13 +623,16 @@ enum PrintPreparationError: LocalizedError, Equatable {
 struct PrintPreparationInput: Sendable {
     var sourceID: UUID
     var sourceName: String
-    /// The model's saved purpose (`designEditIntent`), if any.
+    /// The model's saved purpose (`designEditIntent`), if any. Only this decides the internal-walls plan: never the
+    /// neutral placement intent, whose purpose is a stand-in.
     var savedIntent: PartIntent?
     var internalWalls: Bool
     /// The automatic trigger (true) also stops at the 3 mm scale check; Make Print-Ready Copy doesn't.
     var automatic = true
     /// Why the placement is kept (`printPreparationKeptPlacementReason`), or nil when Studio chooses one.
     var keptPlacement: String? = nil
+    /// Settings › Design Tools › Add a 0.4 mm bottom-edge chamfer.
+    var bottomChamfer = true
     var decorative: Bool { savedIntent?.purpose == .decorative }
 }
 
@@ -447,9 +647,11 @@ struct PrintPreparationResult: Sendable {
 }
 
 /// The preparation, in order: repair (only when the mesh check fails, and only if it makes the mesh sound),
-/// placement, fit-safe Auto-improve treatments (bridging and free-ledge chamfers; never wall matching or fillets), then
-/// internal walls on the bed face. Each step keeps its own checks; the copy must also pass the mesh check, keep its part
-/// count, and still fit the build volume if the original did. A thin-wall advisory is measured on the result.
+/// placement (turned about Z to line up its faces), fit-safe Auto-improve treatments (bridging and free-ledge chamfers;
+/// never wall matching or fillets), the 0.4 mm bottom-edge chamfer (hole entries keep their size), then internal walls
+/// planned for the saved purpose, cut up through the bed face. Each step keeps its own checks; the copy must also pass
+/// the mesh check, keep its part count, and still fit the build volume if the original did. Overhangs, thin areas,
+/// print advisories and hidden pockets are then measured on the result; pockets are reported, never filled.
 /// Throws `PrintPreparationError.stopped`, or `.tookTooLong` when a step hit its time limit.
 func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now: Date = Date(),
                            progress: @escaping @Sendable (String) -> Void = { _ in },
@@ -459,12 +661,17 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     var orientation = PrintOrientation.zUp
     var treatments: [AutoImprovementStep] = []
     var walls: PrintPreparationWalls?
+    var chamfer: PrintPreparationChamfer?
     var notes: [String] = []
     var thinAreas: Int?
+    var overhangs: PrintPreparationOverhangs?
+    var advisories: [PrintPreparationAdvisoryRecord] = []
+    var pockets: PrintPreparationPockets?
     func record() -> PrintPreparationRecord {
         PrintPreparationRecord(sourceID: input.sourceID, sourceName: input.sourceName, created: now, steps: steps,
                                orientation: orientation, treatments: treatments, internalWalls: walls, notes: notes,
-                               thinAreasUnder1MM: thinAreas)
+                               thinAreasUnder1MM: thinAreas, bottomChamfer: chamfer, overhangs: overhangs,
+                               advisories: advisories, hiddenPockets: pockets)
     }
     func blocked(_ reason: String) -> PrintPreparationResult {
         PrintPreparationResult(record: record(), mesh: nil, data: nil, blocked: reason)
@@ -482,7 +689,8 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     var health = before
     func decision(_ step: PrintPreparationStep, sound: Bool = true) -> PrintPreparationDecision {
         printPreparationDecision(step, triangles: mesh.triangleCount, meshSound: sound, internalWallsOn: input.internalWalls,
-                                 decorative: input.decorative, keptPlacement: input.keptPlacement)
+                                 decorative: input.decorative, keptPlacement: input.keptPlacement,
+                                 bottomChamferOn: input.bottomChamfer)
     }
 
     // 1. Repair, only when needed.
@@ -507,26 +715,31 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     }
     try check()
 
-    // 2. Placement. Slant prints the part as uploaded, so this decides which way the layers run.
+    // 2. Placement. Slant prints the part as uploaded, so this decides which way the layers run. The preferred
+    //    placement is turned about Z so faces drawn at an angle line up with the printer's axes.
     let placement = printPreparationPlacementIntent(saved: input.savedIntent)
+    var choice: PrintPlacementChoice?
     switch decision(.orientation) {
     case .skip(let reason):
         steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [reason]))
     case .run:
         progress("Choosing the print placement…")
         let assessments = mesh.orientationAssessments()
+        try check()
         let asImported = assessments.first { $0.orientation == .zUp }
-        if let best = preferredOrientation(assessments, intent: placement.intent) {
-            if best.orientation != .zUp {
-                orientation = best.orientation
-                var lines = ["\(best.orientation.label).", placement.note]
+        if let chosen = printPlacement(assessments, in: mesh, intent: placement.intent, allowTurn: true) {
+            choice = chosen
+            if chosen.orientation != .zUp {
+                orientation = chosen.orientation
+                var lines = ["\(chosen.orientation.label).", placement.note]
                 if let asImported {
                     lines.append(String(format: "Overhangs steeper than 45°: %.0f mm² as imported, %.0f mm² now. Bed contact: %.0f mm².",
-                                        asImported.overhangArea, best.overhangArea, best.contactArea))
+                                        asImported.overhangArea, chosen.assessment.overhangArea, chosen.assessment.contactArea))
                 }
-                steps.append(PrintPreparationStepRecord(step: .orientation, applied: true, lines: lines))
+                steps.append(PrintPreparationStepRecord(step: .orientation, applied: true, lines: lines + chosen.lines))
             } else {
-                steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: ["Kept as imported: it already sits well on the bed.", placement.note]))
+                steps.append(PrintPreparationStepRecord(step: .orientation, applied: false,
+                                                        lines: ["Kept as imported: it already sits well on the bed.", placement.note] + chosen.lines))
             }
         } else {
             steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [
@@ -574,22 +787,59 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     }
     try check()
 
-    // 4. Internal walls, cut up from the bed face now that it is down.
+    // 4. The 0.4 mm bottom-edge chamfer, round the outer edge of the bed face only: hole entries keep their size, so a
+    //    bore that fits a pin or screw is unchanged at the bed. It runs before the internal walls (see
+    //    `PrintPreparationStep`), which are then planned against the chamfered surface.
+    switch decision(.bottomChamfer) {
+    case .skip(let reason):
+        steps.append(PrintPreparationStepRecord(step: .bottomChamfer, applied: false, lines: [reason]))
+    case .run:
+        progress("Chamfering the bottom edge…")
+        do {
+            let result = try bottomChamferCopy(of: mesh, sizeMM: bottomChamferDefaultSizeMM, chamferHoleEntries: false,
+                                               isCancelled: isCancelled)
+            if let chamfered = result.mesh, result.shellsAfter == health.shells {
+                mesh = chamfered
+                chamfer = PrintPreparationChamfer(sizeMM: Double(result.sizeMM), outlineLengthMM: result.outlineLengthMM,
+                                                  removedVolumeMM3: result.removedVolumeMM3, keptHoleEntries: result.keptHoleEntries)
+                steps.append(PrintPreparationStepRecord(step: .bottomChamfer, applied: true, lines: [bottomChamferSummary(result)]))
+            } else {
+                steps.append(PrintPreparationStepRecord(step: .bottomChamfer, applied: false,
+                                                        lines: [result.skipped?.message ?? BottomChamferSkipReason.resultFailedChecks.message]))
+            }
+        } catch BottomChamferError.stopped {
+            throw PrintPreparationError.stopped
+        } catch {
+            try check()
+            steps.append(PrintPreparationStepRecord(step: .bottomChamfer, applied: false, lines: ["Skipped: \(error.localizedDescription)"]))
+        }
+    }
+    try check()
+    // The copy's outer shape, measured below. The internal walls only add 0.25 mm slots opening through the bed face,
+    // whose ceilings bridge and whose sides Slant's walls fill; measured with them, a ring's island would read as a
+    // slender post and its gap as a hole near an edge, and slot ceilings as overhangs.
+    let outerShape = mesh
+
+    // 5. Internal walls, cut up from the bed face now that it is down, planned for the saved purpose only (no purpose:
+    //    rings and pin and thin-section slots, but no slots through thick regions), with the load read in the placed
+    //    copy's axes.
     switch decision(.internalWalls) {
     case .skip(let reason):
         steps.append(PrintPreparationStepRecord(step: .internalWalls, applied: false, lines: [reason]))
     case .run:
         progress("Adding internal walls…")
         do {
-            let result = try internalWallsCopy(of: mesh, options: InternalWallsOptions(), isCancelled: isCancelled)
+            let placed = orientation
+            let options = internalWallsOptions(for: input.savedIntent, rotate: { placed.rotate($0) })
+            let result = try internalWallsCopy(of: mesh, options: options, isCancelled: isCancelled)
             if let slotted = result.mesh {
                 mesh = slotted
-                walls = PrintPreparationWalls(slots: result.slotCount, totalLengthMM: result.totalSlotLengthMM,
-                                              removedVolumeMM3: result.removedVolumeMM3, removedFraction: result.removedFraction,
-                                              spacingMM: Double(result.spacingMM))
-                steps.append(PrintPreparationStepRecord(step: .internalWalls, applied: true, lines: [internalWallsSummary(result)]))
+                walls = PrintPreparationWalls(result)
+                steps.append(PrintPreparationStepRecord(step: .internalWalls, applied: true,
+                                                        lines: [internalWallsSummary(result)] + internalWallsSkipNotes(result)))
             } else {
-                steps.append(PrintPreparationStepRecord(step: .internalWalls, applied: false, lines: [internalWallsSummary(result)]))
+                steps.append(PrintPreparationStepRecord(step: .internalWalls, applied: false,
+                                                        lines: [internalWallsSummary(result)] + internalWallsSkipNotes(result)))
             }
         } catch InternalWallsError.stopped {
             throw PrintPreparationError.stopped
@@ -618,12 +868,31 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     if (sourceExtent.high - sourceExtent.low).max() <= slantBuildVolumeMM, (copyExtent.high - copyExtent.low).max() > slantBuildVolumeMM {
         return blocked("The prepared copy wouldn’t fit Slant’s \(Int(slantBuildVolumeMM)) mm build volume, so no copy was made.")
     }
-    // Advisory only: thin areas Slant's 1 mm walls may not print well.
-    progress("Measuring wall thickness…")
-    guard let thickness = analyzeWallThickness(mesh, maximumSamples: printPreparationWallThicknessSamples, isCancelled: isCancelled) else {
+
+    // Advisory only, on the copy's outer shape as it will print (placed, treated and chamfered): overhangs past 45°
+    // and Slant's 50°, thin areas Slant's 1 mm walls may not print well, the print advisories (from the same wall
+    // analysis) and hidden pockets, which the walls never change.
+    progress("Measuring the copy…")
+    overhangs = PrintPreparationOverhangs(share45: overhangShare(outerShape, limitDegrees: printPreparationOverhangReportDegrees).fraction,
+                                          share50: overhangShare(outerShape, limitDegrees: Double(slantOverhangLimitDegrees)).fraction)
+    guard let thickness = analyzeWallThickness(outerShape, maximumSamples: printPreparationWallThicknessSamples, isCancelled: isCancelled) else {
         throw PrintPreparationError.stopped
     }
     thinAreas = printPreparationThinAreaCount(thickness)
+    let found = printAdvisories(for: outerShape, placed: true, intent: input.savedIntent, wallThickness: thickness, isCancelled: isCancelled)
+    try check()
+    // Only an applied placement's lines are shown among what was applied; a kept one's sit in the collapsed list of
+    // skipped steps, so its contact and tipping advisories stay.
+    let placementShown = steps.contains { $0.step == .orientation && $0.applied }
+    advisories = printPreparationAdvisoryRecords(found, placement: placementShown ? choice : nil)
+    // A pocket is a shell of its own, so a one-part copy has none. The pipeline never fills them.
+    if after.shells > 1, outerShape.triangleCount <= hiddenPocketsMaximumTriangles {
+        let report: HiddenPocketsReport
+        do { report = try hiddenPocketsReport(outerShape, isCancelled: isCancelled) } catch { throw PrintPreparationError.stopped }
+        pockets = PrintPreparationPockets(count: report.count, shellsInside: report.shellsInsidePockets, addedVolumeMM3: report.addedVolumeMM3)
+    } else if after.shells <= 1 {
+        pockets = PrintPreparationPockets(count: 0, shellsInside: 0, addedVolumeMM3: 0)
+    }
     let data = mesh.binarySTL()
     // Read back, as the other copy tools do: the saved bytes must parse to every triangle.
     guard let readBack = try? STLMesh.parse(data), readBack.triangleCount == mesh.triangleCount else {
@@ -768,7 +1037,7 @@ struct PrintPreparationJob: Equatable, Sendable {
         let flag = PrintPreparationCancelFlag()
         self.flag = flag
         runner = Task { [weak self] in
-            await self?.run(job, internalWalls: settings.internalWalls, flag: flag)
+            await self?.run(job, settings: settings, flag: flag)
             guard let self else { return }
             self.current = nil
             self.flag = nil
@@ -777,11 +1046,12 @@ struct PrintPreparationJob: Equatable, Sendable {
         }
     }
 
-    private func run(_ job: PrintPreparationJob, internalWalls: Bool, flag: PrintPreparationCancelFlag) async {
+    private func run(_ job: PrintPreparationJob, settings: PrintPreparationSettings, flag: PrintPreparationCancelFlag) async {
         // Removed from the library while it waited: nothing to prepare, and nothing to report.
         guard store?.localModels.contains(where: { $0.id == job.modelID }) == true else { return }
         let input = PrintPreparationInput(sourceID: job.modelID, sourceName: job.name, savedIntent: job.savedIntent,
-                                          internalWalls: internalWalls, automatic: job.automatic, keptPlacement: job.keptPlacement)
+                                          internalWalls: settings.internalWalls, automatic: job.automatic, keptPlacement: job.keptPlacement,
+                                          bottomChamfer: settings.bottomChamfer)
         let url = job.url
         let report: @Sendable (String) -> Void = { [weak self] text in
             Task { @MainActor in if !flag.isSet, self?.current?.modelID == job.modelID { self?.status = text } }

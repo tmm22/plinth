@@ -705,7 +705,7 @@ let personalisationTempFolderPrefixes = [
     "SlantStudio-OpenSCAD-", "SlantStudio-Personalised-", imageTo3DTempFolderPrefix, meshToolsTempFolderPrefix,
     meshFitTempFolderPrefix, replicaTempFolderPrefix, accessoryTempFolderPrefix, printReadyTempFolderPrefix,
     autoImproveTempFolderPrefix, preparedCopyTempFolderPrefix, edgeEditTempFolderPrefix, reinforceTempFolderPrefix,
-    stlCopyTempFolderPrefix, scaledCopyTempFolderPrefix,
+    stlCopyTempFolderPrefix, scaledCopyTempFolderPrefix, hiddenPocketsTempFolderPrefix,
 ]
 
 /// A folder that this temporary-folder code made: a known prefix followed by exactly a UUID.

@@ -138,14 +138,6 @@ let internalWallsMaximumThinLines = 4096
 /// the slots are vertical walls either way.
 let internalWallsLoadHorizontalMinimum: Float = 0.38
 
-/// The probes for rings, pins and thin sections tilt their rays a hair off the axes. `TriangleRayIndex`'s slab test
-/// computes 0 × ∞ for an axis-aligned ray lying exactly in a box face's plane, and drops that box, so an axis-aligned
-/// ray through a round part's centre (where its corners line up) can miss the part altogether. A tilt of 0.00002 moves
-/// a ray 0.005 mm over 220 mm.
-func internalWallsProbeDirection(_ direction: SIMD3<Float>) -> SIMD3<Float> {
-    simd_normalize(direction + SIMD3(direction.x == 0 ? 1.7e-5 : 0, direction.y == 0 ? 2.3e-5 : 0, direction.z == 0 ? 1.1e-5 : 0))
-}
-
 // MARK: - Types
 
 /// The direction the slots in thick regions run along. Automatic picks the bed footprint's longer side (X on a tie):
@@ -751,7 +743,7 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
     let ringReach = options.clearanceMM + internalWallsRingSampleMarginMM
     let jumpLimit: Float = 20
     let ceiling = bounds.high.z
-    let up = SIMD3<Float>(0, 0, 1), probeUp = internalWallsProbeDirection(up)
+    let up = SIMD3<Float>(0, 0, 1)
 
     // Walls already planned: every later wall keeps its own clearance from them too.
     var featureCorners: [SIMD3<Float>] = []
@@ -766,7 +758,7 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
         var base = SIMD3<Float>(0, 0, floor)
         base[along] = u; base[across] = p
         // It must start on the bed face, with material directly above it.
-        guard let hit = rays.firstHit(from: base - up, along: probeUp), isBed[hit.triangle], abs(hit.distance - 1) < 0.001 else { return nil }
+        guard let hit = rays.firstHit(from: base - up, along: up), isBed[hit.triangle], abs(hit.distance - 1) < 0.001 else { return nil }
         var top: Float?
         var j = 0
         while true {
@@ -795,8 +787,8 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
         for axisIndex in [across, along] {
             var direction = SIMD3<Float>(repeating: 0)
             direction[axisIndex] = 1
-            guard let ahead = rays.firstHit(from: probe, along: internalWallsProbeDirection(direction)),
-                  let behind = rays.firstHit(from: probe, along: internalWallsProbeDirection(-direction)),
+            guard let ahead = rays.firstHit(from: probe, along: direction),
+                  let behind = rays.firstHit(from: probe, along: -direction),
                   ahead.distance + behind.distance >= options.minimumRegionMM else { return nil }
         }
         return clear
@@ -808,7 +800,7 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
     func clearColumnTop(_ xy: SIMD2<Float>, reach: Float, columnStep: Float, cellHalf: SIMD2<Float>,
                         ignoring bore: InternalWallsCylinder? = nil) -> (top: Float?, onBed: Bool) {
         let base = SIMD3<Float>(xy.x, xy.y, floor)
-        guard let hit = rays.firstHit(from: base - up, along: probeUp), isBed[hit.triangle], abs(hit.distance - 1) < 0.001 else { return (nil, false) }
+        guard let hit = rays.firstHit(from: base - up, along: up), isBed[hit.triangle], abs(hit.distance - 1) < 0.001 else { return (nil, false) }
         let lastIndex = Int(((ceiling - columnStep / 2 - floor) / columnStep).rounded(.down))
         var top: Float?
         var j = 0
@@ -836,7 +828,7 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
         origin[c] = bounds.low[c] - 1
         var axisDirection = SIMD3<Float>(repeating: 0)
         axisDirection[c] = 1
-        let direction = internalWallsProbeDirection(axisDirection)
+        let direction = axisDirection
         var intervals: [SIMD2<Float>] = []
         var travelled: Float = 0
         var entry: Float?
@@ -878,10 +870,10 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
             guard rings.count < options.maximumRings else { note(.holeRing, .limitReached); continue }
             // A blind bore's ceiling is the first face above the bed at its centre; a through-hole has none.
             var ceilingZ: Float?
-            if let hit = rays.firstHit(from: SIMD3(bore.centre.x, bore.centre.y, floor - 1), along: probeUp) {
+            if let hit = rays.firstHit(from: SIMD3(bore.centre.x, bore.centre.y, floor - 1), along: up) {
                 // Material at the bed inside the loop, or a face that isn't a ceiling: not an open hole.
                 guard hit.distance > 1.01, hit.normal.z < 0 else { continue }
-                ceilingZ = floor - 1 + hit.distance * probeUp.z
+                ceilingZ = floor - 1 + hit.distance
             }
             holes += 1
             let cylinder = InternalWallsCylinder(centre: bore.centre, radius: bore.radiusMM + internalWallsBoreRadiusToleranceMM)
@@ -924,7 +916,7 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
                 for sign: Float in [1, -1] {
                     var axisDirection = SIMD3<Float>(repeating: 0)
                     axisDirection[axisIndex] = sign
-                    let direction = internalWallsProbeDirection(axisDirection)
+                    let direction = axisDirection
                     guard let hit = rays.firstHit(from: p, along: direction), simd_dot(hit.normal, direction) > 0 else { return nil }
                     if sign > 0 { high[axisIndex] = xy[axisIndex] + hit.distance } else { low[axisIndex] = xy[axisIndex] - hit.distance }
                 }
@@ -948,7 +940,7 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
             // Compact both ways: diagonals no longer than the widest pin's.
             var compact = true
             for diagonal in [SIMD2<Float>(1, 1), SIMD2(1, -1)] {
-                let d = internalWallsProbeDirection(SIMD3<Float>(diagonal.x, diagonal.y, 0) / Float(2).squareRoot())
+                let d = SIMD3<Float>(diagonal.x, diagonal.y, 0) / Float(2).squareRoot()
                 let p = SIMD3<Float>(centre.x, centre.y, probeZ)
                 guard let ahead = rays.firstHit(from: p, along: d), let behind = rays.firstHit(from: p, along: -d),
                       ahead.distance + behind.distance <= widest * Float(2).squareRoot() else { compact = false; break }
@@ -1686,9 +1678,15 @@ struct InternalWallsDistanceIndex {
         return node
     }
 
+    /// Lane by lane, the same arithmetic as `simd_length_squared(simd_max(simd_max(low − p, p − high), 0))`, written
+    /// out because the generic SIMD operators are slow in unoptimised builds and this runs for every node visited.
     private func boxDistanceSquared(_ node: Int, _ p: SIMD3<Float>) -> Float {
-        let d = simd_max(simd_max(low[node] - p, p - high[node]), SIMD3(repeating: 0))
-        return simd_length_squared(d)
+        func larger(_ a: Float, _ b: Float) -> Float { a > b ? a : b }
+        let lo = low[node], hi = high[node]
+        let dx = larger(larger(lo.x - p.x, p.x - hi.x), 0)
+        let dy = larger(larger(lo.y - p.y, p.y - hi.y), 0)
+        let dz = larger(larger(lo.z - p.z, p.z - hi.z), 0)
+        return dx * dx + dy * dy + dz * dz
     }
 
     /// The distance from `p` to the nearest triangle that isn't wholly inside `cylinder` (a bore's own surfaces), or
@@ -1698,27 +1696,31 @@ struct InternalWallsDistanceIndex {
         let radiusSquared = cylinder.radius * cylinder.radius
         func inside(_ q: SIMD3<Float>) -> Bool { simd_distance_squared(SIMD2(q.x, q.y), cylinder.centre) <= radiusSquared }
         var best = limit * limit
-        var stack = [Int](repeating: 0, count: 64)
-        var depth = 1
-        stack[0] = 0
-        while depth > 0 {
-            depth -= 1
-            let node = stack[depth]
-            guard boxDistanceSquared(node, p) < best else { continue }
-            if start[node] >= 0 {
-                for k in Int(start[node])..<Int(start[node] + extra[node]) {
-                    let t = Int(order[k])
-                    if inside(a[t]), inside(b[t]), inside(c[t]) { continue }
-                    best = min(best, internalWallsPointTriangleDistanceSquared(p, a[t], b[t], c[t]))
+        // A stack on the stack, not the heap: this runs for every query.
+        withUnsafeTemporaryAllocation(of: Int.self, capacity: 64) { stack in
+            var depth = 1
+            stack[0] = 0
+            while depth > 0 {
+                depth -= 1
+                let node = stack[depth]
+                guard boxDistanceSquared(node, p) < best else { continue }
+                if start[node] >= 0 {
+                    for k in Int(start[node])..<Int(start[node] + extra[node]) {
+                        let t = Int(order[k])
+                        if inside(a[t]), inside(b[t]), inside(c[t]) { continue }
+                        // `min(best, d)`, without the generic call.
+                        let d = internalWallsPointTriangleDistanceSquared(p, a[t], b[t], c[t])
+                        if d < best { best = d }
+                    }
+                } else if depth + 2 <= stack.count {
+                    let left = node + 1, right = Int(extra[node])
+                    if boxDistanceSquared(left, p) <= boxDistanceSquared(right, p) {
+                        stack[depth] = right; stack[depth + 1] = left
+                    } else {
+                        stack[depth] = left; stack[depth + 1] = right
+                    }
+                    depth += 2
                 }
-            } else if depth + 2 <= stack.count {
-                let left = node + 1, right = Int(extra[node])
-                if boxDistanceSquared(left, p) <= boxDistanceSquared(right, p) {
-                    stack[depth] = right; stack[depth + 1] = left
-                } else {
-                    stack[depth] = left; stack[depth + 1] = right
-                }
-                depth += 2
             }
         }
         return best.squareRoot()
@@ -1728,27 +1730,31 @@ struct InternalWallsDistanceIndex {
     func distance(to p: SIMD3<Float>, within limit: Float) -> Float {
         guard !low.isEmpty else { return limit }
         var best = limit * limit
-        var stack = [Int](repeating: 0, count: 64)
-        var depth = 1
-        stack[0] = 0
-        while depth > 0 {
-            depth -= 1
-            let node = stack[depth]
-            guard boxDistanceSquared(node, p) < best else { continue }
-            if start[node] >= 0 {
-                for k in Int(start[node])..<Int(start[node] + extra[node]) {
-                    let t = Int(order[k])
-                    best = min(best, internalWallsPointTriangleDistanceSquared(p, a[t], b[t], c[t]))
+        // A stack on the stack, not the heap: this runs for every query.
+        withUnsafeTemporaryAllocation(of: Int.self, capacity: 64) { stack in
+            var depth = 1
+            stack[0] = 0
+            while depth > 0 {
+                depth -= 1
+                let node = stack[depth]
+                guard boxDistanceSquared(node, p) < best else { continue }
+                if start[node] >= 0 {
+                    for k in Int(start[node])..<Int(start[node] + extra[node]) {
+                        let t = Int(order[k])
+                        // `min(best, d)`, without the generic call.
+                        let d = internalWallsPointTriangleDistanceSquared(p, a[t], b[t], c[t])
+                        if d < best { best = d }
+                    }
+                } else if depth + 2 <= stack.count {
+                    let left = node + 1, right = Int(extra[node])
+                    // The nearer child is searched first.
+                    if boxDistanceSquared(left, p) <= boxDistanceSquared(right, p) {
+                        stack[depth] = right; stack[depth + 1] = left
+                    } else {
+                        stack[depth] = left; stack[depth + 1] = right
+                    }
+                    depth += 2
                 }
-            } else if depth + 2 <= stack.count {
-                let left = node + 1, right = Int(extra[node])
-                // The nearer child is searched first.
-                if boxDistanceSquared(left, p) <= boxDistanceSquared(right, p) {
-                    stack[depth] = right; stack[depth + 1] = left
-                } else {
-                    stack[depth] = left; stack[depth + 1] = right
-                }
-                depth += 2
             }
         }
         return best.squareRoot()

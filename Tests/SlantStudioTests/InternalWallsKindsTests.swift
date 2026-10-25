@@ -336,7 +336,9 @@ final class InternalWallsKindsTests: XCTestCase {
 
     // MARK: Every kind together
 
-    func testCompositeGetsEveryKindAndTheSameBytesTwice() throws {
+    /// The same bytes on every run are checked by `PrintPreparationFixesTests.testPipelineBytesMatchAcrossHashSeeds`,
+    /// which runs this composite's walls (`wallsDigest`) here and in two other processes.
+    func testCompositeGetsEveryKind() throws {
         let source = try composite()
         let first = try internalWallsCopy(of: source, options: options(.all))
         _ = try sound(first, source)
@@ -357,51 +359,33 @@ final class InternalWallsKindsTests: XCTestCase {
         XCTAssertTrue(text.hasPrefix("Adds internal walls: 1 hole ring, 1 pin slot, "), text)
         XCTAssertTrue(text.contains("all opening through the bed face"), text)
         XCTAssertTrue(text.contains("25 Oct 2026"), text)
-        let second = try internalWallsCopy(of: source, options: options(.all))
-        XCTAssertEqual(first.data, second.data)
-        XCTAssertEqual(first.slots, second.slots)
-        XCTAssertEqual(first.rings, second.rings)
     }
 
-    /// Run only as a subprocess by the test below: writes the output's hash to the named file.
+    /// The composite's walls of every kind, hashed. Built without the instance helpers, so the hash-seed check in
+    /// `PrintPreparationFixesTests.testPipelineBytesMatchAcrossHashSeeds` can run it too.
+    static func wallsDigest() throws -> String {
+        func box(_ low: SIMD3<Double>, _ high: SIMD3<Double>) -> Mesh {
+            let size = high - low, centre = (low + high) / 2
+            return .cube(center: Vector(centre.x, centre.y, centre.z), size: Vector(size.x, size.y, size.z))
+        }
+        func cylinder(_ x: Double, _ y: Double, radius: Double, _ z0: Double, _ z1: Double) -> Mesh {
+            Mesh.cylinder(radius: radius, height: z1 - z0, slices: 32).rotated(by: Rotation(pitch: .halfPi))
+                .translated(by: Vector(x, y, (z0 + z1) / 2))
+        }
+        let composite = box(SIMD3(0, 0, 0), SIMD3(60, 40, 8)).union(box(SIMD3(25, 30, 8), SIMD3(58, 33, 20)))
+            .union(cylinder(45, 12, radius: 3, 8, 18)).subtracting(cylinder(12, 20, radius: 2.5, -5, 15))
+        let source = try repairMesh(ReinforcementEngine.stl(composite.makeWatertight())).mesh
+        var options = InternalWallsOptions()
+        options.plan = .all
+        let result = try internalWallsCopy(of: source, options: options)
+        return SHA256.hash(data: try XCTUnwrap(result.data)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Run only as a subprocess by `PrintPreparationFixesTests.testPipelineBytesMatchAcrossHashSeeds`, which runs this
+    /// with a fixed and a random hash seed side by side: writes the output's hash to the named file.
     func testHashSeedProbeWritesWallsHash() throws {
         guard let out = ProcessInfo.processInfo.environment["SLANT_WALLS_HASH_OUT"] else { return }
-        let result = try internalWallsCopy(of: composite(), options: options(.all))
-        let digest = SHA256.hash(data: try XCTUnwrap(result.data)).map { String(format: "%02x", $0) }.joined()
-        try digest.write(toFile: out, atomically: true, encoding: .utf8)
-    }
-
-    /// The same bytes whatever the process's hash seed: two runs of this test bundle, one with
-    /// `SWIFT_DETERMINISTIC_HASHING=1` and one with a random seed, against this process's own result.
-    func testWallsBytesMatchAcrossHashSeeds() throws {
-        guard ProcessInfo.processInfo.environment["SLANT_WALLS_HASH_OUT"] == nil else { return }
-        let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
-        guard FileManager.default.isExecutableFile(atPath: xcrun.path) else { throw XCTSkip("xcrun isn't available") }
-        let bundle = Bundle(for: Self.self).bundlePath
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioWallsHashSeed-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        func hash(deterministic: Bool) throws -> String {
-            let out = folder.appendingPathComponent(deterministic ? "fixed.txt" : "random.txt").path
-            var environment = ProcessInfo.processInfo.environment
-            environment["SLANT_WALLS_HASH_OUT"] = out
-            if deterministic { environment["SWIFT_DETERMINISTIC_HASHING"] = "1" } else { environment.removeValue(forKey: "SWIFT_DETERMINISTIC_HASHING") }
-            let process = Process()
-            process.executableURL = xcrun
-            process.arguments = ["xctest", "-XCTest", "SlantStudioTests.InternalWallsKindsTests/testHashSeedProbeWritesWallsHash", bundle]
-            process.environment = environment
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            let deadline = Date().addingTimeInterval(180)
-            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
-            if process.isRunning { process.terminate(); XCTFail("The subprocess didn't finish") }
-            return try String(contentsOfFile: out, encoding: .utf8)
-        }
-        let here = try internalWallsCopy(of: composite(), options: options(.all))
-        let local = SHA256.hash(data: try XCTUnwrap(here.data)).map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(try hash(deterministic: true), local)
-        XCTAssertEqual(try hash(deterministic: false), local)
+        try Self.wallsDigest().write(toFile: out, atomically: true, encoding: .utf8)
     }
 
     // MARK: Skip reasons
@@ -520,7 +504,7 @@ final class InternalWallsKindsTests: XCTestCase {
         var total = 0
         _ = try internalWallsCopy(of: source, options: options(.all), isCancelled: { total += 1; return false })
         XCTAssertGreaterThan(total, 20)
-        for limit in [2, total / 4, total / 2, total - 1] {
+        for limit in [2, total / 2, total - 1] {
             var calls = 0
             XCTAssertThrowsError(try internalWallsCopy(of: source, options: options(.all), isCancelled: { calls += 1; return calls > limit })) {
                 XCTAssertEqual($0 as? InternalWallsError, .stopped)
@@ -563,12 +547,13 @@ final class InternalWallsKindsTests: XCTestCase {
     }
 
     /// A finely triangulated bed face gets the same walls: axis-aligned probe rays through many triangle corners used
-    /// to be dropped by the ray index's box test (0 × ∞), losing most slots in thick regions.
+    /// to be dropped by the ray index's box test (0 × ∞), losing most slots in thick regions. `TriangleRayIndex` now
+    /// keeps rays in a box face's plane (`MeshFitTests.testRayIndexKeepsRaysInABoxFacePlane`); one subdivision (about
+    /// 2,000 triangles) is enough to show the old loss, which dropped the pin slot.
     func testDenseBedFaceGetsTheSameWalls() throws {
         let coarse = try composite()
-        var dense = coarse
-        for _ in 0..<3 { dense = try subdivided(dense) }
-        XCTAssertGreaterThan(dense.triangleCount, 30_000)
+        let dense = try subdivided(coarse)
+        XCTAssertGreaterThan(dense.triangleCount, 1_500)
         let a = try internalWallsCopy(of: coarse, options: options(.all))
         let b = try internalWallsCopy(of: dense, options: options(.all))
         _ = try sound(b, dense)

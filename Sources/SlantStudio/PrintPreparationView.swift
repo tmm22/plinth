@@ -146,7 +146,7 @@ struct PrintPreparationPanel: View {
             originalActions
         case nil:
             HStack {
-                SectionHeading(title: "Print-ready copy", caption: "Repair if needed, placement, bridging, chamfers and internal walls, in a separate copy.")
+                SectionHeading(title: "Print-ready copy", caption: "Repair if needed, placement, bridging and chamfers, a bottom-edge chamfer and internal walls, in a separate copy.")
                 Spacer(minLength: 8)
                 makeCopyButton
             }
@@ -158,8 +158,16 @@ struct PrintPreparationPanel: View {
         ForEach(printPreparationAppliedLines(record), id: \.self) { line in
             Label(line, systemImage: "checkmark.circle").font(.callout)
         }
+        if let overhangs = record.overhangs {
+            Label(printPreparationOverhangLine(overhangs), systemImage: "ruler").font(.callout)
+        }
         ForEach(printPreparationCautions(record), id: \.self) { line in
             Label(line, systemImage: "exclamationmark.triangle").font(.callout)
+        }
+        advisories(printPreparationAdvisoryLines(record))
+        if let pockets = record.hiddenPockets, let line = hiddenPocketsLine(pockets) {
+            // Never filled automatically: the seller's own Fill Hidden Pockets saves a further copy.
+            HiddenPocketsRow(run: store.hiddenPocketsFill, line: line, model: model)
         }
         lines(printPreparationSkippedLines(record), title: "Skipped or not needed")
         lines(record.notes, title: "For your review")
@@ -187,6 +195,17 @@ struct PrintPreparationPanel: View {
         }
     }
 
+    /// Print advisories on the copy: up to `printPreparationAdvisoriesShownInline` inline, more in a collapsed list.
+    @ViewBuilder private func advisories(_ advisories: [String]) -> some View {
+        if advisories.count <= printPreparationAdvisoriesShownInline {
+            ForEach(Array(advisories.enumerated()), id: \.offset) { item in
+                Label(item.element, systemImage: "info.circle").font(.callout)
+            }
+        } else {
+            lines(advisories, title: "Print checks")
+        }
+    }
+
     @ViewBuilder private func lines(_ lines: [String], title: String) -> some View {
         if !lines.isEmpty {
             DisclosureGroup("\(title) (\(lines.count))") {
@@ -205,6 +224,7 @@ struct PrintPreparationSettingsSection: View {
     @EnvironmentObject var store: StudioStore
     @AppStorage(printPreparationEnabledDefaultsKey) private var enabled = true
     @AppStorage(printPreparationInternalWallsDefaultsKey) private var internalWalls = true
+    @AppStorage(printPreparationBottomChamferDefaultsKey) private var bottomChamfer = true
 
     var body: some View {
         Section {
@@ -213,6 +233,11 @@ struct PrintPreparationSettingsSection: View {
                     // Turned off: nothing more is prepared automatically this session, including models already waiting.
                     if !on { store.printPreparationQueue.stopAll(automaticOnly: true) }
                 }
+            Toggle(isOn: $bottomChamfer) {
+                Text("Add a 0.4 mm bottom-edge chamfer")
+                Text(printPreparationBottomChamferCaption)
+            }
+            .disabled(!enabled)
             Toggle(isOn: $internalWalls) {
                 Text("Add internal walls")
                 Text(printPreparationInternalWallsCaption)

@@ -276,6 +276,10 @@ struct ModelsView: View {
                         previewBlock
                         if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url {
                             MeshHealthPanel(model: local, mesh: loaded.mesh, objectCount: loaded.objectCount)
+                            if local.supportsPreview {
+                                // Hidden pockets Slant bills as extra bodies, with Fill Hidden Pockets (HiddenPocketsView.swift).
+                                HiddenPocketsCheck(model: local, mesh: loaded.mesh).id(local.id)
+                            }
                             let details = modelSourceDetailsToShow(stored: local.sourceDetails, fromFile: loaded.sourceDetails)
                             if !details.isEmpty {
                                 // 3MF designer and licence, or those an STL copy carried over; advisory only (ModelSourceDetails.swift).
@@ -463,6 +467,11 @@ struct ModelsView: View {
             // Local only: queues a separate print-ready copy (PrintPreparation.swift). Never uploads; no shortcut.
             Button("Make Print-Ready Copy") { store.makePrintReadyCopy(modelID: model.id) }
                 .disabled(store.printPreparationQueue.isPreparing(model.id))
+        }
+        if hiddenPocketsFillOffered(model) {
+            // Local only: saves a separate "(pockets filled)" copy (HiddenPocketsView.swift). Never uploads; no shortcut.
+            Button("Fill Hidden Pockets") { store.fillHiddenPockets(modelID: model.id) }
+                .disabled(store.busy)
         }
         if model.remoteID != nil {
             // Opens the composer for review only; nothing is created or paid from here (SellerAddress.swift).
