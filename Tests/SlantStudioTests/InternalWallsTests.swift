@@ -81,31 +81,32 @@ final class InternalWallsTests: XCTestCase {
         try assertSoundCopy(result, source)
         assertClearance(result, source)
         // The clearance margin is 2 mm plus half the slot width, column step and height step (0.28 mm with defaults):
-        // slots run x = 2.5–37.5 mm and up to z = 17.75 mm. Nine lines at 4 mm would remove 4.4%, over the 3% cap, so
-        // the spacing widens to 6 mm: six lines.
+        // slots run x = 2.5–37.5 mm and up to z = 17.75 mm. Nine lines at the default 4 mm remove 4.4%, within the 6%
+        // cap: the spacing Slant priced on 25 Oct 2026.
         XCTAssertEqual(result.axis, .x)
-        XCTAssertEqual(result.spacingMM, 6)
-        XCTAssertEqual(result.slotCount, 6)
+        XCTAssertEqual(result.spacingMM, 4)
+        XCTAssertEqual(result.slotCount, 9)
         for slot in result.slots {
             XCTAssertEqual(slot.low.x, 2.5, accuracy: 0.0001); XCTAssertEqual(slot.high.x, 37.5, accuracy: 0.0001)
             XCTAssertEqual(slot.high.z, 17.75, accuracy: 0.0001)
             XCTAssertEqual(slot.high.y - slot.low.y, 0.25, accuracy: 0.0001)
         }
-        XCTAssertEqual(result.removedVolumeMM3, 6 * 0.25 * 35 * 17.75, accuracy: 0.01)
-        XCTAssertEqual(result.totalSlotLengthMM, 6 * 35, accuracy: 0.01)
-        XCTAssertEqual(result.slotPerimeterMM, 6 * 2 * 35.25, accuracy: 0.01)
+        XCTAssertEqual(result.removedVolumeMM3, 9 * 0.25 * 35 * 17.75, accuracy: 0.01)
+        XCTAssertEqual(result.totalSlotLengthMM, 9 * 35, accuracy: 0.01)
+        XCTAssertEqual(result.slotPerimeterMM, 9 * 2 * 35.25, accuracy: 0.01)
         XCTAssertEqual(result.shellsBefore, 1); XCTAssertEqual(result.shellsAfter, 1)
     }
 
-    func testLiveTestSpacingWithAHigherVolumeLimit() throws {
+    func testALowerVolumeLimitWidensTheSpacing() throws {
         let source = try block()
         var options = InternalWallsOptions()
-        options.maximumRemovedFraction = 0.05
+        options.maximumRemovedFraction = 0.03
         let result = try internalWallsCopy(of: source, options: options)
-        try assertSoundCopy(result, source, cap: 0.05)
-        XCTAssertEqual(result.spacingMM, 4)
-        XCTAssertEqual(result.slotCount, 9)
-        XCTAssertEqual(result.removedVolumeMM3, 9 * 0.25 * 35 * 17.75, accuracy: 0.01)
+        try assertSoundCopy(result, source, cap: 0.03)
+        // Nine lines at 4 mm would remove 4.4%, over a 3% limit, so the spacing widens to 6 mm: six lines.
+        XCTAssertEqual(result.spacingMM, 6)
+        XCTAssertEqual(result.slotCount, 6)
+        XCTAssertEqual(result.removedVolumeMM3, 6 * 0.25 * 35 * 17.75, accuracy: 0.01)
     }
 
     func testThinWalledBoxGetsNoSlots() throws {
@@ -245,7 +246,7 @@ final class InternalWallsTests: XCTestCase {
     func testSummaryNamesTheWallsWithoutStrengthClaims() throws {
         let result = try internalWallsCopy(of: block())
         let text = internalWallsSummary(result)
-        XCTAssertTrue(text.hasPrefix("Adds internal walls: 6 slots"), text)
+        XCTAssertTrue(text.hasPrefix("Adds internal walls: 9 slots"), text)
         XCTAssertTrue(text.contains("opening through the bed face"), text)
         for word in ["strong", "stronger", "%-", "guarantee", "safe"] { XCTAssertFalse(text.lowercased().contains(word), text) }
     }

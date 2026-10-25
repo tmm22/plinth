@@ -71,7 +71,7 @@ final class ReinforcementTests: XCTestCase {
         let result = try ReinforcementEngine.preview(source, settings: settings)
         try assertPreserved(result, source)
         XCTAssertEqual(result.addedVolume, 0)
-        XCTAssertEqual(result.removedVolume, 6 * 0.25 * 35 * 17.75, accuracy: 0.01)
+        XCTAssertEqual(result.removedVolume, 9 * 0.25 * 35 * 17.75, accuracy: 0.01)
         XCTAssertEqual(result.shellsBefore, 1); XCTAssertEqual(result.shellsAfter, 1)
         XCTAssertTrue(try XCTUnwrap(result.detail).hasPrefix("Adds internal walls"))
         XCTAssertNotNil(result.proposedSection)

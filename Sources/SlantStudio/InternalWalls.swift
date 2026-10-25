@@ -36,8 +36,9 @@ let internalWallsMinimumRegionMM: Float = 7
 let internalWallsMinimumSlotHeightMM: Float = 3
 /// Slots shorter than this along their length are left out.
 let internalWallsMinimumSlotLengthMM: Float = 3
-/// The most of the part's volume the slots may remove; the spacing is widened until the plan fits.
-let internalWallsMaximumRemovedFraction = 0.03
+/// The most of the part's volume the slots may remove; the spacing is widened until the plan fits. 6% keeps the 4 mm
+/// spacing Slant priced on 25 Oct 2026 (9 slots in a 40×40×20 mm block removed 4.4%) on most parts.
+let internalWallsMaximumRemovedFraction = 0.06
 /// Distance between sample columns along a slot line, and between sample heights in a column.
 let internalWallsSampleStepMM: Float = 0.5
 /// Adjacent slots on one line whose heights differ by more than this become separate slots, 1 mm apart, so a tall
