@@ -1,4 +1,5 @@
 import XCTest
+import Euclid
 import simd
 @testable import SlantStudio
 
@@ -67,7 +68,7 @@ final class MeshHealthTests: XCTestCase {
         XCTAssertEqual(r.shells, 2)
         let summary = meshHealthSummary(r)
         XCTAssertEqual(summary.title, "Closed, 2 parts")
-        XCTAssertEqual(summary.details, ["2 separate parts. Fine for a set of pieces or a print-in-place design; otherwise they print loose."])
+        XCTAssertEqual(summary.details, ["2 separate bodies: Slant charges extra for each body after the first (about $0.39 each in a test on 25 Oct 2026). Join them or remove hidden pockets if they aren’t meant to be separate."])
         XCTAssertFalse(summary.isClean)
     }
 
@@ -77,15 +78,66 @@ final class MeshHealthTests: XCTestCase {
         let summary = meshHealthSummary(r, objectCount: 3)
         XCTAssertEqual(summary.title, "Closed, 3 parts (one per object)")
         XCTAssertTrue(summary.isClean)
-        XCTAssertTrue(summary.details.isEmpty)
+        // Expected separate objects stay clean, but Slant still bills the extra bodies, so that is noted.
+        XCTAssertEqual(summary.details, ["3 bodies, one per object: \(meshBodyChargeNote)"])
         XCTAssertEqual(summary.line, "Mesh check: Closed, 3 parts (one per object)")
         // More parts than objects is still worth a note, and says so in terms of the objects.
         let fewer = meshHealthSummary(r, objectCount: 2)
         XCTAssertEqual(fewer.title, "Closed, 3 parts")
         XCTAssertFalse(fewer.isClean)
-        XCTAssertTrue(fewer.details[0].hasPrefix("3 separate parts across 2 objects."))
+        XCTAssertEqual(fewer.details.count, 1)
+        XCTAssertTrue(fewer.details[0].hasPrefix("3 separate bodies across 2 objects: Slant charges extra"))
         // A single-object file is treated like STL.
         XCTAssertFalse(meshHealthSummary(r, objectCount: 1).isClean)
+    }
+
+    // MARK: Body count (Slant bills each body after the first)
+
+    private let block = Mesh.cube(center: Vector(20, 20, 10), size: Vector(40, 40, 20))
+    private func bodies(_ mesh: Mesh) throws -> MeshHealthReport {
+        try XCTUnwrap(analyzeMeshHealth(try ReinforcementEngine.stl(mesh.makeWatertight())))
+    }
+    private func bodyLines(_ summary: MeshHealthSummary) -> [String] {
+        summary.details.filter { $0.contains(meshBodyChargeNote) }
+    }
+
+    func testOneBodyGivesNoBodyChargeLine() throws {
+        let r = try bodies(block)
+        XCTAssertEqual(r.shells, 1)
+        XCTAssertTrue(bodyLines(meshHealthSummary(r)).isEmpty)
+        XCTAssertTrue(meshHealthSummary(r).isClean)
+    }
+
+    func testAClosedHiddenPocketCountsAsAnExtraBody() throws {
+        // Like the live test's closed voids: a pocket ≥ 1.5 mm inside every face.
+        let pocket = Mesh.cube(center: Vector(20, 20, 10), size: Vector(0.25, 35, 17))
+        let r = try bodies(block.subtracting(pocket))
+        XCTAssertTrue(r.isClosed)
+        XCTAssertEqual(r.shells, 2)
+        let summary = meshHealthSummary(r)
+        XCTAssertEqual(bodyLines(summary), [meshBodyChargeAdvisory(bodies: 2)])
+        XCTAssertTrue(bodyLines(summary)[0].hasPrefix("2 separate bodies: Slant charges extra for each body after the first (about $0.39 each"))
+        XCTAssertTrue(bodyLines(summary)[0].hasSuffix("Join them or remove hidden pockets if they aren’t meant to be separate."))
+        XCTAssertFalse(summary.isClean)
+    }
+
+    func testASlotOpenToTheBottomFaceStaysOneBody() throws {
+        // The live test's open variant: the same slot, open through the bottom face (z = 0 to 18.5 mm).
+        let slot = Mesh.cube(center: Vector(20, 20, 8.25), size: Vector(0.25, 35, 20.5))
+        let r = try bodies(block.subtracting(slot))
+        XCTAssertTrue(r.isClosed)
+        XCTAssertEqual(r.shells, 1)
+        XCTAssertTrue(bodyLines(meshHealthSummary(r)).isEmpty)
+        XCTAssertTrue(meshHealthSummary(r).isClean)
+    }
+
+    func testBodyChargeAdvisoryWording() {
+        XCTAssertEqual(meshBodyChargeAdvisory(bodies: 10),
+                       "10 separate bodies: Slant charges extra for each body after the first (about $0.39 each in a test on 25 Oct 2026). Join them or remove hidden pockets if they aren’t meant to be separate.")
+        XCTAssertTrue(meshBodyChargeAdvisory(bodies: 3, objectCount: 2).hasPrefix("3 separate bodies across 2 objects: "))
+        for banned in ["strong", "safe", "guaranteed", "approved"] {
+            XCTAssertFalse(meshBodyChargeAdvisory(bodies: 2).lowercased().contains(banned))
+        }
     }
 
     func testFlippedTriangleIsReportedAsInconsistentOrientation() throws {

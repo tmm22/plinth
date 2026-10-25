@@ -160,8 +160,19 @@ private func counted(_ n: Int, _ singular: String, _ plural: String) -> String {
     "\(n.formatted()) \(n == 1 ? singular : plural)"
 }
 
+/// What Slant's estimates showed for extra bodies (live test, 25 Oct 2026: nine closed internal voids in a block gave
+/// 10 bodies and a $3.50 `bodyChargeCost`; the same slots open to the bottom face kept one body and no charge).
+let meshBodyChargeNote = "Slant charges extra for each body after the first (about $0.39 each in a test on 25 Oct 2026)."
+
+/// The one advisory line for a model of more than one shell. Shells are groups of connected triangles, so a closed
+/// hidden pocket is a body of its own, while a cavity that opens to the outside is part of the outer surface.
+func meshBodyChargeAdvisory(bodies: Int, objectCount: Int = 1) -> String {
+    let across = objectCount > 1 ? " across \(objectCount.formatted()) objects" : ""
+    return "\(bodies.formatted()) separate bodies\(across): \(meshBodyChargeNote) Join them or remove hidden pockets if they aren’t meant to be separate."
+}
+
 /// `objectCount` is the number of objects a 3MF places (1 for STL and OBJ). When each object is exactly one part,
-/// separate parts are expected and aren't flagged.
+/// separate parts are expected and aren't flagged as a problem, though the body charge is still noted.
 func meshHealthSummary(_ report: MeshHealthReport, objectCount: Int = 1) -> MeshHealthSummary {
     guard report.triangleCount > 0 else {
         return MeshHealthSummary(title: "No triangles to check", details: [], isClean: true)
@@ -183,10 +194,13 @@ func meshHealthSummary(_ report: MeshHealthReport, objectCount: Int = 1) -> Mesh
         details.append("The faces point inward. Slicers may read this as a hollow; Repair & Save Copy, in Improve for printing, can turn them outward.")
     }
     if report.shells > 1, !onePartPerObject {
-        let across = objectCount > 1 ? " across \(objectCount) objects" : ""
-        details.append("\(report.shells.formatted()) separate parts\(across). Fine for a set of pieces or a print-in-place design; otherwise they print loose.")
+        details.append(meshBodyChargeAdvisory(bodies: report.shells, objectCount: objectCount))
     }
     let hasIssues = !details.isEmpty
+    if onePartPerObject {
+        // Separate objects are expected, so the check stays clean, but Slant still bills the extra bodies.
+        details.append("\(report.shells.formatted()) bodies, one per object: \(meshBodyChargeNote)")
+    }
     if report.degenerateTriangles > 0 {
         details.append("\(counted(report.degenerateTriangles, "zero-area triangle", "zero-area triangles")). Usually harmless, though some tools list them as errors.")
     }

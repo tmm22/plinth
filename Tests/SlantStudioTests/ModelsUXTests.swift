@@ -25,10 +25,10 @@ final class ModelsUXTests: XCTestCase {
         ]
         let rows = estimateRows(estimate)
         // Print time and material have no documented unit, and the subtotal contradicted the per-unit price live.
-        XCTAssertEqual(rows.map(\.0), ["Price per unit", "Quantity", "Multi-part charge", "Oversize fee", "Total"])
+        XCTAssertEqual(rows.map(\.0), ["Price per unit", "Quantity", "Charge for extra bodies", "Oversize fee", "Total"])
         XCTAssertEqual(rows.map(\.1), ["$4.06", "3", "$1.50", "$0.25", "$13.93"])
         let displayed = displayedEstimateRows(estimate)
-        XCTAssertEqual(displayed.map(\.0), ["Price per unit", "Multi-part charge", "Oversize fee"])
+        XCTAssertEqual(displayed.map(\.0), ["Price per unit", "Charge for extra bodies", "Oversize fee"])
         XCTAssertFalse(displayed.contains { $0.1.contains("min") })
     }
 
@@ -39,11 +39,36 @@ final class ModelsUXTests: XCTestCase {
                                    "bodyChargeCost": 0, "oversizeSurcharge": 0.0]
         XCTAssertEqual(displayedEstimateRows(live).map(\.0), ["Price per unit"])
         XCTAssertEqual(displayedEstimateRows(live).map(\.1), ["$9.93"])
-        XCTAssertEqual(displayedEstimateRows(["bodyChargeCost": "2.00", "oversizeSurcharge": NSNull()]).map(\.0), ["Multi-part charge"])
+        XCTAssertEqual(displayedEstimateRows(["bodyChargeCost": "2.00", "oversizeSurcharge": NSNull()]).map(\.0), ["Charge for extra bodies"])
         XCTAssertTrue(estimateAmountIsCharged("abc"), "an unreadable amount is shown as — rather than hidden")
         XCTAssertFalse(estimateAmountIsCharged(nil))
         XCTAssertFalse(estimateAmountIsCharged("0.00"))
         XCTAssertFalse(estimateAmountIsCharged(-1))
+    }
+
+    func testBodyChargeIsNamedWithSlantsBodyCountForTheEstimatedFile() {
+        let estimate: [String: Any] = ["pricePerUnit": 6.95, "quantity": 1, "bodyChargeCost": 3.5, "total": 6.95]
+        // The live test's ten-body block: nine extra bodies.
+        XCTAssertEqual(displayedEstimateRows(estimate, bodyCount: 10).map(\.0), ["Price per unit", "Charge for 9 extra bodies"])
+        XCTAssertEqual(displayedEstimateRows(estimate, bodyCount: 10).map(\.1), ["$6.95", "$3.50"])
+        XCTAssertEqual(estimateBodyChargeLabel(bodyCount: 2), "Charge for 1 extra body")
+        XCTAssertEqual(estimateBodyChargeLabel(bodyCount: 1), "Charge for extra bodies")
+        XCTAssertEqual(estimateBodyChargeLabel(bodyCount: nil), "Charge for extra bodies")
+        // No charge, no row, whatever the count.
+        XCTAssertEqual(displayedEstimateRows(["bodyChargeCost": 0], bodyCount: 10).map(\.0), [])
+
+        let file = Record(values: ["publicFileServiceId": "file-a", "metrics": ["bodyCount": 10]])
+        XCTAssertEqual(estimateBodyCount(estimateContext: "file-a|pla|1", file: file), 10)
+        // A previous file's estimate never borrows another file's count.
+        XCTAssertNil(estimateBodyCount(estimateContext: "file-b|pla|1", file: file))
+        XCTAssertNil(estimateBodyCount(estimateContext: "", file: file))
+        XCTAssertNil(estimateBodyCount(estimateContext: "file-a|pla|1", file: nil))
+        XCTAssertEqual(slantBodyCount(["bodyCount": "3"]), 3)
+        for unreadable: Any in [2.5, 0, -1, "many", NSNull(), true, Double.nan] {
+            XCTAssertNil(slantBodyCount(["bodyCount": unreadable]), "\(unreadable)")
+        }
+        XCTAssertNil(slantBodyCount([:]))
+        XCTAssertEqual(metricName("bodyCount"), "Bodies")
     }
 
     func testEstimateRowsOmitMissingKeys() {

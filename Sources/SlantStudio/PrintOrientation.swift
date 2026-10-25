@@ -307,7 +307,7 @@ struct PrintOrientationCard: View {
                         }
                         materialAdvice
                         DisclosureGroup("How optimisation works") {
-                            Text("Compares standard placements and up to 24 additional face directions without changing shape, dimensions, holes or clearances. Uses your chosen material. Finished strength and tolerances depend on Slant’s production settings; this is not a mechanical simulation.")
+                            Text("Compares standard placements and up to 24 additional face directions without changing shape, dimensions, holes or clearances. Uses your chosen material. Slant prints a part in the placement it is uploaded in, re-orienting only an obviously wrong upload, so this choice decides which way the layers run. Slant’s settings are fixed (0.2 mm layers, 1 mm walls, 25% infill, overhangs up to 50°); its tolerances aren’t published, and this is not a mechanical simulation.")
                                 .font(.callout).foregroundStyle(.secondary).padding(.top, 8)
                         }.studioDisclosureStyle()
                     } else {

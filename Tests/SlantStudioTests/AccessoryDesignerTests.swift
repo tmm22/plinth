@@ -726,6 +726,23 @@ final class AccessoryDesignerTests: XCTestCase {
         }
     }
 
+    func testPromptUsesSlantsPublishedSettings() {
+        for phrase in ["0.2 mm layers (0.3 mm first layer)", "0.4 mm nozzle", "1 mm walls (about 2 lines)", "25% grid-like infill",
+                       "overhangs up to 50° from vertical", "no brims", "textured bed", "220 mm cube build volume",
+                       "re-orienting only an obviously wrong upload", "print exactly as it sits in your file",
+                       "Not published: the line width, the tolerances Slant holds and which slicer it uses",
+                       "mostly sparse infill", "walls or ribs rather than solid blocks",
+                       "Never leave closed internal voids", "about $0.39 each", "about 0.25 mm wide that open through the bottom face",
+                       "Slant bills each separate body after the first", "at least about 20 mm on a side",
+                       "Slant allows 50°; 45° leaves a margin"] {
+            XCTAssertTrue(accessorySystemPrompt.contains(phrase), phrase)
+        }
+        for gone in ["unknown slicer settings", "slicer settings aren't", "slicer settings are unknown", "2 perimeters of 0.45 mm",
+                     "multiples of the 0.45 mm line", "low infill"] {
+            XCTAssertFalse(accessorySystemPrompt.contains(gone), gone)
+        }
+    }
+
     func testRenderOutcomeForTooMuchMemory() {
         XCTAssertTrue(accessoryOpenSCADFailureText(.tooMuchMemory, messages: []).contains("too much memory"))
     }

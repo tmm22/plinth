@@ -141,13 +141,25 @@ final class AccessorySuggestionsTests: XCTestCase {
 
     func testPromptCoversTheRules() {
         let prompt = accessorySuggestionSystemPrompt
-        for phrase in ["Slant 3D", "unknown slicer settings", "Never guess a model number", "outranks what you see",
+        for phrase in ["Slant 3D", "1 mm walls (about 2 lines), 25% infill", "Never guess a model number", "outranks what you see",
                        "without supports", "internal dimensions", "±0.2 mm", "±1 mm", "\"tight\"", "children",
                        "Helmets", "brakes or steering", "Firearm", "food or drink", "trademarked", "no sales data",
                        "never a percentage", "Answer only by calling suggest_accessories, once.",
                        "220 mm build volume", "smaller is better", "better margin", "different kinds of accessory, not variants of one",
                        "use exactly the same label"] {
             XCTAssertTrue(prompt.contains(phrase), "The prompt doesn't say \(phrase)")
+        }
+    }
+
+    func testPromptUsesSlantsPublishedSettings() {
+        let prompt = accessorySuggestionSystemPrompt
+        for phrase in ["0.2 mm layers", "0.4 mm nozzle", "overhangs up to 50°", "no brims", "orientation the file is uploaded in",
+                       "doesn't publish its tolerances", "about 20 mm on a side", "Slant charges extra for each separate body",
+                       "walls or ribs rather than solid blocks"] {
+            XCTAssertTrue(prompt.contains(phrase), "The prompt doesn't say \(phrase)")
+        }
+        for gone in ["unknown slicer settings", "slicer settings aren't published"] {
+            XCTAssertFalse(prompt.contains(gone), gone)
         }
     }
 
