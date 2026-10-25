@@ -290,7 +290,7 @@ private struct ReinforcementReview: View {
                 let url = folder.appendingPathComponent("\(name)-\(suffix).stl")
                 try part.binarySTL().write(to: url, options: .atomic)
                 imported = store.importModel(url, improvement: model.designImprovement, intent: designEditIntent(model), reinforcement: record,
-                                             sourceDetails: model.sourceDetails, printPreparation: model.printPreparation,
+                                             sourceDetails: model.sourceDetails, inheritsZUpLock: model.requiresZUp,
                                              origin: .studioToolCopy) && imported
             }
             if imported { dismiss() }

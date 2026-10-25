@@ -461,7 +461,7 @@ struct PrintOrientationCard: View {
                 // Lock-bearing records go with the copy, so a Z-up-locked model's copy stays locked (`requiresZUp`).
                 store.importModel(url, recipe: recipe, improvement: model.designImprovement, reinforcement: model.reinforcement,
                                   autoImprovement: model.autoImprovement, sourceDetails: model.sourceDetails,
-                                  printPreparation: model.printPreparation, origin: .studioToolCopy)
+                                  inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy)
                 try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
             case .failure(let error): store.showError(error.localizedDescription)
             }

@@ -181,6 +181,7 @@ func smallPartAdvisory(extentMM: SIMD3<Float>) -> String? {
 func canSaveScaledCopy(_ model: LocalModel) -> Bool {
     model.supportsMeshPreview && model.printRecipe == nil && model.designImprovement == nil
         && model.reinforcement == nil && model.autoImprovement == nil && model.printPreparation == nil
+        && model.inheritsZUpLock != true
 }
 
 /// Model file extensions dropped from a library name before a suffix is added, so "bracket.stl" doesn't become

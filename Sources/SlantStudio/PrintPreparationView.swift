@@ -113,32 +113,37 @@ struct PrintPreparationPanel: View {
             .disabled(printPreparationManualBlockedReason(model) != nil)
     }
 
+    /// Show Copy whenever an earlier print-ready copy is still in the library, then Make Print-Ready Copy.
+    private var originalActions: some View {
+        HStack {
+            if let copy = printReadyCopy(of: model, in: store.localModels) {
+                Button("Show Copy") { store.select(copy) }.disabled(store.busy)
+            }
+            makeCopyButton
+        }
+    }
+
     @ViewBuilder private func originalSummary(_ status: PrintPreparationStatus?) -> some View {
         switch status?.outcome {
         case .madeCopy?:
-            let copy = printReadyCopy(of: model, in: store.localModels)
-            if let copy {
+            if let copy = printReadyCopy(of: model, in: store.localModels) {
                 SectionHeading(title: "Print-ready copy saved", caption: "\(copy.name). This model is unchanged.")
-                HStack {
-                    Button("Show Copy") { store.select(copy) }.disabled(store.busy)
-                    makeCopyButton
-                }
             } else {
                 SectionHeading(title: "Print-ready copy", caption: "Studio made a print-ready copy, which has since been removed from your library. This model is unchanged.")
-                makeCopyButton
             }
+            originalActions
         case .nothingToChange?:
             SectionHeading(title: "Print-ready copy", caption: printPreparationNothingToChange)
             lines(status?.lines ?? [], title: "What Studio checked")
-            makeCopyButton
+            originalActions
         case .noCopy?:
-            SectionHeading(title: "Print-ready copy", caption: "No print-ready copy was made.")
+            SectionHeading(title: "Print-ready copy", caption: "No new print-ready copy was made.")
             ForEach(status?.lines ?? [], id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
-            makeCopyButton
+            originalActions
         case .stopped?:
             SectionHeading(title: "Print-ready copy", caption: "Preparation stopped · Make Print-Ready Copy to try again.")
             ForEach(status?.lines ?? [], id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
-            makeCopyButton
+            originalActions
         case nil:
             HStack {
                 SectionHeading(title: "Print-ready copy", caption: "Repair if needed, placement, bridging, chamfers and internal walls, in a separate copy.")

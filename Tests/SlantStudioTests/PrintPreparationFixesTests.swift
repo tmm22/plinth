@@ -1,6 +1,7 @@
 import XCTest
 import Euclid
 import simd
+import CryptoKit
 @testable import SlantStudio
 
 /// Round 10 review fixes for the print-ready copy, internal walls and the copy tools.
@@ -47,11 +48,14 @@ final class PrintPreparationFixesTests: XCTestCase {
         let before = try XCTUnwrap(analyzeMeshHealth(slotted))
         var options = MeshSimplifyOptions()
         options.targetTriangles = 100
+        // Shells are counted by shared vertices, so a sealed slot stays vertex-connected: the part-count refusal is a
+        // backstop, and what actually happens is a refusal for an opened surface or a sound result.
         do {
             let result = try simplifyMesh(slotted, options: options)
+            XCTAssertTrue(meshHealthIsSound(result.after), "\(result.after)")
             XCTAssertLessThanOrEqual(result.after.shells, before.shells)
         } catch let error as MeshToolError {
-            XCTAssertTrue([.addedParts, .openedSurface].contains(error), "\(error)")
+            XCTAssertEqual(error, .openedSurface)
         }
     }
 
@@ -65,11 +69,16 @@ final class PrintPreparationFixesTests: XCTestCase {
                                                                              skipped: [], manual: [], created: fixedDate))
         for source in [printReady, autoImproved] {
             XCTAssertTrue(source.requiresZUp)
-            // Prepared (Optimise & Save Copy), edge-edit, repair/simplify and Auto-improve copies carry these records.
-            let copy = LocalModel(name: "Copy", filePath: "/tmp/c.stl", printRecipe: nil, designImprovement: nil,
-                                  reinforcement: source.reinforcement, autoImprovement: source.autoImprovement,
-                                  printPreparation: source.printPreparation)
+            // Prepared (Optimise & Save Copy), edge-edit, Reinforce, repair/simplify, review and Auto-improve copies are
+            // saved with `inheritsZUpLock: model.requiresZUp`, never the print-ready record itself.
+            let copy = LocalModel(name: "Copy", filePath: "/tmp/c.stl", inheritsZUpLock: source.requiresZUp ? true : nil)
             XCTAssertTrue(copy.requiresZUp, source.name)
+            XCTAssertNil(copy.printPreparation)
+            XCTAssertNil(printPreparationManualBlockedReason(copy), "A further copy isn't a print-ready copy")
+            XCTAssertTrue(modelIsEditedCopy(copy))
+            XCTAssertFalse(canSaveScaledCopy(copy))
+            let restored = try JSONDecoder().decode(LocalModel.self, from: JSONEncoder().encode(copy))
+            XCTAssertTrue(restored.requiresZUp)
             XCTAssertNotNil(meshFitEditBlockedReason(copy, tool: .plinth))
             XCTAssertNotNil(meshFitEditBlockedReason(copy, tool: .flatBase))
             XCTAssertNotNil(meshFitEditBlockedReason(copy, tool: .scale))
@@ -88,7 +97,21 @@ final class PrintPreparationFixesTests: XCTestCase {
                                             treatments: [], internalWalls: nil, notes: [])
         let copy = LocalModel(name: "Part (print-ready)", filePath: "/tmp/c.stl", printPreparation: record)
         XCTAssertNil(printReadyCopy(of: original, in: [original]))
-        XCTAssertEqual(printReadyCopy(of: original, in: [copy, original])?.id, copy.id)
+        // Matched by the status's copy ID only.
+        XCTAssertNil(printReadyCopy(of: original, in: [copy, original]))
+        var withStatus = original
+        withStatus.printPreparationStatus = PrintPreparationStatus(outcome: .madeCopy, copyID: copy.id, date: fixedDate)
+        XCTAssertEqual(printReadyCopy(of: withStatus, in: [copy, withStatus])?.id, copy.id)
+        let further = LocalModel(name: "Part (print-ready) (repaired)", filePath: "/tmp/f.stl", inheritsZUpLock: true)
+        withStatus.printPreparationStatus?.copyID = further.id
+        XCTAssertNil(printReadyCopy(of: withStatus, in: [further, withStatus]), "A further copy isn't the print-ready copy")
+        // A later outcome without a copy keeps the earlier copy's ID, so Show Copy stays.
+        let made = PrintPreparationStatus(outcome: .madeCopy, copyID: copy.id, date: fixedDate)
+        let later = printPreparationStatusKeepingCopy(PrintPreparationStatus(outcome: .nothingToChange, date: fixedDate), previous: made)
+        XCTAssertEqual(later.outcome, .nothingToChange)
+        XCTAssertEqual(later.copyID, copy.id)
+        let newer = UUID()
+        XCTAssertEqual(printPreparationStatusKeepingCopy(PrintPreparationStatus(outcome: .madeCopy, copyID: newer, date: fixedDate), previous: made).copyID, newer)
         XCTAssertNil(printPreparationManualBlockedReason(original))
         XCTAssertNotNil(printPreparationManualBlockedReason(copy))
         XCTAssertNotNil(printPreparationManualBlockedReason(LocalModel(name: "M", filePath: "/tmp/m.3mf")))
@@ -99,10 +122,22 @@ final class PrintPreparationFixesTests: XCTestCase {
         XCTAssertTrue(printPreparationAlreadyHandled(modelID: original.id, library: [copy, original], queuedThisSession: []))
     }
 
-    func testKeptPlacementReasons() {
+    func testKeptPlacementReasons() throws {
         let plain = LocalModel(name: "P", filePath: "/tmp/p.stl")
         XCTAssertNil(printPreparationKeptPlacementReason(plain, origin: .imported))
         XCTAssertNotNil(printPreparationKeptPlacementReason(plain, origin: .replica))
+        // A saved replica is marked, so a later manual run (no origin) keeps its way up too.
+        let replica = LocalModel(name: "Owl (replica)", filePath: "/tmp/o.stl", keepsPlacement: true)
+        XCTAssertNotNil(printPreparationKeptPlacementReason(replica, origin: nil))
+        XCTAssertNil(printPreparationKeptPlacementReason(plain, origin: nil))
+        // Older libraries decode without the new flags.
+        let old = #"[{"id":"\#(UUID().uuidString)","name":"Old","filePath":"/tmp/x.stl","added":0}]"#
+        let loaded = try JSONDecoder().decode([LocalModel].self, from: Data(old.utf8))
+        XCTAssertNil(loaded[0].keepsPlacement)
+        XCTAssertNil(loaded[0].inheritsZUpLock)
+        XCTAssertFalse(loaded[0].requiresZUp)
+        let junk = #"[{"id":"\#(UUID().uuidString)","name":"Old","filePath":"/tmp/x.stl","added":0,"keepsPlacement":null}]"#
+        XCTAssertEqual(try JSONDecoder().decode([LocalModel].self, from: Data(junk.utf8)).count, 1)
         XCTAssertNotNil(printPreparationKeptPlacementReason(LocalModel(name: "D", filePath: "/tmp/d.stl", partIntent: PartIntent(purpose: .decorative)), origin: .imported))
         let recipe = PreparedPrintRecipe(sourceID: UUID(), sourceName: "P", intent: PartIntent(), orientation: .xUp, materialID: nil, created: fixedDate)
         XCTAssertNotNil(printPreparationKeptPlacementReason(LocalModel(name: "R", filePath: "/tmp/r.stl", printRecipe: recipe), origin: nil))
@@ -259,6 +294,77 @@ final class PrintPreparationFixesTests: XCTestCase {
         let health = try XCTUnwrap(analyzeMeshHealth(result.mesh))
         XCTAssertEqual(health.shells, 1)
         XCTAssertTrue(health.isClosed)
+    }
+
+    func testTreatmentsAreDroppedWhenRepairWouldDropAPart() throws {
+        let main = try block(20, 20, 20)
+        let speck = try exported(.cube(center: Vector(50, 50, 0.1), size: Vector(0.2, 0.2, 0.2)))
+        let sliver: [Float] = [100, 100, 100, 101, 100, 100, 102, 100, 100]
+        let vertices = main.vertices + speck.vertices + sliver
+        let bounds = meshCoordinateBounds(vertices)
+        let treated = STLMesh(vertices: vertices, minimum: bounds.low, maximum: bounds.high)
+        XCTAssertFalse(meshHealthIsSound(try XCTUnwrap(analyzeMeshHealth(treated))))
+        // Before the treatments the part had two pieces; the repair would drop the speck, so the treatments are dropped.
+        XCTAssertNil(soundTreatedMesh(treated, shells: 2))
+        // Where the repair keeps the part count, the tidied mesh is used.
+        let kept = try XCTUnwrap(soundTreatedMesh(treated, shells: 1))
+        XCTAssertTrue(meshHealthIsSound(try XCTUnwrap(analyzeMeshHealth(kept.mesh))))
+        XCTAssertTrue(kept.lines.first?.hasPrefix("Tidied after the treatments") == true)
+        // A sound mesh with the wrong part count is refused too.
+        XCTAssertNil(soundTreatedMesh(main, shells: 2))
+        XCTAssertNotNil(soundTreatedMesh(main, shells: 1))
+        XCTAssertTrue(printPreparationTreatmentsDropped.hasPrefix("Dropped"))
+    }
+
+    func testDroppedSlotsAreCappedAndReported() {
+        XCTAssertEqual(internalWallsMaximumDroppedSlots, 8)
+        XCTAssertEqual(internalWallsDroppedSlotsNote(0), "")
+        XCTAssertTrue(internalWallsDroppedSlotsNote(1).contains("1 planned slot was left out"))
+        XCTAssertTrue(internalWallsDroppedSlotsNote(3).contains("3 planned slots were left out"))
+    }
+
+    // MARK: Determinism across hash seeds
+
+    /// Run only as a subprocess by the test below: writes the pipeline's output hash to the named file.
+    func testHashSeedProbeWritesPipelineHash() throws {
+        guard let out = ProcessInfo.processInfo.environment["SLANT_PIPELINE_HASH_OUT"] else { return }
+        let result = try preparePrintReadyCopy(try ledgedBase(), input: input(), now: fixedDate)
+        let digest = SHA256.hash(data: try XCTUnwrap(result.data)).map { String(format: "%02x", $0) }.joined()
+        try digest.write(toFile: out, atomically: true, encoding: .utf8)
+    }
+
+    /// The same model gives the same bytes whatever the process's hash seed: two runs of this test bundle, one with
+    /// `SWIFT_DETERMINISTIC_HASHING=1` and one with a random seed, against this process's own result.
+    func testPipelineBytesMatchAcrossHashSeeds() throws {
+        guard ProcessInfo.processInfo.environment["SLANT_PIPELINE_HASH_OUT"] == nil else { return }
+        let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        guard FileManager.default.isExecutableFile(atPath: xcrun.path) else { throw XCTSkip("xcrun isn't available") }
+        let bundle = Bundle(for: Self.self).bundlePath
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioHashSeed-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func hash(deterministic: Bool) throws -> String {
+            let out = folder.appendingPathComponent(deterministic ? "fixed.txt" : "random.txt").path
+            var environment = ProcessInfo.processInfo.environment
+            environment["SLANT_PIPELINE_HASH_OUT"] = out
+            if deterministic { environment["SWIFT_DETERMINISTIC_HASHING"] = "1" } else { environment.removeValue(forKey: "SWIFT_DETERMINISTIC_HASHING") }
+            let process = Process()
+            process.executableURL = xcrun
+            process.arguments = ["xctest", "-XCTest", "SlantStudioTests.PrintPreparationFixesTests/testHashSeedProbeWritesPipelineHash", bundle]
+            process.environment = environment
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let deadline = Date().addingTimeInterval(180)
+            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+            if process.isRunning { process.terminate(); XCTFail("The subprocess didn't finish") }
+            return try String(contentsOfFile: out, encoding: .utf8)
+        }
+        let here = try preparePrintReadyCopy(try ledgedBase(), input: input(), now: fixedDate)
+        let local = SHA256.hash(data: try XCTUnwrap(here.data)).map { String(format: "%02x", $0) }.joined()
+        let fixed = try hash(deterministic: true), random = try hash(deterministic: false)
+        XCTAssertEqual(fixed, local)
+        XCTAssertEqual(random, local)
     }
 
     // MARK: 12–15

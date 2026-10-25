@@ -50,6 +50,8 @@ let internalWallsHeightSplitMM: Float = 2
 let internalWallsBedToleranceMM: Float = 0.0001
 /// Less flat downward area than this at the lowest point is not a bed face.
 let internalWallsMinimumBedAreaMM2 = 1.0
+/// The most planned slots left out because their opening couldn't be joined; past this the plan is a failure.
+let internalWallsMaximumDroppedSlots = 8
 /// Meshes above this many triangles are skipped: the library's own limit. In a release build one run took 0.3 s at
 /// 100,000 triangles, 0.5 s at 200,000 and 0.7 s at 400,000 (Euclid needed 83 s for the same slots in an 80,000-triangle
 /// disc), so nothing smaller is needed.
@@ -137,6 +139,8 @@ struct InternalWallsResult: Sendable {
     let removedFraction: Double
     let shellsBefore: Int
     let shellsAfter: Int
+    /// Planned slots left out because their opening couldn't be joined into the bed face's fill.
+    var droppedSlots = 0
 
     var slotCount: Int { slots.count }
     var totalSlotLengthMM: Double { slots.reduce(0) { $0 + Double($1.lengthMM) } }
@@ -184,7 +188,15 @@ func internalWallsSummary(_ result: InternalWallsResult) -> String {
     let slots = result.slotCount == 1 ? "1 slot" : "\(result.slotCount.formatted()) slots"
     let parts = result.shellsAfter == 1 ? "1 part" : "\(result.shellsAfter.formatted()) parts"
     let width = String(format: "%.2f", result.slots.first?.widthMM ?? internalWallsSlotWidthMM)
-    return "Adds internal walls: \(slots), \(Int(result.totalSlotLengthMM.rounded()).formatted()) mm in all, \(width) mm wide, opening through the bed face. About \(Int(result.removedVolumeMM3.rounded()).formatted()) mm³ (\(String(format: "%.1f", result.removedFraction * 100))%) removed; \(parts) before and after."
+    let summary = "Adds internal walls: \(slots), \(Int(result.totalSlotLengthMM.rounded()).formatted()) mm in all, \(width) mm wide, opening through the bed face. About \(Int(result.removedVolumeMM3.rounded()).formatted()) mm³ (\(String(format: "%.1f", result.removedFraction * 100))%) removed; \(parts) before and after."
+    return summary + internalWallsDroppedSlotsNote(result.droppedSlots)
+}
+
+/// " 2 planned slots were left out: …", or nothing when every planned slot was cut.
+func internalWallsDroppedSlotsNote(_ dropped: Int) -> String {
+    guard dropped > 0 else { return "" }
+    return dropped == 1 ? " 1 planned slot was left out: its opening couldn’t be joined into the base."
+        : " \(dropped) planned slots were left out: their openings couldn’t be joined into the base."
 }
 
 // MARK: - Engine
@@ -357,12 +369,16 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
     }
     guard !slots.isEmpty else { return skip(.noRegionThickEnough, shells: shells, axis: axis) }
 
-    // A slot whose opening can't be joined into the bed face's fill is left out, and the rest assembled again.
+    // A slot whose opening can't be joined into the bed face's fill is left out, and the rest assembled again, at most
+    // `internalWallsMaximumDroppedSlots` times: each attempt re-assembles the whole bed face.
     var corners: [SIMD3<Float>] = []
+    var dropped = 0
     assembly: while true {
         switch try slottedCorners(mesh, isBed: isBed, slots: slots, isCancelled: isCancelled) {
         case .corners(let list): corners = list; break assembly
         case .unjoinable(let slot):
+            dropped += 1
+            guard dropped <= internalWallsMaximumDroppedSlots else { return skip(.resultFailedChecks, shells: shells, axis: axis) }
             slots.remove(at: slot)
             guard !slots.isEmpty else { return skip(.resultFailedChecks, shells: shells, axis: axis) }
         case .failed: return skip(.resultFailedChecks, shells: shells, axis: axis)
@@ -385,7 +401,7 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
     }
     return InternalWallsResult(mesh: parsed, data: data, skipped: nil, slots: slots, axis: axis, spacingMM: spacing,
                                removedVolumeMM3: removedVolume, removedFraction: removedVolume / before.signedVolume,
-                               shellsBefore: shells, shellsAfter: after.shells)
+                               shellsBefore: shells, shellsAfter: after.shells, droppedSlots: dropped)
 }
 
 /// Why a slotted result can't be saved, or nil: it must be sound, no worse than the input, with the same shell count,

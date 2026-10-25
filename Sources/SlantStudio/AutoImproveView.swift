@@ -191,10 +191,10 @@ extension AutoImproveRun {
                                                        skipped: result.skipped, manual: result.manual, created: Date())
                     let recipe = model.printRecipe ?? PreparedPrintRecipe(sourceID: model.id, sourceName: model.name, intent: intent,
                                                                            orientation: result.orientation, materialID: materialID, created: Date())
-                    // A print-ready copy's record is kept, so the further copy stays as placed and shows what it inherited.
+                    // A Z-up-locked model's further copy keeps the lock (`LocalModel.inheritsZUpLock`).
                     store.importModel(url, recipe: recipe, improvement: model.designImprovement, intent: intent,
                                       reinforcement: model.reinforcement, autoImprovement: record, sourceDetails: model.sourceDetails,
-                                      printPreparation: model.printPreparation, origin: .studioToolCopy)
+                                      inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy)
                 case .failure(let error):
                     store.showError(error.localizedDescription)
                 }

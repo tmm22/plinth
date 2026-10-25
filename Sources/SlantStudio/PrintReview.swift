@@ -906,8 +906,8 @@ struct PrintReadyCopyRecords: Equatable {
     var intent: PartIntent?
     var reinforcement: ReinforcementRecord?
     var autoImprovement: AutoImprovementRecord?
-    /// Kept from a print-ready original, so the copy stays as placed (`LocalModel.requiresZUp`).
-    var printPreparation: PrintPreparationRecord?
+    /// A Z-up-locked original's copy keeps the lock (`LocalModel.inheritsZUpLock`).
+    var inheritsZUpLock = false
 }
 
 /// The original's records when every step keeps them; and when Auto-improve changed the copy, its record and placement
@@ -921,7 +921,7 @@ func printReadyCopyRecords(for model: LocalModel, actions: [PrintReviewAction], 
         records.improvement = model.designImprovement
         records.reinforcement = model.reinforcement
         records.autoImprovement = model.autoImprovement
-        records.printPreparation = model.printPreparation
+        records.inheritsZUpLock = model.requiresZUp
     }
     if let auto = autoImprove {
         records.autoImprovement = AutoImprovementRecord(sourceID: model.id, orientation: auto.orientation, applied: auto.applied,

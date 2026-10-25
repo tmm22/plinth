@@ -290,7 +290,7 @@ struct DesignImprovementsCard: View {
             // Lock-bearing records go with the copy, so a Z-up-locked model's copy stays locked (`requiresZUp`).
             store.importModel(url, improvement: record, intent: designEditIntent(model), reinforcement: model.reinforcement,
                               autoImprovement: model.autoImprovement, sourceDetails: model.sourceDetails,
-                              printPreparation: model.printPreparation, origin: .studioToolCopy)
+                              inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy)
             review = false
         } catch { store.showError(error.localizedDescription) }
         saving = false

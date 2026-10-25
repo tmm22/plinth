@@ -66,11 +66,17 @@ struct LocalModel: Codable, Identifiable {
     var printPreparation: PrintPreparationRecord?
     /// On an original: what the automatic preparation did with it, so it is explained and never repeated.
     var printPreparationStatus: PrintPreparationStatus?
+    /// A further copy of a Z-up-locked model (such as a print-ready copy's repaired or auto-improved copy): it keeps the
+    /// lock without claiming to be a print-ready copy itself. Nil for anything else; older libraries load without it.
+    var inheritsZUpLock: Bool?
+    /// Set on a saved replica, whose way up the seller chose in Which way is up?: preparation never re-places it.
+    var keepsPlacement: Bool?
     var url: URL { URL(fileURLWithPath: filePath) }
     /// Copies whose features depend on the print layers must stay Z up. A print-ready copy was placed on its bed face
-    /// and may have slots opening through it, so it stays as placed.
+    /// and may have slots opening through it, so it stays as placed, and so do its further copies.
     var requiresZUp: Bool {
         reinforcement?.requiresZUp == true || autoImprovement?.requiresZUp == true || printPreparation != nil
+            || inheritsZUpLock == true
     }
     /// STL only: read by `STLMesh.read` and accepted by the orientation, edge, reinforcement and auto-improve tools.
     var supportsPreview: Bool { url.pathExtension.lowercased() == "stl" }
@@ -716,15 +722,16 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Copies a model file into the library. `origin` says where it came from, which decides whether Studio also makes
     /// a print-ready copy of it (`ModelImportOrigin.mayPrepareForPrinting`); every caller states it.
     @discardableResult
-    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, origin: ModelImportOrigin) -> Bool {
+    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin) -> Bool {
         importModelReturningID(url, recipe: recipe, improvement: improvement, intent: intent, reinforcement: reinforcement,
                                autoImprovement: autoImprovement, sourceDetails: sourceDetails, printPreparation: printPreparation,
+                               inheritsZUpLock: inheritsZUpLock,
                                origin: origin) != nil
     }
     /// `importModel`, returning the new model's ID. `selectsAndShows: false` adds it without changing the selection
     /// or the screen, for copies saved in the background; `insertingBefore` places it next to that model (else first).
     @discardableResult
-    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil) -> UUID? {
+    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil) -> UUID? {
         let ext = url.pathExtension.lowercased()
         guard ["stl", "obj", "3mf"].contains(ext) else {
             showError("Slant Studio accepts STL, OBJ, and 3MF models.")
@@ -740,7 +747,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let model = LocalModel(name: url.deletingPathExtension().lastPathComponent, filePath: destination.path,
                                    partIntent: recipe?.intent ?? intent, printRecipe: recipe, designImprovement: improvement, reinforcement: reinforcement, autoImprovement: autoImprovement,
                                    sourceDetails: sourceDetails?.isEmpty == false ? sourceDetails : nil,
-                                   printPreparation: printPreparation)
+                                   printPreparation: printPreparation, inheritsZUpLock: inheritsZUpLock ? true : nil,
+                                   keepsPlacement: origin == .replica ? true : nil)
             localModels.insert(model, at: neighbour.flatMap { id in localModels.firstIndex { $0.id == id } } ?? 0)
             if selectsAndShows { select(model) }
             saveModels()

@@ -137,17 +137,26 @@ func printPreparationManualBlockedReason(_ model: LocalModel) -> String? {
 /// The placement kept, and why, or nil when Studio may choose one: a replica keeps the way up its seller chose, a
 /// prepared or Z-up-locked copy keeps its placement, and a decorative part keeps the way it was made to stand.
 func printPreparationKeptPlacementReason(_ model: LocalModel, origin: ModelImportOrigin?) -> String? {
-    if origin == .replica { return "Kept as saved: a replica keeps the way up you chose." }
+    if origin == .replica || model.keepsPlacement == true { return "Kept as saved: a replica keeps the way up you chose." }
     if model.printRecipe != nil { return "Kept as placed: this copy already has a prepared placement." }
     if model.requiresZUp { return "Kept as placed: this copy has features that depend on its print layers." }
     if designEditIntent(model)?.purpose == .decorative { return "Kept as imported: a decorative part keeps the way it was made to stand." }
     return nil
 }
 
-/// The newest print-ready copy made from `model`, if it is still in the library.
+/// The print-ready copy last made from `model` (its status's copy ID), if it is still in the library and is a real
+/// print-ready copy. Further copies of it are never matched.
 func printReadyCopy(of model: LocalModel, in library: [LocalModel]) -> LocalModel? {
-    if let id = model.printPreparationStatus?.copyID, let copy = library.first(where: { $0.id == id }) { return copy }
-    return library.filter { $0.printPreparation?.sourceID == model.id }.max { $0.added < $1.added }
+    guard let id = model.printPreparationStatus?.copyID,
+          let copy = library.first(where: { $0.id == id }), copy.printPreparation?.sourceID == model.id else { return nil }
+    return copy
+}
+
+/// The status to save: a later outcome without a copy keeps the copy ID of an earlier one, so Show Copy stays.
+func printPreparationStatusKeepingCopy(_ status: PrintPreparationStatus, previous: PrintPreparationStatus?) -> PrintPreparationStatus {
+    var kept = status
+    if kept.copyID == nil { kept.copyID = previous?.copyID }
+    return kept
 }
 
 // MARK: - Step plan
@@ -545,18 +554,16 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
             if improved.applied.isEmpty {
                 steps.append(PrintPreparationStepRecord(step: .treatments, applied: false,
                                                         lines: ["None needed: no free ledges or counterbores that suit them."] + improved.skipped))
-            } else if let kept = soundTreatedMesh(improved.mesh, isCancelled: isCancelled) {
+            } else if let kept = soundTreatedMesh(improved.mesh, shells: health.shells, isCancelled: isCancelled) {
                 mesh = kept.mesh
                 treatments = improved.applied
                 steps.append(PrintPreparationStepRecord(step: .treatments, applied: true,
                                                         lines: improved.applied.map { $0.summary + "." } + kept.lines + improved.skipped))
             } else {
                 try check()
-                // A treatment that leaves the mesh unsound (such as a zero-area sliver repair can't remove) is dropped:
-                // the part continues as it was before the treatments.
-                steps.append(PrintPreparationStepRecord(step: .treatments, applied: false, lines: [
-                    "Dropped: the result didn’t pass Studio’s mesh check, even after repair, so the part was kept without them.",
-                ]))
+                // A treatment that leaves the mesh unsound, or whose repair changes the number of parts, is dropped: the
+                // part continues as it was before the treatments.
+                steps.append(PrintPreparationStepRecord(step: .treatments, applied: false, lines: [printPreparationTreatmentsDropped]))
             }
         } catch let error as PrintPreparationError {
             throw error
@@ -625,12 +632,15 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     return PrintPreparationResult(record: record(), mesh: mesh, data: data, blocked: nil)
 }
 
+let printPreparationTreatmentsDropped = "Dropped: the result didn’t pass Studio’s mesh check, even after repair, so the part was kept without them."
+
 /// The treated mesh, repaired if a treatment left it unsound (with the repair's lines), or nil when even repair can't
-/// make it sound.
-private func soundTreatedMesh(_ mesh: STLMesh, isCancelled: () -> Bool) -> (mesh: STLMesh, lines: [String])? {
+/// make it sound with `shells` separate parts (a repair that drops a loose piece drops the treatments instead).
+func soundTreatedMesh(_ mesh: STLMesh, shells: Int, isCancelled: () -> Bool = { false }) -> (mesh: STLMesh, lines: [String])? {
     guard let report = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { return nil }
-    if meshHealthIsSound(report) { return (mesh, []) }
-    guard let repaired = try? repairMesh(mesh, isCancelled: isCancelled), repaired.summary.isSound else { return nil }
+    if meshHealthIsSound(report) { return report.shells == shells ? (mesh, []) : nil }
+    guard let repaired = try? repairMesh(mesh, isCancelled: isCancelled), repaired.summary.isSound,
+          repaired.summary.after.shells == shells else { return nil }
     return (repaired.mesh, ["Tidied after the treatments: " + meshRepairSummaryLines(repaired.summary).joined(separator: " ")])
 }
 
@@ -727,7 +737,11 @@ struct PrintPreparationJob: Equatable, Sendable {
         let dropped = pending.filter { !automaticOnly || $0.automatic }
         pending.removeAll { !automaticOnly || $0.automatic }
         for job in dropped { markStopped(job.modelID) }
-        if !automaticOnly || current?.automatic == true { flag?.set() }
+        if let running = current, !automaticOnly || running.automatic {
+            flag?.set()
+            // Marked now, so a quit before the run reaches its safe point still leaves the status.
+            markStopped(running.modelID)
+        }
     }
 
     func dismissFirstCopyNotice() {
@@ -858,6 +872,8 @@ extension StudioStore {
     /// Make Print-Ready Copy: the seller's own request for any STL except a print-ready copy. Local only; it queues the
     /// work and never uploads. Uses the model's current saved purpose.
     func makePrintReadyCopy(modelID: UUID) {
+        // Like Save as Product and Order a Sample: nothing while a sheet, alert or dialog is open.
+        guard !menuCommandsBlockedByModalUI else { return }
         guard let model = localModels.first(where: { $0.id == modelID }), printPreparationManualBlockedReason(model) == nil else { return }
         printPreparationQueue.enqueue(PrintPreparationJob(modelID: model.id, url: model.url, name: model.name,
                                                           savedIntent: designEditIntent(model), automatic: false,
@@ -867,7 +883,7 @@ extension StudioStore {
     /// Saves the outcome on the original (metadata only; its file is never touched).
     func recordPrintPreparationStatus(_ status: PrintPreparationStatus, for modelID: UUID) {
         guard let index = localModels.firstIndex(where: { $0.id == modelID }) else { return }
-        localModels[index].printPreparationStatus = status
+        localModels[index].printPreparationStatus = printPreparationStatusKeepingCopy(status, previous: localModels[index].printPreparationStatus)
         saveModels()
     }
 
