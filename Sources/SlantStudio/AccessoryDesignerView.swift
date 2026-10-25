@@ -1205,7 +1205,7 @@ private struct AccessoryDesignRunView: View {
             case .success(let url):
                 defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
                 // importModel shows its own alert when copying into the library fails.
-                guard store.importModel(url) else { saveProblem = "The design couldn’t be added to your library."; return }
+                guard store.importModel(url, origin: .designedAccessory) else { saveProblem = "The design couldn’t be added to your library."; return }
                 savedRenderIDs.insert(id)
                 if isFitTest { fitTestSaveStatus = status } else { saveStatus = status }
                 store.activities.insert(Activity(title: "Design an accessory", detail: activityDetail, success: true), at: 0)

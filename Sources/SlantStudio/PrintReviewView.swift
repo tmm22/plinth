@@ -303,7 +303,8 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
             try data.write(to: url, options: .atomic)
             return store.importModel(url, recipe: records.recipe, improvement: records.improvement, intent: records.intent,
                                      reinforcement: records.reinforcement, autoImprovement: records.autoImprovement,
-                                     sourceDetails: sourceDetailsForCopy(of: model))
+                                     sourceDetails: sourceDetailsForCopy(of: model), printPreparation: records.printPreparation,
+                                     origin: .studioToolCopy)
         } catch {
             store.showError("The copy wasn’t saved: \(error.localizedDescription)")
             return false

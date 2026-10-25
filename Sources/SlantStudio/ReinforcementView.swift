@@ -278,7 +278,7 @@ private struct ReinforcementReview: View {
         guard current, let preview, confirmed, !settings.kind.isExperimental || experimentalConfirmed, shellsHeld, !settings.kind.isWithdrawn else { return }
         saving = true
         do {
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let folder = studioTempFolderURL(prefix: reinforceTempFolderPrefix)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: folder) }
             let name = URL(fileURLWithPath: model.name).lastPathComponent
@@ -290,7 +290,7 @@ private struct ReinforcementReview: View {
                 let url = folder.appendingPathComponent("\(name)-\(suffix).stl")
                 try part.binarySTL().write(to: url, options: .atomic)
                 imported = store.importModel(url, improvement: model.designImprovement, intent: designEditIntent(model), reinforcement: record,
-                                             sourceDetails: model.sourceDetails) && imported
+                                             sourceDetails: model.sourceDetails, origin: .studioToolCopy) && imported
             }
             if imported { dismiss() }
         } catch { store.showError(error.localizedDescription) }

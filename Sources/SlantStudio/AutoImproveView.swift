@@ -144,10 +144,18 @@ struct AutoImproveCard: View {
     }
 
     private func improve() {
-        let model = model, intent = intent
+        run.improveAndSaveCopy(of: model, intent: intent, profile: .full, store: store)
+    }
+}
+
+extension AutoImproveRun {
+    /// Auto-Improve & Save Copy: reads the model, places it (prepared and Z-up-locked copies keep their placement),
+    /// applies `profile`'s treatments off the main actor and saves the result as a separate copy through `importModel`.
+    /// Shared by the Auto-improve card (`.full`) and a print-ready copy's Add Fillets and Thicken Walls (`.fitAffecting`).
+    func improveAndSaveCopy(of model: LocalModel, intent: PartIntent, profile: AutoImprover.Profile, store: StudioStore) {
         let materialID = store.filamentID.isEmpty ? nil : store.filamentID
         let locked = model.printRecipe != nil || model.requiresZUp
-        run.start { progress, cancelled in
+        start { progress, cancelled in
             let outcome = await Task.detached(priority: .userInitiated) { () -> Result<(AutoImprovementResult, URL?), Error> in
                 Result {
                     let source = try STLMesh.read(from: model.url)
@@ -155,9 +163,10 @@ struct AutoImproveCard: View {
                     guard let orientation = AutoImprover.orientation(for: source, intent: intent, locked: locked) else {
                         throw StudioError("No flat-bed placement fits among the positions checked. Prepare a custom orientation in your CAD tool or slicer, then import it here.")
                     }
-                    let result = try AutoImprover.improve(source, intent: intent, orientation: orientation, progress: progress, cancelled: cancelled)
+                    let result = try AutoImprover.improve(source, intent: intent, orientation: orientation, profile: profile,
+                                                          progress: progress, cancelled: cancelled)
                     guard result.changed else { return (result, nil) }
-                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                    let folder = studioTempFolderURL(prefix: autoImproveTempFolderPrefix)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     let url = folder.appendingPathComponent("\(URL(fileURLWithPath: model.name).lastPathComponent)-auto-improved.stl")
                     do { try result.mesh.binarySTL().write(to: url, options: .atomic) }
@@ -166,17 +175,22 @@ struct AutoImproveCard: View {
                 }
             }.value
             await MainActor.run {
-                guard !cancelled() else { return }
+                guard !cancelled() else {
+                    if case .success((_, let url?)) = outcome { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+                    return
+                }
                 switch outcome {
                 case .success((let result, let url)):
-                    guard let url else { run.unchanged = result; return }
+                    guard let url else { self.unchanged = result; return }
                     defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
                     let record = AutoImprovementRecord(sourceID: model.id, orientation: result.orientation, applied: result.applied,
                                                        skipped: result.skipped, manual: result.manual, created: Date())
                     let recipe = model.printRecipe ?? PreparedPrintRecipe(sourceID: model.id, sourceName: model.name, intent: intent,
                                                                            orientation: result.orientation, materialID: materialID, created: Date())
+                    // A print-ready copy's record is kept, so the further copy stays as placed and shows what it inherited.
                     store.importModel(url, recipe: recipe, improvement: model.designImprovement, intent: intent,
-                                      reinforcement: model.reinforcement, autoImprovement: record, sourceDetails: model.sourceDetails)
+                                      reinforcement: model.reinforcement, autoImprovement: record, sourceDetails: model.sourceDetails,
+                                      printPreparation: model.printPreparation, origin: .studioToolCopy)
                 case .failure(let error):
                     store.showError(error.localizedDescription)
                 }

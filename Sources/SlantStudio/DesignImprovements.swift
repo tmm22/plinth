@@ -281,14 +281,14 @@ struct DesignImprovementsCard: View {
         saving = true
         let record = DesignImprovementRecord(sourceID: model.id, kind: kind, sizeMM: Float(amount), created: Date())
         do {
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let folder = studioTempFolderURL(prefix: edgeEditTempFolderPrefix)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: folder) }
             let name = URL(fileURLWithPath: model.name).lastPathComponent
             let url = folder.appendingPathComponent("\(name)-edge-improved.stl")
             try preview.binarySTL().write(to: url, options: .atomic)
             store.importModel(url, improvement: record, intent: designEditIntent(model), reinforcement: model.reinforcement,
-                              sourceDetails: model.sourceDetails)
+                              sourceDetails: model.sourceDetails, origin: .studioToolCopy)
             review = false
         } catch { store.showError(error.localizedDescription) }
         saving = false

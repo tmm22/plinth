@@ -703,7 +703,9 @@ final class OpenSCADRunRegistry: @unchecked Sendable {
 /// renders and saved copy. Each name is the prefix followed by a UUID. Append new prefixes: callers index the first two.
 let personalisationTempFolderPrefixes = [
     "SlantStudio-OpenSCAD-", "SlantStudio-Personalised-", imageTo3DTempFolderPrefix, meshToolsTempFolderPrefix,
-    meshFitTempFolderPrefix, replicaTempFolderPrefix, accessoryTempFolderPrefix,
+    meshFitTempFolderPrefix, replicaTempFolderPrefix, accessoryTempFolderPrefix, printReadyTempFolderPrefix,
+    autoImproveTempFolderPrefix, preparedCopyTempFolderPrefix, edgeEditTempFolderPrefix, reinforceTempFolderPrefix,
+    stlCopyTempFolderPrefix, scaledCopyTempFolderPrefix,
 ]
 
 /// A folder that this temporary-folder code made: a known prefix followed by exactly a UUID.
@@ -1022,7 +1024,7 @@ extension StudioStore {
         case .success(let url):
             defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
             // importModel shows its own alert if copying into the library fails.
-            guard importModel(url) else { return "The model couldn’t be added to your library." }
+            guard importModel(url, origin: .personalised) else { return "The model couldn’t be added to your library." }
             // No name in Activity: a generated model's name can include a customer's name.
             activities.insert(Activity(title: "Personalise from template", detail: "Saved a new model", success: true), at: 0)
             return nil

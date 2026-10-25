@@ -63,7 +63,22 @@ enum AutoImprover {
         return preferredOrientation(mesh.orientationAssessments(), intent: intent)?.orientation
     }
 
-    static func improve(_ source: STLMesh, intent: PartIntent, orientation: PrintOrientation,
+    /// Which treatments a run may apply. The Auto-improve card uses `.full`. The automatic print-ready copy uses
+    /// `.fitSafe`, which never changes a fitting surface: bridging layers and chamfers under free ledges only. Wall
+    /// matching and fillets take space from cavities and inside corners, so they come only after the seller confirms
+    /// nothing has to fit (`.fitAffecting`, run on the print-ready copy, whose bridging and chamfers are already done).
+    enum Profile: Sendable, CaseIterable {
+        case full, fitSafe, fitAffecting
+        var phases: [Phase] {
+            switch self {
+            case .full: return Phase.allCases
+            case .fitSafe: return [.bridge, .overhang]
+            case .fitAffecting: return [.thicken, .fillet]
+            }
+        }
+    }
+
+    static func improve(_ source: STLMesh, intent: PartIntent, orientation: PrintOrientation, profile: Profile = .full,
                         progress: @Sendable (String) -> Void = { _ in },
                         cancelled: @escaping @Sendable () -> Bool = { false }) throws -> AutoImprovementResult {
         let deadline = Date().addingTimeInterval(240)
@@ -73,7 +88,7 @@ enum AutoImprover {
         var mesh = source.oriented(orientation)
         var solid = try mesh.reinforcementSolid()
         var applied: [AutoImprovementStep] = [], skipped: [String] = [], manual: [String] = []
-        for phase in Phase.allCases where !stop() {
+        for phase in profile.phases where !stop() {
             progress("Looking for \(phase.title.lowercased())…")
             let found = candidates(phase, in: mesh, intent: intent, stop: stop)
             manual += found.manual

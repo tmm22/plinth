@@ -466,7 +466,7 @@ struct EndpointView: View {
     func importGenerated() {
         guard let responseData else { return }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("generated-\(UUID().uuidString).stl")
-        do { try responseData.write(to: url); defer { try? FileManager.default.removeItem(at: url) }; store.importModel(url) } catch { validation = error.localizedDescription }
+        do { try responseData.write(to: url); defer { try? FileManager.default.removeItem(at: url) }; store.importModel(url, origin: .workbench) } catch { validation = error.localizedDescription }
     }
 }
 

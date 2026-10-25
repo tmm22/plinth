@@ -42,7 +42,7 @@ extension StudioStore: ReplicaLibraryHost {
     }
 
     func importReplica(_ url: URL, intent: PartIntent?, sourceDetails: ModelSourceDetails) -> UUID? {
-        guard importModel(url, intent: intent, sourceDetails: sourceDetails) else { return nil }
+        guard importModel(url, intent: intent, sourceDetails: sourceDetails, origin: .replica) else { return nil }
         return selectedLocalID
     }
 }

@@ -447,7 +447,7 @@ struct PrintOrientationCard: View {
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { () -> URL in
-                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                    let folder = studioTempFolderURL(prefix: preparedCopyTempFolderPrefix)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     let safeName = URL(fileURLWithPath: name).lastPathComponent
                     let url = folder.appendingPathComponent("\(safeName)-\(recipe.intent.purpose.rawValue.lowercased())-prepared.stl")
@@ -459,7 +459,7 @@ struct PrintOrientationCard: View {
             switch result {
             case .success(let url):
                 store.importModel(url, recipe: recipe, improvement: model.designImprovement, reinforcement: model.reinforcement,
-                                  sourceDetails: model.sourceDetails)
+                                  sourceDetails: model.sourceDetails, origin: .studioToolCopy)
                 try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
             case .failure(let error): store.showError(error.localizedDescription)
             }

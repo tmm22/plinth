@@ -62,9 +62,16 @@ struct LocalModel: Codable, Identifiable {
     /// Designer, licence, source and copyright carried over from the 3MF (or earlier copy) an STL copy was made from.
     /// Nil for anything else; older libraries load without it (ModelSourceDetails.swift).
     var sourceDetails: ModelSourceDetails?
+    /// On a print-ready copy: what the automatic preparation applied and skipped (PrintPreparation.swift).
+    var printPreparation: PrintPreparationRecord?
+    /// On an original: what the automatic preparation did with it, so it is explained and never repeated.
+    var printPreparationStatus: PrintPreparationStatus?
     var url: URL { URL(fileURLWithPath: filePath) }
-    /// Copies whose features depend on the print layers must stay Z up.
-    var requiresZUp: Bool { reinforcement?.requiresZUp == true || autoImprovement?.requiresZUp == true }
+    /// Copies whose features depend on the print layers must stay Z up. A print-ready copy was placed on its bed face
+    /// and may have slots opening through it, so it stays as placed.
+    var requiresZUp: Bool {
+        reinforcement?.requiresZUp == true || autoImprovement?.requiresZUp == true || printPreparation != nil
+    }
     /// STL only: read by `STLMesh.read` and accepted by the orientation, edge, reinforcement and auto-improve tools.
     var supportsPreview: Bool { url.pathExtension.lowercased() == "stl" }
     /// STL, OBJ and 3MF: shown in the 3D preview with dimensions and the build-volume check.
@@ -505,7 +512,14 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var sellerAddress: SellerAddress?
     /// Order a Sample to Me… without a saved address: the main window explains and offers Settings.
     @Published var showSellerAddressNeeded = false
-    @Published var selectedLocalID: UUID?
+    @Published var selectedLocalID: UUID? {
+        didSet { if oldValue != selectedLocalID { selectionGeneration += 1 } }
+    }
+    /// Counts selection changes, so a print-ready copy finished in the background is selected only when nothing else
+    /// changed the selection since its original was imported (PrintPreparation.swift).
+    private(set) var selectionGeneration = 0
+    /// Automatic preparation of new STL models for printing (PrintPreparation.swift).
+    let printPreparationQueue = PrintPreparationQueue()
     @Published var files: [Record] = []
     @Published var platforms: [Record] = []
     @Published var filaments: [Record] = []
@@ -664,6 +678,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         sellerAddress = loadSellerAddress(from: Self.sellerAddressURL)
         // Personalisation hook (Personalisation.swift): remove leftover OpenSCAD temp folders; stop local runs on quit.
         PersonalisationTempCleanup.startAtLaunch()
+        printPreparationQueue.store = self
     }
     private func redirectDestinationIfNeeded(from oldValue: Destination) {
         let resolved = resolvedNavigation(requested: destination, previous: oldValue, showDeveloperTools: showDeveloperTools)
@@ -696,19 +711,29 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = ["stl", "obj", "3mf"].compactMap { UTType(filenameExtension: $0) }
         panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK { for url in panel.urls { importModel(url) } }
+        if panel.runModal() == .OK { for url in panel.urls { importModel(url, origin: .imported) } }
     }
     func savePartIntent(_ intent: PartIntent, modelID: UUID) {
         guard let index = localModels.firstIndex(where: { $0.id == modelID }) else { return }
         localModels[index].partIntent = intent
         saveModels()
     }
+    /// Copies a model file into the library. `origin` says where it came from, which decides whether Studio also makes
+    /// a print-ready copy of it (`ModelImportOrigin.mayPrepareForPrinting`); every caller states it.
     @discardableResult
-    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil) -> Bool {
+    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, origin: ModelImportOrigin) -> Bool {
+        importModelReturningID(url, recipe: recipe, improvement: improvement, intent: intent, reinforcement: reinforcement,
+                               autoImprovement: autoImprovement, sourceDetails: sourceDetails, printPreparation: printPreparation,
+                               origin: origin) != nil
+    }
+    /// `importModel`, returning the new model's ID. `selectsAndShows: false` adds it without changing the selection
+    /// or the screen, for copies saved in the background.
+    @discardableResult
+    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, origin: ModelImportOrigin, selectsAndShows: Bool = true) -> UUID? {
         let ext = url.pathExtension.lowercased()
         guard ["stl", "obj", "3mf"].contains(ext) else {
             showError("Slant Studio accepts STL, OBJ, and 3MF models.")
-            return false
+            return nil
         }
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -719,13 +744,15 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             try FileManager.default.copyItem(at: url, to: destination)
             let model = LocalModel(name: url.deletingPathExtension().lastPathComponent, filePath: destination.path,
                                    partIntent: recipe?.intent ?? intent, printRecipe: recipe, designImprovement: improvement, reinforcement: reinforcement, autoImprovement: autoImprovement,
-                                   sourceDetails: sourceDetails?.isEmpty == false ? sourceDetails : nil)
+                                   sourceDetails: sourceDetails?.isEmpty == false ? sourceDetails : nil,
+                                   printPreparation: printPreparation)
             localModels.insert(model, at: 0)
-            select(model)
+            if selectsAndShows { select(model) }
             saveModels()
-            self.destination = .models
-            return true
-        } catch { showError(error.localizedDescription); return false }
+            if selectsAndShows { self.destination = .models }
+            considerPrintPreparation(for: model, origin: origin)
+            return model.id
+        } catch { showError(error.localizedDescription); return nil }
     }
     func select(_ model: LocalModel) { selectedLocalID = model.id; fileID = model.remoteID ?? ""; estimate = nil }
     /// Removes the model from the library and moves the app's private copy to the Trash, registering Edit › Undo

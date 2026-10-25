@@ -134,7 +134,7 @@ struct ConnectAccountPrompt: View {
                     }
                 }
                 .dropDestination(for: URL.self) { urls, _ in
-                    urls.forEach { store.importModel($0) }
+                    urls.forEach { store.importModel($0, origin: .imported) }
                     return !urls.isEmpty
                 } isTargeted: { dropTargeted = $0 }
         } else {

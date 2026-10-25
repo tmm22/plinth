@@ -210,6 +210,7 @@ struct AccountSettingsTab: View {
 struct DesignToolsSettingsTab: View {
     var body: some View {
         Form {
+            PrintPreparationSettingsSection() // PrintPreparationView.swift: the automatic print-ready copy
             AnthropicSettingsSection() // AnthropicSettingsView.swift
             ImageTo3DSettingsSection() // ImageTo3DSettingsView.swift: Meshy / Tripo keys
             ImageSharingConsentSettingsSection() // ImageSharingConsent.swift

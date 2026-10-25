@@ -176,10 +176,11 @@ func smallPartAdvisory(extentMM: SIMD3<Float>) -> String? {
 }
 
 /// Scaled copies are only offered for plain imports, whose records don't carry dimension-dependent data. The copy is
-/// always a binary STL, so an OBJ or 3MF original is kept as it is.
+/// always a binary STL, so an OBJ or 3MF original is kept as it is. A print-ready copy is excluded too: its slot widths
+/// and chamfers are sized for Slant's printer, and a scaled copy would lose the Z-up lock that keeps a base off its slots.
 func canSaveScaledCopy(_ model: LocalModel) -> Bool {
     model.supportsMeshPreview && model.printRecipe == nil && model.designImprovement == nil
-        && model.reinforcement == nil && model.autoImprovement == nil
+        && model.reinforcement == nil && model.autoImprovement == nil && model.printPreparation == nil
 }
 
 /// Model file extensions dropped from a library name before a suffix is added, so "bracket.stl" doesn't become

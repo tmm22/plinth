@@ -173,6 +173,8 @@ struct ModelsView: View {
                             if let detail = nameDetails[model.id] {
                                 Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                             }
+                            // "Preparing for printing…" while the automatic print-ready copy is made (PrintPreparation.swift).
+                            PrintPreparationRowNote(queue: store.printPreparationQueue, modelID: model.id)
                             StudioBadge(
                                 text: model.remoteID == nil ? "Ready to upload" : "Uploaded",
                                 tone: model.remoteID == nil ? .neutral : .success
@@ -279,6 +281,10 @@ struct ModelsView: View {
                                                         inherited: loaded.sourceDetails.isEmpty)
                             }
                         }
+                        if let local = store.selectedLocal {
+                            // The automatic print-ready copy: progress, or what it did (PrintPreparationView.swift).
+                            PrintPreparationPanel(queue: store.printPreparationQueue, model: local).id(local.id)
+                        }
                         scaleNoticeBlock
                         printConfigurationCard.id("print-configuration")
                         if let local = store.selectedLocal {
@@ -320,7 +326,7 @@ struct ModelsView: View {
         .dropDestination(for: URL.self) { urls, _ in
             // A model dragged out of this library is already in it, so it isn't imported again.
             let imports = modelDropURLsToImport(urls, supportDirectory: StudioStore.supportDirectory)
-            imports.forEach { store.importModel($0) }
+            imports.forEach { store.importModel($0, origin: .imported) }
             return !imports.isEmpty
         } isTargeted: { targeted = $0 }
     }
@@ -1013,7 +1019,7 @@ struct ModelsView: View {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { () -> URL in
                     let data = try mesh.scaledSTLData(by: factor)
-                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                    let folder = studioTempFolderURL(prefix: scaledCopyTempFolderPrefix)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     let url = folder.appendingPathComponent("\(name).stl")
                     do { try data.write(to: url, options: .atomic) }
@@ -1023,7 +1029,7 @@ struct ModelsView: View {
             }.value
             switch result {
             case .success(let url):
-                store.importModel(url, intent: intent, sourceDetails: details)
+                store.importModel(url, intent: intent, sourceDetails: details, origin: .studioToolCopy)
                 try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
             case .failure(let error):
                 store.showError(error.localizedDescription)
@@ -1050,7 +1056,7 @@ struct ModelsView: View {
                 try FileManager.default.moveItem(at: temp, to: path)
                 moved = true
                 defer { try? FileManager.default.removeItem(at: path) }
-                store.importModel(path)
+                store.importModel(path, origin: .downloadedFromSlant)
                 if let localID = store.selectedLocalID, let index = store.localModels.firstIndex(where: { $0.id == localID }) {
                     store.localModels[index].remoteID = id
                     store.localModels[index].name = (file["name"] as? String).flatMap {

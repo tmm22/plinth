@@ -99,7 +99,7 @@ func queuedImportNote(count: Int) -> String? {
         let urls = pending
         pending = []
         if isWaiting { isWaiting = false }
-        for url in urls { store.importModel(url) }
+        for url in urls { store.importModel(url, origin: .imported) }
         if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { openMainWindow?() }
     }
 }
@@ -220,7 +220,7 @@ extension StudioStore {
         let result = await Task.detached(priority: .userInitiated) {
             Result { () -> URL in
                 let data = try mesh.stlCopyData()
-                let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                let folder = studioTempFolderURL(prefix: stlCopyTempFolderPrefix)
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                 let url = folder.appendingPathComponent(fileName)
                 do { try data.write(to: url, options: .atomic) }
@@ -230,7 +230,8 @@ extension StudioStore {
         }.value
         switch result {
         case .success(let url):
-            if importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: sourceDetails)) {
+            if importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: sourceDetails),
+                           origin: .stlCopyOfOtherFormat) {
                 activities.insert(Activity(title: "Save STL copy", detail: model.name, success: true), at: 0)
             }
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
