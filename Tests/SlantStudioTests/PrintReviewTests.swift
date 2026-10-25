@@ -111,6 +111,38 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertTrue(printReviewNoProblemsLine.contains("overhangs on under 2% of the surface"))
     }
 
+    func testFactLinesNameExtraBodiesAndPartsUnderTwentyMillimetres() throws {
+        let small = try measure(try box(.zero, SIMD3(12, 15, 10)))
+        let lines = printReviewFactLines(small)
+        XCTAssertTrue(lines.contains(smallPartAdvisoryText))
+        XCTAssertFalse(lines.contains { $0.contains(meshBodyChargeNote) }, "one body has no body-charge line")
+        // Advice only: it doesn't change what the checks cover.
+        XCTAssertTrue(small.checksFoundNoProblems)
+
+        let two = try STLMesh.validated(corners(.zero, SIMD3(30, 30, 30)) + corners(SIMD3(40, 0, 0), SIMD3(70, 30, 30)))
+        let measured = try XCTUnwrap(measureForPrintReview(two, wallSamples: 500))
+        XCTAssertEqual(measured.health.shells, 2)
+        let twoLines = printReviewFactLines(measured)
+        XCTAssertTrue(twoLines.contains(meshBodyChargeAdvisory(bodies: 2)))
+        XCTAssertFalse(twoLines.contains(smallPartAdvisoryText))
+        XCTAssertFalse(twoLines.contains(printReviewNoProblemsLine))
+    }
+
+    func testPromptUsesSlantsPublishedSettings() {
+        let prompt = printReviewSystemPrompt
+        for phrase in ["0.2 mm layers (0.3 mm first layer)", "0.4 mm nozzle", "1 mm walls (about 2 lines)", "25% grid-like infill",
+                       "overhangs up to 50° from vertical", "no brims", "textured bed", "220 mm cube build volume",
+                       "re-orienting only an obviously wrong upload", "Not published: the line width, the tolerances Slant holds and which slicer it uses",
+                       "mostly sparse infill", "One connected body", "about $0.39 each", "a cavity open to the outside is not",
+                       "about 0.25 mm wide", "at least about 20 mm on a side", "Slant allows 50°; 45° leaves a margin",
+                       "Studio's assumed 0.45 mm lines", "Never say a part is strong"] {
+            XCTAssertTrue(prompt.contains(phrase), phrase)
+        }
+        for gone in ["nobody can see", "two perimeters", "low infill", "multiples of about 0.45 mm", "matched to the line width"] {
+            XCTAssertFalse(prompt.contains(gone), gone)
+        }
+    }
+
     func testOverhangsAboveTheLimitMeanTheChecksFoundSomething() throws {
         let sound = try measure(try box(.zero, SIMD3(20, 30, 40)))
         func with(_ overhang: OverhangShare) -> PrintReviewMeasurements {

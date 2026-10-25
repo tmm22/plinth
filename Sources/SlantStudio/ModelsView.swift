@@ -605,8 +605,19 @@ struct ModelsView: View {
                             .disabled(savingScaledCopy || store.busy)
                         }
                     }
+                    if let advisory = smallPartAdvisory(extentMM: loaded.mesh.maximum - loaded.mesh.minimum) {
+                        Text(advisory).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
+        } else if let local = store.selectedLocal, let loaded = previewMesh, loaded.url == local.url,
+                  let advisory = smallPartAdvisory(extentMM: loaded.mesh.maximum - loaded.mesh.minimum) {
+            // Advice only: upload, estimate and the draft stay available.
+            Label(advisory, systemImage: "info.circle")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
         }
     }
 
@@ -771,7 +782,7 @@ struct ModelsView: View {
                         Spacer()
                     }
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(displayedEstimateRows(estimate), id: \.0) { row in
+                        ForEach(displayedEstimateRows(estimate, bodyCount: estimateBodyCount(estimateContext: store.estimateContext, file: selectedCloud)), id: \.0) { row in
                             HStack {
                                 Text(row.0).foregroundStyle(.secondary)
                                 Spacer()
@@ -1260,11 +1271,12 @@ struct ImportFromURLSheet: View {
 /// - `subtotal` ("before surcharges"): live replies differ from the price per unit even with no surcharges (7.64
 ///   against 9.93), so listing it beside the total reads as a contradiction.
 /// Surcharges, which `total` includes, are listed only when one is charged.
-func estimateRows(_ estimate: [String: Any]) -> [(String, String)] {
+/// `bodyCount` is Slant's `metrics.bodyCount` for the estimated file, when known; it names the body charge.
+func estimateRows(_ estimate: [String: Any], bodyCount: Int? = nil) -> [(String, String)] {
     var rows: [(String, String)] = []
     if estimate["pricePerUnit"] != nil { rows.append(("Price per unit", money(estimate["pricePerUnit"]))) }
     if let quantity = estimate["quantity"] { rows.append(("Quantity", String(describing: quantity))) }
-    if estimateAmountIsCharged(estimate["bodyChargeCost"]) { rows.append(("Multi-part charge", money(estimate["bodyChargeCost"]))) }
+    if estimateAmountIsCharged(estimate["bodyChargeCost"]) { rows.append((estimateBodyChargeLabel(bodyCount: bodyCount), money(estimate["bodyChargeCost"]))) }
     if estimateAmountIsCharged(estimate["oversizeSurcharge"]) { rows.append(("Oversize fee", money(estimate["oversizeSurcharge"]))) }
     if estimate["total"] != nil { rows.append(("Total", money(estimate["total"]))) }
     return rows
@@ -1282,8 +1294,33 @@ func estimateAmountIsCharged(_ value: Any?) -> Bool {
     return decimal > 0
 }
 
-func displayedEstimateRows(_ estimate: [String: Any]) -> [(String, String)] {
-    estimateRows(estimate).filter { $0.0 != "Total" && $0.0 != "Quantity" }
+func displayedEstimateRows(_ estimate: [String: Any], bodyCount: Int? = nil) -> [(String, String)] {
+    estimateRows(estimate, bodyCount: bodyCount).filter { $0.0 != "Total" && $0.0 != "Quantity" }
+}
+
+/// "Charge for 9 extra bodies" when Slant's body count for the file is known and above one, else a plain name.
+func estimateBodyChargeLabel(bodyCount: Int?) -> String {
+    guard let bodyCount, bodyCount > 1 else { return "Charge for extra bodies" }
+    let extra = bodyCount - 1
+    return "Charge for \(extra.formatted()) extra \(extra == 1 ? "body" : "bodies")"
+}
+
+/// The body count to name the estimate's body charge with: only from the file the estimate was made for
+/// (`estimateContext` starts with its file ID), so a previous file's estimate never borrows another file's count.
+func estimateBodyCount(estimateContext: String, file: Record?) -> Int? {
+    guard let file, let estimated = estimateContext.split(separator: "|", omittingEmptySubsequences: false).first,
+          !estimated.isEmpty, String(estimated) == file.id else { return nil }
+    return slantBodyCount(file.metrics)
+}
+
+/// Slant's `metrics.bodyCount` as a whole number of at least 1; nil when absent, null, fractional or unreadable.
+func slantBodyCount(_ metrics: [String: Any]) -> Int? {
+    let value: Double
+    if let number = metrics["bodyCount"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { value = number.doubleValue }
+    else if let text = metrics["bodyCount"] as? String, let parsed = Double(text.trimmingCharacters(in: .whitespaces)) { value = parsed }
+    else { return nil }
+    guard value.isFinite, value >= 1, value <= 1_000_000, value == value.rounded() else { return nil }
+    return Int(value)
 }
 
 func estimateDisabledReason(hasKey: Bool, fileID: String, filamentID: String, busy: Bool, materialAvailable: Bool? = nil) -> String? {
@@ -1365,7 +1402,7 @@ func money(_ value: Any?) -> String {
 }
 
 func metricName(_ key: String) -> String {
-    ["x": "Width", "y": "Depth", "z": "Height", "weight": "Weight", "volume": "Volume", "bodyCount": "Parts", "printTimeEstimate": "Print time",
+    ["x": "Width", "y": "Depth", "z": "Height", "weight": "Weight", "volume": "Volume", "bodyCount": "Bodies", "printTimeEstimate": "Print time",
      "supportRequired": "Needs supports", "supportVolumeEstimate": "Support volume (est.)"][key] ?? key
 }
 

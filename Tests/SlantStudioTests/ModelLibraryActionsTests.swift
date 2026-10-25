@@ -174,6 +174,28 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertNotNil(scaleWarning(extentMM: SIMD3(2, 0, 0)))
     }
 
+    func testSmallPartAdvisoryBelowSlantsRecommendedSizeCoexistsWithTheScaleCheck() {
+        XCTAssertEqual(smallPartAdvisory(extentMM: SIMD3(19.9, 5, 5)), "Slant recommends parts at least about 20 mm across; smaller parts may print poorly.")
+        XCTAssertEqual(smallPartAdvisory(extentMM: SIMD3(12, 8, 4)), smallPartAdvisoryText)
+        // At or above 20 mm on the largest side, nothing to say.
+        XCTAssertNil(smallPartAdvisory(extentMM: SIMD3(20, 1, 1)))
+        XCTAssertNil(smallPartAdvisory(extentMM: SIMD3(120, 80, 40)))
+        // Under 3 mm, both the unit check and the size advice apply.
+        let tiny = SIMD3<Float>(2, 1, 0.5)
+        XCTAssertNotNil(scaleWarning(extentMM: tiny))
+        XCTAssertEqual(smallPartAdvisory(extentMM: tiny), smallPartAdvisoryText)
+        // Between 3 and 20 mm only the size advice applies; the 3 mm check is unchanged.
+        XCTAssertNil(scaleWarning(extentMM: SIMD3(10, 10, 10)))
+        XCTAssertNotNil(smallPartAdvisory(extentMM: SIMD3(10, 10, 10)))
+        // Empty or unreadable boxes say nothing.
+        XCTAssertNil(smallPartAdvisory(extentMM: .zero))
+        XCTAssertNil(smallPartAdvisory(extentMM: SIMD3(.nan, 5, 5)))
+        XCTAssertNil(smallPartAdvisory(extentMM: SIMD3(.infinity, 1, 1)))
+        for banned in ["strong", "safe", "guaranteed", "can’t", "cannot", "blocked"] {
+            XCTAssertFalse(smallPartAdvisoryText.lowercased().contains(banned), banned)
+        }
+    }
+
     func testScaledCopyOnlyForPlainImports() {
         var model = LocalModel(name: "Bracket", filePath: "/tmp/bracket.stl")
         XCTAssertTrue(canSaveScaledCopy(model))

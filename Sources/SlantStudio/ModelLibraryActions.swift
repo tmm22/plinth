@@ -162,6 +162,19 @@ func scaleWarning(extentMM: SIMD3<Float>) -> ScaleWarning? {
     return ScaleWarning(largestMM: largest, suggestions: suggestions)
 }
 
+/// Slant's own recommendation: nothing smaller than about 20 mm on a side.
+let slantRecommendedSmallestPartMM: Float = 20
+let smallPartAdvisoryText = "Slant recommends parts at least about 20 mm across; smaller parts may print poorly."
+
+/// Advice, never a block: shown when the model's largest side is under Slant's recommended 20 mm, beside the 3 mm
+/// scale check when both apply. Nil for an empty or unreadable box.
+func smallPartAdvisory(extentMM: SIMD3<Float>) -> String? {
+    guard extentMM.x.isFinite, extentMM.y.isFinite, extentMM.z.isFinite else { return nil }
+    let largest = max(extentMM.x, extentMM.y, extentMM.z)
+    guard largest > 0, largest < slantRecommendedSmallestPartMM else { return nil }
+    return smallPartAdvisoryText
+}
+
 /// Scaled copies are only offered for plain imports, whose records don't carry dimension-dependent data. The copy is
 /// always a binary STL, so an OBJ or 3MF original is kept as it is.
 func canSaveScaledCopy(_ model: LocalModel) -> Bool {

@@ -168,8 +168,10 @@ func printReviewFactLines(_ m: PrintReviewMeasurements) -> [String] {
     lines.append(m.fitsBuildVolume
                  ? "Fits Slant’s 220 mm build volume."
                  : "Larger than Slant’s 220 mm build volume: the longest side is \(mm(m.sizeMM.max())).")
+    if let small = smallPartAdvisory(extentMM: m.sizeMM) { lines.append(small) }
     lines.append("Triangles: \(m.triangles.formatted()).")
     lines.append(printReviewMeshCheckLine(m.health))
+    if m.health.shells > 1 { lines.append(meshBodyChargeAdvisory(bodies: m.health.shells)) }
     let wall = m.wallSummary
     lines.append(wall.line + ".")
     lines.append(contentsOf: wall.details)
@@ -927,8 +929,13 @@ let printReviewRenderPixelSize = 768
 let printReviewRenderRasterBudget = 120_000_000
 
 let printReviewSystemPrompt = """
-You review 3D models for FDM printing for a small online seller who uses Slant Studio. A print partner prints them \
-with settings nobody can see: assume about two perimeters (about 0.9 mm), low infill, 0.2 mm layers and no supports.
+You review 3D models for FDM printing for a small online seller who uses Slant Studio. Slant 3D prints them on \
+demand with fixed settings it publishes, which can't be changed for an order or a part: 0.2 mm layers (0.3 mm first \
+layer), a 0.4 mm nozzle, 1 mm walls (about 2 lines), 25% grid-like infill, overhangs up to 50° from vertical, no \
+brims, a textured bed and a 220 mm cube build volume. Slant prints the model in the orientation it is uploaded in, \
+re-orienting only an obviously wrong upload, so the placement the seller uploads is how it prints. Slant decides at \
+upload whether supports are needed, prices supports, surface area and failure risk, and charges extra for each \
+separate body. Not published: the line width, the tolerances Slant holds and which slicer it uses.
 
 You get four orthographic renders of the model as it is placed in its file (Z up; Front looks at the −Y side, Side \
 looks at the +X side, Top looks straight down, Three-quarter is from the front right, above) and Studio's own \
@@ -936,8 +943,14 @@ measurements. Studio measured the mesh itself: trust its numbers over what the p
 Thin-spot positions are measured from the model's lowest corner.
 
 Guidelines for parts that print well:
-- Load-bearing walls 2.0 mm or more, never under 1.0 mm; wall thicknesses in multiples of about 0.45 mm.
-- Overhangs no more than 45° from vertical; horizontal holes as teardrops; bridges under 5 mm.
+- Load-bearing walls 2.0 mm or more (several lines), never under 1.0 mm. With 1 mm walls and 25% infill, a thick \
+solid region is mostly sparse infill: for load, walls and ribs do more than solid bulk.
+- One connected body. More than one shell (separate pieces, or closed hidden pockets inside) is billed as extra bodies \
+(about $0.39 each in a test); a cavity open to the outside is not. Thin slots about 0.25 mm wide that open through \
+the bottom face make the slicer add walls and keep one body.
+- Parts at least about 20 mm on a side, as Slant recommends; flag smaller ones as advice, not a reason to refuse.
+- Overhangs no more than 45° from vertical (Slant allows 50°; 45° leaves a margin); horizontal holes as teardrops; \
+bridges under 5 mm. Fewer supports cost less.
 - A flat base on the bed, with about a 0.5 mm chamfer on the bottom edge.
 - Fillets where features meet (stress roots); loads along the layers (in X and Y), not across them.
 - Pins and posts 3–5 mm or more; embossed detail about 1 mm; printed fits 0.2–0.3 mm clearance per side.
@@ -962,8 +975,8 @@ Studio's suggested cut is in the measurements.
 - plinth (shape: round or rectangular; margin_mm 1–30; thickness_mm 1–20): a base with a chamfered bottom edge under \
 the whole model, for tall or top-heavy figures. Choose a flat base or a plinth, not both.
 - auto_improve: Studio's Auto-improve places the part for its purpose (unless its placement is fixed) and adds only \
-treatments that pass its checks: bridging for counterbores, chamfers under ledges, walls matched to the line width \
-and fillets in inside corners. Accepts up to 20,000 triangles. It must be the last step that changes the model, and \
+treatments that pass its checks: bridging for counterbores, chamfers under ledges, thin walls thickened on the \
+inside to a whole number of Studio's assumed 0.45 mm lines, and fillets in inside corners. Accepts up to 20,000 triangles. It must be the last step that changes the model, and \
 it doesn't go with orient. Suggest it for functional parts.
 - manual (text): anything the tools above can't do, which the seller does elsewhere. Prefer Studio's own tools: \
 "Use Reinforce in Studio to add a gusset under the arm" or "Use Reinforce to add a rib along the handle" before \

@@ -53,6 +53,8 @@ enum AutoImprover {
 
     static let maximumLedgeDepth: Float = 15
     static let maximumFillets = 12
+    /// Studio's assumed extrusion line width for wall matching. Slant publishes 1 mm walls (about 2 lines) and a
+    /// 0.4 mm nozzle, but not its line width, so this is an assumption, not Slant's figure.
     static let lineWidth: Float = 0.45
 
     /// Prepared or Z-up-locked copies keep their axes; others use the purpose-based placement.
