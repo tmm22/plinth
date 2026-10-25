@@ -160,6 +160,11 @@ private func counted(_ n: Int, _ singular: String, _ plural: String) -> String {
     "\(n.formatted()) \(n == 1 ? singular : plural)"
 }
 
+/// The body line when every extra body is a hidden pocket: the pocket line below gives the cost.
+func meshBodyPocketsNote(bodies: Int) -> String {
+    "\(bodies.formatted()) separate bodies: the extra ones are hidden pockets, explained in the hidden-pocket line below."
+}
+
 /// What Slant's estimates showed for extra bodies (live test, 25 Oct 2026: nine closed internal voids in a block gave
 /// 10 bodies and a $3.50 `bodyChargeCost`; the same slots open to the bottom face kept one body and no charge).
 let meshBodyChargeNote = "Slant charges extra for each body after the first (about $0.39 each in a test on 25 Oct 2026)."
@@ -173,7 +178,9 @@ func meshBodyChargeAdvisory(bodies: Int, objectCount: Int = 1) -> String {
 
 /// `objectCount` is the number of objects a 3MF places (1 for STL and OBJ). When each object is exactly one part,
 /// separate parts are expected and aren't flagged as a problem, though the body charge is still noted.
-func meshHealthSummary(_ report: MeshHealthReport, objectCount: Int = 1) -> MeshHealthSummary {
+/// `pocketsExplainBodies`: every extra body is a hidden pocket (`hiddenPocketsAccountForExtraBodies`), so the body line
+/// points to the pocket line, which gives the cost, instead of repeating it.
+func meshHealthSummary(_ report: MeshHealthReport, objectCount: Int = 1, pocketsExplainBodies: Bool = false) -> MeshHealthSummary {
     guard report.triangleCount > 0 else {
         return MeshHealthSummary(title: "No triangles to check", details: [], isClean: true)
     }
@@ -194,7 +201,8 @@ func meshHealthSummary(_ report: MeshHealthReport, objectCount: Int = 1) -> Mesh
         details.append("The faces point inward. Slicers may read this as a hollow; Repair & Save Copy, in Improve for printing, can turn them outward.")
     }
     if report.shells > 1, !onePartPerObject {
-        details.append(meshBodyChargeAdvisory(bodies: report.shells, objectCount: objectCount))
+        details.append(pocketsExplainBodies ? meshBodyPocketsNote(bodies: report.shells)
+                       : meshBodyChargeAdvisory(bodies: report.shells, objectCount: objectCount))
     }
     let hasIssues = !details.isEmpty
     if onePartPerObject {
@@ -228,12 +236,21 @@ struct MeshHealthPanel: View {
     @State private var report: MeshHealthReport?
     @State private var reportKey = ""
     @State private var expanded = false
+    /// The pocket check for an STL with extra bodies (shared with `HiddenPocketsCheck` through its cache).
+    @State private var pockets: HiddenPocketsReport?
+
+    private func pocketsExplainBodies(_ report: MeshHealthReport) -> Bool {
+        if let saved = model.printPreparation?.hiddenPockets {
+            return saved.count > 0 && saved.incomplete != true && saved.removableBodies == report.shells - 1
+        }
+        return hiddenPocketsAccountForExtraBodies(report, pockets)
+    }
 
     var body: some View {
         let taskID = "\(model.id.uuidString)|\(model.filePath)|\(mesh.triangleCount)"
         Group {
             if let report, reportKey == taskID {
-                let summary = meshHealthSummary(report, objectCount: objectCount)
+                let summary = meshHealthSummary(report, objectCount: objectCount, pocketsExplainBodies: pocketsExplainBodies(report))
                 let label = Label(summary.line, systemImage: summary.isClean ? "checkmark.circle" : "info.circle")
                     .font(.callout)
                     .foregroundStyle(summary.isClean ? Color.green : Color.primary)
@@ -274,20 +291,26 @@ struct MeshHealthPanel: View {
             let url = model.url
             let modified = await Task.detached(priority: .utility) { fileModificationDate(url) }.value
             let key = meshHealthCacheKey(modelID: model.id, path: model.filePath, modified: modified)
+            let result: MeshHealthReport
             if let cached = MeshHealthCache.reports[key] {
-                report = cached
-                reportKey = taskID
-                return
+                result = cached
+            } else {
+                let mesh = mesh
+                let worker = Task.detached(priority: .userInitiated) {
+                    analyzeMeshHealth(mesh, isCancelled: { Task.isCancelled })
+                }
+                guard let found = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() }),
+                      !Task.isCancelled else { return }
+                MeshHealthCache.reports[key] = found
+                result = found
             }
-            let mesh = mesh
-            let worker = Task.detached(priority: .userInitiated) {
-                analyzeMeshHealth(mesh, isCancelled: { Task.isCancelled })
-            }
-            let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-            guard !Task.isCancelled, let result else { return }
-            MeshHealthCache.reports[key] = result
             report = result
             reportKey = taskID
+            // Extra bodies on an STL: whether they are hidden pockets, so the body line can point to the pocket line.
+            pockets = nil
+            if result.shells > 1, hiddenPocketsCheckApplies(model), mesh.triangleCount <= hiddenPocketsMaximumTriangles {
+                pockets = await hiddenPocketsCachedReport(key: hiddenPocketsCacheKey(modelID: model.id, path: model.filePath), mesh: mesh)
+            }
         }
     }
 }

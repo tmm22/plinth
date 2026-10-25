@@ -324,6 +324,8 @@ enum InternalWallsFeatureSkipReason: String, Codable, Sendable, CaseIterable {
     case limitReached
     /// Its opening couldn't be joined into the bed face's fill.
     case couldNotJoin
+    /// A hollow boss: a slot through its middle would cut into its hole.
+    case hollow
 
     var index: Int { Self.allCases.firstIndex(of: self)! }
 }
@@ -376,6 +378,8 @@ func internalWallsSkipNote(_ kind: InternalWallsKind, _ skip: InternalWallsFeatu
     case .wouldRemoveTooMuch: why = "it would remove too much of the part"
     case .limitReached: why = "Studio’s limit per part was reached"
     case .couldNotJoin: why = "its opening couldn’t be joined into the base"
+    case .hollow: why = skip.count == 1 ? "it is hollow, so a slot through its middle would cut into its hole"
+        : "they are hollow, so a slot through the middle would cut into the hole"
     }
     return "\(kind.subject(skip.count).prefix(1).uppercased())\(kind.subject(skip.count).dropFirst()) \(verb) \(treatment): \(why)."
 }
@@ -407,10 +411,40 @@ struct InternalWallsBore: Equatable, Sendable {
     let radiusMM: Float
 }
 
-/// The part of space a bore's own surfaces lie in: a vertical cylinder.
+/// The part of space a bore's own surfaces lie in: a vertical cylinder, widening by `slope` per millimetre above
+/// `floorZ` for a bore drawn with a draft (`internalWallsBoreDraftSlope`).
 struct InternalWallsCylinder: Equatable, Sendable {
     let centre: SIMD2<Float>
     let radius: Float
+    var floorZ: Float = 0
+    var slope: Float = 0
+
+    func contains(_ q: SIMD3<Float>) -> Bool {
+        let r = slope > 0 ? radius + slope * max(0, q.z - floorZ) : radius
+        return simd_distance_squared(SIMD2(q.x, q.y), centre) <= r * r
+    }
+}
+
+/// tan 1°: bores drawn with up to about 1° of draft (wider at the top, as moulded parts often are) still count as the
+/// bore's own surfaces.
+let internalWallsBoreDraftSlope: Float = 0.017455
+
+/// How much `cylinder`'s bore widens per millimetre of height, from the corners of the triangles that lie within its
+/// largest allowed draft (up to `internalWallsBoreDraftSlope`); 0 for a straight bore.
+func internalWallsBoreDraft(_ cylinder: InternalWallsCylinder, corners: [SIMD3<Float>], floor: Float) -> Float {
+    let widest = InternalWallsCylinder(centre: cylinder.centre, radius: cylinder.radius, floorZ: floor, slope: internalWallsBoreDraftSlope)
+    var slope: Float = 0
+    var t = 0
+    while t + 2 < corners.count {
+        let a = corners[t], b = corners[t + 1], c = corners[t + 2]
+        t += 3
+        guard widest.contains(a), widest.contains(b), widest.contains(c) else { continue }
+        for q in [a, b, c] where q.z > floor + 0.01 {
+            let grow = (simd_distance(SIMD2(q.x, q.y), cylinder.centre) - cylinder.radius) / (q.z - floor)
+            if grow > slope { slope = grow }
+        }
+    }
+    return min(slope, internalWallsBoreDraftSlope)
 }
 
 /// One ring: the gap between two regular polygons with the same corners' angles, from the bed face up.
@@ -731,6 +765,8 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
     others.reserveCapacity((count - isBed.filter { $0 }.count) * 3)
     for t in 0..<count where !isBed[t] { others.append(corner(t, 0)); others.append(corner(t, 1)); others.append(corner(t, 2)) }
     let nearest = InternalWallsDistanceIndex(corners: others)
+    // Kept for measuring a bore's draft.
+    let surfaceCorners = wallPlan.holeRings ? others : []
     others = []
     if isCancelled() { throw InternalWallsError.stopped }
 
@@ -745,12 +781,21 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
     let ceiling = bounds.high.z
     let up = SIMD3<Float>(0, 0, 1)
 
-    // Walls already planned: every later wall keeps its own clearance from them too.
-    var featureCorners: [SIMD3<Float>] = []
-    var features = InternalWallsDistanceIndex(corners: [])
+    // Walls already planned: every later wall keeps its own clearance from them too. They are indexed in levels, as a
+    // binary counter merges: each new wall is a level of its own, and levels holding as many walls as the new one are
+    // merged into it and indexed again. Every wall is rebuilt about log₂ n times rather than once per later wall, and a
+    // query visits about log₂ n indexes. The nearest distance is the same whichever index holds a wall.
+    var featureLevels: [(walls: Int, corners: [SIMD3<Float>], index: InternalWallsDistanceIndex)] = []
     func distance(_ p: SIMD3<Float>, within limit: Float, ignoring bore: InternalWallsCylinder? = nil) -> Float {
         let surfaces = bore.map { nearest.distance(to: p, within: limit, ignoringInside: $0) } ?? nearest.distance(to: p, within: limit)
-        return min(surfaces, features.distance(to: p, within: limit))
+        // As `min(surfaces, index.distance(…))` over one index of every wall, which returns `limit` when empty.
+        guard !featureLevels.isEmpty else { return min(surfaces, limit) }
+        var nearestWall = Float.infinity
+        for level in featureLevels {
+            let d = level.index.distance(to: p, within: limit)
+            if d < nearestWall { nearestWall = d }
+        }
+        return min(surfaces, nearestWall)
     }
 
     /// The highest clear slot top for a column at (`u` along, `p` across), or nil when the column can't take a slot.
@@ -850,8 +895,15 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
     }
 
     func addFeature(_ append: (inout [SIMD3<Float>]) -> Void) {
-        append(&featureCorners)
-        features = InternalWallsDistanceIndex(corners: featureCorners)
+        var corners: [SIMD3<Float>] = []
+        append(&corners)
+        var walls = 1
+        while let last = featureLevels.last, last.walls <= walls {
+            corners = last.corners + corners
+            walls += last.walls
+            featureLevels.removeLast()
+        }
+        featureLevels.append((walls, corners, InternalWallsDistanceIndex(corners: corners)))
     }
 
     let targetedBudget = options.maximumTargetedRemovedFraction * before.signedVolume
@@ -876,7 +928,11 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
                 ceilingZ = floor - 1 + hit.distance
             }
             holes += 1
-            let cylinder = InternalWallsCylinder(centre: bore.centre, radius: bore.radiusMM + internalWallsBoreRadiusToleranceMM)
+            var cylinder = InternalWallsCylinder(centre: bore.centre, radius: bore.radiusMM + internalWallsBoreRadiusToleranceMM)
+            // A bore drawn with a little draft widens upward; its own walls stay ignored, and the ring stops where the
+            // band between them would be under 1 mm.
+            let draft = internalWallsBoreDraft(cylinder, corners: surfaceCorners, floor: floor)
+            if draft > 0 { cylinder = InternalWallsCylinder(centre: bore.centre, radius: cylinder.radius, floorZ: floor, slope: draft) }
             let innerRadius = cylinder.radius + internalWallsRingWallMM
             let shape = internalWallsRingOutlines(centre: bore.centre, innerRadius: innerRadius, outerRadius: innerRadius + w)
             var top = Float.greatestFiniteMagnitude
@@ -890,6 +946,7 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
             }
             if let failure { note(.holeRing, failure); continue }
             if let ceilingZ { top = min(top, ceilingZ - internalWallsRingBlindTopClearanceMM) }
+            if draft > 0 { top = min(top, floor + (internalWallsRingWallMM - internalWallsTargetedClearanceMM) / draft) }
             guard top - floor >= internalWallsMinimumSlotHeightMM else { note(.holeRing, .tooShort); continue }
             let ring = InternalWallsRing(centre: bore.centre, boreRadiusMM: bore.radiusMM, blind: ceilingZ != nil, floorZ: floor,
                                          topZ: top, inner: shape.inner, outer: shape.outer,
@@ -930,7 +987,18 @@ func internalWallsCopy(of mesh: STLMesh, options: InternalWallsOptions = Interna
             if isCancelled() { throw InternalWallsError.stopped }
             // Centre the probe from below the top, where a chamfer has ended.
             let probeZ = top.z - 0.75
-            guard probeZ > floor, var s = section(top.centre, probeZ) else { continue }
+            guard probeZ > floor else { continue }
+            guard var s = section(top.centre, probeZ) else {
+                // A hollow boss: its flat top is a ring, and its middle is the hole. A slot through the middle would
+                // cut into the hole, so it gets none, and says why.
+                let middle = SIMD3<Float>(top.centre.x, top.centre.y, probeZ)
+                let above = rays.firstHit(from: middle, along: up)
+                if above.map({ $0.normal.z < 0 }) ?? true, top.size.max() <= widest {
+                    pinsFound += 1
+                    note(.pinSlot, .hollow)
+                }
+                continue
+            }
             var centre = SIMD2<Float>((s.low.x + s.high.x) / 2, top.centre.y)
             guard let sy = section(centre, probeZ) else { continue }
             centre.y = (sy.low.y + sy.high.y) / 2
@@ -1693,8 +1761,7 @@ struct InternalWallsDistanceIndex {
     /// `limit` when none is nearer.
     func distance(to p: SIMD3<Float>, within limit: Float, ignoringInside cylinder: InternalWallsCylinder) -> Float {
         guard !low.isEmpty else { return limit }
-        let radiusSquared = cylinder.radius * cylinder.radius
-        func inside(_ q: SIMD3<Float>) -> Bool { simd_distance_squared(SIMD2(q.x, q.y), cylinder.centre) <= radiusSquared }
+        func inside(_ q: SIMD3<Float>) -> Bool { cylinder.contains(q) }
         var best = limit * limit
         // A stack on the stack, not the heap: this runs for every query.
         withUnsafeTemporaryAllocation(of: Int.self, capacity: 64) { stack in

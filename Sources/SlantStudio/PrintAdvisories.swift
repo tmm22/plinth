@@ -38,6 +38,9 @@ func overhangShare(_ mesh: STLMesh, limitDegrees: Double) -> OverhangShare {
 enum PrintAdvisoryKind: String, CaseIterable, Sendable {
     /// In report order.
     case smallBedContact, tipping, steepOverhangs, slenderUpright, thinPin, holeNearEdge, sharpFootprintCorners
+
+    /// Kept in view even when the rest of a list is collapsed: a part that lifts or tips can fail the whole print.
+    var alwaysShown: Bool { self == .smallBedContact || self == .tipping }
 }
 
 struct PrintAdvisory: Identifiable, Equatable, Sendable {
@@ -48,6 +51,9 @@ struct PrintAdvisory: Identifiable, Equatable, Sendable {
     var location: SIMD3<Float>? = nil
     /// The main figure: mm² of bed contact, a share (0–1) of the surface for overhangs, otherwise millimetres.
     var figure: Double? = nil
+    /// Every figure the line is built from, in `printAdvisoryMessage`'s order, so a saved advisory is rebuilt in the
+    /// current wording when it is shown.
+    var values: [Double] = []
     var id: String { "\(kind.rawValue)|\(message)" }
 }
 
@@ -70,71 +76,126 @@ let holeEdgeDistanceRatio: Float = 1.5
 let holeEdgeMinimumDiameterMM: Float = 1.2
 let holeEdgeMaximumDiameterMM: Float = 12
 let holeEdgeMaximumHoles = 32
-/// A bed contact longer than this with corners turning at least `sharpCornerMinimumTurnDegrees` (90° or sharper,
-/// with a little slack) is reported.
+/// A bed contact longer than this, and at least `sharpFootprintMinimumWidthMM` the other way, with corners turning at
+/// least `sharpCornerMinimumTurnDegrees` (90° or sharper, with a little slack) is reported.
 let sharpFootprintMinimumLengthMM: Float = 100
+let sharpFootprintMinimumWidthMM: Float = 60
 let sharpCornerMinimumTurnDegrees: Double = 85
+
+/// Upright-feature notes are about loads, so they appear only for a saved bracket, clip or custom purpose: never for a
+/// missing purpose or a decorative one.
+func slenderUprightAdvisoryApplies(_ intent: PartIntent?) -> Bool {
+    guard let purpose = intent?.purpose else { return false }
+    return purpose == .bracket || purpose == .clip || purpose == .custom
+}
+
+/// The line for an advisory, built from its figures (`PrintAdvisory.values`), or nil when they don't fit the kind.
+/// `onCopy`: the line is for a print-ready copy, whose Size and base tools are blocked, so a base is added to the
+/// original. Positions are measured from the model's lowest corner.
+func printAdvisoryMessage(_ kind: PrintAdvisoryKind, values v: [Double], onCopy: Bool = false) -> String? {
+    guard v.allSatisfy(\.isFinite) else { return nil }
+    func at(_ i: Int) -> String { String(format: "X %.0f, Y %.0f, Z %.0f", v[i], v[i + 1], v[i + 2]) }
+    switch kind {
+    case .smallBedContact:
+        // [has a flat contact (0 or 1), contact mm², minimum mm²]
+        guard v.count == 3 else { return nil }
+        return printPlacementSmallContactText(contactMM2: v[0] > 0 ? Float(v[1]) : nil, minimumMM2: Float(v[2]), onCopy: onCopy)
+    case .tipping:
+        // [kind, height, contact width]
+        guard v.count == 3, let tipping = PrintPlacementTipping(rawValue: Int(v[0])) else { return nil }
+        return printPlacementTippingText(tipping, heightMM: Float(v[1]), widthMM: Float(v[2]), onCopy: onCopy)
+    case .steepOverhangs:
+        // [share, mm²]
+        guard v.count == 2 else { return nil }
+        return "Overhangs: \(percentLabel(v[0])) of the surface (\(Int(v[1].rounded()).formatted()) mm²) faces down more steeply than Slant’s 50° limit, as placed. Those areas may sag or print rough; a different placement, or Reinforce’s overhang chamfer under them, helps."
+    case .slenderUpright:
+        // [x, y, z, height, thickness]
+        guard v.count == 5 else { return nil }
+        return String(format: "Slender upright feature near %@: about %.0f mm tall and %.1f mm thick, standing up as placed. ", at(0), v[3], v[4])
+            + "Layers run across it, and the bond between layers is the weakest direction in a print, so it is likely weaker standing than lying flat. If it carries load, add a rib or gusset in Reinforce, or set its purpose and stress direction in Optimise for purpose on the original and use Make Print-Ready Copy."
+    case .thinPin:
+        // [x, y, z, width]
+        guard v.count == 4 else { return nil }
+        return String(format: "Pin or post about %.1f mm across near %@. Pins and posts under 3 mm across can snap; they print best at 3–5 mm or more.", v[3], at(0))
+    case .holeNearEdge:
+        // [x, y, z, diameter, centre-to-edge distance]
+        guard v.count == 5, v[3] > 0 else { return nil }
+        return String(format: "⌀%.1f mm hole near %@: about %.1f mm from its centre to the nearest edge (%.1f diameters). Studies of pin-loaded holes use about 3 diameters; a hole this close is more likely to tear out under load, so moving it inward or adding material around it helps.", v[3], at(0), v[4], v[4] / v[3])
+    case .sharpFootprintCorners:
+        // [length, corners]
+        guard v.count == 2, v[1] >= 1 else { return nil }
+        let corners = Int(v[1]) == 1 ? "1 sharp corner" : "\(Int(v[1])) sharp corners"
+        return String(format: "Large flat footprint, about %.0f mm long, with %@. Large flat parts can lift at sharp corners (Slant uses no brims); round the corners in your CAD tool.", v[0], corners)
+    }
+}
 
 /// Advisories for `mesh`, at most `printAdvisoryMaximumCount`, no more than `printAdvisoryMaximumPerKind` of a kind,
 /// without repeats, in `PrintAdvisoryKind` order.
 /// - `placed`: the mesh is as it will print (Slant keeps the uploaded orientation). Bed contact, tipping, overhangs
 ///   past 50°, upright features and footprint corners need it; thin pins and holes near an edge don't.
-/// - `intent`: a decorative part gets no upright-feature or hole-edge notes, which are about loads.
+/// - `intent`: the saved purpose. Upright features need a bracket, clip or custom one
+///   (`slenderUprightAdvisoryApplies`); a decorative part gets no hole-edge notes either.
 /// - `wallThickness`: an existing `analyzeWallThickness` report for this mesh, to avoid measuring twice.
+/// - `onCopy`: for a print-ready copy. Its base advice points to the original, and overhangs past 50° are left to
+///   the copy's overhang line (`printPreparationOverhangLine`).
 /// Empty when cancelled.
 func printAdvisories(for mesh: STLMesh, placed: Bool, intent: PartIntent?, wallThickness: WallThicknessReport? = nil,
-                     isCancelled: () -> Bool = { false }) -> [PrintAdvisory] {
+                     onCopy: Bool = false, isCancelled: () -> Bool = { false }) -> [PrintAdvisory] {
     guard mesh.triangleCount > 0 else { return [] }
     let origin = mesh.minimum
     let functional = intent?.purpose != .decorative
     var found: [PrintAdvisory] = []
-    func at(_ p: SIMD3<Float>) -> String {
+    func add(_ kind: PrintAdvisoryKind, _ values: [Double], location: SIMD3<Float>? = nil, figure: Double? = nil) {
+        guard let message = printAdvisoryMessage(kind, values: values, onCopy: onCopy) else { return }
+        found.append(PrintAdvisory(kind: kind, message: message, location: location, figure: figure, values: values))
+    }
+    func position(_ p: SIMD3<Float>) -> [Double] {
         let q = p - origin
-        return String(format: "X %.0f, Y %.0f, Z %.0f", q.x, q.y, q.z)
+        return [Double(q.x), Double(q.y), Double(q.z)]
     }
 
     if placed {
         let assessment = mesh.orientationAssessment(.zUp)
         if !assessment.meetsMinimumContact {
-            found.append(PrintAdvisory(kind: .smallBedContact, message: printPlacementSmallContactLine(assessment),
-                                       figure: Double(assessment.contactArea)))
+            add(.smallBedContact, [assessment.hasFlatContact ? 1 : 0, Double(assessment.contactArea), Double(assessment.minimumContactMM2)],
+                figure: Double(assessment.contactArea))
         }
-        if assessment.hasFlatContact, let line = printPlacementTippingLine(assessment) {
-            found.append(PrintAdvisory(kind: .tipping, message: line, figure: assessment.tipMarginMM.map(Double.init)))
+        if assessment.hasFlatContact, let tipping = printPlacementTipping(assessment) {
+            add(.tipping, [Double(tipping.kind.rawValue), Double(tipping.heightMM), Double(tipping.widthMM)],
+                figure: assessment.tipMarginMM.map(Double.init))
         }
-        let steep = overhangShare(mesh, limitDegrees: Double(slantOverhangLimitDegrees))
-        if steep.overhangAreaMM2 > 0, steep.fraction >= printAdvisorySteepOverhangShare {
-            found.append(PrintAdvisory(kind: .steepOverhangs, message: "Overhangs: \(percentLabel(steep.fraction)) of the surface (\(Int(steep.overhangAreaMM2.rounded()).formatted()) mm²) faces down more steeply than Slant’s 50° limit, as placed. Those areas may sag or print rough; a different placement or a chamfer under them helps.",
-                                       figure: steep.fraction))
+        if !onCopy {
+            let steep = overhangShare(mesh, limitDegrees: Double(slantOverhangLimitDegrees))
+            if steep.overhangAreaMM2 > 0, steep.fraction >= printAdvisorySteepOverhangShare {
+                add(.steepOverhangs, [steep.fraction, steep.overhangAreaMM2], figure: steep.fraction)
+            }
         }
         if let footprint = sharpFootprintCorners(mesh) {
-            let corners = footprint.corners == 1 ? "1 sharp corner" : "\(footprint.corners) sharp corners"
-            found.append(PrintAdvisory(kind: .sharpFootprintCorners, message: String(format: "Large flat footprint, about %.0f mm long, with %@. Large flat parts can lift at sharp corners (Slant uses no brims); rounding the corners helps.", footprint.lengthMM, corners),
-                                       location: footprint.firstCorner - origin, figure: Double(footprint.lengthMM)))
+            add(.sharpFootprintCorners, [Double(footprint.lengthMM), Double(footprint.corners)],
+                location: footprint.firstCorner - origin, figure: Double(footprint.lengthMM))
         }
     }
     if isCancelled() { return [] }
     guard let index = TriangleRayIndex(mesh, isCancelled: isCancelled), !isCancelled() else { return [] }
 
-    if placed && functional {
+    if placed && slenderUprightAdvisoryApplies(intent) {
         guard let features = slenderUprightFeatures(mesh, index: index, isCancelled: isCancelled) else { return [] }
         for feature in features {
-            found.append(PrintAdvisory(kind: .slenderUpright, message: String(format: "Slender upright feature near %@: about %.0f mm tall and %.1f mm thick, standing up as placed. Layers run across this feature; printed standing, parts like hooks have tested about half as strong as printed flat (CNC Kitchen).", at(feature.centre), feature.heightMM, feature.thicknessMM),
-                                       location: feature.centre - origin, figure: Double(feature.thicknessMM)))
+            add(.slenderUpright, position(feature.centre) + [Double(feature.heightMM), Double(feature.thicknessMM)],
+                location: feature.centre - origin, figure: Double(feature.thicknessMM))
         }
     }
 
     guard let report = wallThickness ?? analyzeWallThickness(mesh, isCancelled: isCancelled), !isCancelled() else { return [] }
     for feature in report.smallFeatures {
-        found.append(PrintAdvisory(kind: .thinPin, message: String(format: "Pin or post about %.1f mm across near %@. Pins and posts under 3 mm across can snap; they print best at 3–5 mm or more.", feature.widthMM, at(feature.centre)),
-                                   location: feature.centre - origin, figure: Double(feature.widthMM)))
+        add(.thinPin, position(feature.centre) + [Double(feature.widthMM)], location: feature.centre - origin, figure: Double(feature.widthMM))
     }
 
     if functional {
         guard let holes = verticalHolesNearEdges(mesh, index: index, isCancelled: isCancelled) else { return [] }
         for hole in holes {
-            found.append(PrintAdvisory(kind: .holeNearEdge, message: String(format: "⌀%.1f mm hole near %@: about %.1f mm from its centre to the nearest edge (%.1f diameters). Studies of pin-loaded holes use about 3 diameters; a hole this close is more likely to tear out under load, so moving it inward or adding material around it helps.", hole.diameterMM, at(hole.centre), hole.edgeDistanceMM, hole.edgeDistanceMM / hole.diameterMM),
-                                       location: hole.centre - origin, figure: Double(hole.edgeDistanceMM)))
+            add(.holeNearEdge, position(hole.centre) + [Double(hole.diameterMM), Double(hole.edgeDistanceMM)],
+                location: hole.centre - origin, figure: Double(hole.edgeDistanceMM))
         }
     }
     return isCancelled() ? [] : printAdvisoriesCapped(found)
@@ -465,7 +526,7 @@ func sharpFootprintCorners(_ mesh: STLMesh) -> SharpFootprint? {
     }
     guard !members.isEmpty else { return nil }
     let length = (high - low).max()
-    guard length >= sharpFootprintMinimumLengthMM else { return nil }
+    guard length >= sharpFootprintMinimumLengthMM, (high - low).min() >= sharpFootprintMinimumWidthMM else { return nil }
     let owner = welded.edgeOwners()
     guard let loops = welded.loops(members, edgeOwner: owner, memberOf: { member[$0] }), !loops.isEmpty else { return nil }
     let areas = loops.map { signedAreaXY($0, welded.points) }

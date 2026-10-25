@@ -27,6 +27,9 @@ let hiddenPocketsMaximumTriangles = 500_000
 let hiddenPocketsSamplesPerShell = 32
 /// Ray–triangle tests allowed in one analysis; shells still unjudged after that are never counted or filled.
 let hiddenPocketsRayTestLimit = 200_000_000
+/// Shell-against-shell box comparisons allowed in one analysis (every pair is compared, so a model of many loose
+/// parts is bounded too); shells still unjudged after that are never counted or filled, and the report is incomplete.
+let hiddenPocketsBoxComparisonLimit = 20_000_000
 
 // MARK: - Types
 
@@ -69,6 +72,9 @@ enum HiddenPocketsSkipReason: String, Equatable, Sendable, CaseIterable {
     case tooManyTriangles
     case noPockets
     case resultFailedChecks
+    /// A shell to be removed has a corner that isn't inside the shell around it: it crosses that surface, so it isn't
+    /// wholly a pocket.
+    case couldNotConfirm
 
     var message: String {
         switch self {
@@ -78,6 +84,8 @@ enum HiddenPocketsSkipReason: String, Equatable, Sendable, CaseIterable {
             return "This model has more than \(hiddenPocketsMaximumTriangles.formatted()) triangles, too many to fill hidden pockets. Simplify a copy first."
         case .noPockets: return "This model has no hidden pockets to fill."
         case .resultFailedChecks: return "The pockets weren’t filled: the result didn’t pass Studio’s mesh checks."
+        case .couldNotConfirm:
+            return "The pockets weren’t filled: Studio couldn’t confirm that every one lies wholly inside the part, so removing it could change the part’s surface."
         }
     }
 }
@@ -119,33 +127,46 @@ func hiddenPocketsCostText(_ cost: Decimal) -> String {
     return "$" + String(format: "%.2f", NSDecimalNumber(decimal: rounded).doubleValue)
 }
 
-/// The per-model line, or nil when there are no pockets, such as "2 hidden pockets cost about $0.78 extra: Slant
-/// charges each closed pocket as a separate body (about $0.39 each in a test on 25 Oct 2026). Fill Hidden Pockets
-/// saves a copy with them filled solid, using about 1.2 cm³ more material." Never says filling makes a part stronger.
-func hiddenPocketsSummary(_ report: HiddenPocketsReport) -> String? {
-    guard !report.pockets.isEmpty else { return nil }
-    let pockets = pocketCount(report.count, "hidden pocket", "hidden pockets")
-    let inside = report.shellsInsidePockets > 0
-        ? ", with \(pocketCount(report.shellsInsidePockets, "loose part", "loose parts")) inside," : ""
-    let verb = report.count == 1 && report.shellsInsidePockets == 0 ? "costs" : "cost"
-    let charged = report.shellsInsidePockets > 0 ? "each closed pocket, and each part inside one," : "each closed pocket"
-    let each = "about \(hiddenPocketsCostText(hiddenPocketBodyChargeUSD)) each in a test on \(hiddenPocketBodyChargeDate)"
-    let them = report.count == 1 ? "it" : "them"
-    let centimetres = report.addedVolumeMM3 / 1000
+/// The per-model line, or nil when there are no pockets, such as "2 hidden pockets cost about $0.78 extra in total
+/// (Slant bills each as a separate body; test on 25 Oct 2026). Filling uses about 1.2 cm³ more material. Get an
+/// estimate for both." The cost is the bodies a fill removes × `hiddenPocketBodyChargeUSD`, an estimate from Slant's
+/// price on `hiddenPocketBodyChargeDate`. Never says filling makes a part stronger.
+func hiddenPocketsSummaryText(count: Int, shellsInside: Int, addedVolumeMM3: Double) -> String? {
+    guard count > 0 else { return nil }
+    let pockets = pocketCount(count, "hidden pocket", "hidden pockets")
+    let inside = shellsInside > 0 ? ", with \(pocketCount(shellsInside, "loose part", "loose parts")) inside," : ""
+    let verb = count == 1 && shellsInside == 0 ? "costs" : "cost"
+    let bills: String
+    if shellsInside > 0 { bills = "Slant bills each pocket and each loose part as a separate body" }
+    else { bills = count == 1 ? "Slant bills it as a separate body" : "Slant bills each as a separate body" }
+    let cost = hiddenPocketsCostText(Decimal(count + shellsInside) * hiddenPocketBodyChargeUSD)
+    let centimetres = addedVolumeMM3 / 1000
     let material = centimetres >= 0.05 ? "about \(String(format: "%.1f", centimetres)) cm³ more material" : "a little more material"
-    var text = "\(pockets)\(inside) \(verb) about \(hiddenPocketsCostText(report.estimatedExtraCostUSD)) extra: Slant charges \(charged) as a separate body (\(each)). Fill Hidden Pockets saves a copy with \(them) filled solid, using \(material)."
+    var text = "\(pockets)\(inside) \(verb) about \(cost) extra in total (\(bills); test on \(hiddenPocketBodyChargeDate)). Filling uses \(material)."
+    if shellsInside > 0 { text += " Filling removes the loose parts inside them." }
+    return text + " Get an estimate for both."
+}
+
+func hiddenPocketsSummary(_ report: HiddenPocketsReport) -> String? {
+    guard var text = hiddenPocketsSummaryText(count: report.count, shellsInside: report.shellsInsidePockets,
+                                              addedVolumeMM3: report.addedVolumeMM3) else { return nil }
     if report.separateParts > 1 {
         text += " The model’s \(report.separateParts.formatted()) separate parts aren’t pockets, so filling leaves them."
     }
+    if !report.complete { text += " " + hiddenPocketsIncompleteLine }
     return text
 }
+
+/// Shown when the check ran out of its budget (`HiddenPocketsReport.complete` false).
+let hiddenPocketsIncompleteLine = "Some parts weren’t checked for hidden pockets: there are too many separate parts to check."
 
 // MARK: - Analysis
 
 /// Counts the hidden pockets, separate parts and other shells of `mesh`. Throws `HiddenPocketsError.stopped` when
 /// `isCancelled` reports true. Works on any mesh, but only closed, consistently wound shells are placed.
-func hiddenPocketsReport(_ mesh: STLMesh, isCancelled: () -> Bool = { false }) throws -> HiddenPocketsReport {
-    try hiddenPocketsAnalysis(mesh, isCancelled: isCancelled).report
+func hiddenPocketsReport(_ mesh: STLMesh, boxComparisonLimit: Int = hiddenPocketsBoxComparisonLimit,
+                         isCancelled: () -> Bool = { false }) throws -> HiddenPocketsReport {
+    try hiddenPocketsAnalysis(mesh, boxComparisonLimit: boxComparisonLimit, isCancelled: isCancelled).report
 }
 
 private struct HiddenPocketsAnalysis {
@@ -154,11 +175,16 @@ private struct HiddenPocketsAnalysis {
     let shellOf: [Int32]
     /// Shells a fill removes.
     let removed: [Bool]
+    /// With `verifyRemoved`: every corner of every shell a fill removes is inside the shell around it.
+    var verified = false
 }
 
 private enum ShellKind { case part, pocket, solidInPocket, other }
 
-private func hiddenPocketsAnalysis(_ mesh: STLMesh, isCancelled: () -> Bool) throws -> HiddenPocketsAnalysis {
+/// `verifyRemoved`: also test every corner of each shell a fill would remove (not just the samples that placed it)
+/// against the shell around it, for `fillHiddenPocketsCopy`.
+private func hiddenPocketsAnalysis(_ mesh: STLMesh, boxComparisonLimit: Int = hiddenPocketsBoxComparisonLimit,
+                                   verifyRemoved: Bool = false, isCancelled: () -> Bool) throws -> HiddenPocketsAnalysis {
     let count = mesh.triangleCount
     let v = mesh.vertices
     let check = 8192
@@ -259,8 +285,12 @@ private func hiddenPocketsAnalysis(_ mesh: STLMesh, isCancelled: () -> Bool) thr
     var trianglesOf: [[Int32]]? = nil
     var budget = hiddenPocketsRayTestLimit
     var containers = [[Int]?](repeating: [], count: shellCount)
+    // Every pair of shells is compared by box, so many loose parts need a budget of their own.
+    var boxBudget = boxComparisonLimit
     for g in 0..<shellCount where sound[g] {
         if isCancelled() { throw HiddenPocketsError.stopped }
+        guard boxBudget >= shellCount else { containers[g] = nil; continue }
+        boxBudget -= shellCount
         let corners = cornersOf[g]
         let stride = max(1, corners.count / hiddenPocketsSamplesPerShell)
         let samples = Swift.stride(from: 0, to: corners.count, by: stride).prefix(hiddenPocketsSamplesPerShell)
@@ -329,6 +359,30 @@ private func hiddenPocketsAnalysis(_ mesh: STLMesh, isCancelled: () -> Bool) thr
         removed[g] = true
         for p in owners { inside[p] += 1 }
     }
+    // The fill's own check: every corner of each shell it removes, not only the samples that placed it, is inside the
+    // shell around it. A shell crossing that surface isn't wholly a pocket, and removing it would change the part.
+    var verified = false
+    if verifyRemoved {
+        verified = true
+        var seen = [Bool](repeating: false, count: points.count)
+        var verifyBudget = hiddenPocketsRayTestLimit
+        outer: for g in 0..<shellCount where removed[g] {
+            if isCancelled() { throw HiddenPocketsError.stopped }
+            let around = parentOf[g]
+            guard around >= 0, grids[around] != nil, let lists = trianglesOf else { verified = false; break }
+            for t in lists[g] {
+                for j in 0..<3 {
+                    let id = Int(ids[3 * Int(t) + j])
+                    guard !seen[id] else { continue }
+                    seen[id] = true
+                    guard grids[around]!.contains(SIMD3<Double>(points[id]) - origin, budget: &verifyBudget) == true else {
+                        verified = false
+                        break outer
+                    }
+                }
+            }
+        }
+    }
     var added = 0.0
     for g in 0..<shellCount where removed[g] { added -= volume[g] }
     let pockets = topPockets.map { p in
@@ -340,7 +394,7 @@ private func hiddenPocketsAnalysis(_ mesh: STLMesh, isCancelled: () -> Bool) thr
     let report = HiddenPocketsReport(shells: shellCount, pockets: pockets, separateParts: parts, shellsInsidePockets: innerShells,
                                      otherShells: shellCount - parts - pockets.count - innerShells, complete: complete,
                                      addedVolumeMM3: added)
-    return HiddenPocketsAnalysis(report: report, shellOf: shellOf, removed: removed)
+    return HiddenPocketsAnalysis(report: report, shellOf: shellOf, removed: removed, verified: verified)
 }
 
 /// Ray parity against one shell's triangles, found through a grid over their XY extents. The ray runs almost straight
@@ -451,9 +505,10 @@ func fillHiddenPocketsCopy(of mesh: STLMesh, isCancelled: () -> Bool = { false }
     guard count <= hiddenPocketsMaximumTriangles, count <= STLMesh.maximumTriangles else { return skip(.tooManyTriangles) }
     guard let before = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { throw HiddenPocketsError.stopped }
     guard meshHealthIsSound(before), before.signedVolume > 0 else { return skip(.notClosedSolid, shells: before.shells) }
-    let analysis = try hiddenPocketsAnalysis(mesh, isCancelled: isCancelled)
+    let analysis = try hiddenPocketsAnalysis(mesh, verifyRemoved: true, isCancelled: isCancelled)
     let report = analysis.report
     guard !report.pockets.isEmpty else { return skip(.noPockets, report: report, shells: before.shells) }
+    guard analysis.verified else { return skip(.couldNotConfirm, report: report, shells: before.shells) }
 
     var floats: [Float] = []
     floats.reserveCapacity(mesh.vertices.count)

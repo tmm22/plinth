@@ -94,7 +94,7 @@ final class HiddenPocketsTests: XCTestCase {
         XCTAssertEqual(report.separateParts, 2)
         XCTAssertEqual(report.estimatedExtraCostUSD, Decimal(string: "0.78"))
         let text = try XCTUnwrap(hiddenPocketsSummary(report))
-        XCTAssertEqual(text, "2 hidden pockets cost about $0.78 extra: Slant charges each closed pocket as a separate body (about $0.39 each in a test on 25 Oct 2026). Fill Hidden Pockets saves a copy with them filled solid, using about 1.1 cm³ more material. The model’s 2 separate parts aren’t pockets, so filling leaves them.")
+        XCTAssertEqual(text, "2 hidden pockets cost about $0.78 extra in total (Slant bills each as a separate body; test on 25 Oct 2026). Filling uses about 1.1 cm³ more material. Get an estimate for both. The model’s 2 separate parts aren’t pockets, so filling leaves them.")
         let result = try fillHiddenPocketsCopy(of: source)
         let after = try health(try XCTUnwrap(result.mesh))
         // The separate part stays.
@@ -153,7 +153,7 @@ final class HiddenPocketsTests: XCTestCase {
     func testCopyIsDatedAndMakesNoStrengthClaims() throws {
         let report = try hiddenPocketsReport(try pocketedBlock())
         let text = try XCTUnwrap(hiddenPocketsSummary(report))
-        XCTAssertEqual(text, "1 hidden pocket costs about $0.39 extra: Slant charges each closed pocket as a separate body (about $0.39 each in a test on 25 Oct 2026). Fill Hidden Pockets saves a copy with it filled solid, using about 1.0 cm³ more material.")
+        XCTAssertEqual(text, "1 hidden pocket costs about $0.39 extra in total (Slant bills it as a separate body; test on 25 Oct 2026). Filling uses about 1.0 cm³ more material. Get an estimate for both.")
         for word in ["strong", "guarantee", "safe", "%"] { XCTAssertFalse(text.lowercased().contains(word), word) }
         XCTAssertEqual(hiddenPocketsCostText(Decimal(string: "1.17")!), "$1.17")
         XCTAssertEqual(hiddenPocketsCostText(Decimal(3) * hiddenPocketBodyChargeUSD), "$1.17")

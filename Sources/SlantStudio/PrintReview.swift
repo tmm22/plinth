@@ -113,8 +113,102 @@ struct PrintReviewMeasurements: Equatable, Sendable {
 /// What "Studio's checks found no problems" covers, said with it.
 let printReviewNoProblemsLine = "Studio’s checks found no problems: a closed mesh in one part, no walls under 2 mm found, a flat base, overhangs on under \(Int(printReviewOverhangLimit * 100))% of the surface, and it fits Slant’s 220 mm build volume."
 
+/// Review for Printing's overhang share: faces steeper than `printPreparationOverhangReportDegrees` (45.1°), so
+/// Studio's own 45° chamfers never count. On a print-ready copy (`record`) it also leaves out downward faces wholly
+/// within its bottom chamfer's band and its internal walls' slot and ring ceilings: flat, downward regions inside the
+/// part no wider than `printReviewCeilingMaximumWidthMM`, which bridge.
+func printReviewOverhangShare(_ mesh: STLMesh, record: PrintPreparationRecord?) -> OverhangShare {
+    let limit = sin(printPreparationOverhangReportDegrees * .pi / 180)
+    let floor = Double(mesh.minimum.z) + 0.0001
+    let chamferTop = record?.bottomChamfer.map { Double(mesh.minimum.z) + $0.sizeMM + 0.01 }
+    let ceilings = record?.internalWalls != nil ? printReviewNarrowCeilings(mesh) : []
+    let v = mesh.vertices
+    var surface = 0.0, overhang = 0.0
+    for t in 0..<mesh.triangleCount {
+        let i = t * 9
+        let a = SIMD3<Double>(Double(v[i]), Double(v[i + 1]), Double(v[i + 2]))
+        let b = SIMD3<Double>(Double(v[i + 3]), Double(v[i + 4]), Double(v[i + 5]))
+        let c = SIMD3<Double>(Double(v[i + 6]), Double(v[i + 7]), Double(v[i + 8]))
+        let cross = simd_cross(b - a, c - a)
+        let length = simd_length(cross)
+        guard length > 0, length.isFinite else { continue }
+        let area = length / 2
+        surface += area
+        let nz = cross.z / length
+        let top = max(a.z, b.z, c.z)
+        let onBed = top <= floor && nz <= -0.999999
+        guard !onBed, nz < -limit else { continue }
+        if let chamferTop, top <= chamferTop { continue }
+        if !ceilings.isEmpty, ceilings[t] { continue }
+        overhang += area
+    }
+    return OverhangShare(overhangAreaMM2: overhang, surfaceAreaMM2: surface)
+}
+
+/// Internal walls' slots and rings are 0.25 mm wide; a flat downward region this narrow bridges.
+let printReviewCeilingMaximumWidthMM = 0.3
+
+/// Flat, downward triangles (off the bed) in connected regions whose mean width, twice the area over the perimeter,
+/// is at most `printReviewCeilingMaximumWidthMM`: the ceilings of internal walls' slots and rings. Walked in triangle
+/// order; dictionaries are used only for lookups.
+func printReviewNarrowCeilings(_ mesh: STLMesh) -> [Bool] {
+    let count = mesh.triangleCount, v = mesh.vertices
+    let floor = mesh.minimum.z + 0.0001
+    func corner(_ t: Int, _ j: Int) -> SIMD3<Float> { SIMD3(v[t * 9 + j * 3] + 0, v[t * 9 + j * 3 + 1] + 0, v[t * 9 + j * 3 + 2] + 0) }
+    var candidate = [Bool](repeating: false, count: count)
+    var ids = [Int](repeating: -1, count: count * 3)
+    var lookup: [SIMD3<Float>: Int] = [:]
+    var area = [Double](repeating: 0, count: count)
+    for t in 0..<count {
+        let a = corner(t, 0), b = corner(t, 1), c = corner(t, 2)
+        guard max(a.z, b.z, c.z) > floor else { continue }
+        let cross = simd_cross(SIMD3<Double>(b - a), SIMD3<Double>(c - a))
+        let length = simd_length(cross)
+        guard length > 0, cross.z / length <= -0.999 else { continue }
+        candidate[t] = true
+        area[t] = length / 2
+        for (j, p) in [a, b, c].enumerated() {
+            if let id = lookup[p] { ids[t * 3 + j] = id } else { ids[t * 3 + j] = lookup.count; lookup[p] = lookup.count }
+        }
+    }
+    // Regions: candidates sharing an edge.
+    var parent = Array(0..<count)
+    func root(_ x: Int) -> Int { var r = x; while parent[r] != r { r = parent[r] }; return r }
+    var edgeOwner: [SIMD2<Int>: Int] = [:]
+    var edgeUses: [SIMD2<Int>: Int] = [:]
+    for t in 0..<count where candidate[t] {
+        for j in 0..<3 {
+            let p = ids[t * 3 + j], q = ids[t * 3 + (j + 1) % 3]
+            let key = SIMD2(min(p, q), max(p, q))
+            edgeUses[key, default: 0] += 1
+            if let other = edgeOwner[key] {
+                let ra = root(t), rb = root(other)
+                if ra != rb { parent[max(ra, rb)] = min(ra, rb) }
+            } else {
+                edgeOwner[key] = t
+            }
+        }
+    }
+    var regionArea = [Double](repeating: 0, count: count), regionPerimeter = [Double](repeating: 0, count: count)
+    for t in 0..<count where candidate[t] {
+        let r = root(t)
+        regionArea[r] += area[t]
+        for j in 0..<3 {
+            let p = ids[t * 3 + j], q = ids[t * 3 + (j + 1) % 3]
+            guard edgeUses[SIMD2(min(p, q), max(p, q))] == 1 else { continue }
+            regionPerimeter[r] += Double(simd_distance(corner(t, j), corner(t, (j + 1) % 3)))
+        }
+    }
+    return (0..<count).map { t in
+        guard candidate[t] else { return false }
+        let r = root(t)
+        return regionPerimeter[r] > 0 && 2 * regionArea[r] / regionPerimeter[r] <= printReviewCeilingMaximumWidthMM
+    }
+}
+
 /// Measures `mesh` for the review. Nil when cancelled. `wallSamples` bounds the wall-thickness check (tests use fewer).
-func measureForPrintReview(_ mesh: STLMesh, wallSamples: Int = wallThicknessMaximumSamples,
+/// `record`: the model's print-ready record, so Studio's own chamfer and wall ceilings aren't counted as overhangs.
+func measureForPrintReview(_ mesh: STLMesh, record: PrintPreparationRecord? = nil, wallSamples: Int = wallThicknessMaximumSamples,
                            progress: (Double, String) -> Void = { _, _ in },
                            isCancelled: () -> Bool = { false }) -> PrintReviewMeasurements? {
     progress(0, "Checking the mesh…")
@@ -125,11 +219,13 @@ func measureForPrintReview(_ mesh: STLMesh, wallSamples: Int = wallThicknessMaxi
                                           isCancelled: isCancelled), !isCancelled() else { return nil }
     progress(0.85, "Measuring the base and overhangs…")
     let flat = mesh.flatBaseSuggestion()
-    let overhang = overhangShare(mesh)
+    let overhang = printReviewOverhangShare(mesh, record: record)
     var turns: [PrintReviewTurnOverhang] = []
     for turn in printReviewTurns {
         if isCancelled() { return nil }
-        turns.append(PrintReviewTurnOverhang(orientation: turn.orientation, overhang: overhangShare(mesh.oriented(turn.orientation))))
+        // Turned, Studio's chamfer and wall ceilings are no longer at the bottom; only the 45° tolerance applies.
+        turns.append(PrintReviewTurnOverhang(orientation: turn.orientation,
+                                             overhang: printReviewOverhangShare(mesh.oriented(turn.orientation), record: nil)))
     }
     if isCancelled() { return nil }
     progress(1, "Measured")
@@ -793,9 +889,9 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
         do {
             switch step.action {
             case .orient(let orientation):
-                let before = overhangShare(mesh)
+                let before = printReviewOverhangShare(mesh, record: nil)
                 mesh = mesh.oriented(orientation)
-                lines.append("\(title): overhangs \(percentLabel(before.fraction)) → \(percentLabel(overhangShare(mesh).fraction)) of the surface; now \(meshFitSizeLabel(mesh.maximum - mesh.minimum)).")
+                lines.append("\(title): overhangs \(percentLabel(before.fraction)) → \(percentLabel(printReviewOverhangShare(mesh, record: nil).fraction)) of the surface; now \(meshFitSizeLabel(mesh.maximum - mesh.minimum)).")
             case .autoImprove(let settings):
                 let placement: PrintOrientation
                 if settings.keepPlacement || baseAdded {

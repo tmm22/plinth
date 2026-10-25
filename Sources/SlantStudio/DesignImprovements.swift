@@ -160,7 +160,9 @@ func designEditIntent(_ model: LocalModel) -> PartIntent? {
     guard let recipe = model.printRecipe else { return model.partIntent }
     var intent = recipe.intent
     if let load = intent.load.vector {
-        let transformed = abs(recipe.orientation.rotate(load))
+        // The placement without its turn about Z: the turn only lines up faces drawn at an angle, so a load along the
+        // part's own X or Y stays along it (the slots and stress checks read it in the part's axes).
+        let transformed = abs(recipe.orientation.base.rotate(load))
         // Do not silently round an oblique load to a different axis.
         intent.load = transformed.x > 0.999999 ? .x : (transformed.y > 0.999999 ? .y : (transformed.z > 0.999999 ? .z : .unknown))
     }
@@ -290,7 +292,7 @@ struct DesignImprovementsCard: View {
             // Lock-bearing records go with the copy, so a Z-up-locked model's copy stays locked (`requiresZUp`).
             store.importModel(url, improvement: record, intent: designEditIntent(model), reinforcement: model.reinforcement,
                               autoImprovement: model.autoImprovement, sourceDetails: model.sourceDetails,
-                              inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy)
+                              inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy)
             review = false
         } catch { store.showError(error.localizedDescription) }
         saving = false

@@ -145,18 +145,26 @@ struct PrintPreparationPanel: View {
             ForEach(status?.lines ?? [], id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
             originalActions
         case nil:
-            HStack {
-                SectionHeading(title: "Print-ready copy", caption: "Repair if needed, placement, bridging and chamfers, a bottom-edge chamfer and internal walls, in a separate copy.")
-                Spacer(minLength: 8)
-                makeCopyButton
+            if let reason = printPreparationManualBlockedReason(model), model.fromPrintReadyCopy == true {
+                SectionHeading(title: "Print-ready copy", caption: reason)
+            } else {
+                HStack {
+                    SectionHeading(title: "Print-ready copy", caption: printPreparationOfferCaption(PrintPreparationSettings(defaults: .standard)))
+                    Spacer(minLength: 8)
+                    makeCopyButton
+                }
             }
         }
     }
 
     @ViewBuilder private func copySummary(_ record: PrintPreparationRecord) -> some View {
         SectionHeading(title: "Print-ready copy", caption: printPreparationCaption(record))
+        // One short sentence per step; the figures are under Details.
         ForEach(printPreparationAppliedLines(record), id: \.self) { line in
             Label(line, systemImage: "checkmark.circle").font(.callout)
+        }
+        if let filled = record.hiddenPockets.flatMap(printPreparationPocketsFilledLine) {
+            Label(filled, systemImage: "checkmark.circle").font(.callout)
         }
         if let overhangs = record.overhangs {
             Label(printPreparationOverhangLine(overhangs), systemImage: "ruler").font(.callout)
@@ -164,11 +172,14 @@ struct PrintPreparationPanel: View {
         ForEach(printPreparationCautions(record), id: \.self) { line in
             Label(line, systemImage: "exclamationmark.triangle").font(.callout)
         }
-        advisories(printPreparationAdvisoryLines(record))
+        advisories(printPreparationAdvisoryItems(record))
         if let pockets = record.hiddenPockets, let line = hiddenPocketsLine(pockets) {
             // Never filled automatically: the seller's own Fill Hidden Pockets saves a further copy.
             HiddenPocketsRow(run: store.hiddenPocketsFill, line: line, model: model)
+        } else if record.hiddenPockets?.incomplete == true {
+            Label(hiddenPocketsIncompleteLine, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
         }
+        lines(printPreparationDetailLines(record), title: "Details")
         lines(printPreparationSkippedLines(record), title: "Skipped or not needed")
         lines(record.notes, title: "For your review")
         Text(printPreparationPriceLine(record)).font(.caption).foregroundStyle(.secondary)
@@ -196,14 +207,13 @@ struct PrintPreparationPanel: View {
     }
 
     /// Print advisories on the copy: up to `printPreparationAdvisoriesShownInline` inline, more in a collapsed list.
-    @ViewBuilder private func advisories(_ advisories: [String]) -> some View {
-        if advisories.count <= printPreparationAdvisoriesShownInline {
-            ForEach(Array(advisories.enumerated()), id: \.offset) { item in
-                Label(item.element, systemImage: "info.circle").font(.callout)
-            }
-        } else {
-            lines(advisories, title: "Print checks")
+    /// Contact and tipping advisories are always inline.
+    @ViewBuilder private func advisories(_ items: [PrintPreparationAdvisoryLine]) -> some View {
+        let split = printPreparationAdvisorySplit(items)
+        ForEach(Array(split.inline.enumerated()), id: \.offset) { item in
+            Label(item.element, systemImage: "info.circle").font(.callout)
         }
+        lines(split.collapsed, title: "Print checks")
     }
 
     @ViewBuilder private func lines(_ lines: [String], title: String) -> some View {
@@ -233,16 +243,15 @@ struct PrintPreparationSettingsSection: View {
                     // Turned off: nothing more is prepared automatically this session, including models already waiting.
                     if !on { store.printPreparationQueue.stopAll(automaticOnly: true) }
                 }
+            // Both also apply to Make Print-Ready Copy, so they stay available when automatic copies are off.
             Toggle(isOn: $bottomChamfer) {
                 Text("Add a 0.4 mm bottom-edge chamfer")
                 Text(printPreparationBottomChamferCaption)
             }
-            .disabled(!enabled)
             Toggle(isOn: $internalWalls) {
                 Text("Add internal walls")
                 Text(printPreparationInternalWallsCaption)
             }
-            .disabled(!enabled)
         } header: {
             Text("Prepare new models for printing")
         } footer: {

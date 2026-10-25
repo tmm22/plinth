@@ -148,6 +148,12 @@ struct AutoImproveCard: View {
     }
 }
 
+/// Auto-improve keeps the model's placement for prepared and Z-up-locked copies, and for a saved replica, whose way up
+/// the seller chose (`LocalModel.keepsPlacement`).
+func autoImproveKeepsPlacement(_ model: LocalModel) -> Bool {
+    model.printRecipe != nil || model.requiresZUp || model.keepsPlacement == true
+}
+
 let autoImproveTimedOutMessage = "Auto-improve took too long on this model, so nothing was saved. Simplify a copy, then try again."
 
 extension AutoImproveRun {
@@ -156,7 +162,7 @@ extension AutoImproveRun {
     /// Shared by the Auto-improve card (`.full`) and a print-ready copy's Add Fillets and Thicken Walls (`.fitAffecting`).
     func improveAndSaveCopy(of model: LocalModel, intent: PartIntent, profile: AutoImprover.Profile, store: StudioStore) {
         let materialID = store.filamentID.isEmpty ? nil : store.filamentID
-        let locked = model.printRecipe != nil || model.requiresZUp
+        let locked = autoImproveKeepsPlacement(model)
         start { progress, cancelled in
             let outcome = await Task.detached(priority: .userInitiated) { () -> Result<(AutoImprovementResult, URL?), Error> in
                 Result {
@@ -194,7 +200,7 @@ extension AutoImproveRun {
                     // A Z-up-locked model's further copy keeps the lock (`LocalModel.inheritsZUpLock`).
                     store.importModel(url, recipe: recipe, improvement: model.designImprovement, intent: intent,
                                       reinforcement: model.reinforcement, autoImprovement: record, sourceDetails: model.sourceDetails,
-                                      inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy)
+                                      inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy)
                 case .failure(let error):
                     store.showError(error.localizedDescription)
                 }

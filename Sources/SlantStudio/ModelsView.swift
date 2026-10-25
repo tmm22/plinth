@@ -463,7 +463,7 @@ struct ModelsView: View {
         Button("Save as Product…") {
             store.openSavedProducts(prefill: savedProductPrefill(for: model, selectedFilamentID: store.filamentID))
         }
-        if model.supportsPreview, model.printPreparation == nil {
+        if printPreparationManualBlockedReason(model) == nil {
             // Local only: queues a separate print-ready copy (PrintPreparation.swift). Never uploads; no shortcut.
             Button("Make Print-Ready Copy") { store.makePrintReadyCopy(modelID: model.id) }
                 .disabled(store.printPreparationQueue.isPreparing(model.id))
@@ -471,7 +471,7 @@ struct ModelsView: View {
         if hiddenPocketsFillOffered(model) {
             // Local only: saves a separate "(pockets filled)" copy (HiddenPocketsView.swift). Never uploads; no shortcut.
             Button("Fill Hidden Pockets") { store.fillHiddenPockets(modelID: model.id) }
-                .disabled(store.busy)
+                .disabled(store.busy || store.hiddenPocketsFill.workingModelID != nil)
         }
         if model.remoteID != nil {
             // Opens the composer for review only; nothing is created or paid from here (SellerAddress.swift).

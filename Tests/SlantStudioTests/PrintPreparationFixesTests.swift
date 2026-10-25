@@ -179,15 +179,18 @@ final class PrintPreparationFixesTests: XCTestCase {
         XCTAssertNil(result.blocked)
         XCTAssertGreaterThan(record.chamferCount, 0, "\(record.steps)")
         let walls = try XCTUnwrap(record.internalWalls, "\(record.steps)")
-        // Studio's own filament estimate, beside Slant's dated figure.
+        // With slots through thick regions, Slant's dated 27% figure (measured on those); the walls' own line gives
+        // Studio's filament estimate, so the price line doesn't repeat it.
+        XCTAssertGreaterThan(walls.bulkSlots, 0)
+        XCTAssertEqual(printPreparationPriceLine(record), printPreparationWallsPriceNote)
+        // Without them, Studio's estimate and no 27% figure.
         let fraction = try XCTUnwrap(walls.estimatedExtraMaterialFraction)
-        let price = printPreparationPriceLine(record)
+        var targeted = record
+        targeted.internalWalls?.bulkSlots = 0
+        let price = printPreparationPriceLine(targeted)
         XCTAssertTrue(price.hasPrefix("Studio estimates \(printPreparationPercentText(fraction)) more filament"), price)
         XCTAssertTrue(price.contains("Slant’s price is likely higher"), price)
-        XCTAssertTrue(price.contains("(25 Oct 2026)"), price)
-        var undated = record
-        undated.internalWalls?.estimatedExtraMaterialFraction = nil
-        XCTAssertEqual(printPreparationPriceLine(undated), printPreparationWallsPriceNote)
+        XCTAssertFalse(price.contains("27%"), price)
         XCTAssertTrue(printPreparationWallsPriceNote.contains("(25 Oct 2026)"))
         XCTAssertTrue(printPreparationCautions(record).contains(printPreparationChamferCaution))
         XCTAssertNotNil(record.thinAreasUnder1MM)
@@ -351,8 +354,25 @@ final class PrintPreparationFixesTests: XCTestCase {
         try preparePrintReadyCopy(try round11Part(), input: round11Input, now: Date(timeIntervalSince1970: 1_800_000_000))
     }
 
+    /// A 60 × 20 × 10 mm bar drawn at 30° to X with a saved bracket purpose: placement turns it about Z, and its load
+    /// sets the slots' direction in the turned copy.
+    private static func turnedBarResult() throws -> PrintPreparationResult {
+        let angle: Float = .pi / 6
+        let outline = r11Rectangle(.zero, SIMD2(60, 20)).map { p in
+            SIMD2(p.x * cos(angle) - p.y * sin(angle), p.x * sin(angle) + p.y * cos(angle)) + SIMD2(30, 0)
+        }
+        var input = round11Input
+        input.savedIntent = PartIntent(purpose: .bracket, load: .x)
+        return try preparePrintReadyCopy(try STLMesh.validated(r11PrismSoup(outline, to: 10)), input: input,
+                                         now: Date(timeIntervalSince1970: 1_800_000_000))
+    }
+
+    private static func digest(_ data: Data?) throws -> String {
+        SHA256.hash(data: try XCTUnwrap(data)).map { String(format: "%02x", $0) }.joined()
+    }
+
     static func pipelineDigest() throws -> String {
-        SHA256.hash(data: try XCTUnwrap(try round11Result().data)).map { String(format: "%02x", $0) }.joined()
+        try digest(round11Result().data) + " " + digest(turnedBarResult().data)
     }
 
     /// Run only as a subprocess by the test below: writes the pipeline's output hash to the named file.
@@ -368,10 +388,12 @@ final class PrintPreparationFixesTests: XCTestCase {
     func testPipelineBytesMatchAcrossHashSeeds() throws {
         // Here, the part runs every step but repair (its source is already repaired), with a ring and slots.
         var record: PrintPreparationRecord?
+        var turned: PrintPreparationRecord?
         let localPipeline: () throws -> String = {
-            let result = try Self.round11Result()
+            let result = try Self.round11Result(), bar = try Self.turnedBarResult()
             record = result.record
-            return SHA256.hash(data: try XCTUnwrap(result.data)).map { String(format: "%02x", $0) }.joined()
+            turned = bar.record
+            return try Self.digest(result.data) + " " + Self.digest(bar.data)
         }
         let probes: [(variable: String, test: String, local: () throws -> String)] = [
             ("SLANT_PIPELINE_HASH_OUT", "PrintPreparationFixesTests/testHashSeedProbeWritesPipelineHash", localPipeline),
@@ -407,6 +429,7 @@ final class PrintPreparationFixesTests: XCTestCase {
         XCTAssertEqual(record?.appliedSteps.map(\.step), [.treatments, .bottomChamfer, .internalWalls], "\(String(describing: record?.steps))")
         XCTAssertEqual(record?.internalWalls?.holeRings, 1)
         XCTAssertGreaterThan(record?.internalWalls?.bulkSlots ?? 0, 0)
+        XCTAssertEqual(abs(turned?.zTurnDegrees ?? 0), 30, accuracy: 0.5)
         let deadline = Date().addingTimeInterval(180)
         for process in [fixed, random] {
             while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }

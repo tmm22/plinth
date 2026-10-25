@@ -63,6 +63,9 @@ enum BottomChamferSkipReason: String, Equatable, Sendable, CaseIterable {
     case tooIntricate
     case wouldReduceContactTooMuch
     case resultFailedChecks
+    /// A flat, downward face lies within the chamfer's height of the bed: a shallow recess (such as debossed text) or a
+    /// step in the bottom face.
+    case recessInBedFace
 
     var message: String {
         switch self {
@@ -84,6 +87,8 @@ enum BottomChamferSkipReason: String, Equatable, Sendable, CaseIterable {
             return "No bottom chamfer was added: it would take more than \(Int(((1 - bottomChamferMinimumContactFraction) * 100).rounded()))% of the part’s contact with the bed."
         case .resultFailedChecks:
             return "No bottom chamfer was added: the result didn’t pass Studio’s mesh checks."
+        case .recessInBedFace:
+            return "No bottom chamfer was added: the bottom face has a recess at its edge."
         }
     }
 }
@@ -244,7 +249,7 @@ func bottomChamferCopy(of mesh: STLMesh, sizeMM: Float = bottomChamferDefaultSiz
         return longest > 0 ? simd_length(simd_cross(pb - pa, pc - pa)) / longest : 0
     }
     var segments: [(start: Int, end: Int)] = []
-    var slopedDown = 0, slopedOther = 0
+    var slopedDown = 0, slopedOther = 0, recessCeilings = 0
     for t in 0..<count {
         if t % check == 0, isCancelled() { throw BottomChamferError.stopped }
         let c = [ids[3 * t], ids[3 * t + 1], ids[3 * t + 2]]
@@ -256,7 +261,7 @@ func bottomChamferCopy(of mesh: STLMesh, sizeMM: Float = bottomChamferDefaultSiz
         let cross = simd_cross(SIMD3<Double>(p[1] - p[0]), SIMD3<Double>(p[2] - p[0]))
         let normalZ = cross.z / simd_length(cross)
         guard abs(normalZ) <= bottomChamferUprightTolerance else {
-            if normalZ < 0 { slopedDown += 1 } else { slopedOther += 1 }
+            if normalZ <= -0.999 { recessCeilings += 1 } else if normalZ < 0 { slopedDown += 1 } else { slopedOther += 1 }
             continue
         }
         switch aboveCount {
@@ -282,6 +287,7 @@ func bottomChamferCopy(of mesh: STLMesh, sizeMM: Float = bottomChamferDefaultSiz
             continue
         }
     }
+    if recessCeilings > 0 { return skip(.recessInBedFace, shells: shells, contact: bedArea) }
     if slopedDown + slopedOther > 0 {
         return skip(slopedOther == 0 ? .alreadyTapered : .sidesNotUpright, shells: shells, contact: bedArea)
     }

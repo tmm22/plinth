@@ -74,7 +74,13 @@ struct LocalModel: Codable, Identifiable {
     /// Set on a Fill Hidden Pockets copy (HiddenPocketsView.swift): an edited copy for the licence advisory. Nil for
     /// anything else; older libraries load without it.
     var filledPockets: Bool?
+    /// Set on any further copy of a print-ready copy (or of such a copy): it is already placed and prepared, and its
+    /// saved purpose's load axes describe the original, so Make Print-Ready Copy is never run on it. Nil for anything
+    /// else; older libraries load without it.
+    var fromPrintReadyCopy: Bool?
     var url: URL { URL(fileURLWithPath: filePath) }
+    /// A print-ready copy, or a copy made from one.
+    var derivesFromPrintReadyCopy: Bool { printPreparation != nil || fromPrintReadyCopy == true }
     /// Copies whose features depend on the print layers must stay Z up. A print-ready copy was placed on its bed face
     /// and may have slots opening through it, so it stays as placed, and so do its further copies.
     var requiresZUp: Bool {
@@ -85,6 +91,36 @@ struct LocalModel: Codable, Identifiable {
     var supportsPreview: Bool { url.pathExtension.lowercased() == "stl" }
     /// STL, OBJ and 3MF: shown in the 3D preview with dimensions and the build-volume check.
     var supportsMeshPreview: Bool { ModelFileFormat(url: url) != nil }
+}
+extension LocalModel {
+    /// The identity and file are required; every record is read leniently, so one this build can't read (such as an
+    /// orientation from a later version) drops only that record, never the model or the library.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        filePath = try c.decode(String.self, forKey: .filePath)
+        added = try c.decode(Date.self, forKey: .added)
+        // A placement or edit record that can't be read may have locked the copy Z up, so its loss keeps the lock.
+        var lostRecord = false
+        func record<T: Decodable>(_ type: T.Type, _ key: CodingKeys) -> T? {
+            do { return try c.decodeIfPresent(type, forKey: key) } catch { lostRecord = true; return nil }
+        }
+        remoteID = try? c.decodeIfPresent(String.self, forKey: .remoteID)
+        partIntent = try? c.decodeIfPresent(PartIntent.self, forKey: .partIntent)
+        printRecipe = record(PreparedPrintRecipe.self, .printRecipe)
+        designImprovement = record(DesignImprovementRecord.self, .designImprovement)
+        reinforcement = record(ReinforcementRecord.self, .reinforcement)
+        autoImprovement = record(AutoImprovementRecord.self, .autoImprovement)
+        sourceDetails = try? c.decodeIfPresent(ModelSourceDetails.self, forKey: .sourceDetails)
+        printPreparation = record(PrintPreparationRecord.self, .printPreparation)
+        printPreparationStatus = try? c.decodeIfPresent(PrintPreparationStatus.self, forKey: .printPreparationStatus)
+        inheritsZUpLock = try? c.decodeIfPresent(Bool.self, forKey: .inheritsZUpLock)
+        if lostRecord { inheritsZUpLock = true }
+        keepsPlacement = try? c.decodeIfPresent(Bool.self, forKey: .keepsPlacement)
+        filledPockets = try? c.decodeIfPresent(Bool.self, forKey: .filledPockets)
+        fromPrintReadyCopy = try? c.decodeIfPresent(Bool.self, forKey: .fromPrintReadyCopy)
+    }
 }
 struct CloudDeleteRefusal: Identifiable, Equatable {
     let fileID: String
@@ -727,18 +763,18 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Copies a model file into the library. `origin` says where it came from, which decides whether Studio also makes
     /// a print-ready copy of it (`ModelImportOrigin.mayPrepareForPrinting`); every caller states it.
     @discardableResult
-    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin) -> Bool {
+    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, keepsPlacement: Bool = false, fromPrintReadyCopy: Bool = false) -> Bool {
         importModelReturningID(url, recipe: recipe, improvement: improvement, intent: intent, reinforcement: reinforcement,
                                autoImprovement: autoImprovement, sourceDetails: sourceDetails, printPreparation: printPreparation,
                                inheritsZUpLock: inheritsZUpLock,
-                               origin: origin) != nil
+                               origin: origin, keepsPlacement: keepsPlacement, fromPrintReadyCopy: fromPrintReadyCopy) != nil
     }
     /// `importModel`, returning the new model's ID. `selectsAndShows: false` adds it without changing the selection
     /// or the screen, for copies saved in the background; `insertingBefore` places it next to that model (else first).
     /// `keepsPlacement` carries a replica's chosen way up to a further copy; `filledPockets` marks a Fill Hidden Pockets
     /// copy.
     @discardableResult
-    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil, keepsPlacement: Bool = false, filledPockets: Bool = false) -> UUID? {
+    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil, keepsPlacement: Bool = false, filledPockets: Bool = false, fromPrintReadyCopy: Bool = false) -> UUID? {
         let ext = url.pathExtension.lowercased()
         guard ["stl", "obj", "3mf"].contains(ext) else {
             showError("Slant Studio accepts STL, OBJ, and 3MF models.")
@@ -756,7 +792,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                                    sourceDetails: sourceDetails?.isEmpty == false ? sourceDetails : nil,
                                    printPreparation: printPreparation, inheritsZUpLock: inheritsZUpLock ? true : nil,
                                    keepsPlacement: origin == .replica || keepsPlacement ? true : nil,
-                                   filledPockets: filledPockets ? true : nil)
+                                   filledPockets: filledPockets ? true : nil, fromPrintReadyCopy: fromPrintReadyCopy ? true : nil)
             localModels.insert(model, at: neighbour.flatMap { id in localModels.firstIndex { $0.id == id } } ?? 0)
             if selectsAndShows { select(model) }
             saveModels()

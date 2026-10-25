@@ -187,15 +187,21 @@ final class PrintAdvisoriesTests: XCTestCase {
 
     func testThinPinIsReportedAndStandingPinIsSlenderForFunctionalParts() throws {
         let part = try exported(box(.zero, SIMD3(30, 30, 3)).union(post(x: 15, y: 15, z: 2.9, radius: 1, height: 12.1)))
-        let advisories = advise(part, placed: true, intent: PartIntent())
+        // A saved bracket purpose: the upright-feature note is only for a bracket, clip or custom part.
+        let bracket = PartIntent(purpose: .bracket, load: .x)
+        let advisories = advise(part, placed: true, intent: bracket)
         let pin = try XCTUnwrap(advisories.first { $0.kind == .thinPin })
         XCTAssertTrue(pin.message.contains("under 3 mm across can snap"), pin.message)
         XCTAssertEqual(pin.figure ?? 0, 2, accuracy: 0.3)
         let slender = try XCTUnwrap(advisories.first { $0.kind == .slenderUpright }, "\(advisories)")
-        XCTAssertTrue(slender.message.contains("printed standing, parts like hooks have tested about half as strong as printed flat (CNC Kitchen)"))
+        XCTAssertTrue(slender.message.contains("so it is likely weaker standing than lying flat. If it carries load, add a rib or gusset in Reinforce"), slender.message)
+        XCTAssertFalse(slender.message.contains("half as strong"))
         XCTAssertEqual(slender.location?.x ?? 0, 15, accuracy: 1.5)
         XCTAssertEqual(slender.location?.y ?? 0, 15, accuracy: 1.5)
-        XCTAssertEqual(advisories, advise(part, placed: true, intent: PartIntent()), "Deterministic")
+        XCTAssertEqual(advisories, advise(part, placed: true, intent: bracket), "Deterministic")
+        // No saved purpose, or an enclosure: no upright-feature note.
+        XCTAssertFalse(kinds(advise(part, placed: true, intent: nil)).contains(.slenderUpright))
+        XCTAssertFalse(kinds(advise(part, placed: true, intent: PartIntent())).contains(.slenderUpright))
         // Decorative parts and unplaced meshes get no upright-feature note; the pin note stays.
         for (placed, intent) in [(true, PartIntent(purpose: .decorative)), (false, PartIntent())] {
             let found = kinds(advise(part, placed: placed, intent: intent))
@@ -234,15 +240,16 @@ final class PrintAdvisoriesTests: XCTestCase {
     }
 
     func testLargeSharpCorneredFootprintIsReportedAndRoundedOneIsNot() throws {
-        let sharp = try exported(box(.zero, SIMD3(120, 40, 3)))
+        let sharp = try exported(box(.zero, SIMD3(120, 60, 3)))
         let footprint = try XCTUnwrap(sharpFootprintCorners(sharp))
         XCTAssertEqual(footprint.corners, 4)
         XCTAssertEqual(footprint.lengthMM, 120, accuracy: 0.01)
         let advisory = try XCTUnwrap(advise(sharp, placed: true, intent: PartIntent()).first { $0.kind == .sharpFootprintCorners })
-        XCTAssertEqual(advisory.message, "Large flat footprint, about 120 mm long, with 4 sharp corners. Large flat parts can lift at sharp corners (Slant uses no brims); rounding the corners helps.")
-        XCTAssertNil(sharpFootprintCorners(try exported(box(.zero, SIMD3(80, 40, 3)))), "Under 100 mm")
-        var rounded = box(SIMD3(5, 0, 0), SIMD3(110, 40, 3)).union(box(SIMD3(0, 5, 0), SIMD3(120, 30, 3)))
-        for (x, y) in [(5.0, 5.0), (115.0, 5.0), (5.0, 35.0), (115.0, 35.0)] {
+        XCTAssertEqual(advisory.message, "Large flat footprint, about 120 mm long, with 4 sharp corners. Large flat parts can lift at sharp corners (Slant uses no brims); round the corners in your CAD tool.")
+        XCTAssertNil(sharpFootprintCorners(try exported(box(.zero, SIMD3(80, 60, 3)))), "Under 100 mm")
+        XCTAssertNil(sharpFootprintCorners(try exported(box(.zero, SIMD3(120, 40, 3)))), "Narrower than 60 mm")
+        var rounded = box(SIMD3(5, 0, 0), SIMD3(115, 60, 3)).union(box(SIMD3(0, 5, 0), SIMD3(120, 55, 3)))
+        for (x, y) in [(5.0, 5.0), (115.0, 5.0), (5.0, 55.0), (115.0, 55.0)] {
             rounded = rounded.union(post(x: x, y: y, z: 0, radius: 5, height: 3))
         }
         XCTAssertNil(sharpFootprintCorners(try exported(rounded)))

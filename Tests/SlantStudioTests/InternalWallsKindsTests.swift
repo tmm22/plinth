@@ -355,6 +355,15 @@ final class InternalWallsKindsTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(simd_length(SIMD2(gap.x, gap.y)), internalWallsTargetedClearanceMM - 0.001)
             }
         }
+        // Every slot keeps at least 1 mm from the ring's outer edge too (2 mm for slots in thick regions).
+        for ring in first.rings {
+            for slot in first.slots {
+                let nearest = simd_clamp(ring.centre, SIMD2(slot.low.x, slot.low.y), SIMD2(slot.high.x, slot.high.y))
+                let gap = simd_distance(nearest, ring.centre) - ring.outerRadiusMM
+                let needed = slot.kind == .bulkSlot ? internalWallsClearanceMM : internalWallsTargetedClearanceMM
+                XCTAssertGreaterThanOrEqual(gap, needed - 0.01, "\(slot.kind)")
+            }
+        }
         let text = internalWallsSummary(first)
         XCTAssertTrue(text.hasPrefix("Adds internal walls: 1 hole ring, 1 pin slot, "), text)
         XCTAssertTrue(text.contains("all opening through the bed face"), text)

@@ -79,7 +79,7 @@ extension StudioStore {
             let url = folder.appendingPathComponent(exportFileName(modelName: name, fileExtension: "stl"))
             try data.write(to: url, options: .atomic)
             guard importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: fileDetails),
-                              origin: .studioToolCopy) else {
+                              origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy) else {
                 return false
             }
             activities.insert(Activity(title: activityTitle, detail: model.name, success: true), at: 0)

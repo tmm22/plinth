@@ -515,27 +515,53 @@ func printPlacementTurnLine(_ degrees: Float) -> String? {
     degrees == 0 ? nil : "Turned \(printPlacementTurnDegreesLabel(degrees)) about Z to line up its faces."
 }
 
-func printPlacementSmallContactLine(_ assessment: OrientationAssessment) -> String {
-    guard assessment.hasFlatContact else {
-        return "No flat face touches the bed. Add a flat base or plinth in Size and base."
+/// Where a base goes. Size and base is blocked on a print-ready copy, so its advice points to the original.
+func printPlacementBaseAdvice(onCopy: Bool) -> String {
+    onCopy ? "Add a flat base or plinth to the original in Size and base, then use Make Print-Ready Copy."
+        : "Add a flat base or plinth in Size and base."
+}
+
+/// The small-contact line from its figures; a nil contact means no flat face touches the bed.
+func printPlacementSmallContactText(contactMM2: Float?, minimumMM2: Float, onCopy: Bool = false) -> String {
+    guard let contactMM2 else { return "No flat face touches the bed. \(printPlacementBaseAdvice(onCopy: onCopy))" }
+    return String(format: "Small bed contact: about %.0f mm² touches the bed, under the %.0f mm² Studio looks for. ", contactMM2, minimumMM2)
+        + printPlacementBaseAdvice(onCopy: onCopy)
+}
+
+func printPlacementSmallContactLine(_ assessment: OrientationAssessment, onCopy: Bool = false) -> String {
+    printPlacementSmallContactText(contactMM2: assessment.hasFlatContact ? assessment.contactArea : nil,
+                                   minimumMM2: assessment.minimumContactMM2, onCopy: onCopy)
+}
+
+/// Why a placement could tip, in report order of severity.
+enum PrintPlacementTipping: Int, Sendable {
+    case beyondEdge = 0, nearEdge = 1, slender = 2
+}
+
+/// The tipping risk and the figures its line uses (height and contact width, for a slender part), or nil.
+func printPlacementTipping(_ assessment: OrientationAssessment) -> (kind: PrintPlacementTipping, heightMM: Float, widthMM: Float)? {
+    if let margin = assessment.tipMarginMM, margin < 0 { return (.beyondEdge, assessment.size.z, 0) }
+    if assessment.centreOfMassNearEdge { return (.nearEdge, assessment.size.z, 0) }
+    if assessment.slenderOnBed, let width = assessment.contactHullWidth { return (.slender, assessment.size.z, width) }
+    return nil
+}
+
+func printPlacementTippingText(_ kind: PrintPlacementTipping, heightMM: Float, widthMM: Float, onCopy: Bool = false) -> String {
+    let fix = onCopy ? ": add one to the original in Size and base, then use Make Print-Ready Copy." : "."
+    switch kind {
+    case .beyondEdge:
+        return "Could tip: its centre of mass is beyond the edge of what touches the bed. A plinth or a wider flat base helps it stay put\(fix)"
+    case .nearEdge:
+        return "Could tip: its centre of mass is close to the edge of what touches the bed. A plinth or a wider flat base helps it stay put\(fix)"
+    case .slender:
+        return String(format: "Tall and narrow on the bed: about %.0f mm tall on a contact %.1f mm wide. Slant uses no brims, so a plinth or a wider base helps it stay put",
+                      heightMM, widthMM) + fix
     }
-    return String(format: "Small bed contact: about %.0f mm² touches the bed, under the %.0f mm² Studio looks for. Add a flat base or plinth in Size and base.",
-           assessment.contactArea, assessment.minimumContactMM2)
 }
 
 /// Why the placement could tip, or nil.
-func printPlacementTippingLine(_ assessment: OrientationAssessment) -> String? {
-    if let margin = assessment.tipMarginMM, margin < 0 {
-        return "Could tip: its centre of mass is beyond the edge of what touches the bed. A plinth or a wider flat base helps it stay put."
-    }
-    if assessment.centreOfMassNearEdge {
-        return "Could tip: its centre of mass is close to the edge of what touches the bed. A plinth or a wider flat base helps it stay put."
-    }
-    if assessment.slenderOnBed, let width = assessment.contactHullWidth {
-        return String(format: "Tall and narrow on the bed: about %.0f mm tall on a contact %.1f mm wide. Slant uses no brims, so a plinth or a wider base helps it stay put.",
-                      assessment.size.z, width)
-    }
-    return nil
+func printPlacementTippingLine(_ assessment: OrientationAssessment, onCopy: Bool = false) -> String? {
+    printPlacementTipping(assessment).map { printPlacementTippingText($0.kind, heightMM: $0.heightMM, widthMM: $0.widthMM, onCopy: onCopy) }
 }
 
 /// The preferred placement (`preferredOrientation`), then, when `allowTurn`, a turn about Z that lines up its largest
@@ -776,7 +802,7 @@ struct PrintOrientationCard: View {
                 // Lock-bearing records go with the copy, so a Z-up-locked model's copy stays locked (`requiresZUp`).
                 store.importModel(url, recipe: recipe, improvement: model.designImprovement, reinforcement: model.reinforcement,
                                   autoImprovement: model.autoImprovement, sourceDetails: model.sourceDetails,
-                                  inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy)
+                                  inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy)
                 try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
             case .failure(let error): store.showError(error.localizedDescription)
             }

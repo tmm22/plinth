@@ -263,7 +263,7 @@ struct MeshToolsCard: View {
                     if store.importModel(url, recipe: model.printRecipe, improvement: model.designImprovement,
                                          intent: model.partIntent, reinforcement: model.reinforcement,
                                          autoImprovement: model.autoImprovement, sourceDetails: model.sourceDetails,
-                                         inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy),
+                                         inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy),
                        let id = store.selectedLocalID {
                         MeshToolsNotes.byModel[id] = MeshToolsNote(title: kind.isRepair ? "Repaired copy" : "Simplified copy",
                                                                    lines: value.lines)

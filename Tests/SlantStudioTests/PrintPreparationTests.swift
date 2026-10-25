@@ -213,7 +213,8 @@ final class PrintPreparationTests: XCTestCase {
         XCTAssertLessThanOrEqual(walls.removedFraction, internalWallsMaximumRemovedFraction)
         XCTAssertGreaterThan(try XCTUnwrap(walls.estimatedExtraMaterialFraction), 0)
         XCTAssertEqual(record.appliedSteps.map(\.step), [.bottomChamfer, .internalWalls])
-        XCTAssertTrue(printPreparationAppliedLines(record)[1].hasPrefix("Internal walls: Adds internal walls"))
+        XCTAssertTrue(printPreparationAppliedLines(record)[1].hasPrefix("Internal walls: "), printPreparationAppliedLines(record)[1])
+        XCTAssertTrue(printPreparationDetailLines(record).contains { $0.hasPrefix("Internal walls: Adds internal walls") })
         XCTAssertTrue(printPreparationCaption(record).contains("slots in thick regions"), printPreparationCaption(record))
         // Never a strength claim or percentage of strength.
         for line in printPreparationAppliedLines(record) + printPreparationSkippedLines(record) + [printPreparationCaption(record)] {

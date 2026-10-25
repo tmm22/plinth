@@ -103,7 +103,7 @@ final class PrintPreparationRound11Tests: XCTestCase {
         // The copy keeps both shells, so its final part-count check passes unchanged.
         XCTAssertEqual(try health(XCTUnwrap(result.mesh)).shells, 2)
         let line = try XCTUnwrap(hiddenPocketsLine(pockets))
-        XCTAssertEqual(line, "1 hidden pocket: Slant would bill it as a separate body (about $0.39 extra, test on 25 Oct 2026).")
+        XCTAssertEqual(line, "1 hidden pocket costs about $0.39 extra in total (Slant bills it as a separate body; test on 25 Oct 2026). Filling uses about 1.0 cm³ more material. Get an estimate for both.")
         // A one-part copy is recorded as checked, with none.
         let plain = try preparePrintReadyCopy(try block(), input: input(), now: fixedDate)
         XCTAssertEqual(plain.record.hiddenPockets, PrintPreparationPockets(count: 0, shellsInside: 0, addedVolumeMM3: 0))
@@ -150,8 +150,9 @@ final class PrintPreparationRound11Tests: XCTestCase {
         XCTAssertEqual(abs(record.zTurnDegrees), 30, accuracy: 0.5)
         let placement = try XCTUnwrap(record.steps.first { $0.step == .orientation })
         XCTAssertTrue(placement.applied)
-        XCTAssertTrue(placement.lines.contains { $0.hasPrefix("Turned 30° about Z") }, "\(placement.lines)")
-        XCTAssertTrue(printPreparationCaption(record).contains("turned 30° about Z"), printPreparationCaption(record))
+        // The turn is shown once: in the placement's sentence, not the caption or the details.
+        let shown = printPreparationAppliedLines(record) + printPreparationDetailLines(record) + [printPreparationCaption(record)]
+        XCTAssertEqual(shown.filter { $0.contains("30° about Z") }, ["Placement: kept the way up it was drawn, turned 30° about Z to line up its faces."])
         // Square to the axes now: the bounding box is the bar's own.
         let mesh = try XCTUnwrap(result.mesh)
         let size = mesh.maximum - mesh.minimum
@@ -167,7 +168,10 @@ final class PrintPreparationRound11Tests: XCTestCase {
         let part = Mesh.cube(center: Vector(15, 15, 2.5), size: Vector(30, 30, 5))
             .union(.cube(center: Vector(15, 15, 11), size: Vector(2, 2, 12)))
         let source = try ReinforcementEngine.stl(part.makeWatertight())
-        let result = try preparePrintReadyCopy(source, input: input(walls: false), now: fixedDate)
+        // A saved bracket purpose: the slender-upright note is only for a bracket, clip or custom part.
+        // Kept as placed, so the post stands up.
+        let result = try preparePrintReadyCopy(source, input: input(intent: PartIntent(purpose: .bracket, load: .z), walls: false, kept: "Kept"),
+                                               now: fixedDate)
         let record = result.record
         XCTAssertNil(result.blocked)
         let overhangs = try XCTUnwrap(record.overhangs)
@@ -175,29 +179,61 @@ final class PrintPreparationRound11Tests: XCTestCase {
         XCTAssertEqual(printPreparationOverhangLine(overhangs), "Overhangs: none steeper than 45° as placed.")
         let kinds = record.advisories.map(\.kind)
         XCTAssertTrue(kinds.contains(PrintAdvisoryKind.thinPin.rawValue), "\(record.advisories)")
+        XCTAssertTrue(kinds.contains(PrintAdvisoryKind.slenderUpright.rawValue), "\(record.advisories)")
         XCTAssertLessThanOrEqual(record.advisories.count, printAdvisoryMaximumCount)
-        XCTAssertEqual(printPreparationAdvisoryLines(record), record.advisories.map(\.message))
+        let slender = try XCTUnwrap(printPreparationAdvisoryLines(record).first { $0.hasPrefix("Slender upright feature") })
+        XCTAssertTrue(slender.contains("likely weaker standing than lying flat"), slender)
+        XCTAssertTrue(slender.hasSuffix("on the original and use Make Print-Ready Copy."), slender)
         for line in printPreparationAdvisoryLines(record) {
-            for word in ["guarantee", "approved", "safe"] { XCTAssertFalse(line.lowercased().contains(word), line) }
+            for word in ["guarantee", "approved", "safe", "half as strong", "cnc kitchen", "%"] {
+                XCTAssertFalse(line.lowercased().contains(word), line)
+            }
         }
+        // No saved purpose: no slender-upright note.
+        XCTAssertFalse(slenderUprightAdvisoryApplies(nil))
+        XCTAssertFalse(slenderUprightAdvisoryApplies(PartIntent(purpose: .decorative)))
+        XCTAssertFalse(slenderUprightAdvisoryApplies(PartIntent(purpose: .enclosure)))
+        XCTAssertTrue(slenderUprightAdvisoryApplies(PartIntent(purpose: .clip)))
+        XCTAssertTrue(slenderUprightAdvisoryApplies(PartIntent(purpose: .custom)))
     }
 
-    func testAdvisoriesAreCappedAndPlacementDuplicatesDropped() throws {
-        let many = (0..<12).map { PrintAdvisory(kind: .holeNearEdge, message: "Hole \($0)") }
-        XCTAssertEqual(printPreparationAdvisoryRecords(many, placement: nil).count, printAdvisoryMaximumCount)
+    func testAdvisoriesAreCappedRebuiltAndContactStaysInline() throws {
+        let many = (0..<12).map { PrintAdvisory(kind: .holeNearEdge, message: "Hole \($0)", values: [1, 2, 3, 4, Double($0) + 1]) }
+        XCTAssertEqual(printPreparationAdvisoryRecords(many).count, printAdvisoryMaximumCount)
         let long = PrintPreparationAdvisoryRecord(kind: "thinPin", message: String(repeating: "x", count: 5_000))
         XCTAssertEqual(printPreparationCappedAdvisories([long, PrintPreparationAdvisoryRecord(kind: "x", message: "  ")]).map(\.message.count),
                        [printPreparationAdvisoryMaximumLength])
-        // When the placement step already reported a small contact or a tipping risk, the same advisory isn't repeated.
-        let small = OrientationAssessment(orientation: .zUp, size: SIMD3(10, 10, 40), contactArea: 1, overhangArea: 0, surfaceArea: 100,
-                                          tipMarginMM: 0.5)
-        let choice = PrintPlacementChoice(assessment: small, zTurnDegrees: 0)
-        XCTAssertTrue(choice.smallBedContact)
-        XCTAssertTrue(choice.tippingProne)
-        let found = [PrintAdvisory(kind: .smallBedContact, message: "Small"), PrintAdvisory(kind: .tipping, message: "Tip"),
-                     PrintAdvisory(kind: .thinPin, message: "Pin")]
-        XCTAssertEqual(printPreparationAdvisoryRecords(found, placement: choice).map(\.message), ["Pin"])
-        XCTAssertEqual(printPreparationAdvisoryRecords(found, placement: nil).map(\.message), ["Small", "Tip", "Pin"])
+        // Shown lines are rebuilt from the figures, so an earlier build's saved wording never shows again; a known kind
+        // without figures is left out, and only an unknown kind shows its saved line.
+        var record = PrintPreparationRecord(sourceID: UUID(), sourceName: "P", created: fixedDate, steps: [], orientation: .zUp,
+                                            treatments: [], internalWalls: nil, notes: [])
+        record.advisories = [
+            PrintPreparationAdvisoryRecord(kind: "slenderUpright", message: "… about half as strong as printed flat (CNC Kitchen)."),
+            PrintPreparationAdvisoryRecord(kind: "slenderUpright", message: "Old text", values: [1, 2, 3, 20, 2]),
+            PrintPreparationAdvisoryRecord(kind: "somethingNew", message: "A later build's note."),
+            PrintPreparationAdvisoryRecord(kind: "steepOverhangs", message: "Overhangs", values: [0.05, 40]),
+        ]
+        let lines = printPreparationAdvisoryLines(record)
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertTrue(lines[0].hasPrefix("Slender upright feature near X 1, Y 2, Z 3: about 20 mm tall and 2.0 mm thick"), lines[0])
+        XCTAssertEqual(lines[1], "A later build's note.")
+        XCTAssertFalse(lines.joined().contains("CNC"))
+        // On a copy, contact and tipping advice points to the original, and both stay inline when the rest collapse.
+        let contact = try XCTUnwrap(printAdvisoryMessage(.smallBedContact, values: [1, 40, 100], onCopy: true))
+        XCTAssertTrue(contact.hasSuffix("Add a flat base or plinth to the original in Size and base, then use Make Print-Ready Copy."), contact)
+        let tip = try XCTUnwrap(printAdvisoryMessage(.tipping, values: [1, 30, 0], onCopy: true))
+        XCTAssertTrue(tip.contains("add one to the original in Size and base"), tip)
+        XCTAssertTrue(try XCTUnwrap(printAdvisoryMessage(.steepOverhangs, values: [0.05, 40])).contains("Reinforce’s overhang chamfer"))
+        let items = [PrintPreparationAdvisoryLine(message: "a", alwaysShown: false), PrintPreparationAdvisoryLine(message: "tip", alwaysShown: true),
+                     PrintPreparationAdvisoryLine(message: "b", alwaysShown: false), PrintPreparationAdvisoryLine(message: "c", alwaysShown: false)]
+        XCTAssertEqual(printPreparationAdvisorySplit(items).inline, ["tip"])
+        XCTAssertEqual(printPreparationAdvisorySplit(items).collapsed, ["a", "b", "c"])
+        XCTAssertEqual(printPreparationAdvisorySplit(Array(items.prefix(3))).inline, ["a", "tip", "b"])
+        // A large footprint needs both sides of 60 mm or more, and says how to fix it.
+        let corners = try XCTUnwrap(printAdvisoryMessage(.sharpFootprintCorners, values: [120, 4]))
+        XCTAssertTrue(corners.hasSuffix("round the corners in your CAD tool."), corners)
+        XCTAssertNil(sharpFootprintCorners(try STLMesh.validated(cuboid(.zero, SIMD3(120, 50, 5)))))
+        XCTAssertNotNil(sharpFootprintCorners(try STLMesh.validated(cuboid(.zero, SIMD3(120, 60, 5)))))
     }
 
     func testCopyTexts() {
@@ -205,17 +241,32 @@ final class PrintPreparationRound11Tests: XCTestCase {
         XCTAssertEqual(printPreparationPercentText(0.637), "about 64%")
         XCTAssertEqual(printPreparationOverhangLine(PrintPreparationOverhangs(share45: 0.031, share50: 0)),
                        "Overhangs: about 3% of the surface steeper than 45° as placed; none past Slant’s 50° limit.")
+        XCTAssertEqual(printPreparationOverhangLine(PrintPreparationOverhangs(share45: 0.05, share50: 0.01)),
+                       "Overhangs: about 5% of the surface steeper than 45° as placed; about 1% past Slant’s 50° limit.")
+        // From 2% past 50°, the line says what helps (the copy has no separate overhang advisory).
         XCTAssertEqual(printPreparationOverhangLine(PrintPreparationOverhangs(share45: 0.05, share50: 0.02)),
-                       "Overhangs: about 5% of the surface steeper than 45° as placed; about 2% past Slant’s 50° limit.")
-        XCTAssertEqual(hiddenPocketsLine(count: 2, shellsInside: 0),
-                       "2 hidden pockets: Slant would bill each as a separate body (about $0.78 extra, test on 25 Oct 2026).")
-        XCTAssertEqual(hiddenPocketsLine(count: 1, shellsInside: 1),
-                       "1 hidden pocket, with 1 loose part inside: Slant would bill each as a separate body (about $0.78 extra, test on 25 Oct 2026).")
-        XCTAssertNil(hiddenPocketsLine(count: 0, shellsInside: 0))
+                       "Overhangs: about 5% of the surface steeper than 45° as placed; about 2% past Slant’s 50° limit. Those areas may sag or print rough; Reinforce’s overhang chamfer under them helps.")
+        XCTAssertEqual(hiddenPocketsSummaryText(count: 2, shellsInside: 0, addedVolumeMM3: 2000),
+                       "2 hidden pockets cost about $0.78 extra in total (Slant bills each as a separate body; test on 25 Oct 2026). Filling uses about 2.0 cm³ more material. Get an estimate for both.")
+        XCTAssertEqual(hiddenPocketsSummaryText(count: 1, shellsInside: 1, addedVolumeMM3: 10),
+                       "1 hidden pocket, with 1 loose part inside, cost about $0.78 extra in total (Slant bills each pocket and each loose part as a separate body; test on 25 Oct 2026). Filling uses a little more material. Filling removes the loose parts inside them. Get an estimate for both.")
+        XCTAssertNil(hiddenPocketsSummaryText(count: 0, shellsInside: 0, addedVolumeMM3: 0))
         XCTAssertEqual(pocketsFilledCopyName("Owl.stl"), "Owl (pockets filled)")
         XCTAssertEqual(hiddenPocketsActivityDetail(filled: 2, removedInside: 0), "Copy saved · 2 pockets filled")
         XCTAssertFalse(hiddenPocketsActivityDetail(filled: 1, removedInside: 1).contains("Owl"))
-        for text in [hiddenPocketsFillCaption, hiddenPocketsLine(count: 3, shellsInside: 0)!, printPreparationBottomChamferCaption,
+        // The settings texts: what the chamfer means for automatic copies, that both switches apply to Make
+        // Print-Ready Copy, and which purposes get slots through thick regions.
+        XCTAssertTrue(printPreparationBottomChamferCaption.contains("With this on, almost every new STL gets a print-ready copy, because most parts have a flat bottom edge."))
+        XCTAssertTrue(printPreparationBottomChamferCaption.contains(printPreparationAlsoManualNote))
+        XCTAssertTrue(printPreparationInternalWallsCaption.contains(printPreparationAlsoManualNote))
+        XCTAssertTrue(printPreparationSettingsFooter.contains("any saved purpose except Decorative (including Enclosure and Custom)"))
+        XCTAssertTrue(printPreparationNoticeText.contains("chamfer"))
+        XCTAssertEqual(printPreparationNoticeDismissedDefaultsKey, "prepareNewModelsNoticeDismissedRound11")
+        XCTAssertEqual(printPreparationOfferCaption(PrintPreparationSettings()),
+                       "Repair if needed, placement, bridging, chamfers under ledges, a bottom-edge chamfer and internal walls, in a separate copy.")
+        XCTAssertEqual(printPreparationOfferCaption(PrintPreparationSettings(enabled: false, internalWalls: false, bottomChamfer: false)),
+                       "Repair if needed, placement, bridging and chamfers under ledges, in a separate copy.")
+        for text in [hiddenPocketsFillCaption, hiddenPocketsSummaryText(count: 3, shellsInside: 0, addedVolumeMM3: 9)!, printPreparationBottomChamferCaption,
                      printPreparationInternalWallsCaption] {
             for word in ["stronger", "strong ", "guarantee", "approved", "safe"] { XCTAssertFalse(text.lowercased().contains(word), text) }
         }
@@ -309,13 +360,27 @@ final class PrintPreparationRound11Tests: XCTestCase {
         let stl = LocalModel(name: "Part", filePath: "/tmp/r11-\(UUID().uuidString).stl")
         XCTAssertTrue(hiddenPocketsCheckApplies(stl))
         XCTAssertFalse(hiddenPocketsCheckApplies(LocalModel(name: "M", filePath: "/tmp/m.3mf")))
-        // Unknown: offered. Checked with none: not offered. Checked with pockets: offered.
-        XCTAssertTrue(hiddenPocketsFillOffered(stl))
+        // The menus offer it only when pockets are known: not when unknown, not when checked with none.
+        XCTAssertFalse(hiddenPocketsFillOffered(stl))
         let key = hiddenPocketsCacheKey(modelID: stl.id, path: stl.filePath)
         defer { HiddenPocketsCache.reports[key] = nil }
         HiddenPocketsCache.reports[key] = HiddenPocketsReport(shells: 1, pockets: [], separateParts: 1, shellsInsidePockets: 0,
                                                              otherShells: 0, complete: true, addedVolumeMM3: 0)
         XCTAssertFalse(hiddenPocketsFillOffered(stl))
+        HiddenPocketsCache.reports[key] = HiddenPocketsReport(shells: 2, pockets: [HiddenPocket(triangles: 12, volumeMM3: 1, low: .zero, high: .one, shellsInside: 0)],
+                                                             separateParts: 1, shellsInsidePockets: 0, otherShells: 0, complete: true, addedVolumeMM3: 1)
+        XCTAssertTrue(hiddenPocketsFillOffered(stl))
+        // The fill run's state clears only when its work ends, not when Stop is pressed.
+        let run = HiddenPocketsFillRun()
+        XCTAssertNotNil(run.begin(stl.id))
+        run.stop()
+        XCTAssertEqual(run.workingModelID, stl.id)
+        XCTAssertTrue(run.stopping)
+        XCTAssertNil(run.begin(UUID()), "A second fill can't start while the first one's work runs")
+        run.end()
+        XCTAssertNil(run.workingModelID)
+        XCTAssertFalse(run.stopping)
+        XCTAssertNotNil(run.begin(UUID()))
         // A print-ready copy's own record decides, and its panel shows the line instead of the model checks.
         var record = PrintPreparationRecord(sourceID: UUID(), sourceName: "P", created: fixedDate, steps: [], orientation: .zUp,
                                             treatments: [], internalWalls: nil, notes: [])
