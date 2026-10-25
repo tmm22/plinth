@@ -25,6 +25,9 @@ struct AutoImprovementResult: Sendable {
     let applied: [AutoImprovementStep]
     let skipped: [String]
     let manual: [String]
+    /// A time limit cut the run short (Auto-improve's own, or a treatment's preview limit), so the result may differ
+    /// from a run with no limit. Callers never save such a result: the same model must always give the same copy.
+    var timedOut = false
     var changed: Bool { !applied.isEmpty || orientation != .zUp }
 }
 
@@ -88,7 +91,8 @@ enum AutoImprover {
         var mesh = source.oriented(orientation)
         var solid = try mesh.reinforcementSolid()
         var applied: [AutoImprovementStep] = [], skipped: [String] = [], manual: [String] = []
-        for phase in profile.phases where !stop() {
+        var timedOut = false
+        phases: for phase in profile.phases where !stop() {
             progress("Looking for \(phase.title.lowercased())…")
             let found = candidates(phase, in: mesh, intent: intent, stop: stop)
             manual += found.manual
@@ -97,6 +101,7 @@ enum AutoImprover {
                 progress("\(phase.title) · \(index + 1) of \(found.candidates.count)")
                 var failure: Error?
                 for settings in [candidate.settings] + candidate.alternatives where !stop() {
+                    let started = Date()
                     do {
                         let preview = try ReinforcementEngine.preview(mesh, solid: solid, settings: settings, cancelled: stop)
                         mesh = preview.mesh
@@ -107,6 +112,8 @@ enum AutoImprover {
                         break
                     } catch {
                         try check()
+                        // A preview that ran out of time says nothing about whether the treatment fits.
+                        if Date().timeIntervalSince(started) >= ReinforcementEngine.previewTimeLimit { timedOut = true; break phases }
                         failure = failure ?? error
                     }
                 }
@@ -114,9 +121,11 @@ enum AutoImprover {
             }
         }
         try check()
-        if Date() > deadline { skipped.append("Time limit reached; the remaining treatments were not tried.") }
+        if Date() > deadline { timedOut = true }
+        if timedOut { skipped.append("Time limit reached; the remaining treatments were not tried.") }
         manual += reviewNotes(mesh)
-        return AutoImprovementResult(mesh: mesh, orientation: orientation, applied: applied, skipped: skipped, manual: manual)
+        return AutoImprovementResult(mesh: mesh, orientation: orientation, applied: applied, skipped: skipped, manual: manual,
+                                     timedOut: timedOut)
     }
 
     static func candidates(_ phase: Phase, in mesh: STLMesh, intent: PartIntent, stop: @Sendable () -> Bool = { false }) -> (candidates: [AutoCandidate], manual: [String]) {

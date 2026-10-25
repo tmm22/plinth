@@ -173,7 +173,7 @@ private struct ReinforcementReview: View {
                         Text("Geometry volume is not a filament or strength estimate. Request a new Slant quote for this copy.")
                             .font(.caption).foregroundStyle(.secondary)
                         if settings.kind == .internalWalls {
-                            Text("The slicer’s walls round each slot use more filament: in a live Slant estimate, slots like these added about 27% to a 40 × 40 × 20 mm block’s price.")
+                            Text("The slicer’s walls round each slot use more filament: in a live Slant estimate (25 Oct 2026), slots like these added about 27% to a 40 × 40 × 20 mm block’s price.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -290,7 +290,8 @@ private struct ReinforcementReview: View {
                 let url = folder.appendingPathComponent("\(name)-\(suffix).stl")
                 try part.binarySTL().write(to: url, options: .atomic)
                 imported = store.importModel(url, improvement: model.designImprovement, intent: designEditIntent(model), reinforcement: record,
-                                             sourceDetails: model.sourceDetails, origin: .studioToolCopy) && imported
+                                             sourceDetails: model.sourceDetails, printPreparation: model.printPreparation,
+                                             origin: .studioToolCopy) && imported
             }
             if imported { dismiss() }
         } catch { store.showError(error.localizedDescription) }

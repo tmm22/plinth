@@ -81,7 +81,7 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 /// Why the closed gap and cell treatments are no longer offered.
-let reinforcementClosedVoidWithdrawal = "No longer offered: this treatment leaves a closed gap inside the part, and Slant charges each closed gap or cavity as an extra body (about $0.39 each in a live Slant estimate). Use Internal walls, whose slots open through the bed face."
+let reinforcementClosedVoidWithdrawal = "No longer offered: this treatment leaves a closed gap inside the part, and Slant charges each closed gap or cavity as an extra body (about $0.39 each in a live Slant estimate, 25 Oct 2026). Use Internal walls, whose slots open through the bed face."
 
 /// The shell check's refusal: a copy with more separate shells than its source has a closed void (or a new loose piece).
 func reinforcementShellGrowthProblem(before: Int, after: Int) -> String? {
@@ -702,8 +702,11 @@ enum ReinforcementEngine {
     }
 
     /// `solid`, when given, is the exact solid that `source` was exported from by an earlier preview.
+    /// Seconds a single preview may take before it stops. Auto-improve treats a preview that ran this long as timed out.
+    static let previewTimeLimit: TimeInterval = 20
+
     static func preview(_ source: STLMesh, solid: Mesh? = nil, settings: ReinforcementSettings, cancelled: @escaping @Sendable () -> Bool = { false }) throws -> ReinforcementPreview {
-        let deadline = Date().addingTimeInterval(20)
+        let deadline = Date().addingTimeInterval(previewTimeLimit)
         let stop: @Sendable () -> Bool = { cancelled() || Date() > deadline }
         func check() throws { if stop() { throw StudioError("Preview stopped. Try a simpler mesh or a smaller region.") } }
         guard !settings.kind.isWithdrawn else { throw StudioError(reinforcementClosedVoidWithdrawal) }

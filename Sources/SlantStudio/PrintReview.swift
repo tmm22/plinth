@@ -806,6 +806,8 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
                     placement = found
                 }
                 let result = try AutoImprover.improve(mesh, intent: settings.intent, orientation: placement, cancelled: isCancelled)
+                // A run cut short by a time limit could differ from a full one: a failed step, so nothing is saved.
+                guard !result.timedOut else { throw StudioError(autoImproveTimedOutMessage) }
                 if result.changed {
                     mesh = result.mesh
                     autoImprove = PrintReviewAutoImproveOutcome(intent: settings.intent, orientation: result.orientation,
@@ -875,7 +877,15 @@ func runPrintReviewSteps(_ steps: [PrintReviewRunStep], on original: STLMesh, pr
     return PrintReviewRunResult(mesh: mesh, data: data, lines: lines, changed: changed, autoImprove: autoImprove)
 }
 
-/// "Name (print-ready)", without a model file extension.
+/// Review for Printing's Run Selected Steps copy: "Name (reviewed)", without a model file extension. Distinct from the
+/// automatic "(print-ready)" copy (`printReadyCopyName`).
+func reviewedCopyName(_ name: String) -> String {
+    var base = meshFitBaseName(name).trimmingCharacters(in: .whitespacesAndNewlines)
+    if base.isEmpty { base = "Model" }
+    return "\(base) (reviewed)"
+}
+
+/// The automatic preparation's copy (PrintPreparation.swift): "Name (print-ready)", without a model file extension.
 func printReadyCopyName(_ name: String) -> String {
     var base = meshFitBaseName(name).trimmingCharacters(in: .whitespacesAndNewlines)
     if base.isEmpty { base = "Model" }
@@ -889,7 +899,7 @@ func printReadyCopyKeepsRecords(_ actions: [PrintReviewAction]) -> Bool {
     actions.allSatisfy(\.keepsRecords)
 }
 
-/// The records a print-ready copy is saved with (`StudioStore.importModel`).
+/// The records a reviewed copy is saved with (`StudioStore.importModel`).
 struct PrintReadyCopyRecords: Equatable {
     var recipe: PreparedPrintRecipe?
     var improvement: DesignImprovementRecord?
@@ -949,7 +959,7 @@ Guidelines for parts that print well:
 - Load-bearing walls 2.0 mm or more (several lines), never under 1.0 mm. With 1 mm walls and 25% infill, a thick \
 solid region is mostly sparse infill: for load, walls and ribs do more than solid bulk.
 - One connected body. More than one shell (separate pieces, or closed hidden pockets inside) is billed as extra bodies \
-(about $0.39 each in a test); a cavity open to the outside is not. Thin slots about 0.25 mm wide that open through \
+(about $0.39 each in a Slant estimate on 25 Oct 2026); a cavity open to the outside is not. Thin slots about 0.25 mm wide that open through \
 the bottom face make the slicer add walls and keep one body.
 - Parts at least about 20 mm on a side, as Slant recommends; flag smaller ones as advice, not a reason to refuse.
 - Overhangs no more than 45° from vertical (Slant allows 50°; 45° leaves a margin); horizontal holes as teardrops; \

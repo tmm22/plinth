@@ -512,12 +512,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var sellerAddress: SellerAddress?
     /// Order a Sample to Me… without a saved address: the main window explains and offers Settings.
     @Published var showSellerAddressNeeded = false
-    @Published var selectedLocalID: UUID? {
-        didSet { if oldValue != selectedLocalID { selectionGeneration += 1 } }
-    }
-    /// Counts selection changes, so a print-ready copy finished in the background is selected only when nothing else
-    /// changed the selection since its original was imported (PrintPreparation.swift).
-    private(set) var selectionGeneration = 0
+    @Published var selectedLocalID: UUID?
     /// Automatic preparation of new STL models for printing (PrintPreparation.swift).
     let printPreparationQueue = PrintPreparationQueue()
     @Published var files: [Record] = []
@@ -727,9 +722,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                                origin: origin) != nil
     }
     /// `importModel`, returning the new model's ID. `selectsAndShows: false` adds it without changing the selection
-    /// or the screen, for copies saved in the background.
+    /// or the screen, for copies saved in the background; `insertingBefore` places it next to that model (else first).
     @discardableResult
-    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, origin: ModelImportOrigin, selectsAndShows: Bool = true) -> UUID? {
+    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil) -> UUID? {
         let ext = url.pathExtension.lowercased()
         guard ["stl", "obj", "3mf"].contains(ext) else {
             showError("Slant Studio accepts STL, OBJ, and 3MF models.")
@@ -746,7 +741,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                                    partIntent: recipe?.intent ?? intent, printRecipe: recipe, designImprovement: improvement, reinforcement: reinforcement, autoImprovement: autoImprovement,
                                    sourceDetails: sourceDetails?.isEmpty == false ? sourceDetails : nil,
                                    printPreparation: printPreparation)
-            localModels.insert(model, at: 0)
+            localModels.insert(model, at: neighbour.flatMap { id in localModels.firstIndex { $0.id == id } } ?? 0)
             if selectsAndShows { select(model) }
             saveModels()
             if selectsAndShows { self.destination = .models }

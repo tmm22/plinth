@@ -19,6 +19,8 @@ enum MeshFitError: LocalizedError, Equatable {
     case tooManyTriangles
     case resultNotClosed
     case addedZeroAreaTriangles
+    /// More separate parts than the model had, such as slots sealed into closed cavities: Slant charges each as a body.
+    case addedParts
     case stopped
 
     var errorDescription: String? {
@@ -38,6 +40,8 @@ enum MeshFitError: LocalizedError, Equatable {
         case .resultNotClosed: return "The result didn’t come out as a closed solid, so it wasn’t saved. Try a slightly different height."
         case .addedZeroAreaTriangles:
             return "The result would have more zero-area triangles than the model, so it wasn’t saved. Try a slightly different height, or repair the model first."
+        case .addedParts:
+            return "The result would have more separate parts than the model, such as slots or gaps sealed into closed cavities, which Slant charges as extra bodies, so it wasn’t saved."
         case .stopped: return "Stopped. Nothing was saved."
         }
     }
@@ -675,8 +679,8 @@ private func flattened(_ corners: [SIMD3<Float>]) -> [Float] {
 }
 
 /// Writes the binary STL, parses it back and requires a closed, consistently oriented, outward-facing solid with no
-/// more zero-area triangles than the model had (`inputZeroArea`).
-private func checkedResult(_ corners: [SIMD3<Float>], cutHeight: Float, contact: Double, inputZeroArea: Int,
+/// more zero-area triangles than the model had (`inputZeroArea`) and no more separate parts (`inputShells`).
+private func checkedResult(_ corners: [SIMD3<Float>], cutHeight: Float, contact: Double, inputZeroArea: Int, inputShells: Int,
                            isCancelled: () -> Bool) throws -> MeshFitResult {
     guard corners.count / 3 <= STLMesh.maximumTriangles else { throw MeshFitError.tooManyTriangles }
     let assembled = try STLMesh.validated(flattened(corners))
@@ -684,15 +688,17 @@ private func checkedResult(_ corners: [SIMD3<Float>], cutHeight: Float, contact:
     let parsed = try STLMesh.parse(data)
     guard parsed.triangleCount == corners.count / 3 else { throw MeshFitError.resultNotClosed }
     guard let report = analyzeMeshHealth(parsed, isCancelled: isCancelled) else { throw MeshFitError.stopped }
-    if let problem = meshFitResultProblem(report, inputZeroArea: inputZeroArea) { throw problem }
+    if let problem = meshFitResultProblem(report, inputZeroArea: inputZeroArea, inputShells: inputShells) { throw problem }
     return MeshFitResult(mesh: parsed, data: data, cutHeightMM: cutHeight, contactAreaMM2: contact)
 }
 
 /// Why a fit tool's result can't be saved: not a closed, consistently oriented, outward-facing solid, or more zero-area
-/// triangles than the model had. Nil when it can.
-func meshFitResultProblem(_ report: MeshHealthReport, inputZeroArea: Int) -> MeshFitError? {
+/// triangles than the model had, or more separate parts (a base sealing slots that opened through the bed face into
+/// closed cavities, which Slant bills as bodies). Nil when it can.
+func meshFitResultProblem(_ report: MeshHealthReport, inputZeroArea: Int, inputShells: Int = .max) -> MeshFitError? {
     guard report.isClosed, report.isConsistentlyOriented, report.signedVolume > 0 else { return .resultNotClosed }
     guard report.degenerateTriangles <= inputZeroArea else { return .addedZeroAreaTriangles }
+    guard report.shells <= inputShells else { return .addedParts }
     return nil
 }
 
@@ -720,7 +726,7 @@ extension STLMesh {
         let cut = try planeCut(self, height: cutHeightMM, isCancelled: isCancelled)
         let cap = try capTriangles(cut, isCancelled: isCancelled)
         return try checkedResult(cut.kept + cap.corners, cutHeight: cut.height - minimum.z, contact: cap.area,
-                                 inputZeroArea: input.degenerateTriangles, isCancelled: isCancelled)
+                                 inputZeroArea: input.degenerateTriangles, inputShells: input.shells, isCancelled: isCancelled)
     }
 }
 
@@ -842,13 +848,13 @@ extension STLMesh {
         var underside = 0.0
         for i in 1..<(n - 1) { underside += signedArea2D(footPlanar[0], footPlanar[i], footPlanar[i + 1]) }
         let result = try checkedResult(corners, cutHeight: cut.height - minimum.z, contact: underside,
-                                       inputZeroArea: input.degenerateTriangles, isCancelled: isCancelled)
+                                       inputZeroArea: input.degenerateTriangles, inputShells: input.shells, isCancelled: isCancelled)
         guard result.fitsBuildVolume else { throw MeshFitError.exceedsBuildVolume(largestMM: result.sizeMM.max()) }
         return result
     }
 }
 
-/// "Owl (flat base)", in the style of the other round 6 copies ("(repaired)", "(print-ready)").
+/// "Owl (flat base)", in the style of the other round 6 copies ("(repaired)", "(reviewed)").
 func flatBaseCopyName(_ name: String) -> String { "\(meshFitCopyBaseName(name)) (flat base)" }
 func plinthCopyName(_ name: String) -> String { "\(meshFitCopyBaseName(name)) (plinth)" }
 

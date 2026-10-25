@@ -30,8 +30,9 @@ let internalWallsSlotSpacingMM: Float = 4
 /// twice Slant's 1 mm wall, so the walls the slicer prints round a slot never merge with the part's own skin.
 let internalWallsClearanceMM: Float = 2
 /// Regions thinner than this across either horizontal direction get no slots: their walls and infill are already
-/// close together.
-let internalWallsMinimumRegionMM: Float = 7
+/// close together. 5 mm is about the narrowest region the clearance allows anyway (2 × (2 mm + the 0.37 mm sampling
+/// margin) + the 0.25 mm slot = 4.99 mm), so the clearance proof, not this filter, keeps every slot 2 mm from the skin.
+let internalWallsMinimumRegionMM: Float = 5
 /// Slots shorter than this from the bed add too few layers of wall to be worth the cut.
 let internalWallsMinimumSlotHeightMM: Float = 3
 /// Slots shorter than this along their length are left out.
@@ -468,9 +469,11 @@ private func slottedCorners(_ mesh: STLMesh, isBed: [Bool], slots: [InternalWall
     }
     // Holes are joined to their outlines here, each bridge ending at a point no other bridge uses, so the filled
     // outlines never repeat a point more than twice; the shared filler then sees no holes.
-    let bridging = internalWallsBridgedLoops(points: planar, loops: loops)
+    let bridging = try internalWallsBridgedLoops(points: planar, loops: loops, isCancelled: isCancelled)
     if isCancelled() { throw InternalWallsError.stopped }
     guard let merged = bridging.loops else {
+        // An exhausted work budget is a failure for the whole plan, never a reason to drop one slot and try again.
+        if bridging.workLimitReached { return .failed }
         if let hole = bridging.unjoinedLoop, hole >= bedLoops { return .unjoinable(hole - bedLoops) }
         return .failed
     }
@@ -505,8 +508,15 @@ private func slottedCorners(_ mesh: STLMesh, isBed: [Bool], slots: [InternalWall
 /// flat base cap's filler: holes rightmost first, each by a two-way cut to the nearest outline point it can see without
 /// touching any edge of the outline, this hole or the holes still to be joined. Unlike that filler, a cut may start at
 /// any of the hole's points, and never ends at a point an earlier cut used, so no point appears more than twice in a
-/// filled outline. Returns the joined outlines, or the index of the first loop that couldn't be joined.
-func internalWallsBridgedLoops(points: [SIMD2<Double>], loops: [[Int]], workLimit: Int = 200_000_000) -> (loops: [[Int]]?, unjoinedLoop: Int?) {
+/// filled outline. Returns the joined outlines, or the index of the first loop that couldn't be joined, with
+/// `workLimitReached` when it stopped because the work budget ran out (a failure, not an unjoinable hole).
+///
+/// Only the `internalWallsBridgeCandidatesPerPoint` nearest outline points of each hole point are tried, so the
+/// candidates sorted per hole stay bounded however large the outline grows; distance computations, the sort and the
+/// visibility tests all count against `workLimit`. Throws `InternalWallsError.stopped` when `isCancelled` reports true.
+func internalWallsBridgedLoops(points: [SIMD2<Double>], loops: [[Int]], workLimit: Int = 200_000_000,
+                               candidatesPerPoint: Int = internalWallsBridgeCandidatesPerPoint,
+                               isCancelled: () -> Bool = { false }) throws -> (loops: [[Int]]?, unjoinedLoop: Int?, workLimitReached: Bool) {
     func area(_ loop: [Int]) -> Double {
         var sum = 0.0
         for i in loop.indices {
@@ -539,13 +549,13 @@ func internalWallsBridgedLoops(points: [SIMD2<Double>], loops: [[Int]], workLimi
         return false
     }
     let areas = loops.map(area)
-    if let flat = areas.firstIndex(where: { !($0 != 0 && $0.isFinite) }) { return (nil, flat) }
+    if let flat = areas.firstIndex(where: { !($0 != 0 && $0.isFinite) }) { return (nil, flat, false) }
     let outers = loops.indices.filter { areas[$0] > 0 }
     var holesOf = [[Int]](repeating: [], count: loops.count)
     for hole in loops.indices where areas[hole] < 0 {
         let probe = points[loops[hole][0]]
         guard let owner = outers.filter({ contains(loops[$0], probe) }).min(by: { (areas[$0], $0) < (areas[$1], $1) }) else {
-            return (nil, hole)
+            return (nil, hole, false)
         }
         holesOf[owner].append(hole)
     }
@@ -565,18 +575,34 @@ func internalWallsBridgedLoops(points: [SIMD2<Double>], loops: [[Int]], workLimi
             for loop in [polygon, hole] + holes[(position + 1)...].map({ loops[$0] }) {
                 for i in loop.indices { edges.append((points[loop[i]], points[loop[(i + 1) % loop.count]])) }
             }
-            var pairs: [(distance: Double, from: Int, to: Int)] = []
+            if isCancelled() { throw InternalWallsError.stopped }
+            // The nearest few outline points of each hole point, kept in order by (distance, from, to).
+            typealias Pair = (distance: Double, from: Int, to: Int)
+            func before(_ a: Pair, _ b: Pair) -> Bool { (a.distance, a.from, a.to) < (b.distance, b.from, b.to) }
+            var pairs: [Pair] = []
             for from in hole.indices {
+                work += polygon.count
+                guard work <= workLimit else { return (nil, holeIndex, true) }
+                var nearest: [Pair] = []
                 for to in polygon.indices where !used.contains(polygon[to]) && points[polygon[to]] != points[hole[from]] {
-                    pairs.append((simd_distance_squared(points[hole[from]], points[polygon[to]]), from, to))
+                    let pair: Pair = (simd_distance_squared(points[hole[from]], points[polygon[to]]), from, to)
+                    if nearest.count == candidatesPerPoint, let last = nearest.last, !before(pair, last) { continue }
+                    let at = nearest.firstIndex { before(pair, $0) } ?? nearest.count
+                    nearest.insert(pair, at: at)
+                    if nearest.count > candidatesPerPoint { nearest.removeLast() }
                 }
+                pairs.append(contentsOf: nearest)
             }
-            pairs.sort { ($0.distance, $0.from, $0.to) < ($1.distance, $1.from, $1.to) }
+            // The sort is counted too (n log n comparisons).
+            work += pairs.count * max(1, Int(log2(Double(max(pairs.count, 2)))))
+            guard work <= workLimit else { return (nil, holeIndex, true) }
+            pairs.sort(by: before)
             var joined: [Int]?
             for pair in pairs {
+                if isCancelled() { throw InternalWallsError.stopped }
                 let m = points[hole[pair.from]], target = points[polygon[pair.to]]
                 work += edges.count
-                guard work <= workLimit else { return (nil, holeIndex) }
+                guard work <= workLimit else { return (nil, holeIndex, true) }
                 let blocked = edges.contains { edge in
                     // Edges ending at either end of the cut can only meet it there.
                     if edge.0 == m || edge.1 == m || edge.0 == target || edge.1 == target { return false }
@@ -593,13 +619,17 @@ func internalWallsBridgedLoops(points: [SIMD2<Double>], loops: [[Int]], workLimi
                 joined = merged
                 break
             }
-            guard let joined else { return (nil, holeIndex) }
+            guard let joined else { return (nil, holeIndex, false) }
             polygon = joined
         }
         result.append(polygon)
     }
-    return (result, nil)
+    return (result, nil, false)
 }
+
+/// Outline points tried per hole point when joining slot openings to the bed outline (`internalWallsBridgedLoops`).
+/// A slot opening has four points, so at most 128 candidate cuts are sorted per slot.
+let internalWallsBridgeCandidatesPerPoint = 32
 
 // MARK: - Nearest-surface index
 

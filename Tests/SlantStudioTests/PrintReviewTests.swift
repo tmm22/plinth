@@ -456,8 +456,11 @@ final class PrintReviewTests: XCTestCase {
     }
 
     func testCopyNamesAndRecordRules() {
+        XCTAssertEqual(reviewedCopyName("Dragon.stl"), "Dragon (reviewed)")
+        XCTAssertEqual(reviewedCopyName("  "), "Model (reviewed)")
+        // Distinct from the automatic print-ready copy.
         XCTAssertEqual(printReadyCopyName("Dragon.stl"), "Dragon (print-ready)")
-        XCTAssertEqual(printReadyCopyName("  "), "Model (print-ready)")
+        XCTAssertNotEqual(reviewedCopyName("Dragon"), printReadyCopyName("Dragon"))
         XCTAssertTrue(printReadyCopyKeepsRecords([.repair, .simplify(target: 3000)]))
         XCTAssertFalse(printReadyCopyKeepsRecords([.repair, .flatBase(cutMM: 1)]))
         XCTAssertFalse(printReadyCopyKeepsRecords([.scaleToSize(axis: .z, mm: 10)]))

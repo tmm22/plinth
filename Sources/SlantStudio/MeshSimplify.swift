@@ -126,8 +126,8 @@ private struct CollapseHeap {
 
 /// Simplifies a copy of `mesh` to at most `options.targetTriangles` triangles where the checks allow. Vertices are
 /// welded by exact position first (run `repairMesh` before this for a mesh with gaps). Throws
-/// `MeshToolError.cancelled`, `.empty`, or `.openedSurface` when a closed or consistent input would come out
-/// otherwise. A mesh already at or under the target comes back unchanged (`changed` false).
+/// `MeshToolError.cancelled`, `.empty`, `.openedSurface` when a closed or consistent input would come out
+/// otherwise, or `.addedParts` when the result would have more separate parts. A mesh already at or under the target comes back unchanged (`changed` false).
 func simplifyMesh(_ mesh: STLMesh, options: MeshSimplifyOptions = MeshSimplifyOptions(),
                   progress: MeshToolProgress = { _, _ in }, isCancelled: () -> Bool = { false }) throws -> MeshSimplifyResult {
     guard mesh.triangleCount > 0 else { throw MeshToolError.empty }
@@ -336,6 +336,8 @@ func simplifyMesh(_ mesh: STLMesh, options: MeshSimplifyOptions = MeshSimplifyOp
     if (before.isClosed && !after.isClosed) || (before.isConsistentlyOriented && !after.isConsistentlyOriented) {
         throw MeshToolError.openedSurface
     }
+    // A collapsed 0.25 mm slot opening can seal the slot into a closed cavity: a new part, which Slant bills as a body.
+    if after.shells > before.shells { throw MeshToolError.addedParts }
     progress(1, "Done")
     return MeshSimplifyResult(mesh: simplified, originalTriangles: mesh.triangleCount, reachedTarget: live <= target,
                               estimatedMaximumDeviation: maxCost.squareRoot(),

@@ -37,9 +37,12 @@ final class PrintPreparationTests: XCTestCase {
         defaults.set(false, forKey: printPreparationEnabledDefaultsKey)
         XCTAssertFalse(PrintPreparationSettings(defaults: defaults).enabled)
         XCTAssertEqual(PrintPreparationSettings(), PrintPreparationSettings(enabled: true, internalWalls: true))
-        // No strength percentage in the caption; the dated price finding is there.
-        XCTAssertFalse(printPreparationInternalWallsCaption.contains("%"))
+        // No strength claim in the caption; the dated, sized price finding is there.
+        XCTAssertFalse(printPreparationInternalWallsCaption.lowercased().contains("strong"))
         XCTAssertTrue(printPreparationInternalWallsCaption.contains("25 Oct 2026"))
+        XCTAssertTrue(printPreparationInternalWallsCaption.contains("40 × 40 × 20 mm"))
+        XCTAssertTrue(printPreparationInternalWallsCaption.contains("27%"))
+        XCTAssertTrue(printPreparationSettingsFooter.contains(printPreparationChamferCaution))
         XCTAssertTrue(printPreparationSettingsFooter.contains("never uploads"))
     }
 
@@ -128,6 +131,11 @@ final class PrintPreparationTests: XCTestCase {
         let safe = try AutoImprover.improve(source, intent: PartIntent(purpose: .bracket, load: .x), orientation: .zUp, profile: .fitSafe)
         XCTAssertFalse(safe.applied.contains { [.thicken, .fillet].contains($0.settings.kind) })
         XCTAssertTrue(safe.applied.isEmpty)
+        XCTAssertFalse(safe.timedOut)
+        // The same tray under the full set does get walls and fillets, so the difference is the profile.
+        let full = try AutoImprover.improve(source, intent: PartIntent(purpose: .bracket, load: .x), orientation: .zUp, profile: .full)
+        XCTAssertTrue(full.applied.contains { $0.settings.kind == .thicken }, "\(full.skipped)")
+        XCTAssertTrue(full.applied.contains { $0.settings.kind == .fillet }, "\(full.skipped)")
         let ledge = try AutoImprover.improve(try ledgePart(), intent: PartIntent(), orientation: .zUp, profile: .fitSafe)
         XCTAssertEqual(ledge.applied.map(\.settings.kind), [.overhang], "\(ledge.skipped)")
     }

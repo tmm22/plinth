@@ -148,6 +148,8 @@ struct AutoImproveCard: View {
     }
 }
 
+let autoImproveTimedOutMessage = "Auto-improve took too long on this model, so nothing was saved. Simplify a copy, then try again."
+
 extension AutoImproveRun {
     /// Auto-Improve & Save Copy: reads the model, places it (prepared and Z-up-locked copies keep their placement),
     /// applies `profile`'s treatments off the main actor and saves the result as a separate copy through `importModel`.
@@ -165,6 +167,8 @@ extension AutoImproveRun {
                     }
                     let result = try AutoImprover.improve(source, intent: intent, orientation: orientation, profile: profile,
                                                           progress: progress, cancelled: cancelled)
+                    // A run cut short by a time limit could differ from a full one, so it is never saved.
+                    guard !result.timedOut else { throw StudioError(autoImproveTimedOutMessage) }
                     guard result.changed else { return (result, nil) }
                     let folder = studioTempFolderURL(prefix: autoImproveTempFolderPrefix)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

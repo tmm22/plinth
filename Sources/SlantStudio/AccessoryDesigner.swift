@@ -243,7 +243,7 @@ load-bearing features walls or ribs rather than solid blocks.
 - Load-bearing walls at least 2.0 mm: use 2.25 or 2.7 mm (several lines) wherever the part carries load, 1.8 mm only \
 where it carries none, and never under 1.0 mm anywhere.
 - Never leave closed internal voids or hidden pockets: Slant bills each one as an extra body (about $0.39 each in a \
-test). Where a thick region carries load, thin slots about 0.25 mm wide that open through the bottom face make the \
+Slant estimate on 25 Oct 2026). Where a thick region carries load, thin slots about 0.25 mm wide that open through the bottom face make the \
 slicer add walls inside it while the part stays one body. Slant didn't require supports for their 0.25 mm ceilings in \
 a test, though Studio may list them as overhangs.
 - Overhangs at most 45° from vertical (Slant allows 50°; 45° leaves a margin); chamfer rather than leave flat \

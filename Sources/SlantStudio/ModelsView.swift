@@ -263,6 +263,8 @@ struct ModelsView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    // Shown once, after the first automatic print-ready copy (PrintPreparationView.swift).
+                    PrintPreparationFirstCopyNotice(queue: store.printPreparationQueue)
                     if let focusID = uploadFocusID, store.busy, store.selectedLocalID != focusID,
                        let uploading = store.localModels.first(where: { $0.id == focusID }) {
                         Label("Uploading \(uploading.name)…", systemImage: "arrow.up.circle")
@@ -457,6 +459,11 @@ struct ModelsView: View {
         Button("Save as Product…") {
             store.openSavedProducts(prefill: savedProductPrefill(for: model, selectedFilamentID: store.filamentID))
         }
+        if model.supportsPreview, model.printPreparation == nil {
+            // Local only: queues a separate print-ready copy (PrintPreparation.swift). Never uploads; no shortcut.
+            Button("Make Print-Ready Copy") { store.makePrintReadyCopy(modelID: model.id) }
+                .disabled(store.printPreparationQueue.isPreparing(model.id))
+        }
         if model.remoteID != nil {
             // Opens the composer for review only; nothing is created or paid from here (SellerAddress.swift).
             Button("Order a Sample to Me…") { store.orderSampleToMe(fileID: model.remoteID) }
@@ -509,6 +516,10 @@ struct ModelsView: View {
                 Text(actionStatus(step, uploadFailed: uploadFailed))
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if step == .needsUpload, let local = store.selectedLocal {
+                    // "A print-ready copy exists · Show Copy": only selects the copy (PrintPreparationView.swift).
+                    PrintReadyCopyHint(model: local)
+                }
             }
             Spacer(minLength: 8)
             // While busy, the status line says what is running and the window toolbar shows the only spinner.

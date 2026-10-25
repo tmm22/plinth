@@ -268,14 +268,14 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
                     self.lastRunSelection = selection
                     return
                 }
-                let name = printReadyCopyName(model.name)
+                let name = reviewedCopyName(model.name)
                 let records = printReadyCopyRecords(for: model, actions: steps.map(\.action), autoImprove: value.0.autoImprove,
                                                     materialID: materialID)
                 if Self.save(value.0.data, name: name, model: model, records: records, store: store) {
                     self.lastRunSelection = selection
                     self.run = .saved(name: name, lines: value.0.lines,
                                       comparison: printReviewComparisonLines(before: before, after: after))
-                    store.activities.insert(Activity(title: "Print-ready copy",
+                    store.activities.insert(Activity(title: "Reviewed copy",
                                                      detail: steps.count == 1 ? "1 step run" : "\(steps.count) steps run",
                                                      success: true), at: 0)
                 } else {
@@ -708,7 +708,7 @@ struct PrintReviewSheet: View {
                     Text("Already run with these steps. Tick a different set to make another copy.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text("Saves one copy, “\(printReadyCopyName(model.name))”.").font(.caption).foregroundStyle(.secondary)
+                    Text("Saves one copy, “\(reviewedCopyName(model.name))”.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             switch session.run {

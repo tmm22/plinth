@@ -287,8 +287,10 @@ struct DesignImprovementsCard: View {
             let name = URL(fileURLWithPath: model.name).lastPathComponent
             let url = folder.appendingPathComponent("\(name)-edge-improved.stl")
             try preview.binarySTL().write(to: url, options: .atomic)
+            // Lock-bearing records go with the copy, so a Z-up-locked model's copy stays locked (`requiresZUp`).
             store.importModel(url, improvement: record, intent: designEditIntent(model), reinforcement: model.reinforcement,
-                              sourceDetails: model.sourceDetails, origin: .studioToolCopy)
+                              autoImprovement: model.autoImprovement, sourceDetails: model.sourceDetails,
+                              printPreparation: model.printPreparation, origin: .studioToolCopy)
             review = false
         } catch { store.showError(error.localizedDescription) }
         saving = false

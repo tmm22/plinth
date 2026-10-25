@@ -17,6 +17,8 @@ enum MeshToolError: LocalizedError, Equatable {
     case openedSurface
     /// The input passed the mesh check and the result wouldn't.
     case madeWorse
+    /// Simplifying would leave more separate parts, such as a thin slot's opening collapsed into a closed cavity.
+    case addedParts
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +27,7 @@ enum MeshToolError: LocalizedError, Equatable {
         case .tooLarge: return "The result would be larger than the 500,000-triangle preview limit, so no copy was made."
         case .openedSurface: return "Simplifying would leave gaps in this closed mesh, so no copy was made. Try a higher triangle count."
         case .madeWorse: return "This model passes the mesh check, but the result wouldn’t, so no copy was made."
+        case .addedParts: return "Simplifying would split this model into more separate parts, such as a thin slot closed into a cavity, which Slant charges as extra bodies, so no copy was made. Try a higher triangle count."
         }
     }
 }

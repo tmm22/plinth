@@ -1,20 +1,24 @@
 import SwiftUI
 import AppKit
+import simd
 
 // Prepare new models for printing: after a new STL enters the library, Studio makes one separate "(print-ready)"
 // copy with fit-safe changes only — repair when needed, placement on the bed, bridging layers and chamfers under free
 // ledges, and internal walls — and keeps the original unchanged. Fillets and wall matching, which take space from
-// inside corners and cavities, are added only after the seller confirms nothing on the part has to fit.
+// inside corners and cavities, are added only after the seller confirms nothing on the part has to fit. The seller can
+// also ask for a copy of any STL with Make Print-Ready Copy.
 //
-// Everything here is local: nothing is uploaded or sent to any service, and no menu item or shortcut starts it.
-// The pipeline is pure and deterministic (each step walks meshes in index order), so the same model always gives the
-// same bytes.
+// Everything here is local: nothing is uploaded or sent to any service, and no keyboard shortcut starts it.
+// The pipeline is pure and deterministic (each step walks meshes in index order, and a run cut short by a time limit
+// is never saved), so the same model always gives the same bytes.
 
 // MARK: - Settings
 
 /// Settings › Design Tools › Prepare new models for printing. Both are plain preferences, on by default.
 let printPreparationEnabledDefaultsKey = "prepareNewModelsForPrinting"
 let printPreparationInternalWallsDefaultsKey = "prepareNewModelsAddInternalWalls"
+/// Only that the one-time notice was dismissed is stored.
+let printPreparationNoticeDismissedDefaultsKey = "prepareNewModelsNoticeDismissed"
 
 struct PrintPreparationSettings: Equatable, Sendable {
     var enabled = true
@@ -32,19 +36,26 @@ struct PrintPreparationSettings: Equatable, Sendable {
     }
 }
 
-let printPreparationInternalWallsCaption = "Thin slots open through the base make Slant’s printer add walls inside the part. In a test the price rose about a quarter, for a stronger part (25 Oct 2026)."
-let printPreparationSettingsFooter = "When you import an STL, open one from Finder, save an STL copy of an OBJ or 3MF, or save a replica, Studio makes a separate “(print-ready)” copy: it repairs the mesh if needed, places the part on the bed with the fewest overhangs, adds bridging layers over counterbores and chamfers under free ledges and, if chosen, internal walls. It never changes the original, never uploads or sends anything, and never adds fillets or thickens walls, which can change how parts fit; the copy offers those separately. Personalised models, designed accessories and copies made by Studio’s tools are left alone."
+let printPreparationInternalWallsCaption = "Thin slots open through the base make Slant’s printer add walls inside the part. In one Slant estimate for a 40 × 40 × 20 mm block (25 Oct 2026), this added about 27% to the price."
+let printPreparationChamferCaution = "Chamfers fill the space under overhanging ledges: check any ledge something hooks or slides under."
+let printPreparationSettingsFooter = "When you import an STL, open one from Finder, save an STL copy of an OBJ or 3MF, or save a replica, Studio makes a separate “(print-ready)” copy: it repairs the mesh if needed, places the part on the bed with the fewest overhangs, adds bridging layers over counterbores and chamfers under free ledges and, if chosen, internal walls. It never changes the original, never uploads or sends anything, and never adds fillets or thickens walls, which can change how parts fit; the copy offers those separately. \(printPreparationChamferCaution) Personalised models, designed accessories and copies made by Studio’s tools are left alone; use Make Print-Ready Copy in a model’s More menu for any of them."
+let printPreparationNoticeText = "Studio now makes a print-ready copy of each new STL. Change this in Settings › Design Tools."
+
+/// The one-time notice shows once an automatic copy is saved, until the seller dismisses it.
+func printPreparationNoticeShouldShow(dismissed: Bool, automaticCopySavedThisSession: Bool) -> Bool {
+    !dismissed && automaticCopySavedThisSession
+}
 
 // MARK: - Eligibility
 
 /// How a model entered the library. Every `importModel` caller states one, so whether a model is prepared for printing
-/// is decided by where it came from, never guessed from its name.
+/// automatically is decided by where it came from, never guessed from its name.
 enum ModelImportOrigin: Equatable, Sendable {
     /// The Import panel, Finder and Dock opens, and drag-in. Prepared.
     case imported
     /// An STL copy of an OBJ or 3MF model (ModelFileOpening.swift). Prepared: it becomes an STL.
     case stlCopyOfOtherFormat
-    /// A saved replica (ReplicaGeneratorView.swift). Prepared.
+    /// A saved replica (ReplicaGeneratorView.swift). Prepared, keeping the way up the seller chose.
     case replica
     /// A file downloaded from the seller's Slant account. Not prepared: it is a copy of what Slant already prints, and
     /// is linked to that upload.
@@ -56,7 +67,7 @@ enum ModelImportOrigin: Equatable, Sendable {
     /// A file the API Workbench saved from a response (a developer tool). Not prepared.
     case workbench
     /// A copy made by one of Studio's tools: repaired, simplified, scaled, flat base, plinth, prepared, reinforced,
-    /// auto-improved, print-ready, edge-improved. Never prepared, so preparation can never loop.
+    /// auto-improved, reviewed, print-ready, edge-improved. Never prepared automatically, so preparation can never loop.
     case studioToolCopy
 
     var mayPrepareForPrinting: Bool {
@@ -93,8 +104,9 @@ func modelLicenceForbidsDerivatives(_ details: ModelSourceDetails?) -> Bool {
     return modelLicenceConcerns(text).contains(.noDerivatives)
 }
 
-/// Whether a model that has just entered the library gets a print-ready copy. Nil means yes. Models failing the mesh
-/// check are not refused here: preparation repairs them first, and stops without a copy if repair can't make them sound.
+/// Whether a model that has just entered the library gets an automatic print-ready copy. Nil means yes. Models failing
+/// the mesh check are not refused here: preparation repairs them first, and stops without a copy if repair can't make
+/// them sound. The 3 mm scale check is applied by the pipeline, which reads the mesh.
 func printPreparationSkipReason(origin: ModelImportOrigin, fileExtension: String, sourceDetails: ModelSourceDetails?,
                                 settings: PrintPreparationSettings, alreadyHandled: Bool) -> PrintPreparationSkipReason? {
     guard settings.enabled else { return .settingOff }
@@ -105,12 +117,37 @@ func printPreparationSkipReason(origin: ModelImportOrigin, fileExtension: String
     return nil
 }
 
-/// The "never twice" rule: a model that already has a preparation outcome, that a print-ready copy was made from
-/// (tracked by source ID in the copy's record), or that this session has already queued is never prepared again.
+/// The automatic trigger's "never twice" rule: a model that already has a preparation outcome, that a print-ready copy
+/// was made from (tracked by source ID in the copy's record), or that this session has already queued is never
+/// prepared again automatically. Make Print-Ready Copy is not bound by it.
 func printPreparationAlreadyHandled(modelID: UUID, library: [LocalModel], queuedThisSession: Set<UUID>) -> Bool {
     if queuedThisSession.contains(modelID) { return true }
     if library.first(where: { $0.id == modelID })?.printPreparationStatus != nil { return true }
     return library.contains { $0.printPreparation?.sourceID == modelID }
+}
+
+/// Why Make Print-Ready Copy can't run on this model, or nil. Any STL works, including Studio's own copies and
+/// accessories, except a print-ready copy itself. A failing mesh is repaired first, as in the automatic run.
+func printPreparationManualBlockedReason(_ model: LocalModel) -> String? {
+    guard model.supportsPreview else { return "Make Print-Ready Copy works on STL files. Save an STL copy first, then use it on the copy." }
+    guard model.printPreparation == nil else { return "This is already a print-ready copy." }
+    return nil
+}
+
+/// The placement kept, and why, or nil when Studio may choose one: a replica keeps the way up its seller chose, a
+/// prepared or Z-up-locked copy keeps its placement, and a decorative part keeps the way it was made to stand.
+func printPreparationKeptPlacementReason(_ model: LocalModel, origin: ModelImportOrigin?) -> String? {
+    if origin == .replica { return "Kept as saved: a replica keeps the way up you chose." }
+    if model.printRecipe != nil { return "Kept as placed: this copy already has a prepared placement." }
+    if model.requiresZUp { return "Kept as placed: this copy has features that depend on its print layers." }
+    if designEditIntent(model)?.purpose == .decorative { return "Kept as imported: a decorative part keeps the way it was made to stand." }
+    return nil
+}
+
+/// The newest print-ready copy made from `model`, if it is still in the library.
+func printReadyCopy(of model: LocalModel, in library: [LocalModel]) -> LocalModel? {
+    if let id = model.printPreparationStatus?.copyID, let copy = library.first(where: { $0.id == id }) { return copy }
+    return library.filter { $0.printPreparation?.sourceID == model.id }.max { $0.added < $1.added }
 }
 
 // MARK: - Step plan
@@ -136,32 +173,39 @@ enum PrintPreparationDecision: Equatable, Sendable {
 let printPreparationRepairNotNeeded = "Not needed: the mesh check passed."
 let printPreparationTreatmentsTooLarge = "Skipped: this model has more than \(meshToolsReinforceTriangleLimit.formatted()) triangles, the limit for bridging and chamfers. Simplify a copy, then use Auto-improve."
 let printPreparationWallsOff = "Off in Settings › Design Tools."
+let printPreparationWallsDecorative = "Skipped for a decorative part: internal walls add filament and cost, and a display piece carries no load."
+let printPreparationScaleFirst = "This model is under 3 mm across, so it may have been exported in another unit. Scale it first, then use Make Print-Ready Copy."
 
 /// Whether each step runs, checked against the mesh as it stands when that step is reached (repair can change the
 /// triangle count). Steps always run in `PrintPreparationStep.allCases` order: repair, placement, bridging and chamfers,
 /// then internal walls, which need the bed face down.
-func printPreparationDecision(_ step: PrintPreparationStep, triangles: Int, meshSound: Bool,
-                              internalWallsOn: Bool) -> PrintPreparationDecision {
+func printPreparationDecision(_ step: PrintPreparationStep, triangles: Int, meshSound: Bool, internalWallsOn: Bool,
+                              decorative: Bool = false, keptPlacement: String? = nil) -> PrintPreparationDecision {
     switch step {
     case .repair:
         return meshSound ? .skip(printPreparationRepairNotNeeded) : .run
     case .orientation:
-        return .run
+        return keptPlacement.map { .skip($0) } ?? .run
     case .treatments:
         return triangles > meshToolsReinforceTriangleLimit ? .skip(printPreparationTreatmentsTooLarge) : .run
     case .internalWalls:
         guard internalWallsOn else { return .skip(printPreparationWallsOff) }
+        guard !decorative else { return .skip(printPreparationWallsDecorative) }
         return triangles > internalWallsMaximumTriangles ? .skip("Skipped: " + InternalWallsSkipReason.tooManyTriangles.message) : .run
     }
 }
 
-func printPreparationPlan(triangles: Int, meshSound: Bool, internalWallsOn: Bool) -> [(step: PrintPreparationStep, decision: PrintPreparationDecision)] {
+func printPreparationPlan(triangles: Int, meshSound: Bool, internalWallsOn: Bool, decorative: Bool = false,
+                          keptPlacement: String? = nil) -> [(step: PrintPreparationStep, decision: PrintPreparationDecision)] {
     PrintPreparationStep.allCases.map {
-        ($0, printPreparationDecision($0, triangles: triangles, meshSound: meshSound, internalWallsOn: internalWallsOn))
+        ($0, printPreparationDecision($0, triangles: triangles, meshSound: meshSound, internalWallsOn: internalWallsOn,
+                                      decorative: decorative, keptPlacement: keptPlacement))
     }
 }
 
 // MARK: - Placement
+
+let printPreparationSetPurposeNote = "For a bracket or clip, set its purpose and stress direction in Optimise for purpose, then use Make Print-Ready Copy."
 
 /// The purpose isn't known at import, so placement uses a neutral ranking unless the model already has a complete
 /// saved purpose: `PartIntent()`'s balanced priority with no load direction, which scores only overhangs, bed contact,
@@ -170,15 +214,35 @@ func printPreparationPlacementIntent(saved: PartIntent?) -> (intent: PartIntent,
     let neutral = PartIntent(purpose: .enclosure, details: "", load: .unknown)
     let neutralNote = "Neutral placement: the fewest overhangs and a steady bed face."
     guard let saved else {
-        return (neutral, "\(neutralNote) The part’s purpose isn’t known, so no load direction was assumed. For a bracket or clip, choose its stress direction in Optimise for purpose on the original.")
+        return (neutral, "\(neutralNote) The part’s purpose isn’t known, so no load direction was assumed. \(printPreparationSetPurposeNote)")
     }
     guard saved.isReady else {
-        return (neutral, "\(neutralNote) The saved purpose (\(saved.purpose.rawValue.lowercased())) has no stress direction, and Studio never guesses one. Choose it in Optimise for purpose on the original.")
+        return (neutral, "\(neutralNote) The saved purpose (\(saved.purpose.rawValue.lowercased())) has no stress direction, and Studio never guesses one. Set it in Optimise for purpose, then use Make Print-Ready Copy.")
     }
     if saved.effectiveLoad != .unknown {
         return (saved, "Placed for its saved purpose (\(saved.purpose.rawValue.lowercased()), main stress along \(saved.effectiveLoad.rawValue.lowercased())).")
     }
     return (saved, "Placed for its saved purpose (\(saved.purpose.rawValue.lowercased())): the fewest overhangs and a steady bed face.")
+}
+
+// MARK: - Thin walls
+
+/// Samples for the copy's thin-wall advisory: modest, so preparation stays fast.
+let printPreparationWallThicknessSamples = 4_000
+
+/// Separate areas of readings under `belowMM`: spots within `radiusMM` of an area's first spot join it, in sample order.
+func printPreparationThinAreaCount(_ report: WallThicknessReport, belowMM: Float = 1, radiusMM: Float = smallFeatureClusterRadiusMM) -> Int {
+    var centres: [SIMD3<Float>] = []
+    for spot in report.thinSpots where spot.thicknessMM < belowMM {
+        if centres.contains(where: { simd_distance($0, spot.point) <= radiusMM }) { continue }
+        centres.append(spot.point)
+    }
+    return centres.count
+}
+
+func printPreparationThinAreasLine(_ count: Int) -> String? {
+    guard count > 0 else { return nil }
+    return "\(count == 1 ? "1 area" : "\(count) areas") thinner than 1 mm: Slant’s 1 mm walls may not print \(count == 1 ? "it" : "them") well."
 }
 
 // MARK: - Records
@@ -203,7 +267,7 @@ struct PrintPreparationWalls: Codable, Equatable, Sendable {
 let printPreparationUnknownSourceID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
 
 /// Saved with a print-ready copy: what was applied and skipped, with Studio's numbers. `sourceID` is the original, so
-/// a model is never prepared twice.
+/// a model is never prepared twice automatically.
 struct PrintPreparationRecord: Codable, Equatable, Sendable {
     var sourceID: UUID
     var sourceName: String
@@ -214,15 +278,18 @@ struct PrintPreparationRecord: Codable, Equatable, Sendable {
     var internalWalls: PrintPreparationWalls?
     /// Advice for the seller's review (Auto-improve's notes: holes and bores left alone, and the like).
     var notes: [String]
+    /// Separate areas under 1 mm thick on the copy (advisory; nil when not measured).
+    var thinAreasUnder1MM: Int?
 
     init(sourceID: UUID, sourceName: String, created: Date, steps: [PrintPreparationStepRecord], orientation: PrintOrientation,
-         treatments: [AutoImprovementStep], internalWalls: PrintPreparationWalls?, notes: [String]) {
+         treatments: [AutoImprovementStep], internalWalls: PrintPreparationWalls?, notes: [String], thinAreasUnder1MM: Int? = nil) {
         self.sourceID = sourceID; self.sourceName = sourceName; self.created = created; self.steps = steps
         self.orientation = orientation; self.treatments = treatments; self.internalWalls = internalWalls; self.notes = notes
+        self.thinAreasUnder1MM = thinAreasUnder1MM
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sourceID, sourceName, created, steps, orientation, treatments, internalWalls, notes
+        case sourceID, sourceName, created, steps, orientation, treatments, internalWalls, notes, thinAreasUnder1MM
     }
 
     /// Lenient: never throws, because models.json loads as a whole and a damaged record must not stop the library
@@ -237,6 +304,7 @@ struct PrintPreparationRecord: Codable, Equatable, Sendable {
         treatments = (try? c?.decode([AutoImprovementStep].self, forKey: .treatments)) ?? []
         internalWalls = try? c?.decode(PrintPreparationWalls.self, forKey: .internalWalls)
         notes = (try? c?.decode([String].self, forKey: .notes)) ?? []
+        thinAreasUnder1MM = try? c?.decode(Int.self, forKey: .thinAreasUnder1MM)
     }
 
     var appliedSteps: [PrintPreparationStepRecord] { steps.filter(\.applied) }
@@ -245,7 +313,8 @@ struct PrintPreparationRecord: Codable, Equatable, Sendable {
     var bridgeCount: Int { treatments.filter { $0.settings.kind == .bridge }.count }
 }
 
-/// The outcome saved on the original, so the inspector can say what happened and the model is never prepared twice.
+/// The outcome saved on the original, so the inspector can say what happened and the model is never prepared twice
+/// automatically.
 struct PrintPreparationStatus: Codable, Equatable, Sendable {
     enum Outcome: String, Codable, Sendable {
         case madeCopy, nothingToChange, noCopy, stopped
@@ -262,7 +331,7 @@ struct PrintPreparationStatus: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey { case outcome, copyID, lines, date }
 
     /// Lenient, like the record: never throws, and an unknown outcome reads as "no copy", which still prevents a
-    /// second run.
+    /// second automatic run.
     init(from decoder: Decoder) {
         let c = try? decoder.container(keyedBy: CodingKeys.self)
         outcome = (try? c?.decode(Outcome.self, forKey: .outcome)) ?? .noCopy
@@ -274,6 +343,21 @@ struct PrintPreparationStatus: Codable, Equatable, Sendable {
 
 let printPreparationNothingToChange = "Already print-ready: nothing to change."
 let printPreparationPriceNote = "Slant’s price for this copy may differ: get a new estimate after uploading."
+let printPreparationWallsPriceNote = "Internal walls use more filament, so Slant’s price is likely higher: about 27% more in one Slant estimate for a 40 × 40 × 20 mm block (25 Oct 2026). Get an estimate for both before choosing."
+let printPreparationTookTooLong = "Preparation stopped: it took too long, so no copy was made. Try Make Print-Ready Copy again."
+
+/// The price line for a copy: the internal-walls note when slots were cut, otherwise the general note.
+func printPreparationPriceLine(_ record: PrintPreparationRecord) -> String {
+    record.internalWalls == nil ? printPreparationPriceNote : printPreparationWallsPriceNote
+}
+
+/// Cautions for the copy's panel: the chamfer caution when chamfers were added, and thin areas.
+func printPreparationCautions(_ record: PrintPreparationRecord) -> [String] {
+    var lines: [String] = []
+    if record.chamferCount > 0 { lines.append(printPreparationChamferCaution) }
+    if let thin = record.thinAreasUnder1MM, let line = printPreparationThinAreasLine(thin) { lines.append(line) }
+    return lines
+}
 
 /// One line per applied step, with Studio's numbers.
 func printPreparationAppliedLines(_ record: PrintPreparationRecord) -> [String] {
@@ -320,7 +404,14 @@ func printPreparationActivityDetail(_ status: PrintPreparationStatus, applied: I
 
 enum PrintPreparationError: LocalizedError, Equatable {
     case stopped
-    var errorDescription: String? { "Preparing for printing stopped. Nothing was saved." }
+    /// A step hit a time limit; its result could differ from a full run, so nothing is saved.
+    case tookTooLong
+    var errorDescription: String? {
+        switch self {
+        case .stopped: return "Preparing for printing stopped. Nothing was saved."
+        case .tookTooLong: return printPreparationTookTooLong
+        }
+    }
 }
 
 struct PrintPreparationInput: Sendable {
@@ -329,6 +420,11 @@ struct PrintPreparationInput: Sendable {
     /// The model's saved purpose (`designEditIntent`), if any.
     var savedIntent: PartIntent?
     var internalWalls: Bool
+    /// The automatic trigger (true) also stops at the 3 mm scale check; Make Print-Ready Copy doesn't.
+    var automatic = true
+    /// Why the placement is kept (`printPreparationKeptPlacementReason`), or nil when Studio chooses one.
+    var keptPlacement: String? = nil
+    var decorative: Bool { savedIntent?.purpose == .decorative }
 }
 
 struct PrintPreparationResult: Sendable {
@@ -341,10 +437,11 @@ struct PrintPreparationResult: Sendable {
     var changed: Bool { !record.appliedSteps.isEmpty }
 }
 
-/// The automatic preparation, in order: repair (only when the mesh check fails, and only if it makes the mesh sound),
+/// The preparation, in order: repair (only when the mesh check fails, and only if it makes the mesh sound),
 /// placement, fit-safe Auto-improve treatments (bridging and free-ledge chamfers; never wall matching or fillets), then
 /// internal walls on the bed face. Each step keeps its own checks; the copy must also pass the mesh check, keep its part
-/// count, and still fit the build volume if the original did. Throws only `PrintPreparationError.stopped`.
+/// count, and still fit the build volume if the original did. A thin-wall advisory is measured on the result.
+/// Throws `PrintPreparationError.stopped`, or `.tookTooLong` when a step hit its time limit.
 func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now: Date = Date(),
                            progress: @escaping @Sendable (String) -> Void = { _ in },
                            isCancelled: @escaping @Sendable () -> Bool = { false }) throws -> PrintPreparationResult {
@@ -354,21 +451,33 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     var treatments: [AutoImprovementStep] = []
     var walls: PrintPreparationWalls?
     var notes: [String] = []
+    var thinAreas: Int?
     func record() -> PrintPreparationRecord {
         PrintPreparationRecord(sourceID: input.sourceID, sourceName: input.sourceName, created: now, steps: steps,
-                               orientation: orientation, treatments: treatments, internalWalls: walls, notes: notes)
+                               orientation: orientation, treatments: treatments, internalWalls: walls, notes: notes,
+                               thinAreasUnder1MM: thinAreas)
     }
     func blocked(_ reason: String) -> PrintPreparationResult {
         PrintPreparationResult(record: record(), mesh: nil, data: nil, blocked: reason)
+    }
+
+    // The automatic run waits for the seller where the 3 mm scale check suggests another unit.
+    if input.automatic {
+        let bounds = meshCoordinateBounds(source.vertices)
+        if scaleWarning(extentMM: bounds.high - bounds.low) != nil { return blocked(printPreparationScaleFirst) }
     }
 
     progress("Checking the mesh…")
     guard let before = analyzeMeshHealth(source, isCancelled: isCancelled) else { throw PrintPreparationError.stopped }
     var mesh = source
     var health = before
+    func decision(_ step: PrintPreparationStep, sound: Bool = true) -> PrintPreparationDecision {
+        printPreparationDecision(step, triangles: mesh.triangleCount, meshSound: sound, internalWallsOn: input.internalWalls,
+                                 decorative: input.decorative, keptPlacement: input.keptPlacement)
+    }
 
     // 1. Repair, only when needed.
-    switch printPreparationDecision(.repair, triangles: mesh.triangleCount, meshSound: meshHealthIsSound(before), internalWallsOn: input.internalWalls) {
+    switch decision(.repair, sound: meshHealthIsSound(before)) {
     case .skip(let reason):
         steps.append(PrintPreparationStepRecord(step: .repair, applied: false, lines: [reason]))
     case .run:
@@ -390,33 +499,38 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     try check()
 
     // 2. Placement. Slant prints the part as uploaded, so this decides which way the layers run.
-    progress("Choosing the print placement…")
     let placement = printPreparationPlacementIntent(saved: input.savedIntent)
-    let assessments = mesh.orientationAssessments()
-    let asImported = assessments.first { $0.orientation == .zUp }
-    if let best = preferredOrientation(assessments, intent: placement.intent) {
-        if best.orientation != .zUp {
-            orientation = best.orientation
-            var lines = ["\(best.orientation.label).", placement.note]
-            if let asImported {
-                lines.append(String(format: "Overhangs steeper than 45°: %.0f mm² as imported, %.0f mm² now. Bed contact: %.0f mm².",
-                                    asImported.overhangArea, best.overhangArea, best.contactArea))
+    switch decision(.orientation) {
+    case .skip(let reason):
+        steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [reason]))
+    case .run:
+        progress("Choosing the print placement…")
+        let assessments = mesh.orientationAssessments()
+        let asImported = assessments.first { $0.orientation == .zUp }
+        if let best = preferredOrientation(assessments, intent: placement.intent) {
+            if best.orientation != .zUp {
+                orientation = best.orientation
+                var lines = ["\(best.orientation.label).", placement.note]
+                if let asImported {
+                    lines.append(String(format: "Overhangs steeper than 45°: %.0f mm² as imported, %.0f mm² now. Bed contact: %.0f mm².",
+                                        asImported.overhangArea, best.overhangArea, best.contactArea))
+                }
+                steps.append(PrintPreparationStepRecord(step: .orientation, applied: true, lines: lines))
+            } else {
+                steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: ["Kept as imported: it already sits well on the bed.", placement.note]))
             }
-            steps.append(PrintPreparationStepRecord(step: .orientation, applied: true, lines: lines))
         } else {
-            steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: ["Kept as imported: it already sits well on the bed.", placement.note]))
+            steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [
+                "Kept as imported: no placement with a flat face on the bed fits Slant’s \(Int(slantBuildVolumeMM)) mm build volume.",
+            ]))
         }
-    } else {
-        steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [
-            "Kept as imported: no placement with a flat face on the bed fits Slant’s \(Int(slantBuildVolumeMM)) mm build volume.",
-        ]))
     }
     // Always from the origin, so the bed face is at Z = 0 for the steps below. A translation alone isn't a change.
     mesh = mesh.oriented(orientation)
     try check()
 
     // 3. Fit-safe treatments: bridging layers and chamfers under free ledges only.
-    switch printPreparationDecision(.treatments, triangles: mesh.triangleCount, meshSound: true, internalWallsOn: input.internalWalls) {
+    switch decision(.treatments) {
     case .skip(let reason):
         steps.append(PrintPreparationStepRecord(step: .treatments, applied: false, lines: [reason]))
     case .run:
@@ -424,16 +538,28 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
         do {
             let improved = try AutoImprover.improve(mesh, intent: placement.intent, orientation: .zUp, profile: .fitSafe,
                                                     progress: progress, cancelled: isCancelled)
+            try check()
+            // A run cut short by a time limit could differ from a full one, so the whole preparation stops.
+            guard !improved.timedOut else { throw PrintPreparationError.tookTooLong }
             notes = improved.manual
             if improved.applied.isEmpty {
                 steps.append(PrintPreparationStepRecord(step: .treatments, applied: false,
                                                         lines: ["None needed: no free ledges or counterbores that suit them."] + improved.skipped))
-            } else {
-                mesh = improved.mesh
+            } else if let kept = soundTreatedMesh(improved.mesh, isCancelled: isCancelled) {
+                mesh = kept.mesh
                 treatments = improved.applied
                 steps.append(PrintPreparationStepRecord(step: .treatments, applied: true,
-                                                        lines: improved.applied.map { $0.summary + "." } + improved.skipped))
+                                                        lines: improved.applied.map { $0.summary + "." } + kept.lines + improved.skipped))
+            } else {
+                try check()
+                // A treatment that leaves the mesh unsound (such as a zero-area sliver repair can't remove) is dropped:
+                // the part continues as it was before the treatments.
+                steps.append(PrintPreparationStepRecord(step: .treatments, applied: false, lines: [
+                    "Dropped: the result didn’t pass Studio’s mesh check, even after repair, so the part was kept without them.",
+                ]))
             }
+        } catch let error as PrintPreparationError {
+            throw error
         } catch {
             try check()
             steps.append(PrintPreparationStepRecord(step: .treatments, applied: false, lines: ["Skipped: \(error.localizedDescription)"]))
@@ -442,7 +568,7 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     try check()
 
     // 4. Internal walls, cut up from the bed face now that it is down.
-    switch printPreparationDecision(.internalWalls, triangles: mesh.triangleCount, meshSound: true, internalWallsOn: input.internalWalls) {
+    switch decision(.internalWalls) {
     case .skip(let reason):
         steps.append(PrintPreparationStepRecord(step: .internalWalls, applied: false, lines: [reason]))
     case .run:
@@ -467,9 +593,8 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     }
     try check()
 
-    let finished = record()
-    guard finished.steps.contains(where: \.applied) else {
-        return PrintPreparationResult(record: finished, mesh: nil, data: nil, blocked: nil)
+    guard steps.contains(where: \.applied) else {
+        return PrintPreparationResult(record: record(), mesh: nil, data: nil, blocked: nil)
     }
 
     // Final checks on the whole copy: sound, never worse than its input, the same number of parts as the (repaired)
@@ -486,12 +611,27 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     if (sourceExtent.high - sourceExtent.low).max() <= slantBuildVolumeMM, (copyExtent.high - copyExtent.low).max() > slantBuildVolumeMM {
         return blocked("The prepared copy wouldn’t fit Slant’s \(Int(slantBuildVolumeMM)) mm build volume, so no copy was made.")
     }
+    // Advisory only: thin areas Slant's 1 mm walls may not print well.
+    progress("Measuring wall thickness…")
+    guard let thickness = analyzeWallThickness(mesh, maximumSamples: printPreparationWallThicknessSamples, isCancelled: isCancelled) else {
+        throw PrintPreparationError.stopped
+    }
+    thinAreas = printPreparationThinAreaCount(thickness)
     let data = mesh.binarySTL()
     // Read back, as the other copy tools do: the saved bytes must parse to every triangle.
     guard let readBack = try? STLMesh.parse(data), readBack.triangleCount == mesh.triangleCount else {
         return blocked("The prepared copy couldn’t be read back, so no copy was made.")
     }
-    return PrintPreparationResult(record: finished, mesh: mesh, data: data, blocked: nil)
+    return PrintPreparationResult(record: record(), mesh: mesh, data: data, blocked: nil)
+}
+
+/// The treated mesh, repaired if a treatment left it unsound (with the repair's lines), or nil when even repair can't
+/// make it sound.
+private func soundTreatedMesh(_ mesh: STLMesh, isCancelled: () -> Bool) -> (mesh: STLMesh, lines: [String])? {
+    guard let report = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { return nil }
+    if meshHealthIsSound(report) { return (mesh, []) }
+    guard let repaired = try? repairMesh(mesh, isCancelled: isCancelled), repaired.summary.isSound else { return nil }
+    return (repaired.mesh, ["Tidied after the treatments: " + meshRepairSummaryLines(repaired.summary).joined(separator: " ")])
 }
 
 // MARK: - Temporary folders
@@ -526,19 +666,20 @@ struct PrintPreparationJob: Equatable, Sendable {
     let url: URL
     let name: String
     let savedIntent: PartIntent?
-    /// The store's selection count when the original was imported (and selected): the copy is selected only if it is
-    /// unchanged when the copy is saved.
-    let selectionGeneration: Int
+    /// The automatic trigger (true) or Make Print-Ready Copy (false).
+    let automatic: Bool
+    let keptPlacement: String?
 }
 
 /// One model at a time, off the main actor. The work only reads the library file, so it runs whatever else is
 /// happening; the copy is saved only once no sheet, alert or dialog is shown and no request runs (the same rule as
-/// Finder opens), so it never switches selection behind a review or while an upload reads the selected model.
-/// Stoppable, and stopped on quit.
+/// Finder opens). Saving never changes the selection or the screen. Stoppable, and stopped on quit.
 @MainActor final class PrintPreparationQueue: ObservableObject {
     @Published private(set) var pending: [PrintPreparationJob] = []
     @Published private(set) var current: PrintPreparationJob?
     @Published private(set) var status = ""
+    /// The one-time notice after the first automatic copy (`printPreparationNoticeShouldShow`).
+    @Published private(set) var showsFirstCopyNotice = false
     weak var store: StudioStore?
     private var queuedThisSession: Set<UUID> = []
     private var flag: PrintPreparationCancelFlag?
@@ -558,8 +699,14 @@ struct PrintPreparationJob: Equatable, Sendable {
         printPreparationAlreadyHandled(modelID: modelID, library: library, queuedThisSession: queuedThisSession)
     }
 
+    /// Automatic jobs run once per model per session; a manual job runs whenever the model isn't already queued.
     func enqueue(_ job: PrintPreparationJob) {
-        guard queuedThisSession.insert(job.modelID).inserted else { return }
+        if job.automatic {
+            guard queuedThisSession.insert(job.modelID).inserted else { return }
+        } else {
+            guard !isPreparing(job.modelID) else { return }
+            queuedThisSession.insert(job.modelID)
+        }
         pending.append(job)
         startNextIfIdle()
     }
@@ -568,23 +715,40 @@ struct PrintPreparationJob: Equatable, Sendable {
     func stop(modelID: UUID) {
         if let index = pending.firstIndex(where: { $0.modelID == modelID }) {
             pending.remove(at: index)
-            store?.recordPrintPreparationStatus(PrintPreparationStatus(outcome: .stopped, date: Date()), for: modelID)
+            markStopped(modelID)
         } else if current?.modelID == modelID {
             flag?.set()
         }
     }
 
-    /// Quit, or the setting turned off: nothing more is prepared this session.
-    func stopAll() {
-        pending.removeAll()
-        flag?.set()
+    /// Quit (everything), or the setting turned off (`automaticOnly`: Make Print-Ready Copy requests carry on). Every
+    /// dropped model is marked stopped, so its panel offers Make Print-Ready Copy.
+    func stopAll(automaticOnly: Bool = false) {
+        let dropped = pending.filter { !automaticOnly || $0.automatic }
+        pending.removeAll { !automaticOnly || $0.automatic }
+        for job in dropped { markStopped(job.modelID) }
+        if !automaticOnly || current?.automatic == true { flag?.set() }
+    }
+
+    func dismissFirstCopyNotice() {
+        UserDefaults.standard.set(true, forKey: printPreparationNoticeDismissedDefaultsKey)
+        showsFirstCopyNotice = false
+    }
+
+    private func markStopped(_ modelID: UUID) {
+        store?.recordPrintPreparationStatus(PrintPreparationStatus(outcome: .stopped, date: Date()), for: modelID)
     }
 
     private func startNextIfIdle() {
-        guard current == nil, !pending.isEmpty else { return }
-        let job = pending.removeFirst()
+        guard current == nil else { return }
         let settings = PrintPreparationSettings(defaults: .standard)
-        guard settings.enabled else { pending.removeAll(); return }
+        var next: PrintPreparationJob?
+        while next == nil, !pending.isEmpty {
+            let job = pending.removeFirst()
+            // An automatic job whose setting was turned off before it started is dropped, and says so.
+            if job.automatic, !settings.enabled { markStopped(job.modelID) } else { next = job }
+        }
+        guard let job = next else { return }
         current = job
         status = "Preparing for printing…"
         let flag = PrintPreparationCancelFlag()
@@ -603,7 +767,7 @@ struct PrintPreparationJob: Equatable, Sendable {
         // Removed from the library while it waited: nothing to prepare, and nothing to report.
         guard store?.localModels.contains(where: { $0.id == job.modelID }) == true else { return }
         let input = PrintPreparationInput(sourceID: job.modelID, sourceName: job.name, savedIntent: job.savedIntent,
-                                          internalWalls: internalWalls)
+                                          internalWalls: internalWalls, automatic: job.automatic, keptPlacement: job.keptPlacement)
         let url = job.url
         let report: @Sendable (String) -> Void = { [weak self] text in
             Task { @MainActor in if !flag.isSet, self?.current?.modelID == job.modelID { self?.status = text } }
@@ -630,6 +794,9 @@ struct PrintPreparationJob: Equatable, Sendable {
         switch outcome {
         case .failure(PrintPreparationError.stopped):
             store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .stopped, date: Date()), counts: (0, 0))
+        case .failure(PrintPreparationError.tookTooLong):
+            store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .stopped, lines: [printPreparationTookTooLong], date: Date()),
+                                         counts: (0, 0))
         case .failure(let error):
             store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .noCopy, lines: [
                 "Studio couldn’t prepare this model: \(error.localizedDescription)",
@@ -646,15 +813,18 @@ struct PrintPreparationJob: Equatable, Sendable {
                 return
             }
             // Save only once nothing modal is shown and no request runs.
-            status = "Preparing for printing…"
             while !flag.isSet, !store.printPreparationCanSave {
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
-            guard !flag.isSet, PrintPreparationSettings(defaults: .standard).enabled else {
+            guard !flag.isSet, !job.automatic || PrintPreparationSettings(defaults: .standard).enabled else {
                 store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .stopped, date: Date()), counts: (0, 0))
                 return
             }
-            store.savePrintReadyCopy(file, job: job, record: result.record)
+            if store.savePrintReadyCopy(file, job: job, record: result.record), job.automatic {
+                showsFirstCopyNotice = printPreparationNoticeShouldShow(
+                    dismissed: UserDefaults.standard.bool(forKey: printPreparationNoticeDismissedDefaultsKey),
+                    automaticCopySavedThisSession: true)
+            }
         }
     }
 }
@@ -681,8 +851,17 @@ extension StudioStore {
             return
         }
         printPreparationQueue.enqueue(PrintPreparationJob(modelID: model.id, url: model.url, name: model.name,
-                                                          savedIntent: designEditIntent(model),
-                                                          selectionGeneration: selectionGeneration))
+                                                          savedIntent: designEditIntent(model), automatic: true,
+                                                          keptPlacement: printPreparationKeptPlacementReason(model, origin: origin)))
+    }
+
+    /// Make Print-Ready Copy: the seller's own request for any STL except a print-ready copy. Local only; it queues the
+    /// work and never uploads. Uses the model's current saved purpose.
+    func makePrintReadyCopy(modelID: UUID) {
+        guard let model = localModels.first(where: { $0.id == modelID }), printPreparationManualBlockedReason(model) == nil else { return }
+        printPreparationQueue.enqueue(PrintPreparationJob(modelID: model.id, url: model.url, name: model.name,
+                                                          savedIntent: designEditIntent(model), automatic: false,
+                                                          keptPlacement: printPreparationKeptPlacementReason(model, origin: nil)))
     }
 
     /// Saves the outcome on the original (metadata only; its file is never touched).
@@ -699,29 +878,28 @@ extension StudioStore {
                                    success: status.outcome != .noCopy), at: 0)
     }
 
-    /// Adds the checked copy through `importModel`, without switching screens. It is selected only when the seller
-    /// still has the original selected and nothing else changed the selection meanwhile.
-    func savePrintReadyCopy(_ file: URL, job: PrintPreparationJob, record: PrintPreparationRecord) {
+    /// Adds the checked copy through `importModel`, next to its original, without changing the selection or the screen.
+    @discardableResult
+    func savePrintReadyCopy(_ file: URL, job: PrintPreparationJob, record: PrintPreparationRecord) -> Bool {
         guard let original = localModels.first(where: { $0.id == job.modelID }) else {
             // Removed while it was being prepared: nothing to attach the copy to.
             activities.insert(Activity(title: printPreparationActivityTitle, detail: "Original removed; no copy saved", success: false), at: 0)
-            return
+            return false
         }
         let named = file.deletingLastPathComponent()
             .appendingPathComponent(exportFileName(modelName: printReadyCopyName(original.name), fileExtension: "stl"))
         do { try FileManager.default.moveItem(at: file, to: named) } catch {
             finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .noCopy, lines: ["The copy couldn’t be saved: \(error.localizedDescription)"], date: Date()), counts: (0, 0))
-            return
+            return false
         }
-        let keepSelection = selectedLocalID == original.id && selectionGeneration == job.selectionGeneration
         guard let copyID = importModelReturningID(named, intent: original.partIntent,
                                                   sourceDetails: sourceDetailsForCopy(of: original), printPreparation: record,
-                                                  origin: .studioToolCopy, selectsAndShows: false) else {
+                                                  origin: .studioToolCopy, selectsAndShows: false, insertingBefore: original.id) else {
             finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .noCopy, lines: ["The copy couldn’t be added to your library."], date: Date()), counts: (0, 0))
-            return
+            return false
         }
         finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .madeCopy, copyID: copyID, date: Date()),
                                counts: (record.appliedSteps.count, record.skippedSteps.count))
-        if keepSelection, let copy = localModels.first(where: { $0.id == copyID }) { select(copy) }
+        return true
     }
 }

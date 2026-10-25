@@ -1,7 +1,8 @@
 import SwiftUI
 
-// The automatic print-ready copy's surfaces (PrintPreparation.swift): the library row note, the inspector panel on the
-// original and on the copy, and Settings › Design Tools › Prepare new models for printing.
+// The print-ready copy's surfaces (PrintPreparation.swift): the library row note, the inspector panel on the original
+// and on the copy, the action bar's hint, the one-time notice and Settings › Design Tools › Prepare new models for
+// printing.
 
 /// "Preparing for printing…" under a library row while its model is queued or being prepared.
 struct PrintPreparationRowNote: View {
@@ -15,9 +16,47 @@ struct PrintPreparationRowNote: View {
     }
 }
 
-/// The inspector's account of the automatic preparation: progress and Stop while it runs; on the original, what
-/// happened (with Show Copy); on the copy, what was applied and skipped, Studio's numbers, the price note and the
-/// optional fit-affecting Auto-improve.
+/// The one-time notice after the first automatic copy. Only its dismissal is stored.
+struct PrintPreparationFirstCopyNotice: View {
+    @ObservedObject var queue: PrintPreparationQueue
+
+    var body: some View {
+        if queue.showsFirstCopyNotice {
+            HStack(spacing: 10) {
+                Label(printPreparationNoticeText, systemImage: "info.circle")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Dismiss") { queue.dismissFirstCopyNotice() }
+            }
+            .padding(10)
+            .background(Color.studioCard, in: RoundedRectangle(cornerRadius: StudioMetrics.cardRadius))
+            .overlay(RoundedRectangle(cornerRadius: StudioMetrics.cardRadius).stroke(Color.studioHairline))
+        }
+    }
+}
+
+/// The action bar's one-line hint under Upload Model when the selected original has a print-ready copy. Show Copy only
+/// selects it; nothing is uploaded.
+struct PrintReadyCopyHint: View {
+    @EnvironmentObject var store: StudioStore
+    let model: LocalModel
+
+    var body: some View {
+        if model.printPreparation == nil, let copy = printReadyCopy(of: model, in: store.localModels) {
+            HStack(spacing: 6) {
+                Text("A print-ready copy exists").font(.caption).foregroundStyle(.secondary)
+                Button("Show Copy") { store.select(copy) }
+                    .buttonStyle(.link).font(.caption)
+                    .disabled(store.busy)
+            }
+        }
+    }
+}
+
+/// The inspector's account of preparation for an STL model: progress and Stop while it runs; on the original, what
+/// happened (with Show Copy) and Make Print-Ready Copy; on the copy, what was applied and skipped, Studio's numbers,
+/// the price and cautions, and the optional fit-affecting Auto-improve.
 struct PrintPreparationPanel: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject var queue: PrintPreparationQueue
@@ -25,22 +64,17 @@ struct PrintPreparationPanel: View {
     @StateObject private var followUp = AutoImproveRun()
     @State private var confirmFollowUp = false
 
-    /// Shown only when there is something to say.
-    static func isRelevant(_ model: LocalModel, queue: PrintPreparationQueue) -> Bool {
-        queue.isPreparing(model.id) || model.printPreparation != nil || model.printPreparationStatus != nil
-    }
-
     var body: some View {
         Group {
-            if Self.isRelevant(model, queue: queue) {
+            if model.supportsPreview {
                 Card {
                     VStack(alignment: .leading, spacing: 10) {
                         if queue.isPreparing(model.id) {
                             progressView
                         } else if let record = model.printPreparation {
                             copySummary(record)
-                        } else if let status = model.printPreparationStatus {
-                            originalSummary(status)
+                        } else {
+                            originalSummary(model.printPreparationStatus)
                         }
                     }
                     .fixedSize(horizontal: false, vertical: true)
@@ -74,24 +108,43 @@ struct PrintPreparationPanel: View {
         }
     }
 
-    @ViewBuilder private func originalSummary(_ status: PrintPreparationStatus) -> some View {
-        switch status.outcome {
-        case .madeCopy:
-            let copy = status.copyID.flatMap { id in store.localModels.first { $0.id == id } }
+    private var makeCopyButton: some View {
+        Button("Make Print-Ready Copy") { store.makePrintReadyCopy(modelID: model.id) }
+            .disabled(printPreparationManualBlockedReason(model) != nil)
+    }
+
+    @ViewBuilder private func originalSummary(_ status: PrintPreparationStatus?) -> some View {
+        switch status?.outcome {
+        case .madeCopy?:
+            let copy = printReadyCopy(of: model, in: store.localModels)
             if let copy {
-                SectionHeading(title: "Print-ready copy", caption: "Studio made a print-ready copy: \(copy.name). This model is unchanged.")
-                Button("Show Copy") { store.select(copy) }.disabled(store.busy)
+                SectionHeading(title: "Print-ready copy saved", caption: "\(copy.name). This model is unchanged.")
+                HStack {
+                    Button("Show Copy") { store.select(copy) }.disabled(store.busy)
+                    makeCopyButton
+                }
             } else {
                 SectionHeading(title: "Print-ready copy", caption: "Studio made a print-ready copy, which has since been removed from your library. This model is unchanged.")
+                makeCopyButton
             }
-        case .nothingToChange:
+        case .nothingToChange?:
             SectionHeading(title: "Print-ready copy", caption: printPreparationNothingToChange)
-            lines(status.lines, title: "What Studio checked")
-        case .noCopy:
+            lines(status?.lines ?? [], title: "What Studio checked")
+            makeCopyButton
+        case .noCopy?:
             SectionHeading(title: "Print-ready copy", caption: "No print-ready copy was made.")
-            ForEach(status.lines, id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
-        case .stopped:
-            SectionHeading(title: "Print-ready copy", caption: "Preparing for printing was stopped, so no copy was made. The tools below still work.")
+            ForEach(status?.lines ?? [], id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
+            makeCopyButton
+        case .stopped?:
+            SectionHeading(title: "Print-ready copy", caption: "Preparation stopped · Make Print-Ready Copy to try again.")
+            ForEach(status?.lines ?? [], id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
+            makeCopyButton
+        case nil:
+            HStack {
+                SectionHeading(title: "Print-ready copy", caption: "Repair if needed, placement, bridging, chamfers and internal walls, in a separate copy.")
+                Spacer(minLength: 8)
+                makeCopyButton
+            }
         }
     }
 
@@ -100,24 +153,28 @@ struct PrintPreparationPanel: View {
         ForEach(printPreparationAppliedLines(record), id: \.self) { line in
             Label(line, systemImage: "checkmark.circle").font(.callout)
         }
+        ForEach(printPreparationCautions(record), id: \.self) { line in
+            Label(line, systemImage: "exclamationmark.triangle").font(.callout)
+        }
         lines(printPreparationSkippedLines(record), title: "Skipped or not needed")
         lines(record.notes, title: "For your review")
-        Text(printPreparationPriceNote).font(.caption).foregroundStyle(.secondary)
+        Text(printPreparationPriceLine(record)).font(.caption).foregroundStyle(.secondary)
         HStack {
             if let original = store.localModels.first(where: { $0.id == record.sourceID }) {
                 Button("Show Original") { store.select(original) }.disabled(store.busy)
             }
-            if model.autoImprovement == nil, model.supportsPreview {
-                Button(followUp.working ? "Adding…" : "Nothing on this part has to fit? Add Fillets and Thicken Walls…") {
-                    confirmFollowUp = true
-                }
-                .disabled(followUp.working || store.busy)
+            if model.autoImprovement == nil {
+                Button(followUp.working ? "Adding…" : "Add Fillets and Thicken Walls…") { confirmFollowUp = true }
+                    .disabled(followUp.working || store.busy)
                 if followUp.working {
                     ProgressView().controlSize(.small)
                     Text(followUp.status).font(.caption).foregroundStyle(.secondary)
                     Button("Stop") { followUp.stop() }
                 }
             }
+        }
+        if model.autoImprovement == nil {
+            Text("Only if nothing on this part has to fit.").font(.caption).foregroundStyle(.secondary)
         }
         if let result = followUp.unchanged {
             Text("No fillets or wall matching suit this part, so nothing was saved.").font(.callout)
@@ -148,8 +205,8 @@ struct PrintPreparationSettingsSection: View {
         Section {
             Toggle("Make a print-ready copy of each new STL", isOn: $enabled)
                 .onChange(of: enabled) { _, on in
-                    // Turned off: nothing more is prepared this session, including models already waiting.
-                    if !on { store.printPreparationQueue.stopAll() }
+                    // Turned off: nothing more is prepared automatically this session, including models already waiting.
+                    if !on { store.printPreparationQueue.stopAll(automaticOnly: true) }
                 }
             Toggle(isOn: $internalWalls) {
                 Text("Add internal walls")
