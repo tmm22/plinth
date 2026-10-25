@@ -95,7 +95,11 @@ final class PrintPreparationReviewFixesTests: XCTestCase {
     func testTimedOutWallsStepSavesNothing() throws {
         let source = try STLMesh.validated(cuboid(.zero, SIMD3(40, 40, 20)))
         XCTAssertThrowsError(try preparePrintReadyCopy(source, input: input(PartIntent(purpose: .enclosure), wallsTimeLimit: 0), now: fixedDate)) {
-            XCTAssertEqual($0 as? PrintPreparationError, .tookTooLong)
+            XCTAssertEqual($0 as? PrintPreparationError, .wallsTookTooLong)
+            // It says what to change, never just "try again".
+            let message = $0.localizedDescription
+            XCTAssertTrue(message.contains("Turn off Add internal walls") && message.contains("simplify a copy"), message)
+            XCTAssertFalse(message.lowercased().contains("again"), message)
         }
         XCTAssertEqual(printPreparationWallsTimeLimit, 120)
     }
@@ -200,7 +204,7 @@ final class PrintPreparationReviewFixesTests: XCTestCase {
         let source = try exported(box(SIMD3(0, 0, 0), SIMD3(40, 40, 10)).subtracting(box(SIMD3(10, -1, -1), SIMD3(20, 5, 0.2))))
         let result = try bottomChamferCopy(of: source)
         XCTAssertEqual(result.skipped, .recessInBedFace)
-        XCTAssertEqual(BottomChamferSkipReason.recessInBedFace.message, "No bottom chamfer was added: the bottom face has a recess at its edge.")
+        XCTAssertEqual(BottomChamferSkipReason.recessInBedFace.message, "No bottom chamfer was added: the bottom face has a shallow recess or step.")
     }
 
     // MARK: 12–13, 6, 17. Loads, placements, lineage and decoding
@@ -274,5 +278,76 @@ final class PrintPreparationReviewFixesTests: XCTestCase {
         // A separate part isn't a pocket: the usual cost line stays.
         let parts = try STLMesh.validated(cuboid(.zero, SIMD3(20, 20, 10)) + cuboid(SIMD3(30, 0, 0), SIMD3(50, 20, 10)))
         XCTAssertFalse(hiddenPocketsAccountForExtraBodies(try health(parts), try hiddenPocketsReport(parts)))
+    }
+
+    // MARK: Final batch
+
+    func testFillRefusesWhenTheCheckIsIncomplete() throws {
+        // A pocket with a loose solid inside it: with the budget spent, the solid would go unjudged and be buried.
+        let source = try STLMesh.validated(cuboid(.zero, SIMD3(40, 40, 20)) + cuboid(SIMD3(10, 10, 4), SIMD3(30, 30, 16), inward: true)
+                                           + cuboid(SIMD3(15, 15, 6), SIMD3(25, 25, 14)))
+        let cut = try fillHiddenPocketsCopy(of: source, boxComparisonLimit: 4)
+        XCTAssertNil(cut.mesh)
+        XCTAssertEqual(cut.skipped, .tooManyParts)
+        XCTAssertTrue(HiddenPocketsSkipReason.tooManyParts.message.contains("too many separate parts to check"))
+        XCTAssertNotNil(try fillHiddenPocketsCopy(of: source).mesh)
+    }
+
+    func testEveryStudioCopyCarriesItsLineage() {
+        var record = PrintPreparationRecord(sourceID: UUID(), sourceName: "P", created: fixedDate, steps: [], orientation: .zUp,
+                                            treatments: [], internalWalls: nil, notes: [])
+        record.notes = []
+        let printReady = LocalModel(name: "P (print-ready)", filePath: "/tmp/p.stl", printPreparation: record)
+        let lineage = studioCopyLineage(printReady)
+        XCTAssertTrue(lineage.inheritsZUpLock)
+        XCTAssertTrue(lineage.fromPrintReadyCopy)
+        XCTAssertFalse(lineage.keepsPlacement)
+        let replica = studioCopyLineage(LocalModel(name: "Owl (replica)", filePath: "/tmp/o.stl", keepsPlacement: true))
+        XCTAssertEqual([replica.inheritsZUpLock, replica.keepsPlacement, replica.fromPrintReadyCopy], [false, true, false])
+        let derived = studioCopyLineage(LocalModel(name: "D", filePath: "/tmp/d.stl", inheritsZUpLock: true, fromPrintReadyCopy: true))
+        XCTAssertTrue(derived.fromPrintReadyCopy)
+    }
+
+    func testReviewIgnoresCeilingsOnCopiesOfPrintReadyCopies() throws {
+        let source = try STLMesh.validated(cuboid(.zero, SIMD3(40, 40, 20)))
+        let copy = try XCTUnwrap(preparePrintReadyCopy(source, input: input(PartIntent(purpose: .enclosure)), now: fixedDate).mesh)
+        // A further copy has no record, but derives from a print-ready copy: its slot ceilings still aren't overhangs.
+        XCTAssertGreaterThan(printReviewOverhangShare(copy, record: nil).overhangAreaMM2, 0)
+        XCTAssertEqual(printReviewOverhangShare(copy, record: nil, fromPrintReadyCopy: true).overhangAreaMM2, 0)
+    }
+
+    func testIncompletePocketLineSaysNotEveryPartWasChecked() throws {
+        let line = try XCTUnwrap(hiddenPocketsLine(PrintPreparationPockets(count: 1, shellsInside: 0, addedVolumeMM3: 1000, incomplete: true)))
+        XCTAssertTrue(line.hasSuffix(hiddenPocketsIncompleteLine), line)
+        XCTAssertFalse(try XCTUnwrap(hiddenPocketsLine(PrintPreparationPockets(count: 1, shellsInside: 0, addedVolumeMM3: 1000)))
+            .contains(hiddenPocketsIncompleteLine))
+    }
+
+    @MainActor func testOnePocketAnalysisIsSharedPerModel() async {
+        final class Counter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+            func add() { lock.withLock { value += 1 } }
+            var count: Int { lock.withLock { value } }
+        }
+        let counter = Counter()
+        let key = "shared-\(UUID().uuidString)"
+        defer { HiddenPocketsCache.reports[key] = nil }
+        let report = HiddenPocketsReport(shells: 1, pockets: [], separateParts: 1, shellsInsidePockets: 0, otherShells: 0,
+                                         complete: true, addedVolumeMM3: 0)
+        let analyse: @Sendable () -> HiddenPocketsReport? = {
+            counter.add()
+            Thread.sleep(forTimeInterval: 0.2)
+            return report
+        }
+        async let first = hiddenPocketsSharedReport(key: key, analyse: analyse)
+        async let second = hiddenPocketsSharedReport(key: key, analyse: analyse)
+        let results = await [first, second]
+        XCTAssertEqual(results, [report, report])
+        XCTAssertEqual(counter.count, 1)
+        XCTAssertNil(HiddenPocketsCache.running[key])
+        // Cached afterwards: no further analysis.
+        _ = await hiddenPocketsSharedReport(key: key, analyse: analyse)
+        XCTAssertEqual(counter.count, 1)
     }
 }

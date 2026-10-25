@@ -92,6 +92,12 @@ struct LocalModel: Codable, Identifiable {
     /// STL, OBJ and 3MF: shown in the 3D preview with dimensions and the build-volume check.
     var supportsMeshPreview: Bool { ModelFileFormat(url: url) != nil }
 }
+/// What every further copy of `model` carries: its Z-up lock, a replica's chosen way up, and whether it derives from
+/// a print-ready copy.
+func studioCopyLineage(_ model: LocalModel) -> (inheritsZUpLock: Bool, keepsPlacement: Bool, fromPrintReadyCopy: Bool) {
+    (model.requiresZUp, model.keepsPlacement == true, model.derivesFromPrintReadyCopy)
+}
+
 extension LocalModel {
     /// The identity and file are required; every record is read leniently, so one this build can't read (such as an
     /// orientation from a later version) drops only that record, never the model or the library.

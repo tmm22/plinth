@@ -117,11 +117,11 @@ let printReviewNoProblemsLine = "Studio’s checks found no problems: a closed m
 /// Studio's own 45° chamfers never count. On a print-ready copy (`record`) it also leaves out downward faces wholly
 /// within its bottom chamfer's band and its internal walls' slot and ring ceilings: flat, downward regions inside the
 /// part no wider than `printReviewCeilingMaximumWidthMM`, which bridge.
-func printReviewOverhangShare(_ mesh: STLMesh, record: PrintPreparationRecord?) -> OverhangShare {
+func printReviewOverhangShare(_ mesh: STLMesh, record: PrintPreparationRecord?, fromPrintReadyCopy: Bool = false) -> OverhangShare {
     let limit = sin(printPreparationOverhangReportDegrees * .pi / 180)
     let floor = Double(mesh.minimum.z) + 0.0001
     let chamferTop = record?.bottomChamfer.map { Double(mesh.minimum.z) + $0.sizeMM + 0.01 }
-    let ceilings = record?.internalWalls != nil ? printReviewNarrowCeilings(mesh) : []
+    let ceilings = record?.internalWalls != nil || fromPrintReadyCopy ? printReviewNarrowCeilings(mesh) : []
     let v = mesh.vertices
     var surface = 0.0, overhang = 0.0
     for t in 0..<mesh.triangleCount {
@@ -208,7 +208,7 @@ func printReviewNarrowCeilings(_ mesh: STLMesh) -> [Bool] {
 
 /// Measures `mesh` for the review. Nil when cancelled. `wallSamples` bounds the wall-thickness check (tests use fewer).
 /// `record`: the model's print-ready record, so Studio's own chamfer and wall ceilings aren't counted as overhangs.
-func measureForPrintReview(_ mesh: STLMesh, record: PrintPreparationRecord? = nil, wallSamples: Int = wallThicknessMaximumSamples,
+func measureForPrintReview(_ mesh: STLMesh, record: PrintPreparationRecord? = nil, fromPrintReadyCopy: Bool = false, wallSamples: Int = wallThicknessMaximumSamples,
                            progress: (Double, String) -> Void = { _, _ in },
                            isCancelled: () -> Bool = { false }) -> PrintReviewMeasurements? {
     progress(0, "Checking the mesh…")
@@ -219,7 +219,7 @@ func measureForPrintReview(_ mesh: STLMesh, record: PrintPreparationRecord? = ni
                                           isCancelled: isCancelled), !isCancelled() else { return nil }
     progress(0.85, "Measuring the base and overhangs…")
     let flat = mesh.flatBaseSuggestion()
-    let overhang = printReviewOverhangShare(mesh, record: record)
+    let overhang = printReviewOverhangShare(mesh, record: record, fromPrintReadyCopy: fromPrintReadyCopy)
     var turns: [PrintReviewTurnOverhang] = []
     for turn in printReviewTurns {
         if isCancelled() { return nil }

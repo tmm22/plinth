@@ -75,6 +75,8 @@ enum HiddenPocketsSkipReason: String, Equatable, Sendable, CaseIterable {
     /// A shell to be removed has a corner that isn't inside the shell around it: it crosses that surface, so it isn't
     /// wholly a pocket.
     case couldNotConfirm
+    /// The check ran out of its budget before every shell was placed (`HiddenPocketsReport.complete` false).
+    case tooManyParts
 
     var message: String {
         switch self {
@@ -84,6 +86,8 @@ enum HiddenPocketsSkipReason: String, Equatable, Sendable, CaseIterable {
             return "This model has more than \(hiddenPocketsMaximumTriangles.formatted()) triangles, too many to fill hidden pockets. Simplify a copy first."
         case .noPockets: return "This model has no hidden pockets to fill."
         case .resultFailedChecks: return "The pockets weren’t filled: the result didn’t pass Studio’s mesh checks."
+        case .tooManyParts:
+            return "The pockets weren’t filled: there are too many separate parts to check."
         case .couldNotConfirm:
             return "The pockets weren’t filled: Studio couldn’t confirm that every one lies wholly inside the part, so removing it could change the part’s surface."
         }
@@ -494,7 +498,8 @@ private struct HiddenPocketsShellGrid {
 ///
 /// A returned copy is one closed, outward, sound mesh with fewer shells, the same bounding box and a larger volume: the
 /// input's plus exactly the pockets', less the solids that were inside them.
-func fillHiddenPocketsCopy(of mesh: STLMesh, isCancelled: () -> Bool = { false }) throws -> HiddenPocketsResult {
+func fillHiddenPocketsCopy(of mesh: STLMesh, boxComparisonLimit: Int = hiddenPocketsBoxComparisonLimit,
+                           isCancelled: () -> Bool = { false }) throws -> HiddenPocketsResult {
     let empty = HiddenPocketsReport(shells: 0, pockets: [], separateParts: 0, shellsInsidePockets: 0, otherShells: 0,
                                     complete: true, addedVolumeMM3: 0)
     func skip(_ reason: HiddenPocketsSkipReason, report: HiddenPocketsReport = empty, shells: Int = 0) -> HiddenPocketsResult {
@@ -505,8 +510,10 @@ func fillHiddenPocketsCopy(of mesh: STLMesh, isCancelled: () -> Bool = { false }
     guard count <= hiddenPocketsMaximumTriangles, count <= STLMesh.maximumTriangles else { return skip(.tooManyTriangles) }
     guard let before = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { throw HiddenPocketsError.stopped }
     guard meshHealthIsSound(before), before.signedVolume > 0 else { return skip(.notClosedSolid, shells: before.shells) }
-    let analysis = try hiddenPocketsAnalysis(mesh, verifyRemoved: true, isCancelled: isCancelled)
+    let analysis = try hiddenPocketsAnalysis(mesh, boxComparisonLimit: boxComparisonLimit, verifyRemoved: true, isCancelled: isCancelled)
     let report = analysis.report
+    // An unjudged shell could be a loose solid inside a pocket, which a fill would bury, so an incomplete check never fills.
+    guard report.complete else { return skip(.tooManyParts, report: report, shells: before.shells) }
     guard !report.pockets.isEmpty else { return skip(.noPockets, report: report, shells: before.shells) }
     guard analysis.verified else { return skip(.couldNotConfirm, report: report, shells: before.shells) }
 

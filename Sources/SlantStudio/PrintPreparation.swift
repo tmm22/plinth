@@ -559,7 +559,10 @@ func hiddenPocketsLine(_ report: HiddenPocketsReport) -> String? {
 }
 
 func hiddenPocketsLine(_ pockets: PrintPreparationPockets) -> String? {
-    hiddenPocketsSummaryText(count: pockets.count, shellsInside: pockets.shellsInside, addedVolumeMM3: pockets.addedVolumeMM3)
+    guard let text = hiddenPocketsSummaryText(count: pockets.count, shellsInside: pockets.shellsInside,
+                                              addedVolumeMM3: pockets.addedVolumeMM3) else { return nil }
+    // As `hiddenPocketsSummary`: say when not every part was checked.
+    return pockets.incomplete == true ? text + " " + hiddenPocketsIncompleteLine : text
 }
 
 /// "Hidden pockets filled: 2.", on a Fill Hidden Pockets copy of a print-ready copy.
@@ -698,13 +701,18 @@ enum PrintPreparationError: LocalizedError, Equatable {
     case stopped
     /// A step hit a time limit; its result could differ from a full run, so nothing is saved.
     case tookTooLong
+    /// The internal walls step hit its time limit: trying again would take as long.
+    case wallsTookTooLong
     var errorDescription: String? {
         switch self {
         case .stopped: return "Preparing for printing stopped. Nothing was saved."
         case .tookTooLong: return printPreparationTookTooLong
+        case .wallsTookTooLong: return printPreparationWallsTookTooLong
         }
     }
 }
+
+let printPreparationWallsTookTooLong = "Preparation stopped: adding internal walls took too long, so no copy was made. Turn off Add internal walls in Settings › Design Tools, or simplify a copy, then use Make Print-Ready Copy."
 
 /// The internal walls step stops after this long, as Auto-improve does after 240 s, and the copy isn't saved.
 let printPreparationWallsTimeLimit: TimeInterval = 120
@@ -927,7 +935,7 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
             do {
                 result = try internalWallsCopy(of: mesh, options: options, isCancelled: { isCancelled() || Date() > deadline })
             } catch InternalWallsError.stopped where !isCancelled() && Date() > deadline {
-                throw PrintPreparationError.tookTooLong
+                throw PrintPreparationError.wallsTookTooLong
             }
             if let slotted = result.mesh {
                 mesh = slotted
@@ -1176,8 +1184,8 @@ struct PrintPreparationJob: Equatable, Sendable {
         switch outcome {
         case .failure(PrintPreparationError.stopped):
             store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .stopped, date: Date()), counts: (0, 0))
-        case .failure(PrintPreparationError.tookTooLong):
-            store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .stopped, lines: [printPreparationTookTooLong], date: Date()),
+        case .failure(let error as PrintPreparationError) where error == .tookTooLong || error == .wallsTookTooLong:
+            store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .stopped, lines: [error.localizedDescription], date: Date()),
                                          counts: (0, 0))
         case .failure(let error):
             store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .noCopy, lines: [

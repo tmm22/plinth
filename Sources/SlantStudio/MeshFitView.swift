@@ -78,8 +78,10 @@ extension StudioStore {
             defer { try? FileManager.default.removeItem(at: folder) }
             let url = folder.appendingPathComponent(exportFileName(modelName: name, fileExtension: "stl"))
             try data.write(to: url, options: .atomic)
+            let lineage = studioCopyLineage(model)
             guard importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: fileDetails),
-                              origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy) else {
+                              inheritsZUpLock: lineage.inheritsZUpLock, origin: .studioToolCopy,
+                              keepsPlacement: lineage.keepsPlacement, fromPrintReadyCopy: lineage.fromPrintReadyCopy) else {
                 return false
             }
             activities.insert(Activity(title: activityTitle, detail: model.name, success: true), at: 0)

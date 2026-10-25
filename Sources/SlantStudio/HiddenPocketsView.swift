@@ -28,6 +28,9 @@ let hiddenPocketsFillCaption = "Fill Hidden Pockets saves a separate copy with t
 /// In memory, per model and library file (library files are never changed in place). Cleared when the app quits.
 @MainActor enum HiddenPocketsCache {
     static var reports: [String: HiddenPocketsReport] = [:]
+    /// Analyses under way, by cache key, with how many callers wait on each: the mesh check and the pocket line share
+    /// one rather than analysing the same model twice at once.
+    static var running: [String: (task: Task<HiddenPocketsReport?, Never>, waiters: Int)] = [:]
 }
 
 func hiddenPocketsCacheKey(modelID: UUID, path: String) -> String {
@@ -245,12 +248,33 @@ struct HiddenPocketsCheck: View {
 /// The cached pocket report for a model's file, worked out in the background when it isn't cached yet. Nil when
 /// cancelled.
 @MainActor func hiddenPocketsCachedReport(key: String, mesh: STLMesh) async -> HiddenPocketsReport? {
+    await hiddenPocketsSharedReport(key: key) { try? hiddenPocketsReport(mesh, isCancelled: { Task.isCancelled }) }
+}
+
+/// The cached report for `key`, or the one analysis under way for it, which every caller for that key shares. The
+/// analysis is stopped only when its last waiting caller is cancelled. Nil when cancelled.
+@MainActor func hiddenPocketsSharedReport(key: String, analyse: @escaping @Sendable () -> HiddenPocketsReport?) async -> HiddenPocketsReport? {
     if let cached = HiddenPocketsCache.reports[key] { return cached }
-    let worker = Task.detached(priority: .utility) {
-        try? hiddenPocketsReport(mesh, isCancelled: { Task.isCancelled })
+    let task: Task<HiddenPocketsReport?, Never>
+    if let entry = HiddenPocketsCache.running[key] {
+        task = entry.task
+        HiddenPocketsCache.running[key]?.waiters += 1
+    } else {
+        task = Task.detached(priority: .utility) { analyse() }
+        HiddenPocketsCache.running[key] = (task, 1)
     }
-    let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-    guard !Task.isCancelled, let result else { return nil }
+    let result = await withTaskCancellationHandler {
+        await task.value
+    } onCancel: {
+        Task { @MainActor in
+            // The last caller still waiting has gone: nobody needs the analysis any more.
+            if let entry = HiddenPocketsCache.running[key], entry.task == task, entry.waiters <= 1 { task.cancel() }
+        }
+    }
+    if let entry = HiddenPocketsCache.running[key], entry.task == task {
+        if entry.waiters <= 1 { HiddenPocketsCache.running[key] = nil } else { HiddenPocketsCache.running[key]?.waiters -= 1 }
+    }
+    guard !Task.isCancelled, !task.isCancelled, let result else { return nil }
     HiddenPocketsCache.reports[key] = result
     return result
 }

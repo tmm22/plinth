@@ -103,7 +103,7 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
 
     // MARK: Measuring (no request)
 
-    func measure(url: URL, record: PrintPreparationRecord? = nil) {
+    func measure(url: URL, record: PrintPreparationRecord? = nil, fromPrintReadyCopy: Bool = false) {
         guard measureTask == nil else { return }
         let flag = PrintReviewCancelFlag()
         measureFlag = flag
@@ -114,7 +114,7 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
             let job = Task.detached(priority: .userInitiated) { () -> Result<(STLMesh, PrintReviewMeasurements, [PrintReviewRender])?, Error> in
                 Result {
                     let mesh = try STLMesh.read(from: url)
-                    guard let measured = measureForPrintReview(mesh, record: record, progress: { report($0 * 0.85, $1) }, isCancelled: { flag.isSet }) else {
+                    guard let measured = measureForPrintReview(mesh, record: record, fromPrintReadyCopy: fromPrintReadyCopy, progress: { report($0 * 0.85, $1) }, isCancelled: { flag.isSet }) else {
                         return nil
                     }
                     report(0.9, "Drawing the views…")
@@ -413,7 +413,7 @@ struct PrintReviewSheet: View {
                 sizeAxis = size.axis
                 sizeText = String(format: "%g", (size.mm * 100).rounded() / 100)
             }
-            if found.supportsPreview { session.measure(url: found.url, record: found.printPreparation) }
+            if found.supportsPreview { session.measure(url: found.url, record: found.printPreparation, fromPrintReadyCopy: found.derivesFromPrintReadyCopy) }
         }
         .onDisappear {
             session.cancelAll()

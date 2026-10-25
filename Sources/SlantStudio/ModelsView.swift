@@ -1049,7 +1049,11 @@ struct ModelsView: View {
             }.value
             switch result {
             case .success(let url):
-                store.importModel(url, intent: intent, sourceDetails: details, origin: .studioToolCopy)
+                // The copy carries the lock, a replica's way up and the print-ready lineage, as every Studio copy does.
+                let lineage = studioCopyLineage(model)
+                store.importModel(url, intent: intent, sourceDetails: details, inheritsZUpLock: lineage.inheritsZUpLock,
+                                  origin: .studioToolCopy, keepsPlacement: lineage.keepsPlacement,
+                                  fromPrintReadyCopy: lineage.fromPrintReadyCopy)
                 try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
             case .failure(let error):
                 store.showError(error.localizedDescription)
