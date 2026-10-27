@@ -62,7 +62,8 @@ func addressPasteValueLooksLikeToken(_ value: String) -> Bool {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return false }
     if trimmed.contains("://") { return true }
-    return !trimmed.contains(where: \.isWhitespace) && trimmed.count > addressPasteLongestSingleWord
+    // ASCII only: addresses in scripts written without spaces (Japanese, Chinese) are never mistaken for a token.
+    return !trimmed.contains(where: \.isWhitespace) && trimmed.count > addressPasteLongestSingleWord && trimmed.allSatisfy(\.isASCII)
 }
 
 /// Use These Details is offered only for something that looks like an address: a town or postcode was found, and

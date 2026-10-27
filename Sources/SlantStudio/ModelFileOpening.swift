@@ -89,10 +89,14 @@ func queuedImportNote(count: Int) -> String? {
     /// the command waits for the new window's content, so a sheet it opens has a window to appear in. A command still
     /// waiting after a few seconds is dropped rather than run later by surprise. Each command keeps its own checks.
     func performInMainWindow(_ action: @escaping @MainActor () -> Void) {
-        if revealMainWindow() {
-            actionsAwaitingMainWindow.append((Date(), action))
-        } else {
+        if NSApp.isHidden { NSApp.unhide(nil) }
+        if existingMainWindow() != nil {
+            _ = revealMainWindow()
             action()
+        } else {
+            // Queued before the window is asked for, so the new content's first appearance always finds it.
+            actionsAwaitingMainWindow.append((Date(), action))
+            _ = revealMainWindow()
         }
     }
 

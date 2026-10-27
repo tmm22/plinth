@@ -119,7 +119,7 @@ final class BatchPayTests: XCTestCase {
 
     func testFinalButtonAndConfirmationTitles() {
         XCTAssertEqual(batchPayButtonTitle(count: 3, total: Decimal(string: "45.1")!), "Pay 3 Orders (Total $45.10 USD)")
-        XCTAssertEqual(batchPayButtonTitle(count: 1, total: Decimal(string: "1234.5")!), "Pay 1 Order (Total $1234.50 USD)")
+        XCTAssertEqual(batchPayButtonTitle(count: 1, total: Decimal(string: "1234.5")!), "Pay 1 Order (Total $1,234.50 USD)")
         XCTAssertEqual(batchPayConfirmTitle(count: 2, total: Decimal(string: "19.99")!), "Pay 2 orders for $19.99 USD?")
         XCTAssertEqual(batchPayConfirmTitle(count: 1, total: 0), "Pay 1 order for $0.00 USD?")
     }

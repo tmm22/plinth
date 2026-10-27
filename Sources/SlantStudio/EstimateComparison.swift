@@ -743,7 +743,7 @@ struct EstimateComparisonSheet: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Button("Done") { dismiss() }
+            Button("Close") { dismiss() }
                 .keyboardShortcut(.cancelAction)
             if let message = runner.message {
                 Text(message).font(.caption).foregroundStyle(.orange)

@@ -327,8 +327,8 @@ func claudeSheetShouldBeginKeySession(configured: Bool, holding: Bool) -> Bool {
 }
 
 /// What Close asks before it discards something billed, or nil to close at once: while Claude is replying (closing
-/// stops it part-way), or while a plan is shown and no "(reviewed)" copy has been saved from it. Nothing sent to Claude
-/// yet, or a copy already saved, closes without asking.
+/// stops it part-way), or while steps of a plan are ticked and their selection hasn't been run. Reading a plan (or a
+/// "no problems" result) and closing without ticking anything doesn't ask; nor does a run already done.
 func printReviewCloseConfirmation(hasPlan: Bool, asking: Bool, savedCopy: Bool) -> PrintReviewCloseConfirmation? {
     if asking {
         return PrintReviewCloseConfirmation(
@@ -390,8 +390,9 @@ struct PrintReviewSheet: View {
     }
 
     private var closeConfirmation: PrintReviewCloseConfirmation? {
-        printReviewCloseConfirmation(hasPlan: session.plan != nil, asking: session.isAsking,
-                                     savedCopy: { if case .saved = session.run { return true }; return false }())
+        printReviewCloseConfirmation(hasPlan: session.plan != nil && !session.ticked.isEmpty, asking: session.isAsking,
+                                     savedCopy: session.selectionAlreadyRun
+                                         || { if case .saved = session.run { return true }; return false }())
     }
 
     private func requestClose() {

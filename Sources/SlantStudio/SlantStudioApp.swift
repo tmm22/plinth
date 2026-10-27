@@ -90,7 +90,7 @@ struct SlantStudioApp: App {
                     }
                 }
             }
-            MainWindowAndHelpCommands(modalUIShown: modalUIShown)
+            MainWindowAndHelpCommands(modalUIShown: modalUIShown, showDeveloperTools: store.showDeveloperTools)
         }
         // The single home for the account, default platform, platforms and developer options. Its sheets and dialogs
         // count as modal UI (AppModalState checks every window), so main-window menu commands stay inert under them.
@@ -104,10 +104,11 @@ struct SlantStudioApp: App {
 }
 
 /// Window › Slant Studio (⌘0) brings the main window back after it was closed, and the Help menu opens Studio's own
-/// help window and Slant's API documentation. None of these sends anything; like every menu command they do nothing
+/// help window and, with developer tools on, Slant's API documentation. None of these sends anything; like every menu command they do nothing
 /// while a sheet, alert or dialog is shown.
 private struct MainWindowAndHelpCommands: Commands {
     let modalUIShown: Bool
+    let showDeveloperTools: Bool
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
@@ -129,11 +130,14 @@ private struct MainWindowAndHelpCommands: Commands {
             }
             .keyboardShortcut("?", modifiers: .command)
             .disabled(modalUIShown)
-            Button("Slant API Documentation") {
-                guard !appIsPresentingModalUI() else { return }
-                NSWorkspace.shared.open(slantAPIDocumentationURL)
+            // Developer material: shown only with Settings › Advanced › Show developer tools.
+            if showDeveloperTools {
+                Button("Slant API Documentation") {
+                    guard !appIsPresentingModalUI() else { return }
+                    NSWorkspace.shared.open(slantAPIDocumentationURL)
+                }
+                .disabled(modalUIShown)
             }
-            .disabled(modalUIShown)
         }
     }
 }
@@ -224,7 +228,6 @@ struct StudioHelpView: View {
                             .textSelection(.enabled)
                     }
                 }
-                Link("Slant API Documentation", destination: slantAPIDocumentationURL)
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)

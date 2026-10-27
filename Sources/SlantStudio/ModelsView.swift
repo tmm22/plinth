@@ -2003,11 +2003,6 @@ struct CatalogDetailSheet: View {
 
     private var untitledFallback: String { catalogDisplayFallback(kind) }
 
-    /// The model the material would be used for: the selected library or uploaded model, if any.
-    private var selectedModelName: String? {
-        store.selectedLocal?.name ?? store.files.first { $0.id == store.fileID }.map(cloudModelDisplayName)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
@@ -2032,7 +2027,7 @@ struct CatalogDetailSheet: View {
             Divider()
             HStack(spacing: 12) {
                 if kind == .materials {
-                    Text(catalogMaterialUseCaption(selectedModelName: selectedModelName))
+                    Text(catalogMaterialUseCaption)
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -2042,14 +2037,14 @@ struct CatalogDetailSheet: View {
                     .keyboardShortcut(.cancelAction)
                 if kind == .materials {
                     // Local only: sets the print configuration's material.
-                    Button("Use for Selected Model") {
+                    Button("Use This Material") {
                         store.filamentID = record.id
                         dismiss()
                         store.destination = .models
                     }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(filamentAvailability(record) == false || store.busy || selectedModelName == nil)
+                    .disabled(filamentAvailability(record) == false || store.busy)
                 }
                 if kind == .components || kind == .stationery {
                     // Opens the composer for review only; nothing is created from here.

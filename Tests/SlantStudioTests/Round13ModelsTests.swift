@@ -105,8 +105,7 @@ final class Round13ModelsTests: XCTestCase {
     }
 
     func testMaterialUseCaptionNamesTheModel() {
-        XCTAssertEqual(catalogMaterialUseCaption(selectedModelName: "Bracket"), "Sets the material for “Bracket” and returns to Models.")
-        XCTAssertTrue(catalogMaterialUseCaption(selectedModelName: nil).hasPrefix("Select a model"))
+        XCTAssertTrue(catalogMaterialUseCaption.contains("print configuration"))
     }
 
     func testComponentsAndStationeryLoadOnceWhenFirstShown() {

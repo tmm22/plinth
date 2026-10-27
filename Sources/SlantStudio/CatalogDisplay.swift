@@ -163,11 +163,9 @@ func catalogColourDisplay(_ raw: String) -> String {
         .joined(separator: " ")
 }
 
-/// The caption beside a material's Use for Selected Model button: which model it applies to, or why it's unavailable.
-func catalogMaterialUseCaption(selectedModelName: String?) -> String {
-    guard let selectedModelName else { return "Select a model in Models to use this material for it." }
-    return "Sets the material for “\(selectedModelName)” and returns to Models."
-}
+/// The caption beside a material's Use This Material button. The material is the print configuration's (one setting
+/// for every model), not a particular model's.
+let catalogMaterialUseCaption = "Uses this material in the print configuration and returns to Models."
 
 /// Requests left this minute below which Catalog doesn't load Components or Stationery by itself.
 let catalogLoadOnShowReserve = 5

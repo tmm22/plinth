@@ -931,7 +931,7 @@ struct SpendingReportSheet: View {
             }
             Divider()
             HStack {
-                Button("Done") { dismiss() }
+                Button("Close") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 if let exportError {

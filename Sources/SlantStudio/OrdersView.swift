@@ -293,7 +293,7 @@ struct OrderComposerView: View {
         // An Escape that reaches the sheet some other way (no text field focused, as in a duplicate's address
         // summary) takes the same path as Cancel: the popover guard and the discard check.
         // Like Cancel, it does nothing while a request runs.
-        .onExitCommand { if !store.busy { requestClose(fromCancelButton: true) } }
+        .onExitCommand { if !store.busy && !composerPopoverShown { requestClose(fromCancelButton: true) } }
         .confirmationDialog("Discard this order draft?", isPresented: $confirmDiscard) {
             Button("Discard Draft", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) {}
@@ -1999,6 +1999,7 @@ struct OrderActionConfirmSheet: View {
             var completedOrder: [String: Any]?
             var didWrite = false
             var attemptedWrite = false
+            var payAcceptedUnconfirmed = false
             var rejected = false
             var refusal: String?
             // A definite refusal is explained here in the review, so it doesn't also raise the window's alert.
@@ -2029,13 +2030,19 @@ struct OrderActionConfirmSheet: View {
                     throw error
                 }
                 mutateOrder = mergeOrderDraftEnvelope(responseObject(mutateResponse))
-                didWrite = true
-                store.clearOutcomeUnknown(orderID: orderID)
                 do {
                     let refreshed = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
                     completedOrder = mergeOrderDraftEnvelope(responseObject(refreshed))
                 } catch {
                     completedOrder = mutateOrder
+                }
+                // A 2xx to a pay whose order still shows DRAFT, or no readable status, isn't a confirmed charge: the lock
+                // stays until a reload shows the outcome (as Pay Several Drafts does).
+                if isPay, batchPayAcceptedOutcomeStaysLocked(completedOrder ?? mutateOrder) {
+                    payAcceptedUnconfirmed = true
+                } else {
+                    didWrite = true
+                    store.clearOutcomeUnknown(orderID: orderID)
                 }
             }
             writing = false
@@ -2050,6 +2057,9 @@ struct OrderActionConfirmSheet: View {
                 successMessage = isPay ? "Order placed." : (capturedRefundOnly ? "Refund requested." : "Cancellation requested.")
                 actionMessage = nil
                 onCompleted(orderID, best)
+            } else if payAcceptedUnconfirmed {
+                if let shownOrder = completedOrder ?? mutateOrder { fresh = shownOrder; loadState = .loaded }
+                actionMessage = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Reload the order before doing anything else."
             } else if attemptedWrite {
                 actionMessage = orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
             } else if rejected {

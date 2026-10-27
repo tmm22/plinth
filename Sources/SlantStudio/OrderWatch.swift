@@ -186,11 +186,12 @@ func orderWatchFetchedOrderFitsPlatform(_ order: [String: Any], platformID: Stri
 
 /// Whether a change is listed under "Since you last looked". Placing a draft is the seller's own action, so
 /// Draft → Paid isn't reported (later progress, or a payment problem, is). Live Slant also returns SUBMITTED for a
-/// just-placed order (26 Oct 2026), so Draft → Submitted and Submitted → Paid count as placing too.
+/// just-placed order (26 Oct 2026), in an order not yet confirmed relative to PAID, so any move among Draft,
+/// Submitted and Paid that ends in Submitted or Paid counts as placing too.
 func orderWatchChangeIsReported(from: String, to: String) -> Bool {
     guard from != to else { return false }
     let placing: Set<String> = ["PAID", "SUBMITTED"]
-    return !((from == "DRAFT" || from == "SUBMITTED") && placing.contains(to))
+    return !((from == "DRAFT" || placing.contains(from)) && placing.contains(to))
 }
 
 func orderWatchShouldNotify(_ transition: OrderWatchTransition) -> Bool {

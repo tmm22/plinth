@@ -428,7 +428,7 @@ struct ProductCostCheckView: View {
             }
             Divider()
             HStack(spacing: 12) {
-                Button("Done") { onDone() }
+                Button("Close") { onDone() }
                     .keyboardShortcut(.cancelAction)
                 if let message = runner.message {
                     Text(message).font(.caption).foregroundStyle(.orange).lineLimit(3)

@@ -57,7 +57,7 @@ final class OrdersRound13Tests: XCTestCase {
         XCTAssertFalse(orderWatchChangeIsReported(from: "SUBMITTED", to: "PAID"))
         XCTAssertTrue(orderWatchChangeIsReported(from: "SUBMITTED", to: "QUEUED"))
         XCTAssertTrue(orderWatchChangeIsReported(from: "SUBMITTED", to: "CANCELED"))
-        XCTAssertTrue(orderWatchChangeIsReported(from: "PAID", to: "SUBMITTED"))
+        XCTAssertFalse(orderWatchChangeIsReported(from: "PAID", to: "SUBMITTED"))
         XCTAssertFalse(orderWatchNotableStatuses.contains("SUBMITTED"))
     }
 
@@ -210,5 +210,13 @@ final class OrdersRound13Tests: XCTestCase {
         XCTAssertNil(orderWatchHoldCaption(nil, now: now))
         let other = orderWatchFailureEffect(APIError.http(status: 500, body: "", retryAfter: nil, rateLimitReset: nil), now: now)
         XCTAssertNil(orderWatchHold(after: other))
+    }
+}
+
+extension OrdersRound13Tests {
+    func testUnspacedNonLatinAddressIsNotAToken() {
+        XCTAssertFalse(addressPasteValueLooksLikeToken("東京都千代田区丸の内一丁目九番二号グラントウキョウサウスタワー"))
+        XCTAssertTrue(addressPasteValueLooksLikeToken("aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC"))
+        XCTAssertTrue(addressPasteValueLooksLikeToken("https://example.com"))
     }
 }

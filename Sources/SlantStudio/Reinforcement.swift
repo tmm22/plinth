@@ -203,7 +203,7 @@ func reinforceTooManyTrianglesMessage(_ triangles: Int) -> String {
 extension STLMesh {
     func reinforcementSolid() throws -> Mesh {
         guard triangleCount > 0 else { throw StudioError("This model has no triangles to work on.") }
-        guard triangleCount <= 20_000 else { throw StudioError(reinforceTooManyTrianglesMessage(triangleCount)) }
+        guard triangleCount <= meshToolsReinforceTriangleLimit else { throw StudioError(reinforceTooManyTrianglesMessage(triangleCount)) }
         var polygons: [Polygon] = []
         var edgeCounts: [MeshEdge: Int] = [:]
         var edgeDirections: [MeshEdge: Int] = [:]

@@ -165,9 +165,9 @@ final class SpendReportTests: XCTestCase {
         let text = spendReportText(report, notes: ["Note."], calendar: cal)
         XCTAssertTrue(text.hasPrefix("Slant spending report\nFrom 2 orders in the loaded Orders list."))
         XCTAssertTrue(text.contains("Note.\n"))
-        XCTAssertTrue(text.contains("October 2026 — 1 — $1234.50\n"))
+        XCTAssertTrue(text.contains("October 2026 — 1 — $1,234.50\n"))
         XCTAssertTrue(text.contains("September 2026 — 1 — $0.00 (1 without a total)\n"))
-        XCTAssertTrue(text.contains("Total — 2 — $1234.50\n"))
+        XCTAssertTrue(text.contains("Total — 2 — $1,234.50\n"))
         XCTAssertTrue(text.contains("— 2 units in 1 order\n"))
         XCTAssertEqual(spendReportDefaultFileName(date: Date(timeIntervalSince1970: 0)).hasPrefix("Slant spending 19"), true)
     }

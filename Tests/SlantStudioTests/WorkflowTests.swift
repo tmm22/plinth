@@ -140,7 +140,7 @@ final class WorkflowTests: XCTestCase {
 
     func testMoneyUsesDecimalParsing() {
         XCTAssertEqual(money("4.06"), "$4.06")
-        XCTAssertEqual(money("12345678901234567890.12"), "$12345678901234567890.12")
+        XCTAssertEqual(money("12345678901234567890.12"), "$12,345,678,901,234,567,890.12")
         XCTAssertEqual(money(nil), "—")
     }
 
