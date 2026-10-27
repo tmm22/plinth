@@ -2087,7 +2087,7 @@ struct OrderActionConfirmSheet: View {
                 do {
                     mutateResponse = try await store.client.request(method, path: "/orders/\(encodedSegment(orderID))")
                 } catch {
-                    if orderMutationErrorProvesNoEffect(error) {
+                    if orderMutationErrorProvesNoEffect(error, method: method) {
                         // Slant refused it (or it was never sent), so nothing is pending: lift the lock and return to
                         // the review.
                         store.clearOutcomeUnknown(orderID: orderID)

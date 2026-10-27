@@ -437,9 +437,11 @@ func unknownOutcomeResolvedByReload(context: UnknownOutcomeContext?, reloadedSta
     return outcomeResolved(action: context.action, reviewedStatus: context.reviewedStatus, reloadedStatus: reloaded)
 }
 /// A pay/cancel error that shows Slant did not act: the request failed before it was sent, or Slant refused it with a
-/// definite client error. Timeouts, transport failures, 5xx, 408 and 409 leave the outcome unknown.
-func orderMutationErrorProvesNoEffect(_ error: Error) -> Bool {
-    if let urlError = error as? URLError { return orderMutationURLErrorIsBeforeSending(urlError.code) }
+/// definite client error. Timeouts, transport failures, 5xx, 408 and 409 leave the outcome unknown. `method` matters
+/// only for URL errors: URLSession may resend an idempotent DELETE on a fresh connection after a reused one drops, so a
+/// DNS failure on that resend wouldn't prove the first attempt never reached Slant.
+func orderMutationErrorProvesNoEffect(_ error: Error, method: String = "POST") -> Bool {
+    if let urlError = error as? URLError { return orderMutationURLErrorIsBeforeSending(urlError.code, method: method) }
     switch error as? APIError {
     case .invalidRequest?: return true
     case .http(let status, _, _, _)?: return (400..<500).contains(status) && status != 408 && status != 409
@@ -449,10 +451,12 @@ func orderMutationErrorProvesNoEffect(_ error: Error) -> Bool {
 /// URL failures that happen before any of the request leaves the Mac: Slant's host name couldn't be resolved, or the
 /// URL was refused locally. Every other failure (no connection, a connection refused or lost, a timeout, a cancel, TLS
 /// and the rest) may have reached Slant, so it leaves the outcome unknown.
-func orderMutationURLErrorIsBeforeSending(_ code: URLError.Code) -> Bool {
+func orderMutationURLErrorIsBeforeSending(_ code: URLError.Code, method: String = "POST") -> Bool {
     switch code {
-    case .cannotFindHost, .dnsLookupFailed, .badURL, .unsupportedURL, .appTransportSecurityRequiresSecureConnection:
+    case .badURL, .unsupportedURL, .appTransportSecurityRequiresSecureConnection:
         return true
+    case .cannotFindHost, .dnsLookupFailed:
+        return method.uppercased() != "DELETE"
     default:
         return false
     }
@@ -1486,6 +1490,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             self.error = uploadFailureMessage(stage: failedStage, error: error)
             return true
         }) {
+            // Quit asks first until the upload has its answer (SlantStudioApp.swift).
+            let write = SlantWritesInFlight.shared.begin(.upload)
+            defer { SlantWritesInFlight.shared.end(write) }
             let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID) { [weak self] next in
                 stage.value = next
                 Task { @MainActor in self?.progress = next.progressText }

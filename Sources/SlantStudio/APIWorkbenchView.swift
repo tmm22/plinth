@@ -71,6 +71,8 @@ struct EndpointView: View {
     /// The confirm sheet's own note about the last send (a pay accepted but not confirmed, a refusal), shown in place
     /// of the generic unknown-result line; the window's alert would wait behind the sheet.
     @State private var mutationNote: String?
+    /// After an unconfirmed draft create (any composer), a Workbench `POST /orders` asks for Create Anyway first.
+    @State private var confirmWorkbenchCreateAnyway = false
     var isChargeEndpoint: Bool { endpoint.method == "POST" && endpoint.path == "/orders/{publicOrderId}" }
     var isDeleteOrderEndpoint: Bool { endpoint.method == "DELETE" && endpoint.path == "/orders/{publicOrderId}" }
     var hasOpenSCADResult: Bool { endpoint.path == "/files/openScad" && responseData != nil && !responseText.isEmpty }
@@ -257,11 +259,26 @@ struct EndpointView: View {
                 } else {
                     confirmSendButton(title: "Send \(pending.endpoint.method) Request", prominent: true, destructive: pending.endpoint.method == "DELETE", enabled: sendEnabled, usesReturn: usesReturn) {
                         guard sendUnlocked else { return }
+                        if pending.isDraftCreate,
+                           draftCreateNeedsConfirmation(outcomeUnknown: store.draftCreateOutcomeUnknown, confirmed: false) {
+                            confirmWorkbenchCreateAnyway = true
+                            return
+                        }
                         execute(pending)
                     }
                 }
             }
         }.padding(26).frame(width: 680, height: (isCharge || isDeleteOrder || pending.confirmPhrase != nil) ? 680 : 570)
+        .confirmationDialog("Create another draft?", isPresented: $confirmWorkbenchCreateAnyway, titleVisibility: .visible) {
+            Button("Create Anyway") {
+                guard sendUnlocked, pending.isDraftCreate else { return }
+                execute(pending)
+            }
+            Button("Don’t Create", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(draftCreateAnywayMessage(store.unconfirmedDraftCreates, earlierUnlisted: store.unconfirmedDraftCreatesOverflowed))
+        }
     }
     @ViewBuilder
     func confirmSendButton(title: String, prominent: Bool, destructive: Bool, enabled: Bool, usesReturn: Bool, action: @escaping () -> Void) -> some View {
@@ -450,7 +467,7 @@ struct EndpointView: View {
                 do {
                     response = try await store.client.request(request.endpoint.method, path: request.path, query: request.query, body: request.body)
                 } catch {
-                    if orderMutationErrorProvesNoEffect(error) {
+                    if orderMutationErrorProvesNoEffect(error, method: request.endpoint.method) {
                         // Slant refused it (or it was never sent), so nothing is pending.
                         store.clearOutcomeUnknown(orderID: orderID)
                         mutationAttempted = false

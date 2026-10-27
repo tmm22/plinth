@@ -264,12 +264,13 @@ enum SlantWriteKind: String, CaseIterable {
     case payment = "a payment"
     case cancellation = "a cancellation"
     case draft = "a new draft"
-    case importOrders = "Import Orders"
-    case payDrafts = "Pay Several Drafts"
+    case upload = "an upload"
+    case importOrders = "an Import Orders draft"
+    case payDrafts = "a Pay Several Drafts payment"
 }
 
 /// Slant writes still waiting for a reply: a pay or cancel (Orders or the API Workbench), a draft create (the composer
-/// or the Workbench), or an Import Orders or Pay Several Drafts batch from start to finish. The unknown-outcome lock
+/// or the Workbench), a model upload (Slant may keep a file whose confirm went unanswered), or an Import Orders or Pay Several Drafts batch from start to finish. The unknown-outcome lock
 /// and the unconfirmed-draft guard last only for the session, so quitting mid-request would lose the record of a write
 /// that may have reached Slant: Quit asks first (`slantWritesQuitQuestion`). Memory only; nothing else reads it.
 @MainActor final class SlantWritesInFlight {
@@ -293,8 +294,8 @@ func slantWritesQuitQuestion(_ kinds: [SlantWriteKind]) -> (title: String, messa
     guard let last = named.last else { return nil }
     let list = named.count == 1 ? last : named.dropLast().joined(separator: ", ") + " and " + last
     return ("Quit while Slant is still answering?",
-            "Slant Studio is waiting for Slant’s reply to \(list). If you quit now, Studio can’t record whether it went "
-            + "through, so it can’t warn you before you pay for or create that order again. Wait for it to finish, then quit.")
+            "Slant Studio is still waiting for Slant to answer \(list). If you quit now, Studio can’t record whether it "
+            + "went through, so it can’t warn you before you send it again. Wait for it to finish, then quit.")
 }
 
 extension SlantStudioAppDelegate {

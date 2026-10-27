@@ -19,6 +19,13 @@ final class MoneyPathRound14Tests: XCTestCase {
                                     .cancelled, .secureConnectionFailed, .badServerResponse, .unknown, .dataNotAllowed] {
             XCTAssertFalse(orderMutationErrorProvesNoEffect(URLError(code)), "\(code) may have reached Slant")
         }
+        // A cancel (DELETE) may be resent by URLSession on a fresh connection, so a DNS failure doesn't prove the first
+        // attempt never reached Slant; local URL refusals still do.
+        XCTAssertFalse(orderMutationErrorProvesNoEffect(URLError(.cannotFindHost), method: "DELETE"))
+        XCTAssertFalse(orderMutationErrorProvesNoEffect(URLError(.dnsLookupFailed), method: "delete"))
+        XCTAssertTrue(orderMutationErrorProvesNoEffect(URLError(.badURL), method: "DELETE"))
+        XCTAssertTrue(orderMutationErrorProvesNoEffect(URLError(.cannotFindHost), method: "POST"))
+        XCTAssertTrue(orderMutationErrorProvesNoEffect(http(422), method: "DELETE"))
         // Unchanged: definite refusals lift it, everything else keeps it.
         XCTAssertTrue(orderMutationErrorProvesNoEffect(http(422)))
         XCTAssertFalse(orderMutationErrorProvesNoEffect(http(409)))
@@ -248,8 +255,32 @@ final class MoneyPathRound14Tests: XCTestCase {
     func testQuitAsksOnlyWhileAWriteIsInFlight() throws {
         XCTAssertNil(slantWritesQuitQuestion([]))
         let one = try XCTUnwrap(slantWritesQuitQuestion([.payment]))
-        XCTAssertTrue(one.message.contains("reply to a payment."))
-        let several = try XCTUnwrap(slantWritesQuitQuestion([.payDrafts, .draft, .payment, .payment]))
-        XCTAssertTrue(several.message.contains("a payment, a new draft and Pay Several Drafts"), several.message)
+        XCTAssertTrue(one.message.contains("answer a payment."))
+        XCTAssertTrue(one.message.contains("before you send it again"))
+        let several = try XCTUnwrap(slantWritesQuitQuestion([.payDrafts, .draft, .payment, .payment, .upload]))
+        XCTAssertTrue(several.message.contains("a payment, a new draft, an upload and a Pay Several Drafts payment"), several.message)
+    }
+}
+
+/// Round 14 review fixes: quoted Slant messages never carry a credential, and Pay Several Drafts' Activity line never
+/// quotes Slant.
+final class Round14ReviewSafetyTests: XCTestCase {
+    func testQuotedMessagesMaskCredentials() {
+        XCTAssertEqual(apiMessageRedactingCredentials("Key sl-abc123DEF_456 isn't allowed here"), "Key sl-… isn't allowed here")
+        XCTAssertEqual(apiMessageRedactingCredentials("Got Bearer abcdefghijklmnop123 for this order"), "Got Bearer … for this order")
+        // Ordinary wording is left alone.
+        XCTAssertEqual(apiMessageRedactingCredentials("Bearer token required in Authorization header"),
+                       "Bearer token required in Authorization header")
+        XCTAssertEqual(apiMessageRedactingCredentials("Order belongs to another creator"), "Order belongs to another creator")
+        let body = #"{"success":false,"error":{"message":"Bad key sl-0123456789abcdef","statusCode":403}}"#
+        XCTAssertEqual(shortAPIMessage(from: body), "Bad key sl-…")
+    }
+
+    func testBatchPayActivityNamesOnlyTheKindOfFailure() {
+        let body = #"{"success":false,"error":{"message":"Order for Jane Smith, 1 High St refused","statusCode":422}}"#
+        let detail = batchPayStopActivityDetail(for: APIError.http(status: 422, body: body, retryAfter: nil, rateLimitReset: nil))
+        XCTAssertEqual(detail, "stopped at HTTP 422")
+        XCTAssertFalse(detail.contains("Jane"))
+        XCTAssertEqual(batchPayStopActivityDetail(for: URLError(.timedOut)), "stopped at a connection problem")
     }
 }

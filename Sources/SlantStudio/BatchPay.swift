@@ -618,7 +618,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             case .changed, .refused, .unknown, .notSent: break
             }
             if let completed = result.completed { onCompleted(draft.id, completed) }
-            if let error = result.error { stopDetail = activityDetail(for: error) }
+            if let error = result.error { stopDetail = batchPayStopActivityDetail(for: error) }
             if case .stop(let reason) = batchPayNextStep(after: result.outcome) {
                 stopMessage = reason
                 break
@@ -1185,4 +1185,16 @@ struct BatchPayDraftCard<Extra: View>: View {
 extension OrderImportLedger {
     /// An import this session whose draft create wasn't confirmed (Pay Several Drafts warns about duplicates).
     var hasUnconfirmed: Bool { entries.values.contains(.unknown) }
+}
+
+/// Pay Several Drafts' Activity line names only what kind of failure stopped the batch, never Slant's own words, which
+/// could quote an order or a buyer.
+func batchPayStopActivityDetail(for error: Error) -> String {
+    switch error {
+    case APIError.http(let status, _, _, _): return "stopped at HTTP \(status)"
+    case APIError.invalidResponse: return "stopped at an unreadable reply"
+    case APIError.invalidRequest: return "stopped before sending"
+    case is URLError: return "stopped at a connection problem"
+    default: return "stopped"
+    }
 }

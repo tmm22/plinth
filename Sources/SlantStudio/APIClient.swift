@@ -245,10 +245,22 @@ func clippedAPIAlertMessage(_ text: String) -> String? {
         trimmed = String(trimmed[..<nl]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     guard !trimmed.isEmpty, !trimmed.hasPrefix("{"), !trimmed.hasPrefix("[") else { return nil }
+    trimmed = apiMessageRedactingCredentials(trimmed)
     if trimmed.count > 240 {
         trimmed = String(trimmed.prefix(240)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     return trimmed
+}
+
+/// Slant's quoted messages reach alerts and Activity, so anything shaped like a credential is masked first: a bearer
+/// value, or a Slant key (`sl-…`, the format Slant's 401 names). Messages that are about the key itself aren't quoted
+/// at all (`APIError.userMessage`).
+func apiMessageRedactingCredentials(_ text: String) -> String {
+    var result = text
+    for (pattern, replacement) in [(#"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]{12,}"#, "Bearer …"), (#"\bsl-[A-Za-z0-9_\-]{6,}"#, "sl-…")] {
+        result = result.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+    }
+    return result
 }
 
 func isRetryableAPICall(method: String, path: String) -> Bool {
