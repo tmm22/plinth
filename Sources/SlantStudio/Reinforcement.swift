@@ -64,20 +64,27 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
         default: return nil
         }
     }
+    /// What a new copy's name says in brackets, "Name (internal walls)" (`reinforcementCopyName`). Copies saved before
+    /// keep their "Name-internal-walls" style names.
     var fileSuffix: String {
         switch self {
-        case .cells: return "experimental-cells"
-        case .shell: return "experimental-shell"
-        case .holeRing: return "experimental-hole-ring"
-        case .teardrop: return "teardrop"
+        case .cells: return "experimental cells"
+        case .shell: return "experimental shell"
+        case .holeRing: return "experimental hole ring"
+        case .teardrop: return "teardrop holes"
         case .bridge: return "bridging"
-        case .overhang: return "overhang-chamfer"
-        case .thicken: return "matched-wall"
+        case .overhang: return "overhang chamfer"
+        case .thicken: return "matched walls"
         case .split: return "part"
-        case .internalWalls: return "internal-walls"
+        case .internalWalls: return "internal walls"
         default: return "reinforced"
         }
     }
+}
+
+/// A Reinforce copy's name: "Name (internal walls)", or "Name (part 1)" and "Name (part 2)" for a split.
+func reinforcementCopyName(_ name: String, kind: ReinforcementKind, part: Int? = nil) -> String {
+    studioCopyName(name, suffix: part.map { "\(kind.fileSuffix) \($0)" } ?? kind.fileSuffix)
 }
 
 /// Why the closed gap and cell treatments are no longer offered.
@@ -188,11 +195,15 @@ struct ReinforcementPreview: Sendable {
 private func vector(_ p: SIMD3<Float>) -> Vector { Vector(Double(p.x), Double(p.y), Double(p.z)) }
 private func point(_ p: Vector) -> SIMD3<Float> { SIMD3(Float(p.x), Float(p.y), Float(p.z)) }
 
+/// Why Reinforce and Auto-improve can't read a mesh this large: it points to Studio's own Simplify & Save Copy.
+func reinforceTooManyTrianglesMessage(_ triangles: Int) -> String {
+    "Reinforce and Auto-improve work on models of up to \(meshToolsReinforceTriangleLimit.formatted()) triangles, and this one has \(triangles.formatted()). Make a lighter copy with Simplify & Save Copy in Repair and simplify, then use that copy."
+}
+
 extension STLMesh {
     func reinforcementSolid() throws -> Mesh {
-        guard triangleCount > 0, triangleCount <= 20_000 else {
-            throw StudioError("Reinforcement previews support STL meshes up to 20,000 triangles. Simplify a copy in CAD for this operation.")
-        }
+        guard triangleCount > 0 else { throw StudioError("This model has no triangles to work on.") }
+        guard triangleCount <= 20_000 else { throw StudioError(reinforceTooManyTrianglesMessage(triangleCount)) }
         var polygons: [Polygon] = []
         var edgeCounts: [MeshEdge: Int] = [:]
         var edgeDirections: [MeshEdge: Int] = [:]

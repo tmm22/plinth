@@ -1386,6 +1386,11 @@ func percentLabel(_ fraction: Double) -> String {
     return "\(Int((fraction * 100).rounded()))%"
 }
 
+/// `percentLabel` for the summary line, where "under 1% … under 1 mm" would repeat "under": "less than 1%".
+func surfacePercentLabel(_ fraction: Double) -> String {
+    fraction > 0 && fraction < 0.01 ? "less than 1%" : percentLabel(fraction)
+}
+
 private func millimetres(_ value: Float) -> String { String(format: "%.1f mm", value) }
 
 func wallThicknessSummary(_ report: WallThicknessReport, origin: SIMD3<Float> = .zero) -> WallThicknessSummary {
@@ -1402,9 +1407,10 @@ func wallThicknessSummary(_ report: WallThicknessReport, origin: SIMD3<Float> = 
     if report.fractionUnder2MM == 0 {
         line = "Wall thickness: no walls under 2 mm found"
     } else if report.fractionUnder1MM == 0 {
-        line = "Wall thickness: \(percentLabel(report.fractionUnder2MM)) of the surface under 2 mm"
+        line = "Wall thickness: \(surfacePercentLabel(report.fractionUnder2MM)) of the surface under 2 mm"
     } else {
-        line = "Wall thickness: \(percentLabel(report.fractionUnder1MM)) under 1 mm, \(percentLabel(report.fractionUnder2MM)) under 2 mm"
+        // Both shares are of the whole surface; the thinner one is part of the first.
+        line = "Wall thickness: \(surfacePercentLabel(report.fractionUnder2MM)) of the surface under 2 mm, including \(surfacePercentLabel(report.fractionUnder1MM)) under 1 mm"
     }
     var details: [String] = []
     if let thinnest = report.thinnestMM, let median = report.medianMM {

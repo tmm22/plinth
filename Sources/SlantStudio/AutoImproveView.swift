@@ -42,14 +42,30 @@ func autoImproveSummary(intent: PartIntent, hasRecipe: Bool, improved: Bool) -> 
     return "First choose the main stress direction in Optimise for purpose."
 }
 
+/// Why Auto-Improve & Save Copy can't run on a model with this many triangles, or nil. Nil while the count isn't known
+/// yet; the run itself still refuses a mesh over the limit (`reinforcementSolid()`).
+func autoImproveTriangleLimitProblem(triangles: Int?) -> String? {
+    guard let triangles, triangles > meshToolsReinforceTriangleLimit else { return nil }
+    return "Auto-improve works on models of up to \(meshToolsReinforceTriangleLimit.formatted()) triangles, and this one has \(triangles.formatted()). Make a lighter copy with Simplify & Save Copy in Repair and simplify, then auto-improve that copy."
+}
+
+/// Auto-improve's collapsed caption while the model has too many triangles.
+let autoImproveTooManyTrianglesCaption = "Simplify a copy first · Auto-improve works on up to \(meshToolsReinforceTriangleLimit.formatted()) triangles"
+
+/// A new auto-improved copy's name, "Name (auto-improved)". Copies saved before keep their "Name-auto-improved".
+func autoImproveCopyName(_ name: String) -> String { studioCopyName(name, suffix: "auto-improved") }
+
 struct AutoImproveCard: View {
     @EnvironmentObject var store: StudioStore
     let model: LocalModel
+    /// The inspector preview's triangle count, once loaded.
+    var triangles: Int? = nil
     @StateObject private var run = AutoImproveRun()
     @State private var expanded = false
 
     private var intent: PartIntent { designEditIntent(model) ?? PartIntent() }
     private var ready: Bool { intent.isReady || model.printRecipe != nil }
+    private var limitProblem: String? { autoImproveTriangleLimitProblem(triangles: triangles) }
 
     var body: some View {
         Card {
@@ -70,12 +86,16 @@ struct AutoImproveCard: View {
                             HStack {
                                 Button(run.working ? "Improving…" : "Auto-Improve & Save Copy") { improve() }
                                     .buttonStyle(.borderedProminent)
-                                    .disabled(run.working || store.busy)
+                                    .disabled(run.working || store.busy || limitProblem != nil)
                                 if run.working {
                                     ProgressView().controlSize(.small)
                                     Text(run.status).font(.caption).foregroundStyle(.secondary)
                                     Button("Stop") { run.stop() }
                                 }
+                            }
+                            if let limitProblem {
+                                Text(limitProblem).font(.callout).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         } else {
                             Text(autoImproveSummary(intent: intent, hasRecipe: model.printRecipe != nil, improved: false))
@@ -92,6 +112,8 @@ struct AutoImproveCard: View {
             } label: {
                 SectionHeading(title: "Auto-improve", caption: run.working
                                ? run.status
+                               : model.autoImprovement == nil && model.supportsPreview && ready && limitProblem != nil
+                               ? autoImproveTooManyTrianglesCaption
                                : autoImproveSummary(intent: intent, hasRecipe: model.printRecipe != nil, improved: model.autoImprovement != nil))
             }.studioDisclosureStyle()
         }
@@ -178,7 +200,7 @@ extension AutoImproveRun {
                     guard result.changed else { return (result, nil) }
                     let folder = studioTempFolderURL(prefix: autoImproveTempFolderPrefix)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                    let url = folder.appendingPathComponent("\(URL(fileURLWithPath: model.name).lastPathComponent)-auto-improved.stl")
+                    let url = folder.appendingPathComponent("\(autoImproveCopyName(model.name)).stl")
                     do { try result.mesh.binarySTL().write(to: url, options: .atomic) }
                     catch { try? FileManager.default.removeItem(at: folder); throw error }
                     return (result, url)

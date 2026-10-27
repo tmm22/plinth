@@ -617,19 +617,28 @@ struct EstimateComparisonSheet: View {
                 Text("\(activeSelection.count) of up to \(comparisonMaxMaterials)")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            List {
-                ForEach(comparisonMaterialSections(choices), id: \.type) { section in
-                    Section(section.type) {
-                        ForEach(section.materials) { material in
-                            Toggle(material.name, isOn: materialBinding(material.id))
-                                .toggleStyle(.checkbox)
-                                .disabled(runner.running || (!activeSelection.contains(material.id) && activeSelection.count >= comparisonMaxMaterials))
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(comparisonMaterialSections(choices), id: \.type) { section in
+                        Section(section.type) {
+                            ForEach(section.materials) { material in
+                                Toggle(material.name, isOn: materialBinding(material.id))
+                                    .toggleStyle(.checkbox)
+                                    .disabled(runner.running || (!activeSelection.contains(material.id) && activeSelection.count >= comparisonMaxMaterials))
+                            }
                         }
                     }
                 }
+                .frame(height: 180)
+                .listStyle(.bordered(alternatesRowBackgrounds: true))
+                // The material ticked on opening (the model's own) is often far down the list: bring it into view.
+                .task(id: "\(didSetDefaults)|\(choices.count)") {
+                    await Task.yield()
+                    if let first = choices.first(where: { activeSelection.contains($0.id) }) {
+                        proxy.scrollTo(first.id, anchor: .center)
+                    }
+                }
             }
-            .frame(height: 180)
-            .listStyle(.bordered(alternatesRowBackgrounds: true))
             let hidden = store.filaments.filter { filamentAvailability($0) == false }.count
             if hidden > 0 {
                 Text("\(hidden) out-of-stock material\(hidden == 1 ? " isn’t" : "s aren’t") listed.")

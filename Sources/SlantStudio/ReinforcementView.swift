@@ -209,13 +209,14 @@ private struct ReinforcementReview: View {
                 HStack {
                     Button("Cancel") { cancelPreview(); dismiss() }.keyboardShortcut(.cancelAction)
                     Spacer()
-                    Button(settings.kind.isExperimental ? "Save Experimental Test Copy" : settings.kind == .split ? "Save Two Part Copies" : "Apply to New Copy") { save() }
+                    Button(settings.kind.isExperimental ? "Save Experimental Test Copy" : settings.kind == .split ? "Save Two-Part Copies" : "Apply to New Copy") { save() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!current || !confirmed || (settings.kind.isExperimental && !experimentalConfirmed) || working || saving || store.busy || !shellsHeld)
                 }
             }.padding(20).disabled(saving)
         }
-        .frame(width: 780, height: 760)
+        // Resizable within limits, opening shorter than the main window's minimum height; the settings scroll.
+        .frame(minWidth: 700, idealWidth: 780, maxWidth: 960, minHeight: 520, idealHeight: 680, maxHeight: 900)
         .onAppear { settings = .initial(for: source) }
         .onChange(of: settings.kind) { _, value in
             if value.keepsZUp { settings.orientation = .zUp }
@@ -369,14 +370,13 @@ private struct ReinforcementReview: View {
             let folder = studioTempFolderURL(prefix: reinforceTempFolderPrefix)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: folder) }
-            let name = URL(fileURLWithPath: model.name).lastPathComponent
             let parts = [preview.mesh] + (preview.secondPart.map { [$0] } ?? [])
             let record = ReinforcementRecord(sourceID: model.id, settings: settings, addedVolumeMM3: preview.addedVolume, removedVolumeMM3: preview.removedVolume, created: Date(), inheritedCellRoofs: model.requiresZUp ? true : nil,
                                              teardropHoles: preview.teardrops)
             var imported = true
             for (index, part) in parts.enumerated() {
-                let suffix = parts.count > 1 ? "\(settings.kind.fileSuffix)-\(index + 1)" : settings.kind.fileSuffix
-                let url = folder.appendingPathComponent("\(name)-\(suffix).stl")
+                let name = reinforcementCopyName(model.name, kind: settings.kind, part: parts.count > 1 ? index + 1 : nil)
+                let url = folder.appendingPathComponent("\(name).stl")
                 try part.binarySTL().write(to: url, options: .atomic)
                 imported = store.importModel(url, improvement: model.designImprovement, intent: designEditIntent(model), reinforcement: record,
                                              sourceDetails: model.sourceDetails, inheritsZUpLock: model.requiresZUp,
