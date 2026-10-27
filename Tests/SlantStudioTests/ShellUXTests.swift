@@ -4,8 +4,13 @@ import XCTest
 final class ShellUXTests: XCTestCase {
     func testUserMessageMapsAuthNotFoundRateLimitAndServerErrors() {
         XCTAssertEqual(
-            APIError.http(status: 401, body: #"{"message":"nope"}"#, retryAfter: nil, rateLimitReset: nil).userMessage,
+            APIError.http(status: 401, body: #"{"message":"Invalid API key"}"#, retryAfter: nil, rateLimitReset: nil).userMessage,
             "Slant rejected the saved key. Reconnect in Settings."
+        )
+        // A 401 about something else (Slant uses it for another creator's order or file) quotes Slant instead.
+        XCTAssertEqual(
+            APIError.http(status: 401, body: #"{"message":"nope"}"#, retryAfter: nil, rateLimitReset: nil).userMessage,
+            "Slant refused this request. nope"
         )
         XCTAssertEqual(
             APIError.http(status: 403, body: "", retryAfter: nil, rateLimitReset: nil).userMessage,
@@ -17,7 +22,7 @@ final class ShellUXTests: XCTestCase {
         )
         XCTAssertEqual(
             APIError.http(status: 429, body: "", retryAfter: "12", rateLimitReset: nil).userMessage,
-            "Too many requests. Wait 12, then try again."
+            "Too many requests. Try again in about 12 seconds."
         )
         XCTAssertEqual(
             APIError.http(status: 429, body: "", retryAfter: nil, rateLimitReset: nil).userMessage,
@@ -49,7 +54,7 @@ final class ShellUXTests: XCTestCase {
     func testRateLimitUserMessagePrefersRetryAfterThenReset() {
         XCTAssertEqual(
             rateLimitUserMessage(retryAfter: "8", rateLimitReset: "9999999999"),
-            "Too many requests. Wait 8, then try again."
+            "Too many requests. Try again in about 8 seconds."
         )
         let reset = String(Int(Date().timeIntervalSince1970) + 30)
         let message = rateLimitUserMessage(retryAfter: nil, rateLimitReset: reset)
@@ -74,7 +79,7 @@ final class ShellUXTests: XCTestCase {
         )
         XCTAssertEqual(
             APIError.http(status: 409, body: #"{"error":"Already exists"}"#, retryAfter: nil, rateLimitReset: nil).userMessage,
-            "Slant couldn’t accept those details. Already exists"
+            "Slant reported a conflict: “Already exists.” Refresh to see the current state before trying again."
         )
         XCTAssertEqual(
             APIError.http(status: 400, body: #"{}"#, retryAfter: nil, rateLimitReset: nil).userMessage,

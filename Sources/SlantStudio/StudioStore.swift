@@ -643,6 +643,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var lastDelivery: DeliveryDetails?
     @Published var disabledPlatformsThisSession: [Record] = []
     @Published var deadWebhooks: [String: [Record]] = [:]
+    /// Local models whose last upload failed after `confirm-upload` was sent without a clear answer, so Slant may hold
+    /// the file. Memory only; Models suggests Refresh before uploading again (`uploadUnconfirmedMessage`).
+    @Published var unconfirmedUploadModelIDs: Set<UUID> = []
     @Published var componentCategories: [Record] = []
     @Published var hiddenFileIDs = Set(UserDefaults.standard.stringArray(forKey: "hiddenFileIDs") ?? []) {
         didSet { UserDefaults.standard.set(hiddenFileIDs.sorted(), forKey: "hiddenFileIDs") }
@@ -1295,35 +1298,63 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             showError(problem)
             return false
         }
-        return await run("Upload \(capturedName)") {
-            let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID) { [weak self] stage in
-                Task { @MainActor in self?.progress = stage }
+        let stage = UploadStageBox()
+        return await run("Upload \(capturedName)", handlesError: { error in
+            // Worded by the step that failed; a confirm with an unknown outcome is remembered for this model.
+            let failedStage = stage.value
+            if uploadOutcomeUnknown(stage: failedStage, error: error) { unconfirmedUploadModelIDs.insert(capturedID) }
+            self.error = uploadFailureMessage(stage: failedStage, error: error)
+            return true
+        }) {
+            let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID) { [weak self] next in
+                stage.value = next
+                Task { @MainActor in self?.progress = next.progressText }
             }
             noteRateLimit(from: response)
             let object = responseObject(response)
+            // A real file ID only: `Record.id` would fall back to the name.
+            guard let remoteID = uploadedFileID(object) else { throw UploadConfirmMissingFileID() }
             let record = Record(values: object)
-            guard !record.id.isEmpty else { throw StudioError("The upload didn’t finish. Refresh your models, then try again.") }
+            unconfirmedUploadModelIDs.remove(capturedID)
             if let index = localModels.firstIndex(where: { $0.id == capturedID }) {
-                localModels[index].remoteID = record.id
+                localModels[index].remoteID = remoteID
             }
             if shouldUpdateFileIDAfterUpload(uploadedModelID: capturedID, selectedLocalID: selectedLocalID) {
-                fileID = record.id
+                fileID = remoteID
             }
-            files.removeAll { $0.id == record.id }; files.insert(record, at: 0)
+            files.removeAll { $0.id == remoteID }; files.insert(record, at: 0)
             saveModels()
         }
     }
     func quote() async {
         applyDefaultFilamentIfNeeded()
         let chosenFilament = filamentID
-        let context = "\(fileID)|\(chosenFilament)|\(quantity)"
+        let chosenQuantity = quantity
+        let context = "\(fileID)|\(chosenFilament)|\(chosenQuantity)"
         _ = await run("Estimate print cost", retryable: true, retry: .quote) {
             guard !fileID.isEmpty else { throw StudioError("Upload or select a cloud model first.") }
-            var options: [String: Any] = ["quantity": quantity]
+            var options: [String: Any] = ["quantity": chosenQuantity]
             if !chosenFilament.isEmpty { options["filamentId"] = chosenFilament }
             let response = try await client.request("POST", path: "/files/\(encodedSegment(fileID))/estimate", body: ["options": options])
             noteRateLimit(from: response)
-            estimate = responseObject(response); estimateContext = context
+            let object = responseObject(response)
+            // The same check as Compare estimates: a reply without a usable total (or for another quantity) isn't an estimate.
+            if case .unusable(let reason) = comparisonPrice(from: object, requestedQuantity: chosenQuantity) {
+                throw StudioError("\(reason) Try again.")
+            }
+            estimate = object; estimateContext = context
+        }
+    }
+    /// One read-only `GET /files/{id}` for a file still being analysed; its row in `files` is updated in place.
+    func refreshFile(id: String) async {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        _ = await run("Check model analysis") {
+            let response = try await client.request("GET", path: "/files/\(encodedSegment(trimmed))")
+            noteRateLimit(from: response)
+            let object = responseObject(response)
+            guard uploadedFileID(object) == trimmed else { throw StudioError("Slant didn’t return this model. Refresh and try again.") }
+            files = filesUpdating(files, with: object, id: trimmed)
         }
     }
     @discardableResult
@@ -1332,25 +1363,33 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         let ran = await run("Create platform") {
             let response = try await client.request("POST", path: "/platforms", body: try draft.payload())
             noteRateLimit(from: response)
-            let record = Record(values: responseObject(response))
-            guard !record.id.isEmpty else { throw StudioError("Slant didn’t return a platform. Load platforms before trying again.") }
-            platforms.removeAll { $0.id == record.id }
+            let object = responseObject(response)
+            // A real platform ID only: `Record.id` would fall back to the name.
+            guard let newID = platformRecordID(object) else {
+                throw StudioError("Slant didn’t return the new platform’s ID. Reload platforms to check before creating another.")
+            }
+            let record = Record(values: object)
+            platforms.removeAll { $0.id == newID }
             platforms.insert(record, at: 0)
-            platformID = record.id
+            platformID = newID
             created = true
         }
         return ran && created
     }
     @discardableResult
     func updatePlatform(id: String, draft: PlatformDraft) async -> Bool {
+        let body: [String: Any]
+        do { body = try draft.payload() } catch { showError(error.localizedDescription); return false }
+        // Nothing changed: nothing to send.
+        guard !body.isEmpty else { return true }
         var updated = false
         let ran = await run("Update platform") {
-            let response = try await client.request("PATCH", path: "/platforms/\(encodedSegment(id))", body: try draft.payload())
+            let response = try await client.request("PATCH", path: "/platforms/\(encodedSegment(id))", body: body)
             noteRateLimit(from: response)
-            let record = Record(values: responseObject(response))
-            if !record.id.isEmpty {
-                platforms.removeAll { $0.id == record.id }
-                platforms.insert(record, at: 0)
+            let object = responseObject(response)
+            if let returnedID = platformRecordID(object) {
+                platforms.removeAll { $0.id == returnedID }
+                platforms.insert(Record(values: object), at: 0)
             }
             updated = true
         }
@@ -1386,9 +1425,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         _ = await run("Load platform", retryable: true, retry: .loadPlatform(trimmed)) {
             let response = try await client.request("GET", path: "/platforms/\(encodedSegment(trimmed))")
             noteRateLimit(from: response)
-            let loaded = Record(values: responseObject(response))
-            guard !loaded.id.isEmpty else { throw StudioError("That platform wasn’t found.") }
-            record = loaded
+            let object = responseObject(response)
+            // A real platform ID only: `Record.id` would fall back to the name.
+            guard platformRecordID(object) != nil else { throw StudioError("That platform wasn’t found.") }
+            record = Record(values: object)
         }
         return record
     }
@@ -1460,7 +1500,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         guard !platformID.isEmpty else { showError("Choose a default platform in Settings › Account."); return false }
         let type = importModelType(url: trimmedURL, name: trimmedName)
         var ok = false
-        let ran = await run("Upload model from URL") {
+        let ran = await run("Upload model from URL", handlesError: { error in
+            // `POST /files` has left the live OpenAPI; a 404 or 405 means Slant no longer takes links.
+            guard let message = uploadFromURLUnavailableMessage(error) else { return false }
+            self.error = message
+            return true
+        }) {
             var body: [String: Any] = ["URL": trimmedURL, "name": trimmedName, "platformId": platformID, "type": type]
             if !ownerID.isEmpty { body["ownerId"] = ownerID }
             let response = try await client.request("POST", path: "/files", body: body)
@@ -1493,6 +1538,14 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
 }
 
+/// A platform's editable details as loaded, for sending only what changed.
+struct PlatformDraftFields: Equatable {
+    var name: String
+    var url: String
+    var description: String
+    var webhookURL: String
+}
+
 struct PlatformDraft {
     var name = ""
     var url = ""
@@ -1502,6 +1555,10 @@ struct PlatformDraft {
     var webhookSecret = ""
     /// When true, a blank webhookURL is sent as "" to clear the configured webhook.
     var clearsWebhookWhenBlank = false
+    /// The platform's details when editing began (`init(platform:)`). With it, `payload()` sends only the fields the
+    /// seller changed, so renaming a platform without a webhook never sends an empty `webhookURL`, and a shop address
+    /// made elsewhere (such as an http:// one from the dashboard) is checked only when it is being changed.
+    private(set) var original: PlatformDraftFields?
 
     init(name: String = "", url: String = "", description: String = "", webhookURL: String = "", webhookSecret: String = "", clearsWebhookWhenBlank: Bool = false) {
         self.name = name; self.url = url; self.description = description
@@ -1515,6 +1572,7 @@ struct PlatformDraft {
         webhookURL = platform.string("webhookURL", "webhookUrl")
         webhookSecret = ""
         clearsWebhookWhenBlank = true
+        original = PlatformDraftFields(name: name, url: url, description: description, webhookURL: webhookURL)
     }
 
     func payload() throws -> [String: Any] {
@@ -1526,6 +1584,10 @@ struct PlatformDraft {
         guard !name.isEmpty else { throw StudioError("Enter a platform name.") }
         guard name.count <= 100 else { throw StudioError("Platform names can be at most 100 characters.") }
         guard description.count <= 500 else { throw StudioError("Descriptions can be at most 500 characters.") }
+        if let original {
+            return try editPayload(original: original, name: name, url: url, description: description,
+                                   webhookURL: webhookURL, webhookSecret: webhookSecret)
+        }
         guard Self.isWebURL(url, schemes: ["https"]) else { throw StudioError("Enter your shop’s https:// address, such as https://www.etsy.com/shop/YourShopName.") }
         var body: [String: Any] = ["name": name, "url": url]
         if !description.isEmpty {
@@ -1542,6 +1604,30 @@ struct PlatformDraft {
         }
         // Docs: webhookSecret is only accepted on UPDATE; POST /platforms generates one.
         if clearsWebhookWhenBlank, !webhookSecret.isEmpty {
+            try Self.validateWebhookSecret(webhookSecret)
+            body["webhookSecret"] = webhookSecret
+        }
+        return body
+    }
+
+    /// An edit's PATCH body: only changed fields (a cleared description or webhook URL is sent as ""), plus a typed
+    /// secret. Empty when nothing changed.
+    private func editPayload(original: PlatformDraftFields, name: String, url: String, description: String,
+                             webhookURL: String, webhookSecret: String) throws -> [String: Any] {
+        var body: [String: Any] = [:]
+        if name != original.name.trimmingCharacters(in: .whitespacesAndNewlines) { body["name"] = name }
+        if url != original.url.trimmingCharacters(in: .whitespacesAndNewlines) {
+            guard Self.isWebURL(url, schemes: ["https"]) else { throw StudioError("Enter your shop’s https:// address, such as https://www.etsy.com/shop/YourShopName.") }
+            body["url"] = url
+        }
+        if description != original.description.trimmingCharacters(in: .whitespacesAndNewlines) { body["description"] = description }
+        if webhookURL != original.webhookURL.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if !webhookURL.isEmpty {
+                guard Self.isWebURL(webhookURL, schemes: ["https"]) else { throw StudioError("The webhook URL must be a public https:// address.") }
+            }
+            body["webhookURL"] = webhookURL
+        }
+        if !webhookSecret.isEmpty {
             try Self.validateWebhookSecret(webhookSecret)
             body["webhookSecret"] = webhookSecret
         }
@@ -1597,6 +1683,48 @@ func clearedOrderSearchState() -> (orderSearchActive: Bool, orders: [Record], or
 }
 func shouldUpdateFileIDAfterUpload(uploadedModelID: UUID, selectedLocalID: UUID?) -> Bool {
     selectedLocalID == uploadedModelID
+}
+/// A file record's own ID (`publicFileServiceId`, `publicId` or `id`), never its name; nil when it has none.
+func uploadedFileID(_ object: [String: Any]) -> String? {
+    recordOwnID(object, keys: ["publicFileServiceId", "publicId", "id"])
+}
+/// A platform record's own ID (`publicId` or `id`), never its name; nil when it has none.
+func platformRecordID(_ object: [String: Any]) -> String? {
+    recordOwnID(object, keys: ["publicId", "id"])
+}
+/// The first of `keys` holding a non-empty string or number (trimmed), else nil.
+func recordOwnID(_ object: [String: Any], keys: [String]) -> String? {
+    for key in keys {
+        let text: String
+        if let string = object[key] as? String { text = string }
+        else if let number = object[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { text = number.stringValue }
+        else { continue }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+    }
+    return nil
+}
+/// `files` with the row for `id` replaced by `object` merged over it (fresh values win), in place; unchanged when the
+/// row isn't listed.
+func filesUpdating(_ files: [Record], with object: [String: Any], id: String) -> [Record] {
+    files.map { row in
+        guard row.id == id else { return row }
+        return Record(values: row.values.merging(object) { _, fresh in fresh })
+    }
+}
+/// Upload from URL's copy when Slant doesn't offer `POST /files` any more (404 or 405), else nil.
+func uploadFromURLUnavailableMessage(_ error: Error) -> String? {
+    guard case .http(let status, _, _, _)? = error as? APIError, status == 404 || status == 405 else { return nil }
+    return "Slant didn’t accept an upload from a link. Download the file to this Mac, add it with Import Model…, then upload it from your library."
+}
+/// The upload step currently running, set from `APIClient.upload`'s callback (any thread) and read on the main actor.
+final class UploadStageBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stage: UploadStage?
+    var value: UploadStage? {
+        get { lock.lock(); defer { lock.unlock() }; return stage }
+        set { lock.lock(); stage = newValue; lock.unlock() }
+    }
 }
 func connectionFooterStatus(hasKey: Bool, connected: Bool, accountLoaded: Bool, busy: Bool) -> String {
     if connected { return "Connected to Slant 3D" }

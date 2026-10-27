@@ -98,12 +98,14 @@ enum APIError: LocalizedError {
         case .invalidRequest(let message):
             let line = message.split(separator: "\n").first.map(String.init) ?? message
             return line.count > 180 ? "Slant couldn’t complete that request. Try again." : line
-        case .invalidResponse:
+        case .invalidResponse(let message):
+            // A 2xx with `success: false` stays an unknown outcome; only the wording quotes what Slant said.
+            if let reported = slantReportedFailureMessage(message) { return "Slant reported a problem: \(reported)" }
             return "Slant couldn’t complete that request. Try again."
         case .http(let status, let body, let retryAfter, let rateLimitReset):
             switch status {
             case 401:
-                return "Slant rejected the saved key. Reconnect in Settings."
+                return unauthorizedUserMessage(body: body)
             case 403:
                 if let message = shortAPIMessage(from: body) {
                     return "Slant refused this request. \(message)"
@@ -111,7 +113,9 @@ enum APIError: LocalizedError {
                 return "You don’t have access to that item. It may belong to another API key."
             case 404:
                 return "That item wasn’t found. Refresh and try again."
-            case 400, 409, 422:
+            case 409:
+                return conflictUserMessage(body: body)
+            case 400, 422:
                 if let message = shortAPIMessage(from: body) {
                     return "Slant couldn’t accept those details. \(message)"
                 }
@@ -133,10 +137,11 @@ enum APIError: LocalizedError {
         case .http(let status, let body, _, _):
             let base: String
             switch status {
-            case 401: base = "Slant rejected the saved key. Reconnect in Settings."
+            case 401: base = unauthorizedUserMessage(body: body)
             case 403: base = "You don’t have access to that item. It may belong to another API key."
             case 404: base = "That item wasn’t found. Refresh and try again."
-            case 400, 409, 422:
+            case 409: base = conflictUserMessage(body: body)
+            case 400, 422:
                 if let message = shortAPIMessage(from: body) {
                     base = "Slant couldn’t accept those details. \(message)"
                 } else {
@@ -153,14 +158,59 @@ enum APIError: LocalizedError {
     }
 }
 
+/// The start of the diagnostic text `APIClient.checked` throws for a 2xx whose envelope says `success: false`.
+let slantReportedFailurePrefix = "The API reported a failure (HTTP "
+
+/// Slant's own message from a 2xx `success: false` reply (the text after the diagnostic line), or nil for any other
+/// invalid response. Clipped like other API messages; JSON-looking messages are dropped.
+func slantReportedFailureMessage(_ diagnostic: String) -> String? {
+    guard diagnostic.hasPrefix(slantReportedFailurePrefix),
+          let newline = diagnostic.firstIndex(of: "\n") else { return nil }
+    return shortAPIMessage(from: String(diagnostic[diagnostic.index(after: newline)...]))
+}
+
+/// A 401 isn't always a bad key: Slant also answers 401 for an order or file that belongs to another creator. Only a
+/// missing message, or one about the bearer token, key or authorisation, says to reconnect.
+func unauthorizedUserMessage(body: String) -> String {
+    guard let message = shortAPIMessage(from: body), !unauthorizedMessageIsAboutKey(message) else {
+        return "Slant rejected the saved key. Reconnect in Settings."
+    }
+    return "Slant refused this request. \(message)"
+}
+
+/// True when a 401 message is about the credentials themselves (Slant's live reply: "Bearer token required in
+/// Authorization header").
+func unauthorizedMessageIsAboutKey(_ message: String) -> Bool {
+    let lowered = message.lowercased()
+    return ["token", "key", "authoriz", "authoris", "authent", "credential", "bearer", "sign in", "log in", "login"]
+        .contains { lowered.contains($0) }
+}
+
+/// A 409 to a write leaves its outcome unknown in Studio, so the copy doesn't say the details were refused.
+func conflictUserMessage(body: String) -> String {
+    let advice = "Refresh to see the current state before trying again."
+    guard let message = shortAPIMessage(from: body) else { return "Slant reported a conflict. \(advice)" }
+    let sentence = message.last.map { ".!?".contains($0) } == true ? message : message + "."
+    return "Slant reported a conflict: “\(sentence)” \(advice)"
+}
+
 func rateLimitUserMessage(retryAfter: String?, rateLimitReset: String?, now: Date = Date()) -> String {
-    if let retryAfter, !retryAfter.isEmpty {
-        return "Too many requests. Wait \(retryAfter), then try again."
+    if let seconds = retryAfterSeconds(retryAfter) {
+        return "Too many requests. \(rateLimitResetWaitCopy(secondsFromNow: seconds))"
     }
     if let reset = rateLimitResetDate(rateLimitReset, now: now), reset > now {
         return "Too many requests. \(rateLimitResetWaitCopy(secondsFromNow: reset.timeIntervalSince(now)))"
     }
     return "Too many requests. Wait a moment, then try again."
+}
+
+/// `Retry-After` as a number of seconds. Slant documents no `Retry-After`; an HTTP date or anything else isn't read.
+/// Negative, non-finite and more-than-a-day values give nil, so the caller falls back to the reset header.
+func retryAfterSeconds(_ raw: String?) -> TimeInterval? {
+    guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+          text.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }),
+          let value = Double(text), value.isFinite, value >= 0, value <= rateLimitResetMaxLead else { return nil }
+    return value
 }
 
 func rateLimitResetWaitCopy(secondsFromNow delay: TimeInterval) -> String {
@@ -222,6 +272,108 @@ func uploadTypeParameter(forFileExtension ext: String) -> String? {
     }
 }
 
+/// The Slant API URL for `path` (already checked by `APIClient.request`) and its query, sorted by name. `+` is
+/// percent-encoded as well: URLComponents leaves it as is, and Slant's server reads a bare `+` as a space (a time
+/// zone such as `+10:00` would arrive as ` 10:00`).
+func slantAPIURL(path: String, query: [String: String]) -> URL? {
+    let prefix = path == "/slant/webhook" ? "/v2" : "/v2/api"
+    guard var components = URLComponents(string: "https://slant3dapi.com" + prefix + path) else { return nil }
+    if !query.isEmpty {
+        components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+    }
+    return components.url
+}
+
+/// `User-Agent` for Slant API requests only: `SlantStudio/<version> (macOS <version>)`. A missing or odd bundle
+/// version reads "dev" (as in `swift test` and `swift run`).
+func slantUserAgent(appVersion: String?, os: OperatingSystemVersion) -> String {
+    let trimmed = appVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let allowed = !trimmed.isEmpty && trimmed.count <= 32
+        && trimmed.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || ".-+_".unicodeScalars.contains($0)) }
+    let version = allowed ? trimmed : "dev"
+    let macOS = os.patchVersion > 0
+        ? "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        : "\(os.majorVersion).\(os.minorVersion)"
+    return "SlantStudio/\(version) (macOS \(macOS))"
+}
+
+let slantStudioUserAgent = slantUserAgent(
+    appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+    os: ProcessInfo.processInfo.operatingSystemVersion
+)
+
+/// The step of `APIClient.upload` that was running.
+enum UploadStage: Equatable, Sendable {
+    /// `POST /files/direct-upload`: asks Slant for an upload link. Nothing is stored yet.
+    case preparing
+    /// The PUT to the presigned storage link (not Slant's API, no key).
+    case uploading
+    /// `POST /files/confirm-upload`: Slant adds the file to the account.
+    case confirming
+
+    var progressText: String {
+        switch self {
+        case .preparing: return "Preparing upload…"
+        case .uploading: return "Uploading model…"
+        case .confirming: return "Confirming upload and processing model…"
+        }
+    }
+}
+
+let uploadLinkMissingMessage = "Slant didn’t return a usable upload link, so nothing was uploaded. Try again."
+
+/// After a confirm whose outcome is unknown. Slant doesn't let a standard key delete files, so a blind second upload
+/// could leave a duplicate the seller can't remove.
+let uploadUnconfirmedMessage = "Slant didn’t confirm the upload, so the file may already be in your Slant files. Refresh to check before you upload it again: Studio can’t remove a duplicate from Slant."
+
+/// A confirm reply (2xx) without a file ID: Slant may still have added the file.
+struct UploadConfirmMissingFileID: LocalizedError {
+    var errorDescription: String? { "Slant didn’t return the uploaded file’s ID." }
+}
+
+/// True when an upload failed at a point where Slant may have kept the file: during or after `confirm-upload`, other
+/// than a definite refusal (a 4xx other than 408/409, or a failure before sending). Earlier steps store nothing.
+func uploadOutcomeUnknown(stage: UploadStage?, error: Error) -> Bool {
+    guard stage == .confirming else { return false }
+    return !orderMutationErrorProvesNoEffect(error)
+}
+
+/// Upload failure copy by the step that failed. A storage refusal isn't about the API key, and a local file is never
+/// told to use a secure link.
+func uploadFailureMessage(stage: UploadStage?, error: Error) -> String {
+    if uploadOutcomeUnknown(stage: stage, error: error) { return uploadUnconfirmedMessage }
+    switch stage {
+    case .preparing?:
+        if case .invalidResponse(let message)? = error as? APIError, slantReportedFailureMessage(message) == nil {
+            return uploadLinkMissingMessage
+        }
+        return friendlyAPIMessage(error)
+    case .uploading?:
+        if case .http(let status, _, _, _)? = error as? APIError {
+            if status == 403 {
+                return "Slant’s storage refused the upload link, or it had expired, so nothing was uploaded. Upload again to get a new link."
+            }
+            return "Slant’s storage didn’t accept the file (HTTP \(status)), so nothing was uploaded. Upload again to get a new link."
+        }
+        if error is URLError {
+            return "The upload was interrupted, so nothing was added to Slant. Check your connection, then upload again."
+        }
+        return friendlyAPIMessage(error)
+    case .confirming?, nil:
+        return friendlyAPIMessage(error)
+    }
+}
+
+/// Slant documents uploads up to 250 MB; downloads of a Slant file allow a margin above that.
+let slantDownloadMaxBytes: Int64 = 300 * 1024 * 1024
+let slantDownloadTooLargeMessage = "This model is larger than 300 MB, so Studio didn’t download it."
+
+/// False when `Content-Length` already says the download is over the cap; an unknown length (-1) is checked while reading.
+func slantDownloadLengthAllowed(_ expected: Int64, maxBytes: Int64 = slantDownloadMaxBytes) -> Bool {
+    expected <= maxBytes
+}
+
 private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
@@ -260,17 +412,12 @@ struct APIClient {
               !decodedPath.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else {
             throw APIError.invalidRequest("Use an API path beginning with / and supply query parameters separately.")
         }
-        let prefix = path == "/slant/webhook" ? "/v2" : "/v2/api"
-        guard var components = URLComponents(string: "https://slant3dapi.com" + prefix + path) else {
-            throw APIError.invalidRequest("Invalid API path.")
-        }
-        if !query.isEmpty {
-            components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
-        }
-        guard let url = components.url else { throw APIError.invalidRequest("Invalid API URL.") }
+        guard let url = slantAPIURL(path: path, query: query) else { throw APIError.invalidRequest("Invalid API URL.") }
         var request = URLRequest(url: url)
         request.httpMethod = method.uppercased()
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        // Only Slant API requests name the app; presigned storage PUTs and downloads keep URLSession's default.
+        request.setValue(slantStudioUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(path == "/files/openScad" ? "application/sla, application/json" : "application/json", forHTTPHeaderField: "Accept")
         if let body {
             guard JSONSerialization.isValidJSONObject(body) else { throw APIError.invalidRequest("The request body must be a JSON object or array.") }
@@ -288,15 +435,17 @@ struct APIClient {
         return result
     }
 
+    /// The three requests of an upload. `stage` is called synchronously before each one is sent, so a caller can word a
+    /// failure by the step that failed (`uploadFailureMessage`); the errors thrown are unchanged.
     func upload(file: URL, name: String, platformId: String, ownerId: String,
-                stage: @escaping @Sendable (String) -> Void) async throws -> APIResponse {
+                stage: @escaping @Sendable (UploadStage) -> Void) async throws -> APIResponse {
         guard file.isFileURL, FileManager.default.isReadableFile(atPath: file.path) else {
             throw APIError.invalidRequest("Select a readable local model file.")
         }
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !platformId.isEmpty else {
             throw APIError.invalidRequest("Choose a model name and a platform first.")
         }
-        stage("Preparing upload…")
+        stage(.preparing)
         var body: [String: Any] = ["name": name, "platformId": platformId]
         if !ownerId.isEmpty { body["ownerId"] = ownerId }
         if let type = uploadTypeParameter(forFileExtension: file.pathExtension) {
@@ -308,33 +457,62 @@ struct APIClient {
               let url = URL(string: urlString), url.scheme?.lowercased() == "https",
               let host = url.host, !host.isEmpty, url.user == nil, url.password == nil, url.fragment == nil,
               let placeholder = payload["filePlaceholder"] as? [String: Any] else {
-            throw APIError.invalidResponse("Slant didn’t accept the upload. Try again with a secure HTTPS link.")
+            throw APIError.invalidResponse(uploadLinkMissingMessage)
         }
         try Task.checkCancellation()
-        stage("Uploading model…")
+        stage(.uploading)
         var put = URLRequest(url: url)
         put.httpMethod = "PUT"
         put.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let (data, response) = try await session.upload(for: put, fromFile: file)
         _ = try checked(data: data, response: response)
         try Task.checkCancellation()
-        stage("Confirming upload and processing model…")
+        stage(.confirming)
         return try await request("POST", path: "/files/confirm-upload", body: ["filePlaceholder": placeholder])
     }
 
-    func downloadModel(from url: URL) async throws -> URL {
+    /// Downloads a Slant file's model to a temporary file, at most `slantDownloadMaxBytes` (checked against
+    /// `Content-Length` and while reading). No Authorization header is sent and redirects are refused.
+    func downloadModel(from url: URL, maxBytes: Int64 = slantDownloadMaxBytes) async throws -> URL {
         guard url.scheme?.lowercased() == "https", let host = url.host, !host.isEmpty,
               url.user == nil, url.password == nil, url.fragment == nil else {
             throw APIError.invalidResponse("Slant didn’t return a secure HTTPS download link. Try again.")
         }
-        let (temporaryURL, response) = try await session.download(from: url)
-        do {
-            _ = try checked(data: Data(), response: response)
-            return temporaryURL
-        } catch {
-            try? FileManager.default.removeItem(at: temporaryURL)
-            throw error
+        let (bytes, response) = try await session.bytes(from: url)
+        do { _ = try checked(data: Data(), response: response) } catch { bytes.task.cancel(); throw error }
+        guard slantDownloadLengthAllowed(response.expectedContentLength, maxBytes: maxBytes) else {
+            bytes.task.cancel()
+            throw StudioError(slantDownloadTooLargeMessage)
         }
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudio-Download-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil),
+              let handle = try? FileHandle(forWritingTo: destination) else {
+            bytes.task.cancel()
+            throw StudioError("Studio couldn’t save the download to a temporary file.")
+        }
+        var finished = false
+        defer {
+            try? handle.close()
+            if !finished { try? FileManager.default.removeItem(at: destination) }
+        }
+        var buffer = Data()
+        buffer.reserveCapacity(1 << 20)
+        var written: Int64 = 0
+        for try await byte in bytes {
+            buffer.append(byte)
+            if buffer.count >= 1 << 20 {
+                written += Int64(buffer.count)
+                guard written <= maxBytes else { bytes.task.cancel(); throw StudioError(slantDownloadTooLargeMessage) }
+                try handle.write(contentsOf: buffer)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+        written += Int64(buffer.count)
+        guard written <= maxBytes else { throw StudioError(slantDownloadTooLargeMessage) }
+        guard written > 0 else { throw StudioError("Slant sent an empty model file.") }
+        try handle.write(contentsOf: buffer)
+        finished = true
+        return destination
     }
 
     private func checked(data: Data, response: URLResponse) throws -> APIResponse {
@@ -354,7 +532,7 @@ struct APIClient {
         }
         if let envelope = result.json as? [String: Any], let success = envelope["success"] as? NSNumber,
            CFGetTypeID(success) == CFBooleanGetTypeID(), !success.boolValue {
-            throw APIError.invalidResponse("The API reported a failure (HTTP \(response.statusCode)):\n\(result.pretty)")
+            throw APIError.invalidResponse("\(slantReportedFailurePrefix)\(response.statusCode)):\n\(result.pretty)")
         }
         return result
     }

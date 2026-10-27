@@ -529,11 +529,14 @@ struct ModelsView: View {
 
     private var nextStepBlock: some View {
         let step = currentNextStep
-        let uploadFailed = step == .needsUpload && (store.selectedLocal.map { uploadFailedIDs.contains($0.id) && $0.remoteID == nil } ?? false)
+        let uploadUnconfirmed = step == .needsUpload
+            && (store.selectedLocal.map { store.unconfirmedUploadModelIDs.contains($0.id) && $0.remoteID == nil } ?? false)
+        let uploadFailed = uploadUnconfirmed
+            || (step == .needsUpload && (store.selectedLocal.map { uploadFailedIDs.contains($0.id) && $0.remoteID == nil } ?? false))
         return HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(selectedModelName).font(.headline).lineLimit(1)
-                Text(actionStatus(step, uploadFailed: uploadFailed))
+                Text(actionStatus(step, uploadFailed: uploadFailed, unconfirmed: uploadUnconfirmed))
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if step == .needsUpload, let local = store.selectedLocal {
@@ -544,7 +547,14 @@ struct ModelsView: View {
             Spacer(minLength: 8)
             // While busy, the status line says what is running and the window toolbar shows the only spinner.
             if !store.busy {
-                if uploadFailed {
+                if uploadUnconfirmed, let local = store.selectedLocal {
+                    // Slant may already hold the file and a standard key can't delete it: check first, then ask.
+                    Button("Upload Again…") { pendingReuploadID = local.id }
+                        .disabled(!store.hasKey || store.platformID.isEmpty)
+                    Button("Refresh") { Task { await store.refresh() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!store.hasKey)
+                } else if uploadFailed {
                     Button("Upload Again") { startUpload() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!store.hasKey || store.platformID.isEmpty)
@@ -568,7 +578,10 @@ struct ModelsView: View {
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: { id in
-            Text(reuploadConfirmationMessage(name: store.localModels.first { $0.id == id }?.name ?? "This model"))
+            let name = store.localModels.first { $0.id == id }?.name ?? "This model"
+            Text(store.unconfirmedUploadModelIDs.contains(id)
+                 ? unconfirmedReuploadConfirmationMessage(name: name)
+                 : reuploadConfirmationMessage(name: name))
         }
     }
 
@@ -660,8 +673,9 @@ struct ModelsView: View {
         }
     }
 
-    private func actionStatus(_ step: ModelsNextStep, uploadFailed: Bool) -> String {
+    private func actionStatus(_ step: ModelsNextStep, uploadFailed: Bool, unconfirmed: Bool) -> String {
         if store.busy { return store.progress.isEmpty ? "Working…" : store.progress }
+        if unconfirmed { return uploadUnconfirmedStatusText }
         if uploadFailed { return "Upload didn’t finish. Your local model is still available." }
         if step == .needsPlatform { return platformSetupStatus(currentPlatformSetupAction) }
         if step == .needsEstimate || step == .estimateStale || step == .readyForDraft {
@@ -901,8 +915,16 @@ struct ModelsView: View {
                     if let support = supportRequiredCaption(file) {
                         Text(support).font(.callout).foregroundStyle(.secondary)
                     }
-                    Text("Analysing… Metrics appear once Slant finishes processing.")
-                        .font(.callout).foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("Analysing… Metrics appear once Slant finishes processing.")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        // One read-only GET /files/{id} per press; nothing polls by itself.
+                        Button("Check Again") { Task { await store.refreshFile(id: file.id) } }
+                            .disabled(store.busy || !store.hasKey)
+                            .help("Ask Slant whether this model’s analysis has finished")
+                    }
                 } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 125))], alignment: .leading, spacing: 16) {
                         ForEach(entries, id: \.0) { entry in
@@ -1125,18 +1147,28 @@ struct ModelsView: View {
                 try FileManager.default.moveItem(at: temp, to: path)
                 moved = true
                 defer { try? FileManager.default.removeItem(at: path) }
-                store.importModel(path, origin: .downloadedFromSlant)
-                if let localID = store.selectedLocalID, let index = store.localModels.firstIndex(where: { $0.id == localID }) {
-                    store.localModels[index].remoteID = id
-                    store.localModels[index].name = (file["name"] as? String).flatMap {
-                        $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
-                    } ?? "Untitled model"
-                    store.fileID = id
-                    store.saveModels()
+                // Link only the model this download added, never whatever happens to be selected afterwards.
+                guard let importedID = store.importModelReturningID(path, origin: .downloadedFromSlant),
+                      let index = store.localModels.firstIndex(where: { $0.id == importedID }) else {
+                    throw StudioError(store.error ?? "Studio couldn’t add the downloaded model to your library.")
                 }
+                store.localModels[index].remoteID = id
+                store.localModels[index].name = (file["name"] as? String).flatMap {
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+                } ?? "Untitled model"
+                if store.selectedLocalID == importedID { store.fileID = id }
+                store.saveModels()
             }
         }
     }
+}
+
+/// The next-action bar after an upload whose confirm wasn't answered clearly.
+let uploadUnconfirmedStatusText = "Slant didn’t confirm the upload, so the file may already be in your Slant files. Refresh to check before uploading again."
+
+/// Upload Again… after an unconfirmed upload: a second upload may duplicate a file Studio can't remove from Slant.
+func unconfirmedReuploadConfirmationMessage(name: String) -> String {
+    "Slant may already have “\(name)” from the upload it didn’t confirm. Uploading again could add a second file, and Studio can’t remove files from Slant. Refresh first to check your Slant files."
 }
 
 func printQuantity(_ text: String) -> Int? {
@@ -1631,8 +1663,7 @@ func filamentPickerLabel(_ record: Record) -> String {
 func componentFactRows(_ record: Record) -> [(String, String)] {
     var rows: [(String, String)] = []
     if metricDisplayValue(record.values["price"]) != nil {
-        let unit = record.string("priceUnit")
-        rows.append(("Price", unit.isEmpty ? money(record.values["price"]) : "\(money(record.values["price"])) / \(unit)"))
+        rows.append(("Price", catalogPriceText(record.values["price"], priceUnit: record.string("priceUnit"))))
     }
     let dimensions = record.string("dimensions")
     if !dimensions.isEmpty {
