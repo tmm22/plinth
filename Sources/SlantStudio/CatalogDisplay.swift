@@ -140,3 +140,44 @@ func catalogRecordTitle(_ record: Record, kind: Destination) -> String {
     let name = displayName(for: record, fallback: catalogDisplayFallback(kind))
     return kind == .materials ? materialDisplayName(name) : name
 }
+
+/// Catalog's cards in the order of their titles (Finder's ordering, so "PLA 2" comes before "PLA 10"); equal titles
+/// keep Slant's order. Display only: the Material picker keeps its own grouping.
+func catalogRecordsSortedByTitle(_ records: [Record], kind: Destination) -> [Record] {
+    records.enumerated()
+        .map { (offset: $0.offset, record: $0.element, title: catalogRecordTitle($0.element, kind: kind)) }
+        .sorted { a, b in
+            let order = a.title.localizedStandardCompare(b.title)
+            return order == .orderedSame ? a.offset < b.offset : order == .orderedAscending
+        }
+        .map(\.record)
+}
+
+/// A material's colour for display: Slant sends it in lower case ("black", "light grey"), shown as "Black" and
+/// "Light Grey"; all-capital text goes through `materialDisplayName`, and mixed case is kept as sent. Display only.
+func catalogColourDisplay(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.contains(where: \.isUppercase) { return materialDisplayName(trimmed) }
+    return trimmed.split(separator: " ", omittingEmptySubsequences: false)
+        .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+        .joined(separator: " ")
+}
+
+/// The caption beside a material's Use for Selected Model button: which model it applies to, or why it's unavailable.
+func catalogMaterialUseCaption(selectedModelName: String?) -> String {
+    guard let selectedModelName else { return "Select a model in Models to use this material for it." }
+    return "Sets the material for “\(selectedModelName)” and returns to Models."
+}
+
+/// Requests left this minute below which Catalog doesn't load Components or Stationery by itself.
+let catalogLoadOnShowReserve = 5
+
+/// True when Components or Stationery should load by itself when first shown, as Materials do: a single read-only
+/// GET, tried once a session per kind, only with a key, while nothing else runs and with requests to spare. The Load
+/// button stays for anything this skips.
+func catalogShouldLoadOnShow(_ kind: Destination, loaded: Bool, hasKey: Bool, busy: Bool, alreadyTried: Bool,
+                             rateLimitRemaining: Int?) -> Bool {
+    guard kind == .components || kind == .stationery, !loaded, hasKey, !busy, !alreadyTried else { return false }
+    if let rateLimitRemaining, rateLimitRemaining <= catalogLoadOnShowReserve { return false }
+    return true
+}

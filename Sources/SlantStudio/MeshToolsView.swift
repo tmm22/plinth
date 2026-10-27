@@ -43,11 +43,17 @@ let meshToolsTempFolderPrefix = "SlantStudio-MeshTools-"
 /// "Name (repaired)": slashes and colons become hyphens, an empty name becomes "Model", and long names are shortened
 /// so the file name stays within 255 bytes.
 func meshToolCopyName(_ name: String, kind: MeshToolKind) -> String {
+    studioCopyName(name, suffix: kind.copySuffix)
+}
+
+/// A new geometry copy's name in the library's parenthesised style, "Name (auto-improved)", made safe for a file name
+/// the same way as `meshToolCopyName`. Existing copies keep their names.
+func studioCopyName(_ name: String, suffix: String) -> String {
     var base = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
         .trimmingCharacters(in: .whitespacesAndNewlines)
     if base.isEmpty || base.hasPrefix(".") { base = "Model" + (base.isEmpty ? "" : " " + base) }
     while base.utf8.count > 200 { base.removeLast() }
-    return "\(base) (\(kind.copySuffix))"
+    return "\(base) (\(suffix))"
 }
 
 /// The smallest target the field accepts; fewer triangles would lose almost any real shape.
@@ -74,6 +80,10 @@ func meshToolsStatusLine(triangles: Int, report: MeshHealthReport) -> String {
     let check = meshHealthIsSound(report) ? "closed and consistent" : meshHealthSummary(report).title.lowercased()
     return "\(triangles.formatted()) \(triangles == 1 ? "triangle" : "triangles") · \(check)"
 }
+
+/// Under Repair & Save Copy when the mesh already passes the check: Repair can still tidy what the check doesn't
+/// count, but a run that finds nothing saves no copy.
+let meshRepairSoundMeshNote = "This mesh already passes the check. Repair saves a copy only if it finds something the check doesn’t count, such as tiny loose fragments."
 
 /// The card's one-line explanation of why simplifying matters.
 let meshSimplifyExplanation = "Reinforce and Auto-improve accept up to \(meshToolsReinforceTriangleLimit.formatted()) triangles, so simplify a detailed copy first."
@@ -178,6 +188,9 @@ struct MeshToolsCard: View {
 
         Text("Repair joins nearby vertices, removes zero-area, repeated and loose triangles, turns faces the right way and closes small holes.")
             .font(.callout).foregroundStyle(.secondary)
+        if meshHealthIsSound(report) {
+            Text(meshRepairSoundMeshNote).font(.caption).foregroundStyle(.secondary)
+        }
         Button(run.working && runningRepair ? "Repairing…" : "Repair & Save Copy") { start(.repair, mesh: mesh) }
             .disabled(run.working || store.busy)
 

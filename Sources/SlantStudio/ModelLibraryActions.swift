@@ -406,7 +406,7 @@ struct RenameModelSheet: View {
     var body: some View {
         let problem = modelNameProblem(name)
         VStack(alignment: .leading, spacing: 14) {
-            Text("Rename Model").font(.title3.weight(.semibold))
+            Text("Rename model").font(.title3.weight(.semibold))
             TextField("Model name", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Model name")

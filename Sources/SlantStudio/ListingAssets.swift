@@ -15,8 +15,10 @@ let listingImagePixelSize = 2000
 /// models stay far below this; a mesh of huge overlapping triangles is refused for that view instead of taking minutes.
 let listingImageRasterBudget = 800_000_000
 
+/// In the order the sheet lists and exports them: front first, going round the model, then the view from above.
+/// Each case's camera and file name don't depend on this order.
 enum ListingImageAngle: String, CaseIterable, Identifiable, Sendable {
-    case threeQuarter, front, side, back, top, rearThreeQuarter
+    case front, threeQuarter, side, back, rearThreeQuarter, top
 
     var id: String { rawValue }
 
@@ -499,9 +501,9 @@ struct ListingImagesSheet: View {
                                     Text(materialDisplayName(displayName(for: row.record, fallback: "Untitled material"))).tag(row.record.id)
                                 }
                             }
+                            // VoiceOver reads the picker's own (hidden) label; an extra accessibilityLabel was read as well.
                             .labelsHidden()
                             .frame(maxWidth: 240)
-                            .accessibilityLabel("Colour")
                         }
                     }
                     Picker("Background", selection: $background) {
@@ -528,7 +530,8 @@ struct ListingImagesSheet: View {
                     Button("Stop") { job.stop() }
                         .keyboardShortcut(.cancelAction)
                 } else {
-                    Button(job.summary == nil ? "Cancel" : "Done") { dismiss() }
+                    // Close once images are saved: there's nothing left to abandon.
+                    Button(job.summary == nil ? "Cancel" : "Close") { dismiss() }
                         .keyboardShortcut(.cancelAction)
                 }
                 Spacer()

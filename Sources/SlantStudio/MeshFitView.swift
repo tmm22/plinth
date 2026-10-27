@@ -6,12 +6,22 @@ import simd
 
 enum MeshFitTool: String, Sendable {
     case scale, flatBase, plinth, fitCoupon
+    /// The button's title, in Title Case (the buttons add "…").
     var title: String {
         switch self {
         case .scale: return "Scale to Size"
         case .flatBase: return "Add Flat Base"
         case .plinth: return "Add Plinth"
         case .fitCoupon: return "Make Fit Coupon"
+        }
+    }
+    /// The sheet's title: the button's, in sentence case.
+    var sheetTitle: String {
+        switch self {
+        case .scale: return "Scale to size"
+        case .flatBase: return "Add flat base"
+        case .plinth: return "Add plinth"
+        case .fitCoupon: return "Make fit coupon"
         }
     }
 }
@@ -294,9 +304,15 @@ struct MeshFitSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(request.tool.title).font(.title2.weight(.bold))
+                Text(request.tool.sheetTitle).font(.title2.weight(.bold))
                 Text("\(model?.name ?? "This model") · now \(meshFitSizeLabel(extent))")
                     .font(.callout).foregroundStyle(.secondary)
+                if request.tool == .fitCoupon {
+                    // Above the form, so what Studio checks (and doesn't) is read before the piece is saved.
+                    Text(fitCouponCaption)
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(24)
             Divider()
@@ -331,7 +347,8 @@ struct MeshFitSheet: View {
             }
             .padding(20)
         }
-        .frame(minWidth: 480, idealWidth: 520, minHeight: 420)
+        // The coupon sheet holds a preview, so it opens taller; every sheet stays within the main window's height.
+        .frame(minWidth: 480, idealWidth: 520, minHeight: 420, idealHeight: request.tool == .fitCoupon ? 640 : nil)
         .onDisappear { worker?.cancel() }
         .task {
             guard request.tool == .fitCoupon else { return }
@@ -554,7 +571,7 @@ struct MeshFitSheet: View {
                 }
                 if let note = couponChoiceNote { Text(note) }
                 if let ready = couponReady, let tall = fitCouponTallPieceNote(heightMM: ready.sizeMM.z) { Text(tall) }
-                Text(fitCouponCaption)
+                // `fitCouponCaption` is in the sheet's header, always in view.
                 if let model, !model.derivesFromPrintReadyCopy, let copy = printReadyCopy(of: model, in: store.localModels) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(fitCouponPrintReadyHint)

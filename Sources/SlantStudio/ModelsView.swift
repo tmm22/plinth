@@ -48,6 +48,9 @@ func modelsNextStep(
 
 // MARK: - ModelsView
 
+/// The inspector's content, scrolled back to its top when the selection changes.
+private let inspectorTopID = "inspector-top"
+
 struct ModelsView: View {
     @EnvironmentObject var store: StudioStore
     @State private var targeted = false
@@ -88,14 +91,14 @@ struct ModelsView: View {
                     // Opens the replica sheet (ReplicaGeneratorView.swift); nothing is sent until Generate Replica.
                     Button("Generate a Replica from an Image…") { store.showReplicaGenerator = true }
                 } label: {
-                    Label("Import Model", systemImage: "square.and.arrow.down")
+                    Label("Import Model…", systemImage: "square.and.arrow.down")
                         .labelStyle(.titleAndIcon)
                 } primaryAction: {
                     store.importModel()
                 }
                 .menuStyle(.button)
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Import Model")
+                .accessibilityLabel("Import Model…")
             }
         }
         .confirmationDialog(
@@ -183,6 +186,8 @@ struct ModelsView: View {
                     }
                     .padding(.vertical, 3)
                     .tag(LibrarySelection.local(model.id))
+                    // One element, so VoiceOver reads the row once rather than once per text in it.
+                    .accessibilityElement(children: .combine)
                     .accessibilityLabel("\(nameWithDetail(model.name, nameDetails[model.id])), \(model.remoteID == nil ? "Ready to upload" : "Uploaded")")
                     .contextMenu { localModelMenuItems(model) }
                     // Drag out to Finder or another app: a named copy of the file, never the library file (ModelDragExport.swift).
@@ -223,6 +228,7 @@ struct ModelsView: View {
                     .opacity(hidden ? 0.6 : 1)
                     .padding(.vertical, 3)
                     .tag(LibrarySelection.cloud(row.record.id))
+                    .accessibilityElement(children: .combine)
                     .accessibilityLabel(linked == nil
                                         ? nameWithDetail(cloudModelDisplayName(row.record), cloudNameDetails[row.record.id])
                                         : "\(nameWithDetail(cloudModelDisplayName(row.record), cloudNameDetails[row.record.id])), also on this Mac")
@@ -310,6 +316,7 @@ struct ModelsView: View {
                     }
                 }
                 .padding(StudioMetrics.pagePadding)
+                .id(inspectorTopID)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if showsModelsNextStepBar(hasSelection: hasSelection, step: currentNextStep) {
@@ -322,6 +329,10 @@ struct ModelsView: View {
             }
             .onChange(of: configurationRequest) { _, _ in
                 withAnimation { proxy.scrollTo("print-configuration", anchor: .top) }
+            }
+            // Each model opens at its title, not at the previous model's scroll position.
+            .onChange(of: librarySelection(selectedLocalID: store.selectedLocalID, fileID: store.fileID)) { _, _ in
+                proxy.scrollTo(inspectorTopID, anchor: .top)
             }
             .onReceive(NotificationCenter.default.publisher(for: .improveForPrintingOpenReinforce)) { note in
                 // Review for Printing's "Open Reinforce" link: the card expands itself (ReinforcementView.swift).
@@ -534,7 +545,7 @@ struct ModelsView: View {
             // While busy, the status line says what is running and the window toolbar shows the only spinner.
             if !store.busy {
                 if uploadFailed {
-                    Button("Try Upload Again") { startUpload() }
+                    Button("Upload Again") { startUpload() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!store.hasKey || store.platformID.isEmpty)
                 } else {
@@ -553,7 +564,9 @@ struct ModelsView: View {
                 startUpload()
             }
             .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
+            // Return cancels: no keyboard shortcut may upload (AGENTS.md), so uploading again takes a click.
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: { id in
             Text(reuploadConfirmationMessage(name: store.localModels.first { $0.id == id }?.name ?? "This model"))
         }
@@ -745,9 +758,9 @@ struct ModelsView: View {
                             }
                         }
                     }
+                    // VoiceOver reads the picker's own (hidden) label; an extra accessibilityLabel was read as well.
                     .labelsHidden()
                     .frame(maxWidth: 280)
-                    .accessibilityLabel("Material")
                 }
                 if store.filaments.isEmpty {
                     HStack {
@@ -1290,6 +1303,7 @@ struct ImportFromURLSheet: View {
                 TextField("Name", text: $name, prompt: Text("Model name in Slant"))
                 if let validation {
                     Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .formStyle(.grouped)
@@ -1307,7 +1321,7 @@ struct ImportFromURLSheet: View {
             }
             .padding(20)
         }
-        .frame(width: 480, height: 350)
+        .frame(width: 480, height: validation == nil ? 350 : 420)
     }
 
     private func importModel() {
@@ -1319,6 +1333,9 @@ struct ImportFromURLSheet: View {
         Task {
             if await store.importModelFromURL(url, name: name) {
                 dismiss()
+            } else if let message = takeStoreErrorForSettings(store) {
+                // Never retried. The window's alert would wait behind this sheet, so the reason is shown here instead.
+                validation = message
             }
         }
     }
@@ -1711,6 +1728,11 @@ private extension String {
 
 // MARK: - CatalogView
 
+/// The catalog kinds Catalog has already tried to load by itself this session. Memory only.
+@MainActor enum CatalogLoadOnShow {
+    static var tried: Set<Destination> = []
+}
+
 /// Materials, components and stationery. Platforms are managed in Settings › Account (PlatformsSettingsView.swift).
 struct CatalogView: View {
     @EnvironmentObject var store: StudioStore
@@ -1731,7 +1753,8 @@ struct CatalogView: View {
     private var filtered: [Record] {
         let typed = kind == .materials ? filamentsMatching(records, type: materialType) : records
         let categories = kind == .components ? store.componentCategories : []
-        return typed.filter { catalogRecordMatches($0, search: search, categories: categories) }
+        return catalogRecordsSortedByTitle(typed.filter { catalogRecordMatches($0, search: search, categories: categories) },
+                                           kind: kind)
     }
     private var untitledFallback: String { catalogDisplayFallback(kind) }
     private var catalogLoaded: Bool { store.loadedCatalogs.contains(kind) }
@@ -1762,14 +1785,7 @@ struct CatalogView: View {
             }
             .environmentObject(store)
         }
-        .onAppear {
-            if kind == .components {
-                Task { await store.loadComponentCategories() }
-            }
-            if kind == .materials {
-                Task { await store.refreshFilamentsIfStale() }
-            }
-        }
+        .onAppear { loadOnShow(kind) }
         .onChange(of: store.filaments.count) { _, _ in
             if let materialType, !filamentTypes(in: store.filaments).contains(materialType) {
                 self.materialType = nil
@@ -1778,9 +1794,23 @@ struct CatalogView: View {
         .onChange(of: kind) { _, new in
             selected = nil
             search = ""
-            if new == .components {
-                Task { await store.loadComponentCategories() }
-            }
+            loadOnShow(new)
+        }
+    }
+
+    /// What each kind loads when shown: component categories each time, materials when stale, and Components or
+    /// Stationery once a session if they haven't loaded (`catalogShouldLoadOnShow`). All are read-only GETs, one at a
+    /// time; a failure shows the usual alert, and the Load button stays for a later try.
+    private func loadOnShow(_ kind: Destination) {
+        Task {
+            if kind == .components { await store.loadComponentCategories() }
+            if kind == .materials { await store.refreshFilamentsIfStale() }
+            guard catalogShouldLoadOnShow(kind, loaded: store.loadedCatalogs.contains(kind), hasKey: store.hasKey,
+                                          busy: store.busy || store.error != nil,
+                                          alreadyTried: CatalogLoadOnShow.tried.contains(kind),
+                                          rateLimitRemaining: store.rateLimit?.remaining) else { return }
+            CatalogLoadOnShow.tried.insert(kind)
+            await store.loadCatalog(kind)
         }
     }
 
@@ -1938,7 +1968,7 @@ struct CatalogView: View {
     private func catalogCardSubtitle(_ record: Record, category: String?) -> String {
         switch kind {
         case .materials:
-            return [record.string("profile"), record.string("color").capitalized]
+            return [record.string("profile"), catalogColourDisplay(record.string("color"))]
                 .filter { !$0.isEmpty }.joined(separator: " · ")
         case .components:
             return category ?? record.string("dimensions").nilIfEmpty.map { "\($0) mm" } ?? "Component"
@@ -1973,55 +2003,70 @@ struct CatalogDetailSheet: View {
 
     private var untitledFallback: String { catalogDisplayFallback(kind) }
 
+    /// The model the material would be used for: the selected library or uploaded model, if any.
+    private var selectedModelName: String? {
+        store.selectedLocal?.name ?? store.files.first { $0.id == store.fileID }.map(cloudModelDisplayName)
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack {
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
                     Text(catalogRecordTitle(record, kind: kind)).font(.title2.weight(.bold))
-                    Spacer()
-                    Button("Done") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .accessibilityLabel("Done")
+                        .fixedSize(horizontal: false, vertical: true)
+                    catalogReadableFields(record, kind: kind, categories: store.componentCategories)
+                    DisclosureGroup("Technical details") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Button("Copy ID") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(record.id, forType: .string)
+                            }
+                            .accessibilityLabel("Copy ID")
+                            JSONView(text: prettyJSON(hidingSecrets(record.values))).frame(height: 220)
+                        }
+                    }.studioDisclosureStyle()
                 }
-                catalogReadableFields(record, kind: kind, categories: store.componentCategories)
-                DisclosureGroup("Technical details") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Button("Copy ID") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(record.id, forType: .string)
-                        }
-                        .accessibilityLabel("Copy ID")
-                        JSONView(text: prettyJSON(hidingSecrets(record.values))).frame(height: 220)
+                .padding(28)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            HStack(spacing: 12) {
+                if kind == .materials {
+                    Text(catalogMaterialUseCaption(selectedModelName: selectedModelName))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                // Information only, so Close; Escape closes too.
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                if kind == .materials {
+                    // Local only: sets the print configuration's material.
+                    Button("Use for Selected Model") {
+                        store.filamentID = record.id
+                        dismiss()
+                        store.destination = .models
                     }
-                }.studioDisclosureStyle()
-                HStack {
-                    Spacer()
-                    if kind == .materials {
-                        Button("Use This Material") {
-                            store.filamentID = record.id
-                            dismiss()
-                            store.destination = .models
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(filamentAvailability(record) == false || store.busy)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(filamentAvailability(record) == false || store.busy || selectedModelName == nil)
+                }
+                if kind == .components || kind == .stationery {
+                    // Opens the composer for review only; nothing is created from here.
+                    Button("New Order Draft with This Item…") {
+                        onOrderDraft(OrderLine(
+                            type: kind == .components ? "COMPONENT" : "STATIONERY",
+                            reference: record.id
+                        ))
+                        dismiss()
                     }
-                    if kind == .components || kind == .stationery {
-                        Button("New Order Draft with This Item") {
-                            onOrderDraft(OrderLine(
-                                type: kind == .components ? "COMPONENT" : "STATIONERY",
-                                reference: record.id
-                            ))
-                            dismiss()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(store.busy)
-                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.busy)
                 }
             }
-            .padding(28)
+            .padding(20)
         }
-        .frame(width: 640, height: 520)
+        .frame(minWidth: 520, idealWidth: 600, maxWidth: 760, minHeight: 320, idealHeight: 440, maxHeight: 640)
     }
 }
 
@@ -2030,7 +2075,7 @@ func catalogReadableFields(_ record: Record, kind: Destination, categories: [Rec
     if kind == .materials {
         HStack {
             Circle().fill(Color(hex: record.string("hexValue"))).frame(width: 28, height: 28)
-            Text(record.string("color", "profile")).foregroundStyle(.secondary)
+            Text(catalogColourDisplay(record.string("color", "profile"))).foregroundStyle(.secondary)
         }
         if let stock = filamentAvailabilityLabel(record) {
             Text(stock).foregroundStyle(.orange)

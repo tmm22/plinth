@@ -267,7 +267,8 @@ private struct PersonalisationForm: View {
             if generating, engine == .local {
                 Button("Stop") { job?.cancel() }
             }
-            Button("Done") { job?.cancel(); store.personalisationTemplate = nil }
+            // Close: each generated model is already in the library, and nothing else is kept.
+            Button("Close") { job?.cancel(); store.personalisationTemplate = nil }
                 .keyboardShortcut(.cancelAction)
                 .disabled(generating && engine == .slant)
             // No Return shortcut: a Slant generation uses up its hourly allowance, so it always takes a click.

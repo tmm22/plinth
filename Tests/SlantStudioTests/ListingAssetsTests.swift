@@ -78,7 +78,9 @@ final class ListingAssetsTests: XCTestCase {
     }
 
     func testDefaultViewsAndFileNames() {
-        XCTAssertEqual(ListingImageAngle.allCases.filter(\.selectedByDefault), [.threeQuarter, .front, .side, .top])
+        // Listed front first, round the model, then from above.
+        XCTAssertEqual(ListingImageAngle.allCases, [.front, .threeQuarter, .side, .back, .rearThreeQuarter, .top])
+        XCTAssertEqual(ListingImageAngle.allCases.filter(\.selectedByDefault), [.front, .threeQuarter, .side, .top])
         XCTAssertEqual(listingImageFileName(modelName: "Desk Tidy", angle: .front), "Desk Tidy – front.png")
         XCTAssertEqual(listingImageFileName(modelName: "Desk Tidy", angle: .rearThreeQuarter, attempt: 3),
                        "Desk Tidy – rear three-quarter 3.png")
