@@ -128,7 +128,7 @@ private struct MainWindowAndHelpCommands: Commands {
                 guard !appIsPresentingModalUI() else { return }
                 StudioHelpWindow.show()
             }
-            .keyboardShortcut("?", modifiers: .command)
+            // No ⌘? here: macOS keeps it for the Help menu's search field.
             .disabled(modalUIShown)
             // Developer material: shown only with Settings › Advanced › Show developer tools.
             if showDeveloperTools {

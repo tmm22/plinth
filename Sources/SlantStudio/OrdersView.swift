@@ -289,7 +289,8 @@ struct OrderComposerView: View {
             .padding(16)
             .background(.bar)
         }
-        .interactiveDismissDisabled(hasUnsavedInput)
+        // Also while a popover is open, so an Escape meant for Paste Address or Add Saved Product never closes the sheet.
+        .interactiveDismissDisabled(hasUnsavedInput || composerPopoverShown)
         // An Escape that reaches the sheet some other way (no text field focused, as in a duplicate's address
         // summary) takes the same path as Cancel: the popover guard and the discard check.
         // Like Cancel, it does nothing while a request runs.
@@ -1866,6 +1867,7 @@ struct OrderActionConfirmSheet: View {
                               ? "Close this and review the next draft in the list. Nothing is paid until you press Pay in that review."
                               : "Leave this draft unpaid and review the next one in the list. Nothing is paid until you press Pay in that review.")
                     Text(next.caption).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .layoutPriority(-1)
                 }
                 Spacer()
                 if writeSucceeded {
@@ -1886,6 +1888,7 @@ struct OrderActionConfirmSheet: View {
                         Button("Pay & Send to Production") { confirmAction() }
                             .buttonStyle(.borderedProminent)
                             .disabled(!finalActionEnabled)
+                            .fixedSize()
                     }
                 } else {
                     VStack(alignment: .trailing, spacing: 6) {

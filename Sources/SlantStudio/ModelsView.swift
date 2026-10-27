@@ -1197,7 +1197,7 @@ struct ImproveForPrintingSection: View {
                 MeshFitCard(model: model, loaded: loaded)
             }
             PrintOrientationCard(model: model)
-            AutoImproveCard(model: model)
+            AutoImproveCard(model: model, triangles: loaded?.mesh.triangleCount)
             ReinforcementCard(model: model).id(improveForPrintingReinforceCardID)
             if model.designImprovement != nil || edgeEditableMesh != nil {
                 DesignImprovementsCard(model: model, mesh: edgeEditableMesh)
