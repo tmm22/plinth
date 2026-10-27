@@ -769,6 +769,29 @@ struct ModelsView: View {
                                 .accessibilityLabel("Use prepared material, \(name)")
                         }
                     }
+                } else if let hint = materialPurposeHint(intent: store.selectedLocal?.partIntent, isSTL: store.selectedLocal?.supportsPreview == true,
+                                                         selectedFilamentID: store.filamentID, filaments: store.filaments) {
+                    // A suggestion from the saved purpose, never over a prepared copy's own material; only its Use
+                    // button changes the material.
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(hint.message)
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if hint.options.count == 1, let option = hint.options.first {
+                            Button("Use \(hint.profile)") { store.filamentID = option.id }
+                                .buttonStyle(.bordered)
+                                .disabled(store.busy)
+                                .help("Sets the material to \(option.name)")
+                        } else {
+                            Menu("Use \(hint.profile)") {
+                                ForEach(hint.options, id: \.id) { option in
+                                    Button(option.name) { store.filamentID = option.id }
+                                }
+                            }
+                            .fixedSize()
+                            .disabled(store.busy)
+                        }
+                    }
                 }
                 LabeledContent("Quantity") {
                     HStack(spacing: 10) {
