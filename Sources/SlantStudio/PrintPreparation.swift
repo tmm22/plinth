@@ -155,6 +155,9 @@ func printPreparationManualBlockedReason(_ model: LocalModel) -> String? {
     return nil
 }
 
+/// A fit coupon's own lock wording: it is locked because it keeps the full part's way up, not for layer features.
+let fitCouponKeptPlacementLine = "Kept as placed: a fit coupon keeps the way up the full part prints."
+
 /// A copy made from a print-ready copy is already placed, and its saved purpose's load axes describe the original, so
 /// preparing it again would read them wrongly.
 let printPreparationFromCopyBlocked = "This copy was made from a print-ready copy, so it is already placed and prepared. Use Make Print-Ready Copy on the original instead."
@@ -164,6 +167,7 @@ let printPreparationFromCopyBlocked = "This copy was made from a print-ready cop
 func printPreparationKeptPlacementReason(_ model: LocalModel, origin: ModelImportOrigin?) -> String? {
     if origin == .replica || model.keepsPlacement == true { return "Kept as saved: a replica keeps the way up you chose." }
     if model.printRecipe != nil { return "Kept as placed: this copy already has a prepared placement." }
+    if model.fitCoupon == true { return fitCouponKeptPlacementLine }
     if model.requiresZUp { return "Kept as placed: this copy has features that depend on its print layers." }
     if designEditIntent(model)?.purpose == .decorative { return "Kept as imported: a decorative part keeps the way it was made to stand." }
     return nil
@@ -1236,9 +1240,13 @@ func printPreparationTeardropConfirmText(_ settings: PrintPreparationSettings, d
     var later: [String] = []
     if settings.bottomChamfer { later.append("the bottom-edge chamfer") }
     if settings.internalWalls && !decorative { later.append("internal walls") }
+    var off: [String] = []
+    if !settings.bottomChamfer { off.append("the bottom-edge chamfer is off") }
+    if !settings.internalWalls { off.append("internal walls are off") } else if decorative { off.append("a decorative part gets no internal walls") }
+    let why = off.isEmpty ? "" : " (" + off.joined(separator: " and ") + ")"
     let steps = later.isEmpty
-        ? "repeats the earlier copy’s other steps (with the bottom-edge chamfer and internal walls off, as now set)"
-        : "repeats the earlier copy’s other steps, and adds \(later.joined(separator: " and ")) round the new shapes"
+        ? "repeats the earlier copy’s other steps\(why)"
+        : "repeats the earlier copy’s other steps, and adds \(later.joined(separator: " and ")) round the new shapes\(why)"
     return "The upper sides of the ticked holes rise at 45° to a flat top at the hole’s own top, so each hole’s bottom and height are unchanged, but anything that fits against the upper sides of a hole will be looser. Studio makes a new print-ready copy from the original, placed as this one, \(steps). This copy stays as it is. Slant decides supports, so a hole may still get support inside it."
 }
 

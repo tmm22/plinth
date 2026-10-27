@@ -232,10 +232,10 @@ private struct ReinforcementReview: View {
     }
 
     @ViewBuilder private var teardropHolesSection: some View {
-        if model.printPreparation != nil {
-            // The print-ready copy's own follow-up re-prepares from the original, so its chamfer and walls are rebuilt
-            // round the new shapes; reshaping holes here would cut into walls planned round the old ones.
-            Text(reinforceTeardropOnPrintReadyCopyNote).font(.caption).foregroundStyle(.secondary)
+        if let note = reinforceTeardropPrintReadyNote(model, library: store.localModels) {
+            // A print-ready copy and its further copies have a chamfer and walls planned round the old holes; only the
+            // copy's own follow-up, which re-prepares from the original, rebuilds them round the new shapes.
+            Text(note).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             foundHolesSection
@@ -253,12 +253,13 @@ private struct ReinforcementReview: View {
                 }
             }
             if let holes {
+                let labels = teardropCandidateLabels(holes, low: source.minimum, high: source.maximum)
                 if holes.isEmpty {
                     Text("No horizontal round holes found. You can still place a pointed roof by hand under Placement and dimensions.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(holes.filter(\.eligible)) { hole in
-                        Toggle(teardropCandidateLabel(hole, low: source.minimum, high: source.maximum), isOn: Binding(
+                        Toggle((labels[hole.key] ?? teardropCandidateLabel(hole, low: source.minimum, high: source.maximum)), isOn: Binding(
                             get: { chosenHoles.contains(hole.key) },
                             set: { on in if on { chosenHoles.insert(hole.key) } else { chosenHoles.remove(hole.key) } }))
                             .fixedSize(horizontal: false, vertical: true)
@@ -269,7 +270,7 @@ private struct ReinforcementReview: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     ForEach(holes.filter { !$0.eligible }) { hole in
-                        Text(teardropCandidateLabel(hole, low: source.minimum, high: source.maximum) + ": " + (hole.skipped?.message ?? ""))
+                        Text((labels[hole.key] ?? teardropCandidateLabel(hole, low: source.minimum, high: source.maximum)) + ": " + (hole.skipped?.message ?? ""))
                             .font(.caption).foregroundStyle(.secondary)
                             .help(teardropCandidateDetail(hole, minimum: source.minimum))
                     }
@@ -390,6 +391,27 @@ private struct ReinforcementReview: View {
 /// Reinforce's shell check line, such as "Separate shells: 1 before · 1 after".
 func reinforcementShellLine(before: Int, after: Int, split: Bool) -> String {
     split ? "Separate shells: \(before) before · at most \(after) in each part after" : "Separate shells: \(before) before · \(after) after"
+}
+
+/// Reinforce's Teardrop hole roof on a print-ready copy or a copy made from one, in place of Find Horizontal Holes: where
+/// to add teardrop holes instead, or why they aren't available. Nil for any other model.
+func reinforceTeardropPrintReadyNote(_ model: LocalModel, library: [LocalModel]) -> String? {
+    guard model.derivesFromPrintReadyCopy else { return nil }
+    if printPreparationTeardropOfferApplies(model, library: library) { return reinforceTeardropOnPrintReadyCopyNote }
+    let record = model.printPreparation
+    if record?.hasTeardropHoles == true {
+        return "Teardrop holes aren’t available on this copy: it already has them."
+    }
+    if record?.hiddenPockets?.filled != nil || model.filledPockets == true {
+        return "Teardrop holes aren’t available on this copy: a new preparation from the original would bring its filled pockets back. Use Add Teardrop Holes… on the print-ready copy, then fill the new copy’s pockets."
+    }
+    guard let record else {
+        return "Teardrop holes aren’t available on a copy made from a print-ready copy, whose chamfer and walls were planned round the old holes. Use Add Teardrop Holes… on the print-ready copy itself."
+    }
+    guard library.contains(where: { $0.id == record.sourceID }) else {
+        return "Teardrop holes aren’t available on this copy: its original has been removed. Import the original again and make a print-ready copy of it."
+    }
+    return "Teardrop holes aren’t available on this copy. Make a print-ready copy of the original, then use Add Teardrop Holes… on it."
 }
 
 /// Reinforce's Teardrop hole roof on a print-ready copy, in place of Find Horizontal Holes.

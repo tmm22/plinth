@@ -182,7 +182,28 @@ private func teardropAxisName(_ axis: SIMD3<Float>) -> String {
 /// `teardropCandidateDetail`.
 func teardropCandidateLabel(_ hole: TeardropCandidate, low: SIMD3<Float>, high: SIMD3<Float>) -> String {
     let place = fitCouponPositionWords(SIMD2(hole.centre.x, hole.centre.y), low: SIMD2(low.x, low.y), high: SIMD2(high.x, high.y))
-    return String(format: "%.1f mm %@ hole %@, %@", hole.diameterMM, hole.through ? "through" : "blind", place, teardropAxisLabel(hole.axis))
+    let up = String(format: "%.0f mm up", max(0, hole.centre.z - low.z))
+    return String(format: "%.1f mm %@ hole %@, %@, %@", hole.diameterMM, hole.through ? "through" : "blind", place, up, teardropAxisLabel(hole.axis))
+}
+
+/// `teardropCandidateLabel` for each hole in a list, by key. Labels that would still repeat get the hole's centre
+/// from `low` ("(X 20, Y 10, Z 8)"), and any still alike are numbered, so no two ticks read the same.
+func teardropCandidateLabels(_ holes: [TeardropCandidate], low: SIMD3<Float>, high: SIMD3<Float>) -> [TeardropHoleKey: String] {
+    let plain = holes.map { teardropCandidateLabel($0, low: low, high: high) }
+    let detailed = holes.indices.map { i -> String in
+        guard plain.filter({ $0 == plain[i] }).count > 1 else { return plain[i] }
+        let p = holes[i].centre - low
+        return plain[i] + String(format: " (X %.0f, Y %.0f, Z %.0f)", p.x, p.y, p.z)
+    }
+    var result: [TeardropHoleKey: String] = [:]
+    var seen: [String: Int] = [:]
+    for (i, hole) in holes.enumerated() {
+        let total = detailed.filter { $0 == detailed[i] }.count
+        guard total > 1 else { result[hole.key] = detailed[i]; continue }
+        seen[detailed[i], default: 0] += 1
+        result[hole.key] = "\(detailed[i]) · \(seen[detailed[i]] ?? 1) of \(total)"
+    }
+    return result
 }
 
 /// The hole's figures, for a help tag: "⌀5.0 mm through hole along X · centre Y 10.0, Z 8.0 · 20.0 mm long · 3.2 mm of
@@ -318,10 +339,13 @@ func teardropHolesCopy(of mesh: STLMesh, keys: Set<TeardropHoleKey>? = nil, isCa
 /// How far the measured removed volume may differ from the new shapes' own: 1% of it (at least 0.01 mm³), plus what
 /// rounding can move the end faces that were triangulated again. On a part turned off the axes those faces' corners
 /// sit a rounding step off their plane, so a new triangulation can change the volume by up to about that much over
-/// their area (four steps at the part's largest coordinate are allowed).
+/// their area (four steps at the part's largest coordinate are allowed, up to a tenth of the expected change).
 func teardropVolumeTolerance(expectedMM3: Double, retriangulatedAreaMM2: Double, largestCoordinateMM: Float) -> Double {
     let step = Double(max(abs(largestCoordinateMM), 1).ulp)
-    return max(0.01, expectedMM3 * 0.01) + max(0, retriangulatedAreaMM2) * 4 * step
+    // The rounding allowance is capped at a tenth of the expected change, so a small hole in a part with large end
+    // faces is still checked against its own shape.
+    let rounding = min(max(0, retriangulatedAreaMM2) * 4 * step, max(0, expectedMM3) * 0.1)
+    return max(0.01, expectedMM3 * 0.01) + rounding
 }
 
 // MARK: - Topology

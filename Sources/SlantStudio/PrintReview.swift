@@ -408,6 +408,7 @@ func printReviewAutoImproveSettings(_ model: LocalModel, purpose: PrintReviewPur
 
 /// Why the review can't turn this model, or nil.
 func printReviewOrientBlockedReason(_ model: LocalModel) -> String? {
+    if model.fitCoupon == true { return "A fit coupon keeps the way up the full part prints, so it stays Z up." }
     if model.requiresZUp { return "This copy has features that depend on its print layers, so it stays Z up." }
     if model.printRecipe != nil { return "This copy already has a prepared placement. Turn the original instead." }
     return nil

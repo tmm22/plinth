@@ -262,7 +262,87 @@ final class Round12FixesTests: XCTestCase {
 
         let block = try PrintPreparationTeardropTests.block()
         let hole = try XCTUnwrap(try teardropCandidates(in: block).first)
-        XCTAssertEqual(teardropCandidateLabel(hole, low: block.minimum, high: block.maximum), "5.0 mm through hole in the middle, along X")
+        XCTAssertEqual(teardropCandidateLabel(hole, low: block.minimum, high: block.maximum), "5.0 mm through hole in the middle, 8 mm up, along X")
         XCTAssertTrue(teardropCandidateDetail(hole, minimum: block.minimum).contains("centre Y 10.0, Z 8.0"))
+    }
+
+    // MARK: Re-review follow-ups
+
+    /// M1: two ⌀5 mm holes along X at the same Y, one above the other, read differently; identical ones are told apart.
+    func testHoleLabelsNameTheHeightAndNeverRepeat() throws {
+        let block = try r12HoledBlock(SIMD3(40, 30, 30), xHoles: [r12Hole(SIMD2(6, 8), radius: 2.5, segments: 48),
+                                                                  r12Hole(SIMD2(6, 20), radius: 2.5, segments: 48)], zHoles: [])
+        let holes = try teardropCandidates(in: block)
+        XCTAssertEqual(holes.count, 2)
+        let labels = teardropCandidateLabels(holes, low: block.minimum, high: block.maximum)
+        XCTAssertEqual(Set(labels.values), ["5.0 mm through hole near the front, 8 mm up, along X",
+                                            "5.0 mm through hole near the front, 20 mm up, along X"])
+        // The same hole twice (as a stale and a fresh find could be): positions, then numbers.
+        let same = TeardropCandidate(key: TeardropHoleKey(centre: SIMD3(1, 1, 1), heading: 0, diameter: 500), centre: holes[0].centre,
+                                     axis: holes[0].axis, radiusMM: 2.5, startMM: 0, endMM: 40, through: true, wallAboveMM: 5,
+                                     skipped: nil, changeLow: .zero, changeHigh: .zero)
+        let twice = teardropCandidateLabels([holes[0], same], low: block.minimum, high: block.maximum)
+        XCTAssertEqual(Set(twice.values).count, 2, "\(twice)")
+        XCTAssertTrue(twice.values.allSatisfy { $0.contains("(X 20, Y 6, Z 8)") }, "\(twice)")
+    }
+
+    /// L1: a fit coupon's lock names the coupon, not layer-dependent features.
+    func testFitCouponLockHasItsOwnWording() throws {
+        let coupon = LocalModel(name: "Owl (fit coupon)", filePath: "/tmp/c.stl", inheritsZUpLock: true, fitCoupon: true)
+        XCTAssertEqual(printPreparationKeptPlacementReason(coupon, origin: nil), fitCouponKeptPlacementLine)
+        XCTAssertEqual(printReviewOrientBlockedReason(coupon), "A fit coupon keeps the way up the full part prints, so it stays Z up.")
+        XCTAssertTrue(meshFitEditBlockedReason(coupon, tool: .flatBase)?.contains("fit coupon") == true)
+        let bar = try STLMesh.validated(r11PrismSoup(r11Rectangle(.zero, SIMD2(60, 6)), to: 4))
+        XCTAssertEqual(bar.layFlatOutcome(for: coupon).unavailable, .fitCoupon)
+        for text in [fitCouponKeptPlacementLine, LayFlatUnavailable.fitCoupon.message] {
+            XCTAssertFalse(text.contains("depend on"), text)
+        }
+        // Other locked copies keep their wording.
+        let locked = LocalModel(name: "L", filePath: "/tmp/l.stl", inheritsZUpLock: true)
+        XCTAssertTrue(printReviewOrientBlockedReason(locked)?.contains("depend on its print layers") == true)
+        // Saved as a coupon and read back.
+        let data = try JSONEncoder().encode(coupon)
+        XCTAssertEqual(try JSONDecoder().decode(LocalModel.self, from: data).fitCoupon, true)
+    }
+
+    /// L2, L3: Reinforce's note on print-ready copies and copies made from them.
+    func testReinforceTeardropNoteForPrintReadyLineage() {
+        let original = LocalModel(name: "Owl", filePath: "/tmp/owl.stl")
+        let record = PrintPreparationRecord(sourceID: original.id, sourceName: "Owl", created: Self.date, steps: [], orientation: .zUp,
+                                            treatments: [], internalWalls: nil, notes: [])
+        let copy = LocalModel(name: "Owl (print-ready)", filePath: "/tmp/pr.stl", printPreparation: record)
+        XCTAssertNil(reinforceTeardropPrintReadyNote(original, library: [original, copy]))
+        XCTAssertEqual(reinforceTeardropPrintReadyNote(copy, library: [original, copy]), reinforceTeardropOnPrintReadyCopyNote)
+        XCTAssertTrue(reinforceTeardropPrintReadyNote(copy, library: [copy])?.contains("original has been removed") == true)
+        var withHoles = record
+        withHoles.steps = [PrintPreparationStepRecord(step: .teardrops, applied: true, lines: [])]
+        XCTAssertTrue(reinforceTeardropPrintReadyNote(LocalModel(name: "T", filePath: "/tmp/t.stl", printPreparation: withHoles),
+                                                      library: [original])?.contains("already has them") == true)
+        let filled = LocalModel(name: "F", filePath: "/tmp/f.stl", printPreparation: printPreparationRecordAfterFill(record, filled: 1), filledPockets: true)
+        XCTAssertTrue(reinforceTeardropPrintReadyNote(filled, library: [original, filled])?.contains("filled pockets") == true)
+        let fillets = LocalModel(name: "Owl (print-ready) (auto-improved)", filePath: "/tmp/a.stl", fromPrintReadyCopy: true)
+        XCTAssertTrue(reinforceTeardropPrintReadyNote(fillets, library: [original, copy, fillets])?.contains("copy made from a print-ready copy") == true)
+    }
+
+    /// L4: walls skipped for a decorative part aren't described as off.
+    func testConfirmTextSaysWhyWallsAreSkipped() {
+        let decorative = printPreparationTeardropConfirmText(PrintPreparationSettings(), decorative: true)
+        XCTAssertTrue(decorative.contains("a decorative part gets no internal walls"), decorative)
+        XCTAssertFalse(decorative.contains("internal walls are off"), decorative)
+        let chamferOnly = printPreparationTeardropConfirmText(PrintPreparationSettings(enabled: true, internalWalls: true, bottomChamfer: false),
+                                                              decorative: true)
+        XCTAssertTrue(chamferOnly.contains("(the bottom-edge chamfer is off and a decorative part gets no internal walls)"), chamferOnly)
+        let wallsOff = printPreparationTeardropConfirmText(PrintPreparationSettings(enabled: true, internalWalls: false, bottomChamfer: true),
+                                                           decorative: false)
+        XCTAssertTrue(wallsOff.contains("(internal walls are off)"), wallsOff)
+        XCTAssertFalse(printPreparationTeardropConfirmText(PrintPreparationSettings(), decorative: false).contains("("))
+    }
+
+    /// L6: the rounding allowance never exceeds a tenth of the expected change.
+    func testRoundingAllowanceIsCapped() {
+        let small = teardropVolumeTolerance(expectedMM3: 0.2, retriangulatedAreaMM2: 40_000, largestCoordinateMM: 220)
+        XCTAssertEqual(small, 0.01 + 0.02, accuracy: 1e-9)
+        XCTAssertEqual(teardropVolumeTolerance(expectedMM3: 50, retriangulatedAreaMM2: 10, largestCoordinateMM: 10),
+                       0.5 + 10 * 4 * Double(Float(10).ulp), accuracy: 1e-12)
     }
 }

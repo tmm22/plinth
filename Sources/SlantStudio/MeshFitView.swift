@@ -42,9 +42,10 @@ func meshFitEditBlockedReason(_ model: LocalModel, tool: MeshFitTool) -> String?
         return canSaveScaledCopy(model) ? nil
             : "This copy records a placement or edits that depend on its size. Scale the original import instead."
     case .flatBase, .plinth:
-        return model.requiresZUp
-            ? "This copy has features that depend on its print layers. Add the base to the original, then reinforce that copy."
-            : nil
+        guard model.requiresZUp else { return nil }
+        return model.fitCoupon == true
+            ? "A fit coupon keeps the full part’s bed face. Add the base to the original, then make a new coupon."
+            : "This copy has features that depend on its print layers. Add the base to the original, then reinforce that copy."
     case .fitCoupon:
         // The coupon keeps the bed face and the way up, so copies locked Z up (print-ready ones included) can have one.
         return nil
@@ -83,9 +84,11 @@ extension StudioStore {
             let url = folder.appendingPathComponent(exportFileName(modelName: name, fileExtension: "stl"))
             try data.write(to: url, options: .atomic)
             let lineage = studioCopyLineage(model)
-            guard importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: fileDetails),
-                              inheritsZUpLock: lineage.inheritsZUpLock || locksZUp, origin: .studioToolCopy,
-                              keepsPlacement: lineage.keepsPlacement, fromPrintReadyCopy: lineage.fromPrintReadyCopy) else {
+            // A fit coupon is locked Z up and marked as one, so the lock's wording names the coupon.
+            guard importModelReturningID(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: fileDetails),
+                                         inheritsZUpLock: lineage.inheritsZUpLock || locksZUp, origin: .studioToolCopy,
+                                         keepsPlacement: lineage.keepsPlacement, fromPrintReadyCopy: lineage.fromPrintReadyCopy,
+                                         fitCoupon: locksZUp) != nil else {
                 return false
             }
             activities.insert(Activity(title: activityTitle, detail: model.name, success: true), at: 0)
@@ -561,6 +564,7 @@ struct MeshFitSheet: View {
                             store.select(copy)
                         }
                         .buttonStyle(.link)
+                        .disabled(store.busy)
                     }
                 }
             }

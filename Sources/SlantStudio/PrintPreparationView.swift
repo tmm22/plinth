@@ -324,13 +324,15 @@ struct TeardropHolesConfirmation: View {
     @State private var leftAloneExpanded = false
 
     var body: some View {
+        // Over both lists, so no two holes read the same.
+        let labels = teardropCandidateLabels(offer.holes, low: offer.minimum, high: offer.maximum)
         VStack(alignment: .leading, spacing: 14) {
             Text("Add teardrop holes").font(.title3.weight(.semibold))
             Text(text)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(offer.eligible) { hole in
-                    Toggle(teardropCandidateLabel(hole, low: offer.minimum, high: offer.maximum), isOn: Binding(
+                    Toggle((labels[hole.key] ?? teardropCandidateLabel(hole, low: offer.minimum, high: offer.maximum)), isOn: Binding(
                         get: { chosen.contains(hole.key) },
                         set: { on in if on { chosen.insert(hole.key) } else { chosen.remove(hole.key) } }))
                         .fixedSize(horizontal: false, vertical: true)
@@ -341,7 +343,7 @@ struct TeardropHolesConfirmation: View {
                 DisclosureGroup("Left as they are (\(offer.leftAlone.count))", isExpanded: $leftAloneExpanded) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(offer.leftAlone) { hole in
-                            Text(teardropCandidateLabel(hole, low: offer.minimum, high: offer.maximum) + ": " + (hole.skipped?.message ?? ""))
+                            Text((labels[hole.key] ?? teardropCandidateLabel(hole, low: offer.minimum, high: offer.maximum)) + ": " + (hole.skipped?.message ?? ""))
                                 .help(teardropCandidateDetail(hole, minimum: offer.minimum))
                         }
                     }

@@ -610,7 +610,7 @@ let layFlatCaption = "The bond between layers is the weakest direction in a prin
 
 /// Why Lay It Flat isn't offered, with the line that says so.
 enum LayFlatUnavailable: Equatable, Sendable {
-    case zUpLocked, keptPlacement, fromPrintReadyCopy, preparedCopy, decorative, needsDescription, noClearLength, alreadySet
+    case zUpLocked, fitCoupon, keptPlacement, fromPrintReadyCopy, preparedCopy, decorative, needsDescription, noClearLength, alreadySet
     case noPlacement, noFlatSide, placementStandsItUp
 
     var message: String {
@@ -619,6 +619,8 @@ enum LayFlatUnavailable: Equatable, Sendable {
             return "This copy is already placed for its purpose, and its directions describe the original. Use Lay It Flat on the original instead."
         case .zUpLocked:
             return "This copy keeps Z up because its features depend on the print layers. Use Lay It Flat on the original instead."
+        case .fitCoupon:
+            return "A fit coupon keeps the way up the full part prints. Use Lay It Flat on the original, then make a new coupon."
         case .keptPlacement:
             return "Its way up was chosen in Which way is up?, so Studio keeps that placement."
         case .fromPrintReadyCopy:
@@ -697,7 +699,9 @@ enum LayFlatOutcome: Equatable, Sendable {
 /// - `assessments`: its `orientationAssessments()`; `turns`: turns about Z by placement ID, as Optimise for purpose
 ///   measures them (none means no turn).
 func layFlatOutcome(intent: PartIntent, extents: SIMD3<Float>, assessments: [OrientationAssessment], turns: [String: Float] = [:],
-                    requiresZUp: Bool, keepsPlacement: Bool, fromPrintReadyCopy: Bool, preparedCopy: Bool = false) -> LayFlatOutcome {
+                    requiresZUp: Bool, keepsPlacement: Bool, fromPrintReadyCopy: Bool, preparedCopy: Bool = false,
+                    fitCoupon: Bool = false) -> LayFlatOutcome {
+    if fitCoupon { return .unavailable(.fitCoupon) }
     if requiresZUp { return .unavailable(.zUpLocked) }
     if keepsPlacement { return .unavailable(.keptPlacement) }
     if fromPrintReadyCopy { return .unavailable(.fromPrintReadyCopy) }
@@ -738,7 +742,8 @@ extension STLMesh {
         // Refusals first, so a locked copy is never measured.
         let quick = SlantStudio.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: [],
                                                requiresZUp: lineage.inheritsZUpLock, keepsPlacement: lineage.keepsPlacement,
-                                               fromPrintReadyCopy: lineage.fromPrintReadyCopy, preparedCopy: model.printRecipe != nil)
+                                               fromPrintReadyCopy: lineage.fromPrintReadyCopy, preparedCopy: model.printRecipe != nil,
+                                               fitCoupon: model.fitCoupon == true)
         guard quick.unavailable == .noPlacement else { return quick }
         let assessments = orientationAssessments()
         let outcome = SlantStudio.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: assessments,
@@ -784,7 +789,10 @@ struct PrintOrientationCard: View {
                         Text(failure)
                     } else if let mesh {
                         purposeForm(mesh)
-                        if model.requiresZUp {
+                        if model.fitCoupon == true {
+                            Text("Keeps Z up: a fit coupon keeps the way up the full part prints. To print it another way, place the original first, then make a new coupon.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        } else if model.requiresZUp {
                             Text("Keeps Z up: this copy has features that depend on the print layers, such as cells, gaps, teardrop holes, bridging or matched walls. Prepare a different orientation from the source before adding them.")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
@@ -895,7 +903,8 @@ struct PrintOrientationCard: View {
     @ViewBuilder private func layFlatControls(_ mesh: STLMesh) -> some View {
         let outcome = layFlatOutcome(intent: intent, extents: mesh.maximum - mesh.minimum, assessments: assessments, turns: turns,
                                      requiresZUp: model.requiresZUp, keepsPlacement: model.keepsPlacement == true,
-                                     fromPrintReadyCopy: model.derivesFromPrintReadyCopy, preparedCopy: model.printRecipe != nil)
+                                     fromPrintReadyCopy: model.derivesFromPrintReadyCopy, preparedCopy: model.printRecipe != nil,
+                                     fitCoupon: model.fitCoupon == true)
         if let preview = layFlatPreview {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(preview.lines, id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
