@@ -73,7 +73,8 @@ let orderAttentionDraftIgnoredAfterDays = 30
 /// conservative stand-in that leaves room for printing and finishing before flagging.
 let orderAttentionProductionDays = 5
 
-/// Placed and being made, not yet shipped (Slant's statuses between payment and SHIPPED).
+/// Placed and being made, not yet shipped: Slant's live SUBMITTED (paid, waiting to print) and PRINTING, and the
+/// earlier statuses between payment and SHIPPED (still read from old replies).
 let orderAttentionProductionStatuses: Set<String> = [
     "PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING", "COMPLETED", "IN_REVIEW",
     "AWAITING_SHIPMENT"
@@ -120,12 +121,14 @@ func orderAttentionDays(_ days: Int) -> String { days == 1 ? "1 day" : "\(days) 
 /// past the `orderAttentionDraftIgnoredAfterDays` window (or with no creation date), which Slant can't remove.
 func orderAttention(_ order: [String: Any], now: Date, timeZone: TimeZone = .current) -> OrderAttention? {
     let status = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    guard !status.isEmpty, !["CANCELED", "CANCELLED", "DELIVERED"].contains(status) else { return nil }
+    guard !status.isEmpty, !orderStatusIsCancelled(status), status != "DELIVERED" else { return nil }
     if status == "PAYMENT_ERROR" { return .paymentProblem }
     let draftInWindow = orderCreatedDate(order).map {
         now.timeIntervalSince($0) <= Double(orderAttentionDraftIgnoredAfterDays) * 86_400
     } ?? false
-    let canBeLate = status != "SHIPPED" && (status != "DRAFT" || draftInWindow)
+    // Late only while Studio knows the order is still being made (or is a recent draft): never once shipped, and never
+    // for a status Studio doesn't know, which might mean the parcel is already on its way.
+    let canBeLate = orderAttentionProductionStatuses.contains(status) || (status == "DRAFT" && draftInWindow)
     if canBeLate, let arriveBy = orderArriveByDate(order), now > orderArriveByDeadline(arriveBy, timeZone: timeZone) {
         return .pastArriveBy(arriveBy)
     }

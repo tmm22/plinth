@@ -1166,6 +1166,20 @@ struct OrdersView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 6)
                 }
+                if !store.orderSearchActive, store.ordersChangedWhileLoading {
+                    // A later page's count differed from page 1's: some orders may have shifted past the pages read.
+                    HStack(spacing: 8) {
+                        Label(orderListChangedWhileLoadingNote, systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("Reload") { Task { await store.applyOrderFilter(store.orderFilter) } }
+                            .controlSize(.small)
+                            .disabled(!store.hasKey || store.busy)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+                }
                 if !store.orderSearchActive, store.ordersHasMore {
                     HStack {
                         Spacer()
