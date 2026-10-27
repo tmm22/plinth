@@ -216,8 +216,9 @@ struct OrderFilter: Equatable {
     var sortOrder: String = "desc"
     var isActive: Bool { status != nil || startDate != nil || endDate != nil }
 }
+/// The bundled `GET /orders` status enum, plus SUBMITTED after Paid (seen live; see `orderUndocumentedLiveStatuses`).
 let orderStatusFilterOptions = [
-    "DRAFT", "PAID", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING",
+    "DRAFT", "PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING",
     "COMPLETED", "IN_REVIEW", "AWAITING_SHIPMENT", "SHIPPED", "DELIVERED", "CANCELED", "PAYMENT_ERROR"
 ]
 let maxPlatforms = 5
@@ -262,27 +263,6 @@ struct WebhookSingleResendResult: Equatable {
     var error: String?
     var alreadyDelivered: Bool
     var expired: Bool
-}
-
-func orderStatusFilterTitle(_ status: String) -> String {
-    switch status.uppercased() {
-    case "DRAFT": return "Draft"
-    case "PAID": return "Paid"
-    case "QUEUED": return "Queued"
-    case "PROCESSING": return "Processing"
-    case "PRINTING": return "Printing"
-    case "ITEMS_ON_SHELF": return "Items on shelf"
-    case "POST_PROCESSING": return "Post-processing"
-    case "COMPLETED": return "Completed"
-    case "IN_REVIEW": return "In review"
-    case "AWAITING_SHIPMENT": return "Awaiting shipment"
-    case "SHIPPED": return "Shipped"
-    case "DELIVERED": return "Delivered"
-    case "CANCELED": return "Cancelled"
-    case "PAYMENT_ERROR": return "Payment error"
-    case "": return "Any status"
-    default: return status.replacingOccurrences(of: "_", with: " ").capitalized
-    }
 }
 
 func orderFilterDateString(_ date: Date) -> String {

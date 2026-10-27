@@ -2,11 +2,12 @@ import SwiftUI
 import AppKit
 
 /// The pasteboard's plain text for Paste Address…, read only when the seller presses it (AddressPaste.swift).
+/// Text that doesn't look like an address is left out (`addressPasteClipboardPrefill`), so it never shows on screen.
 @MainActor
-func addressPastePasteboardText(_ pasteboard: NSPasteboard = .general) -> String {
+func addressPastePasteboardText(_ pasteboard: NSPasteboard = .general) -> (text: String, skippedNonAddress: Bool) {
     let types = pasteboard.types ?? []
-    return addressPastePrefill(pasteboard.availableType(from: [.string]) == nil ? nil : pasteboard.string(forType: .string),
-                               holdsFileURL: types.contains(.fileURL))
+    return addressPasteClipboardPrefill(pasteboard.availableType(from: [.string]) == nil ? nil : pasteboard.string(forType: .string),
+                                        holdsFileURL: types.contains(.fileURL))
 }
 
 /// The order composer's Paste Address… popover: a text box, the details read from it for review, and Use These
@@ -17,15 +18,21 @@ struct AddressPastePopover: View {
     @State private var text: String
     @State private var parsed = PastedAddress()
     @State private var confirming = false
+    /// The clipboard's text was left out because it doesn't look like an address.
+    let skippedClipboard: Bool
     /// The form's details as they are now, for what the review says is kept (name, email, country).
     let current: DeliveryDetails
     let needsConfirmation: (PastedAddress) -> Bool
     let onUse: (PastedAddress) -> Void
     let onCancel: () -> Void
 
-    init(initialText: String, current: DeliveryDetails, needsConfirmation: @escaping (PastedAddress) -> Bool,
+    var usable: Bool { pastedAddressLooksLikeAddress(parsed) }
+
+    init(initialText: String, skippedClipboard: Bool = false, current: DeliveryDetails,
+         needsConfirmation: @escaping (PastedAddress) -> Bool,
          onUse: @escaping (PastedAddress) -> Void, onCancel: @escaping () -> Void) {
         _text = State(initialValue: initialText)
+        self.skippedClipboard = skippedClipboard
         self.current = current
         self.needsConfirmation = needsConfirmation
         self.onUse = onUse
@@ -68,8 +75,8 @@ struct AddressPastePopover: View {
                         if needsConfirmation(parsed) { confirming = true } else { onUse(parsed) }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!parsed.foundAddress)
-                    .help(parsed.foundAddress ? "Fill in the delivery details from this address, for you to check" : "Paste an address first")
+                    .disabled(!usable)
+                    .help(usable ? "Fill in the delivery details from this address, for you to check" : "Paste an address first")
                 }
             }
         }
@@ -85,9 +92,18 @@ struct AddressPastePopover: View {
     @ViewBuilder
     var review: some View {
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Text("Nothing pasted yet.").font(.callout).foregroundStyle(.secondary)
+            Text(skippedClipboard
+                 ? "The clipboard doesn’t hold an address, so nothing was pasted. Paste the address into the box."
+                 : "Nothing pasted yet.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         } else if !parsed.foundAddress {
             Text("No address found. Paste the whole address, with the street, town and postcode.")
+                .font(.callout).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if !usable {
+            // The parsed parts aren't listed: this text may be anything that was on the clipboard.
+            Text("This doesn’t look like an address. Paste the whole address, with the street, town and postcode.")
                 .font(.callout).foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         } else {

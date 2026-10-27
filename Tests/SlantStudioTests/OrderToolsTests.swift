@@ -148,15 +148,17 @@ final class OrderToolsTests: XCTestCase {
         let parameters = try XCTUnwrap(get["parameters"] as? [[String: Any]])
         let status = try XCTUnwrap(parameters.first { $0["name"] as? String == "status" })
         let accepted = try XCTUnwrap((status["schema"] as? [String: Any])?["enum"] as? [String])
-        XCTAssertEqual(orderStatusFilterOptions, accepted)
+        // Plus SUBMITTED, which live Slant returns but the bundled OpenAPI doesn't list, offered after Paid.
+        XCTAssertEqual(orderStatusFilterOptions.filter { !orderUndocumentedLiveStatuses.contains($0) }, accepted)
+        XCTAssertEqual(orderStatusFilterOptions.firstIndex(of: "SUBMITTED"), (orderStatusFilterOptions.firstIndex(of: "PAID") ?? -1) + 1)
     }
 
     func testEveryDocumentedOrderStatusHasALabelAndCancelCopy() throws {
         let schemas = try XCTUnwrap((try spec()["components"] as? [String: Any])?["schemas"] as? [String: Any])
         let order = try XCTUnwrap(((schemas["Order"] as? [String: Any])?["properties"] as? [String: Any])?["status"] as? [String: Any])
         let statuses = try XCTUnwrap(order["enum"] as? [String])
-        XCTAssertEqual(Set(statuses), orderKnownStatuses)
-        for status in statuses {
+        XCTAssertEqual(Set(statuses).union(orderUndocumentedLiveStatuses), orderKnownStatuses)
+        for status in statuses + Array(orderUndocumentedLiveStatuses) {
             let title = orderStatusTitle(status)
             XCTAssertFalse(title.isEmpty || title == "Order" || title.contains("_"), status)
             XCTAssertFalse(orderCancelButtonBaseTitle(status).isEmpty, status)
@@ -426,9 +428,9 @@ final class OrderToolsTests: XCTestCase {
     // MARK: Draft composer copy
 
     func testComposerHeading() {
-        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: nil), "New Order Draft")
-        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: "  "), "New Order Draft")
-        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: "SLANT_9"), "Duplicate of Order SLANT_9")
+        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: nil), "New order draft")
+        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: "  "), "New order draft")
+        XCTAssertEqual(orderComposerHeading(sourceOrderNumber: "SLANT_9"), "Duplicate of order SLANT_9")
     }
 
     func testReusedAddressLineNamesRecipientAndCity() {

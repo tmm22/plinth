@@ -272,6 +272,14 @@ func profitMoney(_ amount: Decimal) -> String {
     amount < 0 ? "−" + money(NSDecimalNumber(decimal: -amount)) : money(NSDecimalNumber(decimal: amount))
 }
 
+/// "12.5%" or "−107.7%", with a true minus like `profitMoney`.
+func profitPercentText(_ value: Decimal) -> String {
+    value < 0 ? "−" + profitRateText(-value) + "%" : profitRateText(value) + "%"
+}
+
+/// Honest about both ways the amounts go: never saved, and cleared when another order is chosen.
+let profitCheckEntryCaption = "Enter what the buyer paid, in US dollars. Slant charges in USD; if you sold in another currency, convert it first. Nothing you type here is saved, and it clears when you choose another order."
+
 let profitCheckExclusionsNote = "Not included: taxes, refunds, ads you pay for separately, currency conversion."
 
 /// One dated line for the fee rates in use, such as "Etsy (US): 6.5% transaction + 3% + $0.25 processing +
@@ -398,7 +406,7 @@ struct ProfitCheckPanel: View {
 
     @ViewBuilder
     func content(slantTotal: Decimal) -> some View {
-        Text("Enter what the buyer paid, in US dollars. Slant charges in USD; if you sold in another currency, convert it first. Nothing you type here is saved.")
+        Text(profitCheckEntryCaption)
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         if let imported, prefilledFromImport {
             Label(importedSaleCaption(imported), systemImage: "tray.and.arrow.down")
@@ -518,7 +526,7 @@ struct ProfitCheckPanel: View {
                     .foregroundStyle(result.profit < 0 ? .red : .primary)
             }
             if let margin = result.marginPercent {
-                LabeledContent("Estimated margin") { Text("\(profitRateText(margin))%").monospacedDigit() }
+                LabeledContent("Estimated margin") { Text(profitPercentText(margin)).monospacedDigit() }
             }
             if (order["status"] as? String)?.uppercased() == "DRAFT" {
                 Text("This draft’s total is Slant’s current price; it’s charged when you place the order.")

@@ -1087,8 +1087,8 @@ struct BatchPayDraftCard<Extra: View>: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                LabeledContent("Printing") { Text("\(money(order["printingCost"])) USD").monospacedDigit() }
-                LabeledContent("Delivery") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
+                LabeledContent("Print cost") { Text("\(money(order["printingCost"])) USD").monospacedDigit() }
+                LabeledContent("Delivery cost") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
                 LabeledContent("Total") { Text("\(orderTotalMoney(order)) USD").monospacedDigit().fontWeight(.semibold) }
                 LabeledContent("Recipient") { Text(orderRecipientDisplay(order)).lineLimit(2) }
             }

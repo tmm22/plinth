@@ -45,6 +45,34 @@ func addressPastePrefill(_ pasteboardText: String?, holdsFileURL: Bool = false) 
     return text
 }
 
+/// What the box starts with, and whether the clipboard's text was left out because it doesn't look like an address
+/// (`pastedAddressLooksLikeAddress`). A password, link or note on the clipboard is then never shown on screen; the
+/// seller can still paste into the box.
+func addressPasteClipboardPrefill(_ pasteboardText: String?, holdsFileURL: Bool = false) -> (text: String, skippedNonAddress: Bool) {
+    let text = addressPastePrefill(pasteboardText, holdsFileURL: holdsFileURL)
+    guard !text.isEmpty else { return ("", false) }
+    return pastedAddressLooksLikeAddress(parsePastedAddressDetecting(text)) ? (text, false) : ("", true)
+}
+
+/// A single unbroken run of characters longer than this isn't a street or a town (a password, token or link is).
+let addressPasteLongestSingleWord = 25
+
+/// A value with no spaces that is too long to be a street or town name, or that is a link.
+func addressPasteValueLooksLikeToken(_ value: String) -> Bool {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return false }
+    if trimmed.contains("://") { return true }
+    return !trimmed.contains(where: \.isWhitespace) && trimmed.count > addressPasteLongestSingleWord
+}
+
+/// Use These Details is offered only for something that looks like an address: a town or postcode was found, and
+/// neither the street nor the town is a long unbroken token. Otherwise the popover says "This doesn't look like an
+/// address." rather than turning any clipboard text into a street and clearing the form's town and postcode.
+func pastedAddressLooksLikeAddress(_ parsed: PastedAddress) -> Bool {
+    guard parsed.foundAddress, !parsed.city.isEmpty || !parsed.zip.isEmpty else { return false }
+    return !addressPasteValueLooksLikeToken(parsed.line1) && !addressPasteValueLooksLikeToken(parsed.city)
+}
+
 // MARK: Applying
 
 /// The composer's delivery details with the pasted address in place. The whole address is replaced — the old

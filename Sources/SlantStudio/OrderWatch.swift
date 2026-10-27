@@ -185,10 +185,12 @@ func orderWatchFetchedOrderFitsPlatform(_ order: [String: Any], platformID: Stri
 }
 
 /// Whether a change is listed under "Since you last looked". Placing a draft is the seller's own action, so
-/// Draft → Paid isn't reported (later progress, or a payment problem, is).
+/// Draft → Paid isn't reported (later progress, or a payment problem, is). Live Slant also returns SUBMITTED for a
+/// just-placed order (26 Oct 2026), so Draft → Submitted and Submitted → Paid count as placing too.
 func orderWatchChangeIsReported(from: String, to: String) -> Bool {
     guard from != to else { return false }
-    return !(from == "DRAFT" && to == "PAID")
+    let placing: Set<String> = ["PAID", "SUBMITTED"]
+    return !((from == "DRAFT" || from == "SUBMITTED") && placing.contains(to))
 }
 
 func orderWatchShouldNotify(_ transition: OrderWatchTransition) -> Bool {
@@ -468,6 +470,35 @@ func orderWatchFailureEffect(_ error: Error, now: Date) -> (backoffUntil: Date?,
     }
 }
 
+/// Why the background checks are holding back after a failure, for Settings › Advanced (Activity is hidden unless
+/// developer tools are on). Memory only.
+enum OrderWatchHold: Equatable {
+    /// Slant refused the key or platform (401/403).
+    case accountRefused
+    /// Slant's rate limit (429): the next check waits until this time.
+    case rateLimited(until: Date)
+}
+
+/// The hold a failure leads to, or nil when the next check simply runs as scheduled.
+func orderWatchHold(after effect: (backoffUntil: Date?, pauseAccount: Bool)) -> OrderWatchHold? {
+    if effect.pauseAccount { return .accountRefused }
+    if let until = effect.backoffUntil { return .rateLimited(until: until) }
+    return nil
+}
+
+/// The line under Last checked while checks are held back, or nil (a rate-limit wait that has passed says nothing).
+func orderWatchHoldCaption(_ hold: OrderWatchHold?, now: Date) -> String? {
+    switch hold {
+    case .accountRefused?:
+        return "Paused: Slant refused the API key or platform. Checks start again when you change either, or after \(Int(orderWatchAccountPause / 60)) minutes."
+    case .rateLimited(let until)?:
+        guard until > now else { return nil }
+        return "Waiting for Slant’s rate limit: the next check is after \(until.formatted(date: .omitted, time: .shortened))."
+    case nil:
+        return nil
+    }
+}
+
 // MARK: - Storage
 
 func encodeOrderWatchSnapshot(_ snapshot: OrderWatchSnapshot) -> Data? {
@@ -555,6 +586,8 @@ private struct PendingNotificationOpen {
     /// macOS has notifications for Slant Studio turned off (or permission was refused).
     @Published private(set) var notificationsDenied = false
     @Published private(set) var requestingPermission = false
+    /// Shown in Settings › Advanced while checks are paused (401/403) or waiting after a 429; memory only.
+    @Published private(set) var hold: OrderWatchHold?
 
     private weak var store: StudioStore?
     private var loop: Task<Void, Never>?
@@ -654,6 +687,7 @@ private struct PendingNotificationOpen {
         // A refused key or platform pauses checks until it changes, or for half an hour (it may have been fixed on Slant).
         if let paused = pausedAccount, paused != token || now.timeIntervalSince(pausedAt ?? now) >= orderWatchAccountPause {
             pausedAccount = nil
+            if hold == .accountRefused { hold = nil }
         }
         if let skip = orderWatchSkipReason(conditions(store, token: token, now: now)) {
             if skip == .rateLimited(until: nil) { rateLimitWaitedFor = store.rateLimit }
@@ -676,6 +710,7 @@ private struct PendingNotificationOpen {
             guard stillCurrent() else { return orderWatchRecheckDelay }
             applyRateLimit(from: response, to: store)
             newest = orderWatchObservations(responseRecords(response))
+            hold = nil
         } catch {
             guard stillCurrent() else { return orderWatchRecheckDelay }
             noteFailure(error, store: store, token: token)
@@ -729,6 +764,7 @@ private struct PendingNotificationOpen {
         let effect = orderWatchFailureEffect(error, now: Date())
         backoffUntil = effect.backoffUntil
         if effect.pauseAccount { pausedAccount = token; pausedAt = Date() }
+        hold = orderWatchHold(after: effect)
         // One Activity line per run of failures (no order details), so a long outage doesn't fill Activity.
         if !failureLogged {
             failureLogged = true

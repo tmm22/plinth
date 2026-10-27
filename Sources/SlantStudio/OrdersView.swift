@@ -202,9 +202,16 @@ struct OrderComposerView: View {
     // the popover closes.
     @State private var showAddressPaste = false
     @State private var addressPasteText = ""
+    /// The clipboard held text that doesn't look like an address, so the box started empty (AddressPaste.swift).
+    @State private var addressPasteSkippedClipboard = false
+    /// When a popover last closed: an Escape that closed it must not also reach the composer's Cancel.
+    @State private var popoverClosedAt: Date?
+    /// Catalog loads started here that failed: shown in the form, since the window's alert waits behind the sheet.
+    @State private var catalogLoadError: String?
     /// Check Slant's last result for unconfirmed drafts (DraftConfirmation.swift).
     @State private var draftCheckOutcome: DraftCreateCheckOutcome?
 
+    var composerPopoverShown: Bool { showAddressPaste || showAddSavedProduct }
     var hasUnsavedInput: Bool {
         orderComposerHasUnsavedInput(
             lines: lines, initialLines: initialLines, delivery: delivery, initialDelivery: initialDelivery,
@@ -259,17 +266,23 @@ struct OrderComposerView: View {
         .onChange(of: delivery) { validation = nil }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Button("Cancel", role: .cancel) { requestClose() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Cancel", role: .cancel) { requestClose(fromCancelButton: true) }
+                    // Escape belongs to an open popover (Paste Address…, Add Saved Product…) first: it must close only
+                    // that popover, never the whole composer as well.
+                    .keyboardShortcut(composerPopoverShown ? nil : .cancelAction)
                     .disabled(store.busy)
                     .help(store.busy ? "Working…" : "Cancel")
                 Spacer()
-                if let validation { Text(validation).font(.caption).foregroundStyle(.orange).lineLimit(3) }
+                if let validation {
+                    Text(validation).font(.caption).foregroundStyle(.orange).lineLimit(4).help(validation)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 else if let createBlockedReason { Text(createBlockedReason).font(.caption).foregroundStyle(.secondary) }
                 if store.busy { ProgressView().controlSize(.small) }
+                // No default-action shortcut: creating a draft always takes a click (Return in a field must never
+                // send `POST /orders`, which Slant can't undo), as in Import Orders.
                 Button("Create Draft") { createDraft() }
                     .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
                     .disabled(store.busy || createBlockedReason != nil)
                     .help(createBlockedReason ?? "Create an order draft")
             }
@@ -277,6 +290,10 @@ struct OrderComposerView: View {
             .background(.bar)
         }
         .interactiveDismissDisabled(hasUnsavedInput)
+        // An Escape that reaches the sheet some other way (no text field focused, as in a duplicate's address
+        // summary) takes the same path as Cancel: the popover guard and the discard check.
+        // Like Cancel, it does nothing while a request runs.
+        .onExitCommand { if !store.busy { requestClose(fromCancelButton: true) } }
         .confirmationDialog("Discard this order draft?", isPresented: $confirmDiscard) {
             Button("Discard Draft", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) {}
@@ -300,7 +317,10 @@ struct OrderComposerView: View {
         }
         .onAppear(perform: seedIfNeeded)
         // Pasted text goes as soon as the popover closes, however it closed.
-        .onChange(of: showAddressPaste) { _, shown in if !shown { addressPasteText = "" } }
+        .onChange(of: showAddressPaste) { _, shown in
+            if !shown { addressPasteText = ""; addressPasteSkippedClipboard = false; popoverClosedAt = Date() }
+        }
+        .onChange(of: showAddSavedProduct) { _, shown in if !shown { popoverClosedAt = Date() } }
         // Pending location work stops whenever the form actually closes (create, cancel or discard).
         .onDisappear { locationLookup.cancel() }
         .task(id: catalogTaskID) { await loadNeededCatalogs() }
@@ -345,15 +365,21 @@ struct OrderComposerView: View {
                 }
             }
             Section("Items") {
+                if let catalogLoadError {
+                    Label(catalogLoadError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 ForEach($lines) { $item in
                     orderItemEditor($item)
                 }
-                Button { lines.append(OrderLine()) } label: { Label("Add another item", systemImage: "plus") }
+                Button { lines.append(OrderLine()) } label: { Label("Add Another Item", systemImage: "plus") }
                 Button { showAddSavedProduct = true } label: { Label("Add Saved Product…", systemImage: "shippingbox") }
                     .help("Add the items of a product you’ve saved, for a number of units sold")
                     .popover(isPresented: $showAddSavedProduct, arrowEdge: .bottom) {
                         AddSavedProductPopover { added in
                             lines = orderLinesAddingSavedProduct(lines, adding: added)
+                            popoverClosedAt = Date()
                             showAddSavedProduct = false
                         }
                         .environmentObject(store)
@@ -400,7 +426,9 @@ struct OrderComposerView: View {
                     }
                     // The pasteboard is read only when this is pressed; nothing changes until Use These Details.
                     Button {
-                        addressPasteText = addressPastePasteboardText()
+                        let prefill = addressPastePasteboardText()
+                        addressPasteText = prefill.text
+                        addressPasteSkippedClipboard = prefill.skippedNonAddress
                         showAddressPaste = true
                     } label: {
                         Label("Paste Address…", systemImage: "doc.on.clipboard")
@@ -410,13 +438,18 @@ struct OrderComposerView: View {
                     .help("Fill in an address copied from Etsy, Shopify or an email, after you check it")
                     .popover(isPresented: $showAddressPaste, arrowEdge: .bottom) {
                         // The popover asks before replacing details already in the form.
-                        AddressPastePopover(initialText: addressPasteText, current: delivery, needsConfirmation: { pasted in
+                        AddressPastePopover(initialText: addressPasteText, skippedClipboard: addressPasteSkippedClipboard,
+                                            current: delivery, needsConfirmation: { pasted in
                             pastedAddressNeedsConfirmation(current: delivery, replacement: deliveryDetails(applyingPasted: pasted, to: delivery),
                                                            countryPicked: countryPicked)
                         }, onUse: { pasted in
+                            popoverClosedAt = Date()
                             showAddressPaste = false
                             applyPastedAddress(pasted)
-                        }, onCancel: { showAddressPaste = false })
+                        }, onCancel: {
+                            popoverClosedAt = Date()
+                            showAddressPaste = false
+                        })
                     }
                     // Location is only requested when this is pressed; manual entry stays available.
                     Button {
@@ -434,7 +467,8 @@ struct OrderComposerView: View {
             Section("More options") {
                 if store.platforms.isEmpty {
                     Text("Load platforms to choose one by name.").foregroundStyle(.secondary)
-                    Button("Load Platforms") { Task { await store.loadCatalog(.platforms) } }.disabled(!store.hasKey || store.busy)
+                    Button("Load Platforms") { Task { catalogLoadError = nil; await loadCatalogShowingFailure(.platforms) } }
+                        .disabled(!store.hasKey || store.busy)
                 } else {
                     orderCatalogPicker("Platform", selection: $draftPlatformID, records: store.platforms, placeholder: "Choose a platform")
                 }
@@ -443,7 +477,7 @@ struct OrderComposerView: View {
                         Picker("Shipping provider", selection: $shippingProvider) {
                             ForEach(orderShippingProviderChoices, id: \.code) { Text($0.name).tag($0.code) }
                         }
-                        TextField("Payment service ID (optional)", text: $paymentID)
+                        TextField("Payment service ID", text: $paymentID, prompt: Text("Optional"))
                         let ownerID = store.ownerID.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !ownerID.isEmpty {
                             // Sent with every draft; edited in Settings › Advanced, where uploads use it too.
@@ -518,24 +552,21 @@ struct OrderComposerView: View {
 
     @ViewBuilder
     var deliveryFields: some View {
-        TextField("Full name", text: $delivery.name)
+        // Prompts make an empty field visible in the grouped form, as in System Settings.
+        TextField("Full name", text: $delivery.name, prompt: Text("Required"))
         VStack(alignment: .leading, spacing: 4) {
-            TextField("Email", text: $delivery.email)
+            TextField("Email", text: $delivery.email, prompt: Text("name@example.com"))
             if let emailFieldError { Text(emailFieldError).font(.caption).foregroundStyle(.orange) }
         }
         // Country first: it decides whether State is required and how the postcode is checked.
         countryPicker
-        TextField("Street address", text: $delivery.line1)
-        TextField("Apartment, suite, etc. (optional)", text: $delivery.line2)
-        TextField("City", text: $delivery.city)
-        TextField(
-            orderStateIsRequired(orderCountryPickerValue(delivery))
-                ? "State / province"
-                : "State / province (optional)",
-            text: $delivery.state
-        )
+        TextField("Street address", text: $delivery.line1, prompt: Text("Required"))
+        TextField("Apartment, suite, etc.", text: $delivery.line2, prompt: Text("Optional"))
+        TextField("City", text: $delivery.city, prompt: Text("Required"))
+        TextField("State / province", text: $delivery.state,
+                  prompt: Text(orderStateIsRequired(orderCountryPickerValue(delivery)) ? "Required" : "Optional"))
         VStack(alignment: .leading, spacing: 4) {
-            TextField("Postal code", text: $delivery.zip)
+            TextField("Postal code", text: $delivery.zip, prompt: Text("Required"))
                 .focused($postcodeFocused)
             if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.orange) }
         }
@@ -623,7 +654,7 @@ struct OrderComposerView: View {
                 catalogOrLoad(kind: .stationery, empty: store.stationery.isEmpty, hasSelection: !item.wrappedValue.reference.isEmpty) {
                     orderCatalogPicker("Stationery", selection: item.reference, records: store.stationery, placeholder: "Choose stationery")
                 }
-                TextField("Custom image link (optional, starts with https://)", text: item.imageURL)
+                TextField("Custom image link", text: item.imageURL, prompt: Text("Optional, https://…"))
             }
             let copiedOptions = orderLineOptionsSummary(item.wrappedValue.optionsJSON)
             if !copiedOptions.isEmpty {
@@ -644,8 +675,8 @@ struct OrderComposerView: View {
             }
             DisclosureGroup("Advanced") {
                 VStack(alignment: .leading, spacing: 8) {
-                    TextField("Item name (optional)", text: item.name)
-                    TextField("SKU (optional)", text: item.sku)
+                    TextField("Item name", text: item.name, prompt: Text("Optional"))
+                    TextField("SKU", text: item.sku, prompt: Text("Optional"))
                     if item.wrappedValue.type == "PRINT", store.files.isEmpty { TextField("Model reference", text: item.reference) }
                     if item.wrappedValue.type == "PRINT", store.filaments.isEmpty { TextField("Material reference", text: item.filamentID) }
                     if item.wrappedValue.type == "COMPONENT", store.components.isEmpty { TextField("Component reference", text: item.reference) }
@@ -823,7 +854,10 @@ struct OrderComposerView: View {
         editingDelivery = true
     }
 
-    func requestClose() {
+    /// `fromCancelButton`: the footer's Cancel (or Escape). A press right after a popover closed is ignored, so the
+    /// Escape that closed Paste Address… or Add Saved Product… never closes the composer too.
+    func requestClose(fromCancelButton: Bool = false) {
+        if fromCancelButton, composerCancelFollowsPopoverClose(closedAt: popoverClosedAt, now: Date()) { return }
         if hasUnsavedInput { confirmDiscard = true } else { dismiss() }
     }
 
@@ -832,13 +866,24 @@ struct OrderComposerView: View {
         catalogsLoading = true
         defer { catalogsLoading = false }
         let types = Set(lines.map(\.type))
+        if force { catalogLoadError = nil }
         if types.contains("PRINT") {
-            if store.filaments.isEmpty || force { await store.loadCatalog(.materials) }
+            if store.filaments.isEmpty || force { await loadCatalogShowingFailure(.materials) }
             if store.files.isEmpty || force { await store.refresh() }
         }
-        if types.contains("COMPONENT"), store.components.isEmpty || force { await store.loadCatalog(.components) }
-        if types.contains("STATIONERY"), store.stationery.isEmpty || force { await store.loadCatalog(.stationery) }
-        if store.platforms.isEmpty || force { await store.loadCatalog(.platforms) }
+        if types.contains("COMPONENT"), store.components.isEmpty || force { await loadCatalogShowingFailure(.components) }
+        if types.contains("STATIONERY"), store.stationery.isEmpty || force { await loadCatalogShowingFailure(.stationery) }
+        if store.platforms.isEmpty || force { await loadCatalogShowingFailure(.platforms) }
+    }
+
+    /// A read-only catalog load whose failure is shown in the form instead of the window's alert behind this sheet.
+    func loadCatalogShowingFailure(_ kind: Destination) async {
+        guard !store.busy else { return }
+        await store.loadCatalog(kind)
+        if !store.loadedCatalogs.contains(kind), let message = store.error {
+            catalogLoadError = message
+            store.dismissError()
+        }
     }
 
     /// After an unconfirmed create, the next press asks for "Create Anyway" first. Never retried automatically.
@@ -886,9 +931,13 @@ struct OrderComposerView: View {
             let attemptDate = Date()
             Task {
                 var attempt = DraftCreateAttempt.notSent
+                var failure: String?
+                // Any failure is explained here in the form (a window alert would wait behind this sheet). An unknown
+                // outcome also gets the unconfirmed-draft notice below, as before.
                 let ran = await store.run("Create order draft", handlesError: { error in
                     attempt = .failed(error)
-                    return false
+                    failure = orderComposerCreateFailureMessage(error)
+                    return true
                 }) {
                     let response = try await store.client.request("POST", path: "/orders", body: body)
                     let data = responseObject(response)
@@ -911,6 +960,7 @@ struct OrderComposerView: View {
                                                                              marker: marker, platformID: sentPlatformID)
                     // An earlier Check Slant result no longer describes the notice.
                     draftCheckOutcome = nil
+                    if let failure { validation = failure }
                 }
             }
         } catch { validation = error.localizedDescription }
@@ -983,6 +1033,12 @@ struct OrdersView: View {
     /// The list's order IDs when the first of a run of charge reviews opened, so Review Next Draft keeps its place
     /// however the list changes meanwhile (OrderDetailExtras.swift).
     @State private var reviewListSnapshot: [String] = []
+    /// The drafts in that snapshot when it was taken, for "Draft 2 of 5" (`orderReviewRunPositionText`).
+    @State private var reviewRunDraftIDs: [String] = []
+    /// A run of reviews is going (Review Drafts One by One…, or Review Next Draft after a payment), and the order
+    /// whose review is open or was last closed. Choosing another order ends the run; nothing here ever pays.
+    @State private var reviewRunActive = false
+    @State private var reviewRunCurrentID: String?
     /// Only the Arrive by column has a customization ID, so this controls its visibility alone.
     @State private var columnCustomization = TableColumnCustomization<OrderTableRow>()
 
@@ -1170,7 +1226,7 @@ struct OrdersView: View {
                     .labelsHidden()
                     .disabled(!store.hasKey || store.busy)
                     Section {
-                        Toggle("Needs attention (loaded orders)", isOn: needsAttentionBinding)
+                        Toggle("Needs Attention (Loaded Orders)", isOn: needsAttentionBinding)
                             .disabled(!store.ordersLoaded)
                     }
                 } label: {
@@ -1178,7 +1234,7 @@ struct OrdersView: View {
                           ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                 }
                 .help(needsAttentionOnly
-                      ? "Showing loaded orders that need attention. Choose a status, or turn off Needs attention."
+                      ? "Showing loaded orders that need attention. Choose a status, or turn off Needs Attention."
                       : "Show orders with this status, or only loaded orders that are late, stuck or not yet placed")
             }
             ToolbarItem(placement: .automatic) {
@@ -1249,6 +1305,8 @@ struct OrdersView: View {
             store.exportOrdersCSV(tableRows.map(\.record), moreOnServer: store.ordersHasMore && !store.orderSearchActive)
         }
         .onChange(of: selection) { _, new in
+            // Choosing another order ends a run of reviews (its next review sets the selection first, so it stays).
+            if reviewRunActive, new != reviewRunCurrentID { endReviewRun() }
             pendingLoadID = nil
             detail = nil
             if let new { load(new) }
@@ -1276,7 +1334,11 @@ struct OrdersView: View {
         .sheet(item: $pendingConfirm, onDismiss: openNextReviewIfRequested) { request in
             OrderActionConfirmSheet(method: request.method, orderID: request.orderID, onCompleted: { orderID, order in
                 applyCompletedOrder(orderID, order)
-            }, nextDraft: { nextDraftForReview(after: $0) }, onReviewNext: { id in
+            }, nextDraft: { nextDraftForReview(after: $0) },
+               runPosition: request.method == "POST" && reviewRunActive
+                   ? orderReviewRunPositionText(draftIDs: reviewRunDraftIDs, current: request.orderID) : nil,
+               inReviewRun: request.method == "POST" && reviewRunActive,
+               onReviewNext: { id in
                 // Opens only after this review has closed; that review then needs its own Pay press.
                 nextReviewAfterDismiss = id
                 pendingConfirm = nil
@@ -1357,8 +1419,17 @@ struct OrdersView: View {
     }
     /// Opens the charge review. A review opened from the list or the detail starts a new run (its snapshot of the list);
     /// Review Next Draft continues the current run's.
-    func presentChargeReview(orderID: String, continuingRun: Bool = false) {
-        if !continuingRun { reviewListSnapshot = tableRows.map(\.id) }
+    /// `startsRun`: Review Drafts One by One…, whose reviews show "Draft 2 of 5" and can skip to the next draft.
+    func presentChargeReview(orderID: String, continuingRun: Bool = false, startsRun: Bool = false) {
+        if !continuingRun {
+            reviewListSnapshot = tableRows.map(\.id)
+            reviewRunDraftIDs = orderReviewRunDraftIDs(rows: orderDraftReviewRows(snapshotIDs: reviewListSnapshot, orders: store.orders),
+                                                       isLocked: { store.isOutcomeUnknown(orderID: $0) })
+            reviewRunActive = startsRun
+        } else {
+            reviewRunActive = true
+        }
+        reviewRunCurrentID = reviewRunActive ? orderID : nil
         pendingConfirm = PendingOrderConfirm(method: "POST", orderID: orderID)
     }
     /// Review Drafts One by One…: opens the existing charge review for the first draft in the list. It never pays.
@@ -1366,7 +1437,25 @@ struct OrdersView: View {
         guard !store.menuCommandsBlockedByModalUI, !store.busy, pendingConfirm == nil,
               let next = nextDraftForReview(after: nil, in: tableRows.map(\.id)) else { return }
         selection = next.id
-        presentChargeReview(orderID: next.id)
+        presentChargeReview(orderID: next.id, startsRun: true)
+    }
+    /// The detail's way on after Go Back during a run: the position, and the next draft (nil when there is none, the
+    /// run has ended, or a review is open).
+    func reviewRunContinuation(for id: String) -> (position: String, nextID: String, nextCaption: String)? {
+        guard reviewRunActive, reviewRunCurrentID == id, pendingConfirm == nil,
+              let next = nextDraftForReview(after: id) else { return nil }
+        let position = orderReviewRunPositionText(draftIDs: reviewRunDraftIDs, current: id).map { "Reviewing drafts one by one: \($0)." }
+        return (position ?? "Reviewing drafts one by one.", next.id, next.caption)
+    }
+    /// Opens the next draft's review; that review loads the order fresh and needs its own Pay press.
+    func continueReviewRun(to id: String) {
+        guard pendingConfirm == nil, !store.busy, store.orders.contains(where: { $0.id == id }) else { return }
+        selection = id
+        presentChargeReview(orderID: id, continuingRun: true)
+    }
+    func endReviewRun() {
+        reviewRunActive = false
+        reviewRunCurrentID = nil
     }
     func openNextReviewIfRequested() {
         guard let id = nextReviewAfterDismiss else { return }
@@ -1525,19 +1614,15 @@ struct OrdersView: View {
                         Button { load(selected.id) } label: { Image(systemName: "arrow.clockwise") }
                             .accessibilityLabel("Reload order").help("Reload order").disabled(store.busy)
                     }
+                    // Why this order needs attention (OrderFollowUp.swift), which the list shows only as a marker.
+                    if let attention = orderAttention(displayed, now: Date()) {
+                        Label("Needs attention: \(attention.detail)", systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     // Actions sit under the header so placing a draft never needs scrolling; both open a review first.
+                    // The destructive Cancel & Refund… comes last.
                     HStack {
-                        if canCancelSelected {
-                            let status = (displayed["status"] as? String) ?? ""
-                            Button(orderCancelActionTitle(status), role: .destructive) {
-                                pendingConfirm = PendingOrderConfirm(method: "DELETE", orderID: selected.id)
-                            }
-                            .disabled(store.busy)
-                            .fixedSize()
-                            .help("Review cancellation")
-                        } else if let reason = orderDetailCancelBlockedNote((displayed["status"] as? String) ?? "") {
-                            Text(reason).font(.caption).foregroundStyle(.secondary)
-                        }
                         Spacer()
                         let duplicateBlocked = store.duplicateOrderBlockedReason(orderID: selected.id)
                         Button("Duplicate as New Draft…") { Task { await store.duplicateOrderAsDraft(orderID: selected.id) } }
@@ -1557,9 +1642,34 @@ struct OrdersView: View {
                                 .fixedSize()
                                 .help("Put together a message about this order for Slant support, to copy")
                         }
+                        if canCancelSelected {
+                            let status = (displayed["status"] as? String) ?? ""
+                            Button(orderCancelActionTitle(status), role: .destructive) {
+                                pendingConfirm = PendingOrderConfirm(method: "DELETE", orderID: selected.id)
+                            }
+                            .disabled(store.busy)
+                            .fixedSize()
+                            .help("Review cancellation")
+                        }
                     }
                     if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
                         Text(orderDetailDraftCaption).font(.caption).foregroundStyle(.secondary)
+                    } else if !canCancelSelected, let reason = orderDetailCancelBlockedNote((displayed["status"] as? String) ?? "") {
+                        // Under the row with its own width, rather than squeezed beside the buttons.
+                        Text(reason).font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    // Review Drafts One by One…: after Go Back the run can still move on (never pays by itself).
+                    if let run = reviewRunContinuation(for: selected.id) {
+                        HStack {
+                            Text(run.position).font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Stop Reviewing") { endReviewRun() }
+                                .help("End this run of reviews. Nothing is paid.")
+                            Button("Review Next Draft…") { continueReviewRun(to: run.nextID) }
+                                .disabled(store.busy || pendingConfirm != nil)
+                                .help("Open the review for the next draft in the list (\(run.nextCaption)). Nothing is paid until you press Pay in that review.")
+                        }
                     }
                     Divider()
                     OrderSummary(order: displayed)
@@ -1627,9 +1737,13 @@ struct OrderActionConfirmSheet: View {
     let method: String
     let orderID: String
     let onCompleted: (_ orderID: String, _ order: [String: Any]) -> Void
-    /// Review Next Draft (OrderDetailExtras.swift): offered only after this order was placed. It closes this review
-    /// and opens a new one for the next draft, which loads fresh and needs its own Pay press; it never pays.
+    /// Review Next Draft… (OrderDetailExtras.swift): offered after this order was placed, and as Skip to Next Draft…
+    /// before paying during Review Drafts One by One…. It closes this review and opens a new one for the next draft,
+    /// which loads fresh and needs its own Pay press; it never pays.
     var nextDraft: ((_ after: String) -> (id: String, caption: String)?)? = nil
+    /// "Draft 2 of 5" during a run of reviews.
+    var runPosition: String? = nil
+    var inReviewRun = false
     var onReviewNext: ((_ orderID: String) -> Void)? = nil
     @State private var fresh: [String: Any]?
     @State private var loadState: OrderConfirmLoadState = .loading
@@ -1668,7 +1782,11 @@ struct OrderActionConfirmSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(sheetTitle).font(.title2.weight(.bold))
+            HStack(alignment: .firstTextBaseline) {
+                Text(sheetTitle).font(.title2.weight(.bold))
+                Spacer()
+                if let runPosition { Text(runPosition).foregroundStyle(.secondary) }
+            }
             Text(sheetBodyCopy).foregroundStyle(.secondary)
             switch loadState {
             case .loading:
@@ -1705,8 +1823,9 @@ struct OrderActionConfirmSheet: View {
                         // A receipt: labels on the left, values in a right-aligned column.
                         VStack(alignment: .leading, spacing: 6) {
                             LabeledContent("Status") { Text(orderStatusTitle(status ?? "")) }
-                            LabeledContent("Printing") { Text("\(money(order["printingCost"])) USD").monospacedDigit() }
-                            LabeledContent("Delivery") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
+                            // "Print cost", as in the order detail: "Printing" is also a status, shown just above.
+                            LabeledContent("Print cost") { Text("\(money(order["printingCost"])) USD").monospacedDigit() }
+                            LabeledContent("Delivery cost") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
                             LabeledContent("Total") { Text("\(orderTotalMoney(order)) USD").monospacedDigit().fontWeight(.semibold) }
                             LabeledContent("Recipient") { Text(orderRecipientDisplay(order)).lineLimit(2) }
                             if let reference {
@@ -1724,18 +1843,28 @@ struct OrderActionConfirmSheet: View {
             } else if let actionMessage {
                 Text(actionMessage).font(.callout).foregroundStyle(.orange)
             }
-            if writing { Label("Working…", systemImage: "ellipsis").font(.caption).foregroundStyle(.secondary) }
+            if writing {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Working…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: 0)
             HStack {
                 Button(writeSucceeded ? "Done" : "Go Back", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(writing)
-                // Review Next Draft: never the default button, and kept away from the trailing Pay position so a
-                // repeated click can't land on the next review's Pay.
-                if isPay, writeSucceeded, let onReviewNext, let next = nextDraft?(orderID) {
-                    Button("Review Next Draft") { onReviewNext(next.id) }
-                        .disabled(store.busy)
-                        .help("Close this and review the next draft in the list. Nothing is paid until you press Pay in that review.")
+                // Review Next Draft… (after paying) or Skip to Next Draft… (before paying, during Review Drafts One by
+                // One…): never the default button, and kept away from the trailing Pay position so a repeated click
+                // can't land on the next review's Pay. Not offered once a Pay was sent without a confirmed result.
+                if isPay, let onReviewNext, let next = nextDraft?(orderID),
+                   orderReviewOffersNextDraft(inRun: inReviewRun, writeSucceeded: writeSucceeded,
+                                              writeAttempted: writeAttempted, writing: writing) {
+                    Button(writeSucceeded ? "Review Next Draft…" : "Skip to Next Draft…") { onReviewNext(next.id) }
+                        .disabled(store.busy || writing)
+                        .help(writeSucceeded
+                              ? "Close this and review the next draft in the list. Nothing is paid until you press Pay in that review."
+                              : "Leave this draft unpaid and review the next one in the list. Nothing is paid until you press Pay in that review.")
                     Text(next.caption).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
                 Spacer()
@@ -1966,6 +2095,23 @@ func orderConfirmRefusalMessage(isPay: Bool, error: Error) -> String {
     let detail = friendlyAPIMessage(error).trimmingCharacters(in: .whitespacesAndNewlines)
     return detail.isEmpty ? lead + " Review the order before trying again." : detail
 }
+/// The composer's note after Create Draft failed: for a definite refusal (400/422) Slant's own words, otherwise the
+/// usual message. An unknown outcome is also explained by the unconfirmed-draft notice.
+func orderComposerCreateFailureMessage(_ error: Error) -> String {
+    if case .http(let status, let body, _, _)? = error as? APIError, status == 400 || status == 422,
+       let message = shortAPIMessage(from: body)?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+        let sentence = message.last.map { ".!?".contains($0) } == true ? message : message + "."
+        return "Slant didn’t create the draft. Slant said: “" + sentence + "”"
+    }
+    let detail = friendlyAPIMessage(error).trimmingCharacters(in: .whitespacesAndNewlines)
+    return detail.isEmpty ? "The draft wasn’t created." : detail
+}
+/// True for a Cancel press (or Escape) that follows a popover closing so closely that it is the same keystroke.
+func composerCancelFollowsPopoverClose(closedAt: Date?, now: Date) -> Bool {
+    guard let closedAt else { return false }
+    let elapsed = now.timeIntervalSince(closedAt)
+    return elapsed >= 0 && elapsed < 0.4
+}
 func orderConfirmLoadStateAfterRun(succeeded: Bool, skippedBusy: Bool) -> OrderConfirmLoadState {
     if succeeded { return .loaded }
     if skippedBusy { return .loading }
@@ -2084,10 +2230,14 @@ func orderMatchesSearch(_ order: Record, query: String, modelNames: [String: Str
     return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
 }
 
+/// The bundled OpenAPI's statuses plus `SUBMITTED`, which live Slant returned for an order the owner had just paid
+/// (26 Oct 2026) and which the OpenAPI doesn't list. It is treated as placed everywhere, like PAID.
 let orderKnownStatuses: Set<String> = [
-    "DRAFT", "PAID", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING",
+    "DRAFT", "PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING",
     "COMPLETED", "IN_REVIEW", "AWAITING_SHIPMENT", "SHIPPED", "DELIVERED", "CANCELED", "PAYMENT_ERROR"
 ]
+/// Statuses Slant returns that its bundled OpenAPI doesn't list (seen live).
+let orderUndocumentedLiveStatuses: Set<String> = ["SUBMITTED"]
 
 func orderCanRequestCancellation(_ status: String) -> Bool {
     let normalized = status.uppercased()
@@ -2134,7 +2284,7 @@ func orderCancelButtonBaseTitle(_ status: String) -> String {
     switch status.uppercased() {
     case "DRAFT": return "Cancel Draft"
     case "SHIPPED", "DELIVERED": return "Request Refund"
-    case "QUEUED", "PRINTING", "AWAITING_SHIPMENT", "PROCESSING", "PAID", "IN_REVIEW",
+    case "QUEUED", "PRINTING", "AWAITING_SHIPMENT", "PROCESSING", "PAID", "SUBMITTED", "IN_REVIEW",
          "POST_PROCESSING", "ITEMS_ON_SHELF", "COMPLETED":
         return "Cancel & Refund"
     case "PAYMENT_ERROR": return "Cancel Order"
@@ -2155,7 +2305,7 @@ func orderCancelSheetBody(_ status: String) -> String {
         return "This order already shipped, so Slant refunds it but can't stop delivery."
     case "PAYMENT_ERROR":
         return "Cancellation may be possible. A refund isn’t promised for payment-problem orders."
-    case "QUEUED", "PRINTING", "AWAITING_SHIPMENT", "PROCESSING", "PAID", "IN_REVIEW",
+    case "QUEUED", "PRINTING", "AWAITING_SHIPMENT", "PROCESSING", "PAID", "SUBMITTED", "IN_REVIEW",
          "POST_PROCESSING", "ITEMS_ON_SHELF", "COMPLETED":
         return "Slant will cancel when eligible and refund according to their rules."
     default:
@@ -2166,6 +2316,7 @@ func orderStatusTitle(_ status: String) -> String {
     switch status.uppercased() {
     case "DRAFT": "Draft"
     case "PAID": "Paid"
+    case "SUBMITTED": "Submitted"
     case "QUEUED": "In queue"
     case "PROCESSING": "Processing"
     case "PRINTING": "Printing"
@@ -2707,6 +2858,9 @@ struct OrderSummary: View {
                         Spacer()
                         if row.0 == "Tracking link", let url = URL(string: row.1) {
                             Link(row.1, destination: url)
+                        } else if ["Carrier", "Service", "Shipment status"].contains(row.0) {
+                            // Readable words for Slant's constants (SHIPPO, INTERNATIONAL); display only.
+                            Text(orderAPIValueTitle(row.1)).textSelection(.enabled).help(row.1)
                         } else {
                             Text(row.1).textSelection(.enabled)
                         }

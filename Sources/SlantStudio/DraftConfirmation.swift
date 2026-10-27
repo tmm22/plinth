@@ -183,14 +183,24 @@ func draftCheckButtonTitle(count: Int) -> String {
     count > 1 ? "Look for Drafts on Slant" : "Look for Draft on Slant"
 }
 
+/// Shown in the composer or Import Orders when Look for Draft on Slant couldn't read the orders. Nothing changes:
+/// every attempt stays unconfirmed.
+func draftMarkerSearchFailureText(_ message: String) -> String {
+    let detail = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    let lead = "Couldn’t look on Slant, so nothing was confirmed."
+    return detail.isEmpty ? lead : lead + " " + detail
+}
+
 // MARK: - Store hook
 
 extension StudioStore {
     /// Looks for orders carrying `markers` (marker → the platform its draft was sent to). The loaded list is checked
     /// first, without a request; then, through `run` (so never while busy), read-only `GET /orders` newest first, up to
     /// 3 pages of 100 per platform, stopping as soon as every marker is found or the rate limit runs low. Nil when it
-    /// didn't run or a request failed (the error is shown as usual). Never retried, never writes an order.
-    func searchOrdersForDraftMarkers(_ markers: [String: String]) async -> DraftMarkerSearchResult? {
+    /// didn't run or a request failed. A failure goes to `onFailure` (the sheet that asked shows it) instead of the
+    /// window's alert, which would wait behind that sheet. Never retried, never writes an order.
+    func searchOrdersForDraftMarkers(_ markers: [String: String],
+                                     onFailure: (String) -> Void = { _ in }) async -> DraftMarkerSearchResult? {
         guard !busy else { return nil }
         var result = DraftMarkerSearchResult()
         let wanted = Set(markers.keys.map { $0.lowercased() })
@@ -203,7 +213,10 @@ extension StudioStore {
             platforms[platform.trimmingCharacters(in: .whitespacesAndNewlines), default: []].insert(marker.lowercased())
         }
         var completed = false
-        let ran = await run("Look for unconfirmed drafts on Slant") {
+        let ran = await run("Look for unconfirmed drafts on Slant", handlesError: { error in
+            onFailure(friendlyAPIMessage(error))
+            return true
+        }) {
             for platform in platforms.keys.sorted() {
                 guard let platformMarkers = platforms[platform] else { continue }
                 var page = 1
@@ -245,6 +258,8 @@ struct UnconfirmedDraftNotice: View {
     @EnvironmentObject var store: StudioStore
     @Binding var outcome: DraftCreateCheckOutcome?
     @State private var checking = false
+    /// Why the last look couldn't read Slant's orders (shown here, not in the window's alert behind the composer).
+    @State private var failure: String?
     /// Found orders not in the loaded list, kept for Show Order while the composer is open.
     @State private var foundRecords: [String: Record] = [:]
     let onShowOrder: (Record) -> Void
@@ -260,6 +275,11 @@ struct UnconfirmedDraftNotice: View {
             if let outcome {
                 Label(outcome.message, systemImage: outcome.allConfirmed ? "checkmark.circle" : "info.circle")
                     .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let failure {
+                Label(draftMarkerSearchFailureText(failure), systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
@@ -289,9 +309,14 @@ struct UnconfirmedDraftNotice: View {
         for attempt in attempts { if let marker = attempt.marker { markers[marker] = attempt.platformID } }
         guard !markers.isEmpty, !store.busy else { return }
         checking = true
+        failure = nil
         Task {
             defer { checking = false }
-            guard let result = await store.searchOrdersForDraftMarkers(markers) else { return }
+            var failed: String?
+            guard let result = await store.searchOrdersForDraftMarkers(markers, onFailure: { failed = $0 }) else {
+                failure = failed
+                return
+            }
             for record in result.found.values { foundRecords[record.id] = record }
             outcome = draftCreateCheckOutcome(attempts: attempts, result: result, earlierUnlisted: store.unconfirmedDraftCreatesOverflowed)
             // Found markers confirm those drafts; the rest stay unconfirmed (not finding one proves nothing).

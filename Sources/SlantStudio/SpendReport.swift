@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 /// Statuses whose orders Slant has charged for. Drafts, cancelled orders, payment errors and any status Studio doesn't
 /// know are left out (and counted), so a new Slant status never adds spend by accident.
 let spendReportCountedStatuses: Set<String> = [
-    "PAID", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING", "COMPLETED", "IN_REVIEW",
+    "PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING", "COMPLETED", "IN_REVIEW",
     "AWAITING_SHIPMENT", "SHIPPED", "DELIVERED"
 ]
 
@@ -84,8 +84,10 @@ struct SpendReport: Equatable {
     var ordersWithoutTotal = 0
     var excludedDrafts = 0
     var excludedCancelled = 0
-    /// Payment errors and statuses Studio doesn't know.
-    var excludedOther = 0
+    var excludedPaymentProblems = 0
+    /// Orders whose status Studio doesn't recognise (or that have none), and those statuses as Slant sent them.
+    var excludedUnrecognised = 0
+    var unrecognisedStatuses: Set<String> = []
     /// Counted-status orders without a readable creation date; left out of months and items.
     var undated = 0
     /// Order items whose quantity wasn't a whole number above zero; left out of units.
@@ -117,7 +119,10 @@ func spendReport(orders records: [Record], modelNames: [String: String] = [:], p
             switch status {
             case "DRAFT": report.excludedDrafts += 1
             case "CANCELED", "CANCELLED": report.excludedCancelled += 1
-            default: report.excludedOther += 1
+            case "PAYMENT_ERROR": report.excludedPaymentProblems += 1
+            default:
+                report.excludedUnrecognised += 1
+                report.unrecognisedStatuses.insert(String(status.prefix(40)))
             }
             continue
         }
@@ -339,10 +344,20 @@ func spendReportExclusionLine(_ report: SpendReport) -> String? {
     let parts = [
         count(report.excludedDrafts, "draft", "drafts"),
         count(report.excludedCancelled, "cancelled order", "cancelled orders"),
-        count(report.excludedOther, "order with a payment error or another status", "orders with a payment error or another status"),
+        count(report.excludedPaymentProblems, "order with a payment problem", "orders with a payment problem"),
+        count(report.excludedUnrecognised, "order with a status Studio doesn’t recognise", "orders with a status Studio doesn’t recognise")
+            .map { $0 + spendReportUnrecognisedStatusNames(report.unrecognisedStatuses) },
         count(report.undated, "order without a date", "orders without a date"),
     ].compactMap { $0 }
     return parts.isEmpty ? nil : "Left out: " + parts.joined(separator: ", ") + "."
+}
+
+/// " (REFUNDED, no status)": Slant's own words for the statuses left out, at most three, then how many more.
+func spendReportUnrecognisedStatusNames(_ statuses: Set<String>) -> String {
+    guard !statuses.isEmpty else { return "" }
+    let names = statuses.map { $0.isEmpty ? "no status" : $0 }.sorted()
+    let shown = names.prefix(3).joined(separator: ", ")
+    return names.count > 3 ? " (\(shown) and \(names.count - 3) more)" : " (\(shown))"
 }
 
 func spendReportMonthTitle(_ month: SpendReportMonth, calendar: Calendar = .current) -> String {
@@ -1000,7 +1015,7 @@ struct SpendingReportSheet: View {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
                     GridRow {
                         Text("Product"); Text("Orders").gridColumnAlignment(.trailing); Text("Units").gridColumnAlignment(.trailing)
-                        Text("Printing").gridColumnAlignment(.trailing); Text("Each").gridColumnAlignment(.trailing)
+                        Text("Print cost").gridColumnAlignment(.trailing); Text("Each").gridColumnAlignment(.trailing)
                     }
                     .font(.caption).foregroundStyle(.secondary)
                     ForEach(report.productCosts.prefix(spendReportTopItemLimit)) { cost in

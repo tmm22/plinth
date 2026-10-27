@@ -95,6 +95,12 @@ struct OrderWatchSettingsSection: View {
                     Text("Not yet").foregroundStyle(.secondary)
                 }
             }
+            // A refused key (401/403) or Slant's rate limit (429) holds checks back; Activity may be hidden.
+            if watch.enabled, let caption = orderWatchHoldCaption(watch.hold, now: Date()) {
+                Label(caption, systemImage: "pause.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button("Forget Saved Statuses…") { confirmForget = true }
                 .disabled(watch.snapshot.orders.isEmpty)
         } header: {

@@ -233,6 +233,8 @@ struct SavedProductsSheet: View {
     @State private var confirmDiscardEdit = false
     @State private var saveError: String?
     @State private var catalogsLoading = false
+    /// A catalog load started here that failed: shown in the sheet, since the window's alert waits behind it.
+    @State private var catalogLoadError: String?
     /// Check Cost… (ProductCostCheck.swift) shows in place of the list; its results go when it closes.
     @State private var costCheckProduct: SavedProduct?
 
@@ -288,7 +290,7 @@ struct SavedProductsSheet: View {
     private var productList: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Saved Products").font(.title2.weight(.semibold))
+                Text("Saved products").font(.title2.weight(.semibold))
                 Text("Products you sell often, ready to add to an order draft in one step. A product keeps its items, materials and SKU on this Mac — never prices or customer details.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -297,11 +299,11 @@ struct SavedProductsSheet: View {
             .padding(16)
             if store.savedProducts.isEmpty {
                 ContentUnavailableView {
-                    Label("No Saved Products", systemImage: "shippingbox")
+                    Label("No saved products", systemImage: "shippingbox")
                 } description: {
                     Text("Add a product here, or choose Save as Product… from a model’s More actions menu in Models.")
                 } actions: {
-                    Button("Add Product") { beginEditing(SavedProduct(lines: [newSavedProductLine()]), isNew: true) }
+                    Button("Add Product…") { beginEditing(SavedProduct(lines: [newSavedProductLine()]), isNew: true) }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -326,7 +328,7 @@ struct SavedProductsSheet: View {
             }
             HStack {
                 Button { beginEditing(SavedProduct(lines: [newSavedProductLine()]), isNew: true) } label: {
-                    Label("Add Product", systemImage: "plus")
+                    Label("Add Product…", systemImage: "plus")
                 }
                 Button("Edit…") { if let selectedProduct { beginEditing(selectedProduct, isNew: false) } }
                     .disabled(selectedProduct == nil)
@@ -371,15 +373,15 @@ struct SavedProductsSheet: View {
         let blockedReason = savedProductSaveBlockedReason(product.wrappedValue, in: store.savedProducts, localModels: store.localModels)
         let skuConflict = savedProductSKUConflict(product.wrappedValue.sku, for: product.wrappedValue.id, in: store.savedProducts)
         return VStack(spacing: 0) {
-            Text(editorIsNew ? "New Product" : "Edit Product")
+            Text(editorIsNew ? "New product" : "Edit product")
                 .font(.title2.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top], 16)
             Form {
                 Section("Product") {
-                    TextField("Name", text: product.name)
+                    TextField("Name", text: product.name, prompt: Text("Required"))
                     VStack(alignment: .leading, spacing: 4) {
-                        TextField("SKU (optional)", text: product.sku)
+                        TextField("SKU", text: product.sku, prompt: Text("Optional"))
                         if let skuConflict {
                             Label("\(skuConflict) Each SKU can belong to one product.", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption).foregroundStyle(.orange)
@@ -396,7 +398,7 @@ struct SavedProductsSheet: View {
                         }
                     }
                     Button { product.wrappedValue.lines.append(newSavedProductLine()) } label: {
-                        Label("Add another item", systemImage: "plus")
+                        Label("Add Another Item", systemImage: "plus")
                     }
                 } header: {
                     Text("Items")
@@ -471,7 +473,7 @@ struct SavedProductsSheet: View {
             case "STATIONERY":
                 catalogField(.stationery, title: "Stationery", placeholder: "Choose stationery", records: store.stationery, selection: line.reference)
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField("Custom image link (optional, starts with https://)", text: line.imageURL)
+                    TextField("Custom image link", text: line.imageURL, prompt: Text("Optional, https://…"))
                     if !isHTTPSImageURL(line.wrappedValue.imageURL) {
                         Text("Enter an https image link with a website address, or leave it blank.")
                             .font(.caption).foregroundStyle(.orange)
@@ -480,7 +482,7 @@ struct SavedProductsSheet: View {
             default:
                 Text("Choose a type for this item.").font(.callout).foregroundStyle(.orange)
             }
-            TextField("Item name (optional)", text: line.name)
+            TextField("Item name", text: line.name, prompt: Text("Optional"))
         }
     }
 
@@ -575,12 +577,19 @@ struct SavedProductsSheet: View {
     @ViewBuilder
     private func catalogNotLoaded(_ kind: Destination) -> some View {
         let loaded = store.loadedCatalogs.contains(kind)
-        HStack {
-            Text(loaded ? catalogEmptyMessage(kind) : (catalogsLoading ? "Loading…" : "Not loaded yet."))
-                .font(.callout).foregroundStyle(.secondary)
-            if !loaded, !catalogsLoading {
-                Button("Load \(kind.rawValue)") { loadCatalogs([kind]) }
-                    .disabled(!store.hasKey || store.busy)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(loaded ? catalogEmptyMessage(kind) : (catalogsLoading ? "Loading…" : "Not loaded yet."))
+                    .font(.callout).foregroundStyle(.secondary)
+                if !loaded, !catalogsLoading {
+                    Button("Load \(kind.rawValue)") { loadCatalogs([kind]) }
+                        .disabled(!store.hasKey || store.busy)
+                }
+            }
+            if !loaded, !catalogsLoading, let catalogLoadError {
+                Label(catalogLoadError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -645,8 +654,17 @@ struct SavedProductsSheet: View {
     private func loadCatalogs(_ kinds: [Destination]) {
         guard store.hasKey, !kinds.isEmpty, !catalogsLoading else { return }
         catalogsLoading = true
+        catalogLoadError = nil
         Task {
-            for kind in kinds { await store.loadCatalog(kind) }
+            for kind in kinds {
+                // A load skipped while another request runs leaves the Load button; only a failed one is reported.
+                guard !store.busy else { continue }
+                await store.loadCatalog(kind)
+                if !store.loadedCatalogs.contains(kind), let message = store.error {
+                    catalogLoadError = message
+                    store.dismissError()
+                }
+            }
             catalogsLoading = false
         }
     }

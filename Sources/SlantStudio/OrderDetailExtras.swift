@@ -446,6 +446,31 @@ func orderDraftReviewRows(snapshotIDs: [String], orders: [Record]) -> [(id: Stri
     return snapshotIDs.map { (id: $0, status: statuses[$0] ?? "") }
 }
 
+/// The drafts a run of reviews can reach, in list order, when it begins: unlocked DRAFT rows, each once. Only counts
+/// for "Draft 2 of 5"; which review opens next is still `orderNextDraftToReview`'s choice.
+func orderReviewRunDraftIDs(rows: [(id: String, status: String)], isLocked: (String) -> Bool) -> [String] {
+    var seen = Set<String>()
+    return rows.compactMap { row in
+        guard !row.id.isEmpty, row.status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "DRAFT",
+              !isLocked(row.id), seen.insert(row.id).inserted else { return nil }
+        return row.id
+    }
+}
+
+/// "Draft 2 of 5" for the review of `current`, or nil when the run has a single draft or doesn't include it.
+func orderReviewRunPositionText(draftIDs: [String], current: String) -> String? {
+    guard draftIDs.count > 1, let index = draftIDs.firstIndex(of: current) else { return nil }
+    return "Draft \(index + 1) of \(draftIDs.count)"
+}
+
+/// Whether the charge review offers the next draft: Review Next Draft… once this order is placed, or Skip to Next
+/// Draft… during a run before Pay is pressed. Never while a Pay is being sent or after one whose result is unknown.
+func orderReviewOffersNextDraft(inRun: Bool, writeSucceeded: Bool, writeAttempted: Bool, writing: Bool) -> Bool {
+    if writing { return false }
+    if writeSucceeded { return true }
+    return inRun && !writeAttempted
+}
+
 /// The list's orders, in the order shown, as the ID and Slant status that `orderNextDraftToReview` reads.
 func orderDraftReviewRows(_ records: [Record]) -> [(id: String, status: String)] {
     records.map { record in

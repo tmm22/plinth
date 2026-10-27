@@ -392,9 +392,7 @@ func importedSaleReviewEstimate(_ amounts: ImportedSaleAmounts?, order: [String:
     guard !listingFee || amounts.unitsSold != nil else { return nil }
     let result = profitCheck(itemTotal: item, shippingCharged: shipping, preset: preset, rates: rates, offsiteAds: false,
                              unitsSold: amounts.unitsSold ?? 1, slantTotal: slantTotal)
-    let margin = result.marginPercent.map { value -> String in
-        value < 0 ? " (−\(profitRateText(-value))%)" : " (\(profitRateText(value))%)"
-    } ?? ""
+    let margin = result.marginPercent.map { " (\(profitPercentText($0)))" } ?? ""
     let basis = preset.hasRates ? "at your saved fee rates" : "before marketplace fees"
     if result.profit < 0 {
         return ImportedSaleReviewEstimate(text: "This order would lose about \(profitMoney(-result.profit))\(margin) \(basis)", isLoss: true)

@@ -1540,7 +1540,7 @@ struct OrderImportSheet: View {
         let currentChecks = parsed.map(checks(for:)) ?? [:]
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Import Orders").font(.title2.bold())
+                Text("Import orders").font(.title2.bold())
                 Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Studio’s template. Each item must match a saved product by SKU, or one you choose under Match products. Drafts aren’t charged: afterwards you review and pay them in Orders, one at a time or together with Pay Several Drafts… in the Orders toolbar’s More menu.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let hint = shopifyImportIntroHint(shop: shopify.shop) {
@@ -1715,6 +1715,8 @@ struct OrderImportSheet: View {
                                 Text("Leave out of drafts").tag(OrderImportProductChoice?.some(.leaveOut))
                             }
                             .labelsHidden()
+                            // VoiceOver doesn't read a hidden label.
+                            .accessibilityLabel(key.kind == .sku ? "Product for SKU \(key.display)" : "Product for “\(key.display)”")
                             .frame(width: 260)
                             .disabled(runner.running)
                         }
@@ -1747,6 +1749,7 @@ struct OrderImportSheet: View {
                 get: { ticked.contains(order.id) && check.canTick && !lockedByRun },
                 set: { if $0 { ticked.insert(order.id) } else { ticked.remove(order.id) } }))
                 .labelsHidden()
+                .accessibilityLabel("Import order \(order.sourceOrderID)")
                 .toggleStyle(.checkbox)
                 .disabled(!check.canTick || lockedByRun || runner.running)
             VStack(alignment: .leading, spacing: 3) {
@@ -1856,7 +1859,12 @@ struct OrderImportSheet: View {
         for value in pending.values { markers[value.marker] = value.platformID }
         guard !markers.isEmpty, !store.busy, !runner.running else { return }
         Task {
-            guard let result = await store.searchOrdersForDraftMarkers(markers) else { return }
+            // A failed read is explained here: the window's alert would wait behind this sheet.
+            var failure: String?
+            guard let result = await store.searchOrdersForDraftMarkers(markers, onFailure: { failure = $0 }) else {
+                if let failure { importCheckMessage = draftMarkerSearchFailureText(failure) }
+                return
+            }
             var confirmed = 0
             for (key, value) in pending {
                 guard let record = result.found[value.marker.lowercased()] else { continue }

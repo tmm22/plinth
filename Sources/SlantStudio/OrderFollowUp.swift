@@ -75,7 +75,8 @@ let orderAttentionProductionDays = 5
 
 /// Placed and being made, not yet shipped (Slant's statuses between payment and SHIPPED).
 let orderAttentionProductionStatuses: Set<String> = [
-    "PAID", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING", "COMPLETED", "IN_REVIEW", "AWAITING_SHIPMENT"
+    "PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING", "COMPLETED", "IN_REVIEW",
+    "AWAITING_SHIPMENT"
 ]
 
 /// Why an order needs a look. Worked out locally from the loaded order and the clock; never a request.
@@ -181,9 +182,10 @@ struct OrderStatusCell: View {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).imageScale(.small)
                 Text(status).lineLimit(1)
             }
-            .help("\(status). \(attention.detail)")
+            // The tooltip goes on the combined element: on the HStack before `.combine` it reached VoiceOver twice.
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(status), needs attention: \(attention.detail)")
+            .help("\(status). \(attention.detail)")
         } else {
             Text(status).lineLimit(1).help(status)
         }
@@ -396,7 +398,7 @@ struct ShopFollowUpSheet: View {
                     Label(groups.doneCount > 0 ? "All orders marked as done" : "No tracking yet", systemImage: "shippingbox")
                 } description: {
                     Text(groups.doneCount > 0
-                         ? "Every loaded order with tracking is marked as done in your shop. Show Marked Orders lists them again."
+                         ? "Every loaded order with tracking is marked as done in your shop. Show marked orders lists them again."
                          : "None of the loaded orders has tracking from Slant yet. Refresh Orders later to check again.")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -431,7 +433,7 @@ struct ShopFollowUpSheet: View {
                               : "Review, then add this tracking to the orders in \(shopify.shop ?? "your store")")
                 }
                 if groups.doneCount > 0 {
-                    Toggle("Show Marked Orders (\(groups.doneCount))", isOn: $showDone)
+                    Toggle("Show marked orders (\(groups.doneCount))", isOn: $showDone)
                         .toggleStyle(.checkbox)
                 }
                 Spacer()
@@ -439,8 +441,9 @@ struct ShopFollowUpSheet: View {
                 if let exportError {
                     Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).lineLimit(2)
                 }
+                // Marks apply as they're made, so Done; Escape closes the sheet as everywhere else.
                 Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.cancelAction)
             }
             if store.ordersHasMore {
                 Text("Older orders aren’t loaded. Load more in Orders to include them.")
@@ -461,7 +464,7 @@ struct ShopFollowUpSheet: View {
                 if ticked { store.shopFollowUpDoneIDs.insert(entry.id) } else { store.shopFollowUpDoneIDs.remove(entry.id) }
             })
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Toggle("Done in Your Shop", isOn: done)
+            Toggle("Done in your shop", isOn: done)
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .accessibilityLabel("Marked as done in your shop, \(shopFollowUpOrderTitle(entry))")
@@ -478,7 +481,7 @@ struct ShopFollowUpSheet: View {
                 Text(shopFollowUpTrackingText(entry))
                     .font(.callout.monospaced()).textSelection(.enabled).lineLimit(2)
                 if let provider = entry.provider {
-                    Text("Provider: \(provider)").font(.caption).foregroundStyle(.secondary)
+                    Text("Provider: \(orderAPIValueTitle(provider))").font(.caption).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 8)

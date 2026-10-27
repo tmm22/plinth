@@ -108,6 +108,23 @@ func orderShippingProviderTitle(_ code: String) -> String {
     return trimmed
 }
 
+/// Readable words for a tracking value Slant sends as an API constant (carrier SHIPPO, service INTERNATIONAL, shipment
+/// status IN_TRANSIT): "Shippo", "International", "In transit". Carrier acronyms stay in capitals, and values that
+/// aren't all capitals (a carrier's own name, a tracking number) are shown as sent. Display only: copies, CSVs and
+/// requests keep Slant's value.
+func orderAPIValueTitle(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.range(of: #"^[A-Z][A-Z_ ]*[A-Z]$"#, options: .regularExpression) != nil else { return trimmed }
+    let known: [String: String] = [
+        "SHIPPO": "Shippo", "SHIPSTATION": "ShipStation", "FEDEX": "FedEx", "USPS": "USPS", "UPS": "UPS", "DHL": "DHL",
+        "DHL_EXPRESS": "DHL Express", "EASYPOST": "EasyPost", "ROYAL_MAIL": "Royal Mail", "AUSTRALIA_POST": "Australia Post",
+        "CANADA_POST": "Canada Post", "USPS_INTERNATIONAL": "USPS International"
+    ]
+    if let name = known[trimmed] { return name }
+    let words = trimmed.replacingOccurrences(of: "_", with: " ").lowercased()
+    return words.prefix(1).uppercased() + words.dropFirst()
+}
+
 /// Extra order fields Slant returns that the detail pane shows only when present: when the order was processed, the
 /// requested shipping provider and the fulfillment delivery instructions.
 func orderDetailFacts(_ order: [String: Any]) -> [(String, String)] {
@@ -359,9 +376,9 @@ func orderReviewLargeQuantityNotice(_ items: [[String: Any]]) -> String? {
 /// The composer's own heading (a sheet shows no window title).
 func orderComposerHeading(sourceOrderNumber: String?) -> String {
     guard let number = sourceOrderNumber?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty else {
-        return "New Order Draft"
+        return "New order draft"
     }
-    return "Duplicate of Order \(number)"
+    return "Duplicate of order \(number)"
 }
 
 /// Shown when a new draft reuses the address from this session's last draft, such as

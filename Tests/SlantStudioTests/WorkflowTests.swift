@@ -128,7 +128,7 @@ final class WorkflowTests: XCTestCase {
     }
 
     func testCancellationOnlyOfferedBeforeProduction() {
-        for status in ["PAID", "QUEUED", "PROCESSING", "PRINTING", "IN_REVIEW", "PAYMENT_ERROR",
+        for status in ["PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "IN_REVIEW", "PAYMENT_ERROR",
                        "AWAITING_SHIPMENT", "POST_PROCESSING", "COMPLETED", "ITEMS_ON_SHELF", "SHIPPED", "DELIVERED"] {
             XCTAssertTrue(orderCanRequestCancellation(status), status)
         }
