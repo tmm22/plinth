@@ -25,7 +25,7 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .fillet: return "Adds a rounded transition along an inside junction. Place its two flat sides into the adjoining surfaces."
         case .overhang: return "Fills under a flat downward ledge with a 45° slope (up to Slant’s 50° when the region is a little shorter than it is deep) so it prints without supports. Put the region’s local −Y side into the wall and its top into the ledge; turn about Z to face another wall."
         case .thicken: return "Measures the wall through the region centre along local Y and thickens its +Y side to the next whole number of extrusion lines, avoiding weak gap fill. Slant publishes 1 mm walls, 25% infill and 0.2 mm layers, but not its line width, so the width here is an estimate."
-        case .teardrop: return "Reshapes the top of a horizontal round hole so it prints without drooping. Find Horizontal Holes lists round holes \(Int(teardropMinimumDiameterMM))–\(Int(teardropMaximumDiameterMM)) mm across for you to tick: each gets 45° shoulders up to a flat top at the hole’s own top, so its bottom and height are unchanged and only its shoulders widen slightly. Or place a pointed 45° roof by hand on a hole along local X, which raises the hole’s top. Use either only where the hole’s shoulders aren’t fit-critical."
+        case .teardrop: return "Gives horizontal round holes a teardrop roof, so their tops are less likely to droop. Find Horizontal Holes lists holes \(Int(teardropMinimumDiameterMM))–\(Int(teardropMaximumDiameterMM)) mm across for you to tick: the upper sides of each rise at 45° to a flat top at the hole’s own top, so its bottom and height are unchanged. Use it only where the upper sides of a hole don’t have to fit. Without a ticked hole, Placement and dimensions adds a pointed 45° roof by hand along local X, which raises the hole’s top."
         case .bridge: return "For a counterbore that opens downward, cuts two single-layer steps into its ceiling so each layer bridges between solid edges. Set position Z at the ceiling and the region footprint to the counterbore diameter. Slightly reduces the screw-head bearing area."
         case .internalWalls: return "Cuts thin \(String(format: "%.2f", internalWallsSlotWidthMM)) mm slots up from the bed face into thick, solid regions, at least \(Int(internalWallsClearanceMM)) mm from every other surface. Slant’s slicer prints its 1 mm walls round each slot, which adds internal walls where the part would otherwise be 25% infill. Every slot opens through the bed face, so the part stays one body. Applies to the whole part, which must stand on a flat face at its lowest point; keep-clear regions are left uncut. Uses more filament, so request a new Slant quote."
         case .shell, .cells: return reinforcementClosedVoidWithdrawal
@@ -907,7 +907,7 @@ enum ReinforcementEngine {
             }
             let low = source.minimum + region.offset, high = low + region.size
             for hole in holes where hole.eligible && (simd_min(hole.changeHigh, high) - simd_max(hole.changeLow, low)).min() > 0 {
-                throw StudioError(String(format: "The ⌀%.1f mm hole’s new shoulders enter a keep-clear region. Untick it or move the region.", hole.diameterMM))
+                throw StudioError(String(format: "The ⌀%.1f mm hole’s new upper sides enter a keep-clear region. Untick it or move the region.", hole.diameterMM))
             }
         }
         let result: TeardropHolesResult

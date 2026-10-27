@@ -130,8 +130,8 @@ func fitCouponRoundHoles(points: [SIMD3<Float>], loops: [[Int]]) -> [InternalWal
 
 /// Features a fit coupon can be cut round: round holes that open through the bed face (flat, downward faces at the
 /// lowest point, the internal walls' rule), round holes running sideways (`fitCouponSideHoles`), then flat-topped pins
-/// and posts that rise from the part (not from the bed). Each kind is sorted by X, then Y; at most
-/// `fitCouponMaximumFeatures`. Labels that would repeat get the position
+/// and posts that rise from the part (not from the bed). Listed nearest the bed first (by the height of the piece each
+/// would make), then by kind, X and Y; at most `fitCouponMaximumFeatures`. Labels that would repeat get the position
 /// from the model's lowest corner. Nil when cancelled.
 func fitCouponFeatures(in mesh: STLMesh, isCancelled: () -> Bool = { false }) -> [FitCouponFeature]? {
     let count = mesh.triangleCount
@@ -252,7 +252,14 @@ func fitCouponFeatures(in mesh: STLMesh, isCancelled: () -> Bool = { false }) ->
             return a.offset < b.offset
         }.map(\.element)
     }
-    let found = Array((ordered(holes) + ordered(sideHoles) + ordered(pins)).prefix(fitCouponMaximumFeatures))
+    // Nearest the bed first: by the height of the piece each would make (to 0.1 mm), then X and Y. Bed-face holes,
+    // side holes and pins are listed in that order where those are equal.
+    let all = ordered(holes) + ordered(sideHoles) + ordered(pins)
+    func pieceTop(_ f: Found) -> Int { Int(((min(f.top + fitCouponHeadroomMM, bounds.high.z) - floor) * 10).rounded()) }
+    let found = Array(all.enumerated().sorted { a, b in
+        let p = pieceTop(a.element), q = pieceTop(b.element)
+        return p != q ? p < q : a.offset < b.offset
+    }.map(\.element).prefix(fitCouponMaximumFeatures))
     let lowXY = SIMD2(bounds.low.x, bounds.low.y), highXY = SIMD2(bounds.high.x, bounds.high.y)
     let labels = found.map {
         "\(fitCouponFeatureName($0.kind, sizeMM: $0.size, diameterMM: $0.diameter)) \(fitCouponPositionWords($0.centre, low: lowXY, high: highXY))"
@@ -278,15 +285,15 @@ struct FitCouponSideHole: Equatable, Sendable {
 }
 
 /// Teardrop holes' horizontal round holes (`teardropCandidates`) that are round, level and measured end to end, whether
-/// or not they could take a teardrop roof: a 2 mm pin hole is as much a fitting feature as a 6 mm one. Tilted, out of
-/// round, stepped or tapered holes, whose ends weren't measured, and any past the finder's 64 are left out. In the finder's
-/// order; nil when cancelled.
+/// or not they could take a teardrop roof: a 2 mm pin hole is as much a fitting feature as a 6 mm one. Tilted or
+/// out-of-round holes, and any whose tube and far end weren't measured (`TeardropCandidate.measured`: stepped, tapered
+/// or crossing holes), are left out. In the finder's order; nil when cancelled.
 func fitCouponSideHoles(in mesh: STLMesh, isCancelled: () -> Bool = { false }) -> [FitCouponSideHole]? {
     let candidates: [TeardropCandidate]
     do { candidates = try teardropCandidates(in: mesh, isCancelled: isCancelled) } catch { return nil }
-    let unmeasured: Set<TeardropSkipReason> = [.notRound, .tilted, .notPlainTube, .endNotFlat, .notChecked]
     return candidates.compactMap { hole in
-        if let reason = hole.skipped, unmeasured.contains(reason) { return nil }
+        // Only holes followed end to end: a size skip is decided before the tube and its far end are measured.
+        guard hole.measured, hole.skipped != .notRound, hole.skipped != .tilted else { return nil }
         let axis = SIMD2(abs(hole.axis.x), abs(hole.axis.y))
         let length = hole.lengthMM, diameter = hole.diameterMM
         guard length > 0, diameter > 0, length.isFinite, diameter.isFinite else { return nil }
@@ -369,19 +376,19 @@ enum FitCouponError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .notClosedSolid:
-            return "A fit coupon needs a closed, outward-facing mesh. The mesh check above lists what to repair first."
+            return "A fit coupon needs a closed, outward-facing mesh. Use Repair & Save Copy first, then make the coupon from the repaired copy."
         case .missesModel:
-            return "That box doesn’t meet the model."
+            return "The piece wouldn’t include any of the model. Choose another feature or slice height."
         case .splits(let pieces):
             return "The piece would have \(pieces) separate parts or closed pockets, which Slant charges as separate bodies, so it wasn’t made. Choose another feature or slice height."
         case .noBedFace:
-            return "The piece wouldn’t include any of the model’s bed face, so it wouldn’t print the way the full part does."
+            return "The piece wouldn’t include any of the model’s bed face, so it wouldn’t print the way the full part does. Choose a feature nearer the bed, or the Bottom slice."
         case .tooSmall(let size):
             return "The piece would be only \(meshFitSizeLabel(size)), under \(Int(fitCouponMinimumSizeMM)) mm across, so it wasn’t made."
         case .exceedsBuildVolume(let largest):
             return "The piece would be \(String(format: "%.1f", largest)) mm on its longest side, larger than Slant’s 220 mm build volume, so it wasn’t made."
         case .failedChecks:
-            return "The piece didn’t come out as one closed solid, so it wasn’t made. Repair the model first, or choose another feature."
+            return "The piece didn’t come out as one closed solid, so it wasn’t made. Use Repair & Save Copy first, or choose another feature."
         case .cutFailed(let reason): return reason
         case .stopped: return "Stopped. Nothing was saved."
         }
@@ -469,4 +476,16 @@ func fitCouponCopyName(_ name: String) -> String { "\(meshFitCopyBaseName(name))
 /// The sheet's caption. It promises nothing about fit.
 let fitCouponCaption = "Saves a small piece cut from this model, with its bed face and the same way up, so you can order it (for example with Order a Sample to Me…) and check how it fits before ordering the full part. Studio checks only that the piece is one closed solid; it checks nothing about fit."
 /// Shown when the model isn't a print-ready copy or one of its copies.
-let fitCouponPrintReadyHint = "If you’ll order this model’s print-ready copy, make the coupon from that copy, so the piece has the same changes."
+let fitCouponPrintReadyHint = "This model has a print-ready copy. If you’ll order that copy, make the coupon from it, so the piece has the same placement and changes: holes print differently standing up and lying down."
+
+/// Fit coupons suit features near the bed: the piece is cut from the bed up, so a high feature makes a tall piece.
+let fitCouponTallPieceMM: Float = 20
+
+/// "Coupons suit features near the bed; this piece is 34 mm tall.", for a piece taller than `fitCouponTallPieceMM`.
+func fitCouponTallPieceNote(heightMM: Float) -> String? {
+    guard heightMM.isFinite, heightMM > fitCouponTallPieceMM else { return nil }
+    return "Coupons suit features near the bed; this piece is \(Int(heightMM.rounded())) mm tall."
+}
+
+/// Fit coupons keep the bed face and the way up, so they are saved Z-up locked: no later tool places them again.
+func meshFitCopyLocksZUp(_ tool: MeshFitTool) -> Bool { tool == .fitCoupon }

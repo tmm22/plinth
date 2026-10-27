@@ -183,29 +183,22 @@ struct PrintPreparationPanel: View {
         lines(printPreparationSkippedLines(record), title: "Skipped or not needed")
         lines(record.notes, title: "For your review")
         Text(printPreparationPriceLine(record)).font(.caption).foregroundStyle(.secondary)
-        HStack {
-            if let original = store.localModels.first(where: { $0.id == record.sourceID }) {
-                Button("Show Original") { store.select(original) }.disabled(store.busy)
-            }
-            if model.autoImprovement == nil {
-                Button(followUp.working ? "Adding…" : "Add Fillets and Thicken Walls…") { confirmFollowUp = true }
-                    .disabled(followUp.working || store.busy)
-                if followUp.working {
-                    ProgressView().controlSize(.small)
-                    Text(followUp.status).font(.caption).foregroundStyle(.secondary)
-                    Button("Stop") { followUp.stop() }
-                }
-            }
+        if let original = store.localModels.first(where: { $0.id == record.sourceID }) {
+            Button("Show Original") { store.select(original) }.disabled(store.busy)
         }
-        if model.autoImprovement == nil {
-            Text("Only if nothing on this part has to fit.").font(.caption).foregroundStyle(.secondary)
+        // Both fit-changing follow-ups in one row, under one caption.
+        FitChangingFollowUps(queue: queue, model: model, record: record, fillets: model.autoImprovement == nil) {
+            Button(followUp.working ? "Adding…" : "Add Fillets and Thicken Walls…") { confirmFollowUp = true }
+                .disabled(followUp.working || store.busy)
+            if followUp.working {
+                ProgressView().controlSize(.small)
+                Text(followUp.status).font(.caption).foregroundStyle(.secondary)
+                Button("Stop") { followUp.stop() }
+            }
         }
         if let result = followUp.unchanged {
             Text("No fillets or wall matching suit this part, so nothing was saved.").font(.callout)
             lines(result.skipped + result.manual, title: "Details")
-        }
-        if printPreparationTeardropOfferApplies(model, library: store.localModels) {
-            TeardropHolesFollowUp(queue: queue, model: model, record: record)
         }
     }
 
@@ -232,59 +225,65 @@ struct PrintPreparationPanel: View {
     }
 }
 
-// MARK: - Add Teardrop Holes…
+// MARK: - Fit-changing follow-ups
 
 /// In memory, per copy and original file (library files are never changed in place). Cleared when the app quits.
 @MainActor enum TeardropOfferCache {
     static var offers: [String: PrintPreparationTeardropOffer] = [:]
 }
 
-/// Add Teardrop Holes… on a print-ready copy: offered only when the original, placed as this copy is, has horizontal
-/// round holes that can take a teardrop roof (found in the background, stopped when the panel goes, cached). Pressing
-/// it asks which holes, none ticked; only the confirmation's own button queues the new copy. Never automatic, local
-/// only, and no keyboard shortcut starts it.
-struct TeardropHolesFollowUp: View {
+/// A print-ready copy's fit-changing follow-ups in one row under one caption: Add Fillets and Thicken Walls… (`fillets`,
+/// the panel's own button) and Add Teardrop Holes…. Teardrops are offered only when the original, placed as this copy
+/// is, has horizontal round holes that can take a teardrop roof (found in the background, stopped when the panel goes,
+/// cached). Pressing it asks which holes, none ticked; only the confirmation's own button queues the new copy. Never
+/// automatic, local only, and no keyboard shortcut starts either.
+struct FitChangingFollowUps<Fillets: View>: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject var queue: PrintPreparationQueue
     let model: LocalModel
     let record: PrintPreparationRecord
+    let fillets: Bool
+    @ViewBuilder let filletsButton: () -> Fillets
     @State private var offer: PrintPreparationTeardropOffer?
     @State private var offerKey = ""
     @State private var confirming = false
 
     private var original: LocalModel? { store.localModels.first { $0.id == record.sourceID } }
+    private var teardropsApply: Bool { printPreparationTeardropOfferApplies(model, library: store.localModels) }
     private var cacheKey: String {
-        original.map { "\(model.id.uuidString)|\(model.filePath)|\($0.filePath)" } ?? ""
+        guard teardropsApply, let original else { return "" }
+        return "\(model.id.uuidString)|\(model.filePath)|\(original.filePath)"
     }
 
     var body: some View {
         let key = cacheKey
+        let running = teardropsApply ? queue.teardropJob(for: record.sourceID) : nil
+        let holes = (!key.isEmpty && offerKey == key) ? (offer?.eligible.count ?? 0) : 0
         VStack(alignment: .leading, spacing: 6) {
             if let latest = original.flatMap({ printReadyCopy(of: $0, in: store.localModels) }), latest.id != model.id,
-               latest.printPreparation?.teardropHoles != nil {
+               latest.printPreparation?.hasTeardropHoles == true {
                 HStack(spacing: 6) {
                     Text("Saved with teardrop holes: \(latest.name)").font(.callout).foregroundStyle(.secondary)
                     Button("Show Copy") { store.select(latest) }.buttonStyle(.link).disabled(store.busy)
                 }
             }
-            if let running = queue.teardropJob(for: record.sourceID) {
-                HStack(spacing: 8) {
+            if let caption = printPreparationFitChangingCaption(fillets: fillets, teardropHoles: running == nil ? holes : 0) {
+                Text(caption).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                if fillets { filletsButton() }
+                if let running {
                     ProgressView().controlSize(.small)
                     Text(running.running && !queue.status.isEmpty ? queue.status : "Waiting to add teardrop holes…")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Stop") { queue.stop(modelID: record.sourceID) }
-                }
-            } else if let offer, offerKey == key, !offer.eligible.isEmpty {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(printPreparationTeardropOfferLine(count: offer.eligible.count))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 8)
+                } else if holes > 0 {
                     Button("Add Teardrop Holes…") { confirming = true }
                         .disabled(store.busy || queue.isPreparing(record.sourceID))
                 }
             }
-            if let outcome = queue.teardropOutcome, outcome.sourceID == record.sourceID, queue.teardropJob(for: record.sourceID) == nil {
+            if teardropsApply, let outcome = queue.teardropOutcome, outcome.sourceID == record.sourceID, running == nil {
                 Text(outcome.message).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -305,7 +304,8 @@ struct TeardropHolesFollowUp: View {
         }
         .sheet(isPresented: $confirming) {
             if let offer {
-                TeardropHolesConfirmation(offer: offer) { keys in
+                TeardropHolesConfirmation(offer: offer, text: printPreparationTeardropConfirmText(
+                    PrintPreparationSettings(defaults: .standard), decorative: designEditIntent(original ?? model)?.purpose == .decorative)) { keys in
                     store.addTeardropHoles(from: model, keys: keys)
                 }
             }
@@ -314,32 +314,35 @@ struct TeardropHolesFollowUp: View {
 }
 
 /// Which holes get a teardrop roof: none ticked until the seller chooses. Cancel is the default button; Add Teardrop
-/// Holes has no shortcut.
+/// Holes has no shortcut. Each hole is named in words; its figures are in the help tag.
 struct TeardropHolesConfirmation: View {
     @Environment(\.dismiss) private var dismiss
     let offer: PrintPreparationTeardropOffer
+    let text: String
     let confirm: ([TeardropHoleKey]) -> Void
     @State private var chosen: Set<TeardropHoleKey> = []
     @State private var leftAloneExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Add Teardrop Holes").font(.title3.weight(.semibold))
-            Text(printPreparationTeardropConfirmText)
+            Text("Add teardrop holes").font(.title3.weight(.semibold))
+            Text(text)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(offer.eligible) { hole in
-                    Toggle(teardropCandidateLabel(hole, minimum: offer.minimum), isOn: Binding(
+                    Toggle(teardropCandidateLabel(hole, low: offer.minimum, high: offer.maximum), isOn: Binding(
                         get: { chosen.contains(hole.key) },
                         set: { on in if on { chosen.insert(hole.key) } else { chosen.remove(hole.key) } }))
                         .fixedSize(horizontal: false, vertical: true)
+                        .help(teardropCandidateDetail(hole, minimum: offer.minimum))
                 }
             }
             if !offer.leftAlone.isEmpty {
                 DisclosureGroup("Left as they are (\(offer.leftAlone.count))", isExpanded: $leftAloneExpanded) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(offer.leftAlone) { hole in
-                            Text(teardropCandidateLabel(hole, minimum: offer.minimum) + " · " + (hole.skipped?.message ?? ""))
+                            Text(teardropCandidateLabel(hole, low: offer.minimum, high: offer.maximum) + ": " + (hole.skipped?.message ?? ""))
+                                .help(teardropCandidateDetail(hole, minimum: offer.minimum))
                         }
                     }
                     .font(.callout).foregroundStyle(.secondary).padding(.top, 4)
@@ -348,7 +351,7 @@ struct TeardropHolesConfirmation: View {
                 .studioDisclosureStyle()
             }
             HStack {
-                Text(chosen.isEmpty ? "Tick the holes whose shoulders don’t have to fit anything." : "\(chosen.count) ticked")
+                Text(chosen.isEmpty ? teardropTickCaption : "\(chosen.count) ticked")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { dismiss() }

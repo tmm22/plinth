@@ -74,7 +74,7 @@ extension StudioStore {
     /// Adds `data` (an already-checked binary STL) to the library as a separate copy named `name`.
     @discardableResult
     func saveMeshFitCopy(_ data: Data, name: String, of model: LocalModel, fileDetails: ModelSourceDetails,
-                         activityTitle: String) -> Bool {
+                         activityTitle: String, locksZUp: Bool = false) -> Bool {
         do {
             let folder = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(meshFitTempFolderPrefix)\(UUID().uuidString)")
@@ -84,7 +84,7 @@ extension StudioStore {
             try data.write(to: url, options: .atomic)
             let lineage = studioCopyLineage(model)
             guard importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: fileDetails),
-                              inheritsZUpLock: lineage.inheritsZUpLock, origin: .studioToolCopy,
+                              inheritsZUpLock: lineage.inheritsZUpLock || locksZUp, origin: .studioToolCopy,
                               keepsPlacement: lineage.keepsPlacement, fromPrintReadyCopy: lineage.fromPrintReadyCopy) else {
                 return false
             }
@@ -320,16 +320,11 @@ struct MeshFitSheet: View {
                 .keyboardShortcut(.cancelAction)
                 Spacer()
                 if saving { ProgressView().controlSize(.small) }
-                if request.tool == .fitCoupon {
-                    // Not the default button and no shortcut: the seller presses it after reading the piece's size.
-                    Button(saveTitle, action: save)
-                        .disabled(!canSave || saving || model == nil)
-                } else {
-                    Button(saveTitle, action: save)
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!canSave || saving || model == nil)
-                }
+                // A free local save, like the other Size and base sheets.
+                Button(saveTitle, action: save)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave || saving || model == nil)
             }
             .padding(20)
         }
@@ -534,6 +529,12 @@ struct MeshFitSheet: View {
                 LabeledContent("Piece") {
                     Text(couponSizeText).monospacedDigit()
                 }
+                if let ready = couponReady {
+                    STLSceneView(mesh: ready.mesh, showsPrintBed: true)
+                        .frame(height: 180)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .accessibilityLabel("Preview of the fit coupon")
+                }
             } else {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -546,11 +547,22 @@ struct MeshFitSheet: View {
                     Text(problem).foregroundStyle(.orange)
                 }
                 if couponFeatures?.isEmpty == true {
-                    Text("No round holes through the base or pins standing on the part were found, so only the Bottom slice is offered.")
+                    Text("No round holes (through the base or running sideways) or pins standing on the part were found, so only the Bottom slice is offered.")
                 }
                 if let note = couponChoiceNote { Text(note) }
+                if let ready = couponReady, let tall = fitCouponTallPieceNote(heightMM: ready.sizeMM.z) { Text(tall) }
                 Text(fitCouponCaption)
-                if model?.derivesFromPrintReadyCopy == false { Text(fitCouponPrintReadyHint) }
+                if let model, !model.derivesFromPrintReadyCopy, let copy = printReadyCopy(of: model, in: store.localModels) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(fitCouponPrintReadyHint)
+                        Button("Show Copy") {
+                            worker?.cancel()
+                            dismiss()
+                            store.select(copy)
+                        }
+                        .buttonStyle(.link)
+                    }
+                }
             }
             .settingsFooterLayout()
         }
@@ -624,7 +636,8 @@ struct MeshFitSheet: View {
             guard !Task.isCancelled else { return }
             switch result {
             case .success(let data):
-                if store.saveMeshFitCopy(data, name: name, of: model, fileDetails: details, activityTitle: title) {
+                if store.saveMeshFitCopy(data, name: name, of: model, fileDetails: details, activityTitle: title,
+                                         locksZUp: meshFitCopyLocksZUp(tool)) {
                     dismiss()
                 }
             case .failure(let error):

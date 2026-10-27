@@ -85,8 +85,10 @@ struct MaterialPurposeHint: Equatable, Sendable {
 /// one of the requirement's profiles and an in-stock material of one is listed. A purpose's own stiff-PLA suggestion
 /// (decorative, enclosure) appears only while no material is chosen: any of Slant's materials suits those, so it
 /// never second-guesses a choice. Wording stays relative ("a starting point", "more give"); never food contact.
-func materialPurposeHint(intent: PartIntent?, isSTL: Bool, selectedFilamentID: String, filaments: [Record]) -> MaterialPurposeHint? {
-    guard isSTL, let intent, let advice = materialAdviceGoal(intent) else { return nil }
+func materialPurposeHint(intent: PartIntent?, isSTL: Bool, selectedFilamentID: String, filaments: [Record],
+                         preparedCopy: Bool = false) -> MaterialPurposeHint? {
+    // A prepared copy (Optimise & Save Copy) carries its own material: never second-guessed.
+    guard isSTL, !preparedCopy, let intent, let advice = materialAdviceGoal(intent) else { return nil }
     let current = selectedFilamentID.isEmpty ? nil : filaments.first { $0.id == selectedFilamentID }
     if let current, advice.goal.profiles.contains(filamentType(current)) { return nil }
     if !advice.chosen, advice.goal == .rigid, !selectedFilamentID.isEmpty { return nil }
@@ -105,7 +107,7 @@ private func materialHintReason(profile: String, goal: MaterialGoal) -> String? 
     case ("PLA", _): return "it is stiffer than PETG"
     case ("PETG", .warm): return "it handles warmth better than PLA, though not on a car dashboard or behind glass"
     case ("PETG", _): return "it has more give than PLA"
-    case ("OPM", _): return "it handles warmth and sun better than PLA"
+    case ("OPM", _): return "it handles warmth and sun better than PLA, though large flat parts can lift at the corners"
     default: return nil
     }
 }
@@ -127,6 +129,14 @@ private func materialHintSubject(_ goal: MaterialGoal) -> String {
     case .warm: return "For a part that lives outdoors or in the sun"
     case .keepCurrent, .repeatedFlex: return "For this part"
     }
+}
+
+/// Keep Current Material: the seller's explicit choice to keep the material as it is, saved as the part's material
+/// requirement so the purpose's suggestion stops showing for it.
+func materialIntentKeepingCurrent(_ intent: PartIntent) -> PartIntent {
+    var kept = intent
+    kept.materialGoal = .keepCurrent
+    return kept
 }
 
 /// Under the requirement picker while it shows the purpose's suggestion rather than the seller's choice.

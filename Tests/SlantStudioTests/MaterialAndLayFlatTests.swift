@@ -76,7 +76,7 @@ final class MaterialAndLayFlatTests: XCTestCase {
     func testOutdoorRequirementFallsBackToPETGWhenOPMIsMissingOrOutOfStock() throws {
         let outdoor = PartIntent(purpose: .bracket, load: .x, materialGoal: .warm)
         XCTAssertEqual(hint(outdoor, current: "pla", [pla, petg, opm])?.message,
-                       "For a part that lives outdoors or in the sun, OPM is a common starting point: it handles warmth and sun better than PLA.")
+                       "For a part that lives outdoors or in the sun, OPM is a common starting point: it handles warmth and sun better than PLA, though large flat parts can lift at the corners.")
         for missing in [[pla, petg, opmOut], [pla, petg, opmUnknown], [pla, petg]] {
             let found = try XCTUnwrap(hint(outdoor, current: "pla", missing))
             XCTAssertEqual(found.profile, "PETG")
@@ -126,8 +126,8 @@ final class MaterialAndLayFlatTests: XCTestCase {
         let locked = LocalModel(name: "copy", filePath: "/tmp/copy.stl", partIntent: bracket, inheritsZUpLock: true)
         XCTAssertEqual(mesh.layFlatOutcome(for: locked).unavailable, .zUpLocked)
         let replica = LocalModel(name: "replica", filePath: "/tmp/replica.stl", partIntent: bracket, keepsPlacement: true)
-        XCTAssertEqual(layFlatIntent(for: replica, mesh: mesh).reason, LayFlatUnavailable.keptPlacement.message)
-        XCTAssertNil(layFlatIntent(for: replica, mesh: mesh).intent)
+        XCTAssertEqual(mesh.layFlatOutcome(for: replica).unavailable?.message, LayFlatUnavailable.keptPlacement.message)
+        XCTAssertNil(mesh.layFlatOutcome(for: replica).plan)
         // Optimise & Save Copy's prepared copy: already placed, and its saved directions describe the original.
         let recipe = PreparedPrintRecipe(sourceID: UUID(), sourceName: "bar", intent: bracket, orientation: .xUp, materialID: nil, created: Date())
         let prepared = LocalModel(name: "prepared", filePath: "/tmp/prepared.stl", partIntent: bracket, printRecipe: recipe)
@@ -157,8 +157,9 @@ final class MaterialAndLayFlatTests: XCTestCase {
             XCTAssertTrue(plan.lines[2].hasPrefix("Overhangs steeper than 45°"), plan.lines[2])
         }
         let model = LocalModel(name: "bar", filePath: "/tmp/bar.stl", partIntent: PartIntent(purpose: .bracket))
-        XCTAssertEqual(layFlatIntent(for: model, mesh: mesh).intent?.load, .z)
-        XCTAssertNil(layFlatIntent(for: model, mesh: mesh).reason)
+        XCTAssertEqual(mesh.layFlatOutcome(for: model).plan?.intent.load, .z)
+        XCTAssertNil(mesh.layFlatOutcome(for: model).unavailable)
+        XCTAssertEqual(mesh.layFlatOutcome(for: model).plan?.lines.last, layFlatSaveLine)
         XCTAssertEqual(mesh.layFlatOutcome(for: model), mesh.layFlatOutcome(for: model))
     }
 
@@ -173,7 +174,7 @@ final class MaterialAndLayFlatTests: XCTestCase {
         let rod = try STLMesh.validated(r11PrismSoup(r11Circle(SIMD2(3, 3), radius: 3, segments: 64), to: 60))
         XCTAssertEqual(outcome(rod, PartIntent(purpose: .bracket)).unavailable, .noFlatSide)
         let model = LocalModel(name: "pin", filePath: "/tmp/pin.stl", partIntent: PartIntent(purpose: .clip))
-        XCTAssertEqual(layFlatIntent(for: model, mesh: rod).reason,
+        XCTAssertEqual(rod.layFlatOutcome(for: model).unavailable?.message,
                        "It has no flat side to lie on: add a flat base in Size and base first.")
     }
 

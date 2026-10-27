@@ -392,6 +392,15 @@ final class FitCouponTests: XCTestCase {
         // Saved as a Studio tool copy, which is never prepared automatically.
         XCTAssertFalse(ModelImportOrigin.studioToolCopy.mayPrepareForPrinting)
         XCTAssertEqual(MeshFitTool.fitCoupon.title, "Make Fit Coupon")
+        // Saved Z-up locked, so no later tool places the piece again, and it counts as an edited copy.
+        XCTAssertTrue(meshFitCopyLocksZUp(.fitCoupon))
+        XCTAssertFalse(meshFitCopyLocksZUp(.scale))
+        XCTAssertFalse(meshFitCopyLocksZUp(.flatBase))
+        XCTAssertFalse(meshFitCopyLocksZUp(.plinth))
+        let coupon = LocalModel(name: "Owl (fit coupon)", filePath: "/tmp/c.stl", inheritsZUpLock: meshFitCopyLocksZUp(.fitCoupon))
+        XCTAssertTrue(coupon.requiresZUp)
+        XCTAssertTrue(modelIsEditedCopy(coupon))
+        XCTAssertNotNil(meshFitEditBlockedReason(coupon, tool: .flatBase))
     }
 
     func testCaptionPromisesNoFit() {

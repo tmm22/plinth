@@ -183,7 +183,7 @@ final class PrintPreparationRound11Tests: XCTestCase {
         XCTAssertLessThanOrEqual(record.advisories.count, printAdvisoryMaximumCount)
         let slender = try XCTUnwrap(printPreparationAdvisoryLines(record).first { $0.hasPrefix("Slender upright feature") })
         XCTAssertTrue(slender.contains("likely weaker standing than lying flat"), slender)
-        XCTAssertTrue(slender.hasSuffix("on the original and use Make Print-Ready Copy."), slender)
+        XCTAssertTrue(slender.hasSuffix("then use Make Print-Ready Copy; or add a rib or gusset in Reinforce."), slender)
         for line in printPreparationAdvisoryLines(record) {
             for word in ["guarantee", "approved", "safe", "half as strong", "cnc kitchen", "%"] {
                 XCTAssertFalse(line.lowercased().contains(word), line)

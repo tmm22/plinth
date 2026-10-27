@@ -487,6 +487,8 @@ struct PrintPreparationRecord: Codable, Equatable, Sendable {
     }
 
     var appliedSteps: [PrintPreparationStepRecord] { steps.filter(\.applied) }
+    /// Add Teardrop Holes… made this copy: its record, or its step when the record was damaged and dropped.
+    var hasTeardropHoles: Bool { teardropHoles != nil || steps.contains { $0.step == .teardrops } }
     var skippedSteps: [PrintPreparationStepRecord] { steps.filter { !$0.applied } }
     var chamferCount: Int { treatments.filter { $0.settings.kind == .overhang }.count }
     var bridgeCount: Int { treatments.filter { $0.settings.kind == .bridge }.count }
@@ -635,7 +637,7 @@ func printPreparationAdvisoryRecords(_ advisories: [PrintAdvisory]) -> [PrintPre
 func printPreparationCautions(_ record: PrintPreparationRecord) -> [String] {
     var lines: [String] = []
     if record.chamferCount > 0 { lines.append(printPreparationChamferCaution) }
-    if record.teardropHoles != nil { lines.append(printPreparationTeardropCaution) }
+    if record.hasTeardropHoles { lines.append(printPreparationTeardropCaution) }
     if let thin = record.thinAreasUnder1MM, let line = printPreparationThinAreasLine(thin) { lines.append(line) }
     return lines
 }
@@ -655,8 +657,11 @@ func printPreparationStepSentence(_ step: PrintPreparationStepRecord, record: Pr
         if record.chamferCount > 0 { parts.append(record.chamferCount == 1 ? "1 chamfer under a ledge" : "\(record.chamferCount) chamfers under ledges") }
         return "Bridging and chamfers: \(parts.isEmpty ? "added" : parts.joined(separator: ", "))."
     case .teardrops:
-        let count = record.teardropHoles?.count ?? 0
-        return count == 1 ? "Teardrop holes: a teardrop roof on 1 horizontal hole." : "Teardrop holes: teardrop roofs on \(count) horizontal holes."
+        switch record.teardropHoles?.count ?? 0 {
+        case 0: return "Teardrop holes: horizontal holes given teardrop roofs."
+        case 1: return "Teardrop holes: a teardrop roof on 1 horizontal hole."
+        case let count: return "Teardrop holes: teardrop roofs on \(count) horizontal holes."
+        }
     case .bottomChamfer:
         let size = record.bottomChamfer.map { String(format: "%.1f", $0.sizeMM) } ?? "0.4"
         return "Bottom-edge chamfer: \(size) mm round the bottom edge; hole entries keep their size."
@@ -696,8 +701,11 @@ func printPreparationCaption(_ record: PrintPreparationRecord) -> String {
             if record.bridgeCount > 0 { parts.append(record.bridgeCount == 1 ? "1 bridging layer" : "\(record.bridgeCount) bridging layers") }
             if record.chamferCount > 0 { parts.append(record.chamferCount == 1 ? "1 chamfer" : "\(record.chamferCount) chamfers") }
         case .teardrops:
-            let count = record.teardropHoles?.count ?? 0
-            parts.append(count == 1 ? "1 teardrop hole" : "\(count) teardrop holes")
+            switch record.teardropHoles?.count ?? 0 {
+            case 0: parts.append("teardrop holes")
+            case 1: parts.append("1 teardrop hole")
+            case let count: parts.append("\(count) teardrop holes")
+            }
         case .bottomChamfer:
             parts.append("bottom-edge chamfer")
         case .internalWalls:
@@ -1134,6 +1142,13 @@ func printPreparationTeardropsMissingLine(_ count: Int) -> String? {
 /// rebuild the mesh, which may move a measured centre by a rounding step.
 let printPreparationTeardropMatchTolerance: Int32 = 5
 
+/// How far apart two key headings (0.1° steps) are as axes: a hole's axis has no direction, and the finder points it
+/// towards +X or +Y, which flips it by 180° across 45° headings, so headings are compared modulo 180°.
+func teardropHeadingGap(_ a: Int32, _ b: Int32) -> Int32 {
+    let d = Int32((Int(a) - Int(b)) % 1800 + 1800) % 1800
+    return min(d, 1800 - d)
+}
+
 /// The found eligible holes that match the ticked keys (exactly, else the nearest within the tolerance; each found hole
 /// matches at most once), and how many ticked keys matched none. Ticked keys are taken in a fixed order and found holes
 /// in index order, so the match never depends on hashing.
@@ -1143,7 +1158,7 @@ func printPreparationTeardropMatches(chosen: [TeardropHoleKey], found: [Teardrop
     var keys = Set<TeardropHoleKey>(), unmatched = 0
     func gap(_ a: TeardropHoleKey, _ b: TeardropHoleKey) -> Int32 {
         let d = a.centre &- b.centre
-        return [abs(d.x), abs(d.y), abs(d.z), abs(a.heading &- b.heading), abs(a.diameter &- b.diameter)].max() ?? .max
+        return [abs(d.x), abs(d.y), abs(d.z), teardropHeadingGap(a.heading, b.heading), abs(a.diameter &- b.diameter)].max() ?? .max
     }
     for key in Array(Set(chosen)).sorted(by: teardropKeyOrder) {
         var best: Int?
@@ -1161,7 +1176,7 @@ func printPreparationTeardropMatches(chosen: [TeardropHoleKey], found: [Teardrop
 /// filled (a new preparation from the original would bring them back), and its original is still in the library.
 /// Whether it has holes to offer is `printPreparationTeardropOffer`'s.
 func printPreparationTeardropOfferApplies(_ model: LocalModel, library: [LocalModel]) -> Bool {
-    guard model.supportsPreview, let record = model.printPreparation, record.teardropHoles == nil,
+    guard model.supportsPreview, let record = model.printPreparation, !record.hasTeardropHoles,
           record.hiddenPockets?.filled == nil, model.filledPockets != true else { return false }
     return library.contains { $0.id == record.sourceID && $0.supportsPreview }
 }
@@ -1192,6 +1207,7 @@ func printPreparationPlacedOriginal(_ source: STLMesh, orientation: PrintOrienta
 struct PrintPreparationTeardropOffer: Sendable {
     let holes: [TeardropCandidate]
     let minimum: SIMD3<Float>
+    var maximum: SIMD3<Float> = .zero
     var eligible: [TeardropCandidate] { holes.filter(\.eligible) }
     var leftAlone: [TeardropCandidate] { holes.filter { !$0.eligible } }
 }
@@ -1201,20 +1217,52 @@ func printPreparationTeardropOffer(original: STLMesh, record: PrintPreparationRe
     guard let placed = try printPreparationPlacedOriginal(original, orientation: record.orientation, isCancelled: isCancelled) else {
         return PrintPreparationTeardropOffer(holes: [], minimum: .zero)
     }
-    return PrintPreparationTeardropOffer(holes: try teardropCandidates(in: placed, isCancelled: isCancelled), minimum: placed.minimum)
+    return PrintPreparationTeardropOffer(holes: try teardropCandidates(in: placed, isCancelled: isCancelled), minimum: placed.minimum,
+                                         maximum: placed.maximum)
 }
+
+/// Under the teardrop holes lists (Add Teardrop Holes… and Reinforce's Find Horizontal Holes) until one is ticked.
+let teardropTickCaption = "Tick the holes whose upper sides don’t have to fit anything."
 
 /// The copy's line beside Add Teardrop Holes….
 func printPreparationTeardropOfferLine(count: Int) -> String {
     let holes = count == 1 ? "1 horizontal round hole" : "\(count) horizontal round holes"
-    return "\(holes) could take a teardrop roof, so \(count == 1 ? "its top prints" : "their tops print") without drooping. Only for holes whose shoulders don’t have to fit anything."
+    return "\(holes) could take a teardrop roof, so \(count == 1 ? "its top is" : "their tops are") less likely to droop."
 }
 
-/// Add Teardrop Holes…'s confirmation. It promises nothing about fit or strength.
-let printPreparationTeardropConfirmText = "The tops of the ticked holes get 45° shoulders up to a flat top at the hole’s own top, so each hole’s bottom and height are unchanged, but anything that must fit against the top shoulders will be looser. Studio makes a new print-ready copy from the original, placed as this one, and adds the bottom-edge chamfer and internal walls round the new shapes. This copy stays as it is. Slant decides supports, so a hole may still get support inside it."
+/// Add Teardrop Holes…'s confirmation, naming the later steps the current settings and the saved purpose will run.
+/// It promises nothing about fit or strength.
+func printPreparationTeardropConfirmText(_ settings: PrintPreparationSettings, decorative: Bool) -> String {
+    var later: [String] = []
+    if settings.bottomChamfer { later.append("the bottom-edge chamfer") }
+    if settings.internalWalls && !decorative { later.append("internal walls") }
+    let steps = later.isEmpty
+        ? "repeats the earlier copy’s other steps (with the bottom-edge chamfer and internal walls off, as now set)"
+        : "repeats the earlier copy’s other steps, and adds \(later.joined(separator: " and ")) round the new shapes"
+    return "The upper sides of the ticked holes rise at 45° to a flat top at the hole’s own top, so each hole’s bottom and height are unchanged, but anything that fits against the upper sides of a hole will be looser. Studio makes a new print-ready copy from the original, placed as this one, \(steps). This copy stays as it is. Slant decides supports, so a hole may still get support inside it."
+}
+
+/// The caption over the copy's fit-changing follow-ups (Add Fillets and Thicken Walls…, Add Teardrop Holes…).
+/// Teardrops go first when both are wanted: the fillets copy isn't a print-ready copy, so it doesn't offer them.
+func printPreparationFitChangingCaption(fillets: Bool, teardropHoles: Int) -> String? {
+    guard fillets || teardropHoles > 0 else { return nil }
+    var text = "These change surfaces that may fit another part: use them only where those surfaces don’t have to fit."
+    if teardropHoles > 0 { text += " " + printPreparationTeardropOfferLine(count: teardropHoles) }
+    if fillets && teardropHoles > 0 {
+        text += " If you want both, add teardrop holes first: the fillets copy isn’t a print-ready copy, so it doesn’t offer Add Teardrop Holes…."
+    }
+    return text
+}
 
 /// The caution on a copy with teardrop holes.
-let printPreparationTeardropCaution = "Teardrop holes: anything that fits against the top of a reshaped hole will be looser there."
+let printPreparationTeardropCaution = "Teardrop holes: anything that fits against the upper sides of a reshaped hole will be looser there."
+
+/// Whether a job's outcome is saved on the original. An Add Teardrop Holes… job that saved no copy (refused, failed or
+/// stopped) leaves the original's print-ready status as it was and says so on the copy it was asked from instead; one
+/// that saved a copy records it, so the original's Show Copy finds the new copy.
+func printPreparationStatusGoesToOriginal(_ job: PrintPreparationJob, status: PrintPreparationStatus) -> Bool {
+    job.teardrops == nil || status.outcome == .madeCopy
+}
 
 /// Shown under Add Teardrop Holes… on the copy it was asked from when no copy was saved.
 struct PrintPreparationTeardropOutcome: Equatable, Sendable {
@@ -1304,8 +1352,7 @@ struct PrintPreparationJob: Equatable, Sendable {
     /// The seller's Stop for one model: a queued model is dropped, a running one stops at its next safe point.
     func stop(modelID: UUID) {
         if let index = pending.firstIndex(where: { $0.modelID == modelID }) {
-            pending.remove(at: index)
-            markStopped(modelID)
+            markStopped(pending.remove(at: index))
         } else if current?.modelID == modelID {
             flag?.set()
         }
@@ -1316,11 +1363,11 @@ struct PrintPreparationJob: Equatable, Sendable {
     func stopAll(automaticOnly: Bool = false) {
         let dropped = pending.filter { !automaticOnly || $0.automatic }
         pending.removeAll { !automaticOnly || $0.automatic }
-        for job in dropped { markStopped(job.modelID) }
+        for job in dropped { markStopped(job) }
         if let running = current, !automaticOnly || running.automatic {
             flag?.set()
             // Marked now, so a quit before the run reaches its safe point still leaves the status.
-            markStopped(running.modelID)
+            markStopped(running)
         }
     }
 
@@ -1344,8 +1391,14 @@ struct PrintPreparationJob: Equatable, Sendable {
         showsFirstCopyNotice = false
     }
 
-    private func markStopped(_ modelID: UUID) {
-        store?.recordPrintPreparationStatus(PrintPreparationStatus(outcome: .stopped, date: Date()), for: modelID)
+    /// A stopped Add Teardrop Holes… job says so on the copy it was asked from; the original's own status is left as
+    /// it was (`printPreparationStatusGoesToOriginal`).
+    private func markStopped(_ job: PrintPreparationJob) {
+        let status = PrintPreparationStatus(outcome: .stopped, date: Date())
+        if job.teardrops != nil { recordTeardropOutcome(sourceID: job.modelID, status: status) }
+        if printPreparationStatusGoesToOriginal(job, status: status) {
+            store?.recordPrintPreparationStatus(status, for: job.modelID)
+        }
     }
 
     private func startNextIfIdle() {
@@ -1355,7 +1408,7 @@ struct PrintPreparationJob: Equatable, Sendable {
         while next == nil, !pending.isEmpty {
             let job = pending.removeFirst()
             // An automatic job whose setting was turned off before it started is dropped, and says so.
-            if job.automatic, !settings.enabled { markStopped(job.modelID) } else { next = job }
+            if job.automatic, !settings.enabled { markStopped(job) } else { next = job }
         }
         guard let job = next else { return }
         current = job
@@ -1497,7 +1550,7 @@ extension StudioStore {
     }
 
     func finishPrintPreparation(_ job: PrintPreparationJob, status: PrintPreparationStatus, counts: (applied: Int, skipped: Int)) {
-        recordPrintPreparationStatus(status, for: job.modelID)
+        if printPreparationStatusGoesToOriginal(job, status: status) { recordPrintPreparationStatus(status, for: job.modelID) }
         if job.teardrops != nil { printPreparationQueue.recordTeardropOutcome(sourceID: job.modelID, status: status) }
         activities.insert(Activity(title: job.teardrops == nil ? printPreparationActivityTitle : printPreparationTeardropActivityTitle,
                                    detail: printPreparationActivityDetail(status, applied: counts.applied, skipped: counts.skipped),
@@ -1513,7 +1566,7 @@ extension StudioStore {
             return false
         }
         let named = file.deletingLastPathComponent()
-            .appendingPathComponent(exportFileName(modelName: record.teardropHoles == nil ? printReadyCopyName(original.name)
+            .appendingPathComponent(exportFileName(modelName: !record.hasTeardropHoles ? printReadyCopyName(original.name)
                                                                                            : printReadyTeardropCopyName(original.name),
                                                    fileExtension: "stl"))
         do { try FileManager.default.moveItem(at: file, to: named) } catch {

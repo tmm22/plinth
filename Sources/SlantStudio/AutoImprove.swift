@@ -138,8 +138,9 @@ enum AutoImprover {
         try check()
         if Date() > deadline { timedOut = true }
         if timedOut { skipped.append("Time limit reached; the remaining treatments were not tried.") }
-        // The print-ready copy (`.fitSafe`) offers Add Teardrop Holes… on its own panel instead of this note.
-        manual += reviewNotes(mesh, stop: cancelled, teardrops: profile != .fitSafe)
+        // The print-ready copy offers Add Teardrop Holes… on its own panel instead of this note: its automatic run
+        // (`.fitSafe`) and the fillets follow-up made from it (`.fitAffecting`) both skip it.
+        manual += reviewNotes(mesh, stop: cancelled, teardrops: profile == .full)
         try check()
         return AutoImprovementResult(mesh: mesh, orientation: orientation, applied: applied, skipped: skipped, manual: manual,
                                      timedOut: timedOut)

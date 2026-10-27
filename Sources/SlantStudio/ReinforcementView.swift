@@ -232,6 +232,17 @@ private struct ReinforcementReview: View {
     }
 
     @ViewBuilder private var teardropHolesSection: some View {
+        if model.printPreparation != nil {
+            // The print-ready copy's own follow-up re-prepares from the original, so its chamfer and walls are rebuilt
+            // round the new shapes; reshaping holes here would cut into walls planned round the old ones.
+            Text(reinforceTeardropOnPrintReadyCopyNote).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            foundHolesSection
+        }
+    }
+
+    @ViewBuilder private var foundHolesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Button(holes == nil ? "Find Horizontal Holes" : "Find Again") { findHoles() }.disabled(working)
@@ -247,18 +258,20 @@ private struct ReinforcementReview: View {
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(holes.filter(\.eligible)) { hole in
-                        Toggle(teardropCandidateLabel(hole, minimum: source.minimum), isOn: Binding(
+                        Toggle(teardropCandidateLabel(hole, low: source.minimum, high: source.maximum), isOn: Binding(
                             get: { chosenHoles.contains(hole.key) },
                             set: { on in if on { chosenHoles.insert(hole.key) } else { chosenHoles.remove(hole.key) } }))
                             .fixedSize(horizontal: false, vertical: true)
+                            .help(teardropCandidateDetail(hole, minimum: source.minimum))
                     }
                     if holes.contains(where: \.eligible) {
-                        Text("Tick the holes whose shoulders don’t need to fit anything. While any hole is ticked, the preview reshapes those holes and Placement and dimensions isn’t used.")
+                        Text(teardropTickCaption + " While any hole is ticked, the preview reshapes those holes and Placement and dimensions isn’t used.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     ForEach(holes.filter { !$0.eligible }) { hole in
-                        Text(teardropCandidateLabel(hole, minimum: source.minimum) + " · " + (hole.skipped?.message ?? ""))
+                        Text(teardropCandidateLabel(hole, low: source.minimum, high: source.maximum) + ": " + (hole.skipped?.message ?? ""))
                             .font(.caption).foregroundStyle(.secondary)
+                            .help(teardropCandidateDetail(hole, minimum: source.minimum))
                     }
                 }
             }
@@ -378,3 +391,6 @@ private struct ReinforcementReview: View {
 func reinforcementShellLine(before: Int, after: Int, split: Bool) -> String {
     split ? "Separate shells: \(before) before · at most \(after) in each part after" : "Separate shells: \(before) before · \(after) after"
 }
+
+/// Reinforce's Teardrop hole roof on a print-ready copy, in place of Find Horizontal Holes.
+let reinforceTeardropOnPrintReadyCopyNote = "On a print-ready copy, use Add Teardrop Holes… in its panel, which rebuilds the chamfer and walls round the new shapes."

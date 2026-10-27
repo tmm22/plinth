@@ -670,9 +670,14 @@ struct LayFlatPlan: Equatable, Sendable {
             result.append(String(format: "Overhangs steeper than 45°: about %.0f mm². Bed contact: about %.0f mm².",
                                  laid.overhangArea, laid.contactArea))
         }
-        return result + placement.lines
+        return result + placement.lines + [layFlatSaveLine]
     }
 }
+
+/// How to save the part laid this way once its stress direction is set: Lay It Flat only saves the direction.
+let layFlatSaveLine = "Then use Optimise & Save Copy, or Make Print-Ready Copy again, to save it laid this way."
+/// Shown once Set Stress Direction is pressed.
+let layFlatSetLine = "Stress direction set. Use Optimise & Save Copy, or Make Print-Ready Copy again, to save it laid this way."
 
 enum LayFlatOutcome: Equatable, Sendable {
     case plan(LayFlatPlan)
@@ -746,16 +751,6 @@ extension STLMesh {
     }
 }
 
-/// For callers outside Optimise for purpose (such as the print-ready copy's slender-upright advisory): the intent
-/// Lay It Flat would save on `model`, the original, with `mesh` read from its file, or the reason it isn't offered.
-/// Saving the intent is the caller's explicit action (`StudioStore.savePartIntent`); nothing is saved here.
-func layFlatIntent(for model: LocalModel, mesh: STLMesh) -> (intent: PartIntent?, reason: String?) {
-    switch mesh.layFlatOutcome(for: model) {
-    case .plan(let plan): return (plan.intent, nil)
-    case .unavailable(let reason): return (nil, reason.message)
-    }
-}
-
 struct PrintOrientationCard: View {
     @EnvironmentObject var store: StudioStore
     let model: LocalModel
@@ -770,6 +765,8 @@ struct PrintOrientationCard: View {
     @State private var turns: [String: Float] = [:]
     /// Lay It Flat's plan, shown for the seller to confirm before anything is saved.
     @State private var layFlatPreview: LayFlatPlan?
+    /// Set Stress Direction was pressed for this model: say how to save the part laid flat.
+    @State private var layFlatSet = false
 
     private var best: PrintPlacementChoice? {
         preferredOrientation(assessments, intent: intent).map { PrintPlacementChoice(assessment: $0, zTurnDegrees: turns[$0.id] ?? 0) }
@@ -826,7 +823,7 @@ struct PrintOrientationCard: View {
         .task(id: model.id) {
             loaded = false
             intent = model.partIntent ?? PartIntent()
-            mesh = nil; assessments = []; failure = nil; turns = [:]; layFlatPreview = nil
+            mesh = nil; assessments = []; failure = nil; turns = [:]; layFlatPreview = nil; layFlatSet = false
             guard model.supportsPreview, model.printRecipe == nil else { return }
             let url = model.url
             let keepCellRoofsUp = model.requiresZUp
@@ -858,6 +855,10 @@ struct PrintOrientationCard: View {
             layFlatPreview = nil
             guard loaded else { return }
             store.savePartIntent(value, modelID: model.id)
+        }
+        .onChange(of: model.partIntent?.materialGoal) { _, goal in
+            // Keep Current Material (in Print configuration) saves the requirement directly: keep this form in step.
+            if loaded, intent.materialGoal != goal { intent.materialGoal = goal }
         }
     }
 
@@ -904,6 +905,7 @@ struct PrintOrientationCard: View {
                         let saved = preview.intent
                         layFlatPreview = nil
                         intent = saved
+                        layFlatSet = true
                     }
                     .disabled(store.busy)
                 }
@@ -911,6 +913,9 @@ struct PrintOrientationCard: View {
             .padding(10)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
             .fixedSize(horizontal: false, vertical: true)
+        } else if layFlatSet, outcome.unavailable == .alreadySet {
+            Text(layFlatSetLine).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         } else if outcome.unavailable != .alreadySet && outcome.unavailable != .noClearLength {
             // Not shown at all for a boxy part (no clear length) or when the direction is already set.
             VStack(alignment: .leading, spacing: 4) {

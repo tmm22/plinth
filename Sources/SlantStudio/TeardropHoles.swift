@@ -35,14 +35,14 @@ enum TeardropSkipReason: String, Codable, Sendable, CaseIterable {
     case tooSmall, tooLarge, notRound, tilted, notPlainTube, endNotFlat, thinRoof, thinWall, crowded, couldNotRebuild, notChecked
     var message: String {
         switch self {
-        case .tooSmall: return "Under \(Int(teardropMinimumDiameterMM)) mm across: a hole this small prints its top cleanly as it is."
+        case .tooSmall: return "Under \(Int(teardropMinimumDiameterMM)) mm across: a hole this small usually prints its top cleanly as it is."
         case .tooLarge: return "Over \(Int(teardropMaximumDiameterMM)) mm across: a teardrop roof would change too much of the part. Reshape it in your CAD tool if its top sags."
         case .notRound: return "Not round: a slot, an oval or a hole that’s already shaped."
         case .tilted: return "Its axis runs more than \(Int(teardropMaximumTiltDegrees))° off horizontal."
         case .notPlainTube: return "Its wall isn’t a plain straight tube: it steps, tapers or meets another feature."
         case .endNotFlat: return "Its far end isn’t one flat face: it has a drill-point floor, or runs into another hole or pocket."
         case .thinRoof: return "Less than \(Int(teardropMinimumWallMM)) mm of material would be left above its new top."
-        case .thinWall: return "Less than \(Int(teardropMinimumWallMM)) mm of material would be left beside its new 45° shoulders."
+        case .thinWall: return "Less than \(Int(teardropMinimumWallMM)) mm of material would be left beside the new 45° upper sides of the hole."
         case .crowded: return "Another feature meets the hole or sits too close to its top."
         case .couldNotRebuild: return "Studio couldn’t rebuild the faces round it cleanly."
         case .notChecked: return "Not checked: Studio checks up to \(teardropMaximumHoles) holes in one model."
@@ -52,13 +52,14 @@ enum TeardropSkipReason: String, Codable, Sendable, CaseIterable {
 
 /// Why no teardrop copy was made.
 enum TeardropCopyProblem: String, Equatable, Sendable, CaseIterable {
-    case notClosedSolid, tooManyTriangles, noHolesChosen, resultFailedChecks
+    case notClosedSolid, tooManyTriangles, noHolesChosen, resultFailedChecks, volumeMismatch
     var message: String {
         switch self {
         case .notClosedSolid: return "Teardrop holes need a closed, consistently oriented mesh. Use Repair and simplify first."
         case .tooManyTriangles: return "This model has more than \(teardropMaximumTriangleText) triangles, the most Studio reshapes holes in."
         case .noHolesChosen: return "None of the chosen holes could take a teardrop roof."
         case .resultFailedChecks: return "The copy didn’t pass Studio’s mesh check, so no copy was made."
+        case .volumeMismatch: return "The reshaped holes didn’t remove the material Studio expected, so no copy was made."
         }
     }
 }
@@ -97,6 +98,9 @@ struct TeardropCandidate: Equatable, Sendable, Identifiable {
     /// The box round the material the change removes (eligible holes only; zero-size otherwise).
     let changeLow: SIMD3<Float>
     let changeHigh: SIMD3<Float>
+    /// The wall was followed as a plain straight tube to one flat far face, so `startMM`, `endMM` and `through` are
+    /// measured. Size and shape skips are decided before that, so a too-small hole may not be.
+    var measured = true
     var eligible: Bool { skipped == nil }
     var diameterMM: Float { 2 * radiusMM }
     var lengthMM: Float { endMM - startMM }
@@ -173,9 +177,17 @@ private func teardropAxisName(_ axis: SIMD3<Float>) -> String {
     }
 }
 
-/// One line per hole for a list, such as "⌀5.0 mm through hole along X · centre Y 10.0, Z 8.0 · 20.0 mm long ·
-/// 3.2 mm of material above". Positions are from `minimum`, as Reinforce measures them.
-func teardropCandidateLabel(_ hole: TeardropCandidate, minimum: SIMD3<Float>) -> String {
+/// One line per hole for a list, in words: "5.0 mm through hole near the front left, along X". Where it lies is read
+/// in thirds of the box `low`–`high` seen from above (`fitCouponPositionWords`); figures are in
+/// `teardropCandidateDetail`.
+func teardropCandidateLabel(_ hole: TeardropCandidate, low: SIMD3<Float>, high: SIMD3<Float>) -> String {
+    let place = fitCouponPositionWords(SIMD2(hole.centre.x, hole.centre.y), low: SIMD2(low.x, low.y), high: SIMD2(high.x, high.y))
+    return String(format: "%.1f mm %@ hole %@, %@", hole.diameterMM, hole.through ? "through" : "blind", place, teardropAxisLabel(hole.axis))
+}
+
+/// The hole's figures, for a help tag: "⌀5.0 mm through hole along X · centre Y 10.0, Z 8.0 · 20.0 mm long · 3.2 mm of
+/// material above". Positions are from `minimum`, as Reinforce measures them.
+func teardropCandidateDetail(_ hole: TeardropCandidate, minimum: SIMD3<Float>) -> String {
     let p = hole.centre - minimum
     let centre: String
     switch teardropAxisLabel(hole.axis) {
@@ -197,7 +209,7 @@ func teardropHolesSummary(_ record: TeardropHolesRecord) -> String {
     guard record.count > 0 else { return "No holes were reshaped." }
     let sizes = record.diametersMM.map { String(format: "%.1f", $0) }
     let list = sizes.count == 1 ? sizes[0] : sizes.dropLast().joined(separator: ", ") + " and " + sizes.last!
-    return "Teardrop roofs on \(record.count) \(record.count == 1 ? "hole" : "holes") (⌀\(list) mm): 45° shoulders up to a flat top at the hole’s own top, so \(record.count == 1 ? "its" : "each hole’s") bottom and height are unchanged and only the shoulders widen slightly."
+    return "Teardrop roofs on \(record.count) \(record.count == 1 ? "hole" : "holes") (⌀\(list) mm): the upper sides of \(record.count == 1 ? "the hole" : "each hole") rise at 45° to a flat top at the hole’s own top, so \(record.count == 1 ? "its" : "each hole’s") bottom and height are unchanged and only its upper sides widen slightly."
 }
 
 /// A skipped hole's line, such as "⌀2.0 mm hole: Under 3 mm across: …".
@@ -211,7 +223,7 @@ func teardropSkipNote(_ skip: TeardropSkipRecord) -> String {
 func teardropReviewNote(eligibleCount: Int) -> String? {
     guard eligibleCount > 0 else { return nil }
     let holes = "\(eligibleCount) horizontal round hole\(eligibleCount == 1 ? "" : "s")"
-    return "\(holes) found that could take a teardrop roof, so \(eligibleCount == 1 ? "its top prints" : "their tops print") without drooping. Not added, because a teardrop widens a hole’s shoulders slightly. To add one, open Reinforce this part, choose Teardrop hole roof, then Find Horizontal Holes."
+    return "\(holes) found that could take a teardrop roof, so \(eligibleCount == 1 ? "its top is" : "their tops are") less likely to droop. Not added, because a teardrop widens the upper sides of a hole slightly. To add one, open Reinforce this part, choose Teardrop hole roof, then Find Horizontal Holes."
 }
 
 // MARK: - Detection
@@ -265,7 +277,7 @@ func teardropHolesCopy(of mesh: STLMesh, keys: Set<TeardropHoleKey>? = nil, isCa
                 skipped.append(TeardropSkipRecord(reason: .couldNotRebuild, diameterMM: Double(plans[index].candidate.diameterMM)))
             }
             plans = plans.indices.filter { !failed.contains($0) }.map { plans[$0] }
-        case .built(let vertices):
+        case .built(let vertices, let retriangulatedArea):
             try check()
             guard let copy = try? STLMesh.parse(STLMesh(vertices: vertices, minimum: .zero, maximum: .one).binarySTL()) else {
                 return none(.resultFailedChecks, skipped: skipped, shells: before.shells)
@@ -274,11 +286,16 @@ func teardropHolesCopy(of mesh: STLMesh, keys: Set<TeardropHoleKey>? = nil, isCa
             let removed = before.signedVolume - after.signedVolume
             let expected = plans.reduce(0.0) { $0 + $1.plan!.expectedVolume }
             let source = meshCoordinateBounds(mesh.vertices), result = meshCoordinateBounds(copy.vertices)
-            guard teardropInputUsable(after), after.degenerateTriangles <= before.degenerateTriangles, !meshToolMadeWorse(before: before, after: after), after.shells == before.shells,
-                  source.low == result.low, source.high == result.high,
-                  abs(removed - expected) <= max(0.01, expected * 0.01) else {
+            let largest = max(abs(source.low).max(), abs(source.high).max())
+            let problem: TeardropCopyProblem? = {
+                guard teardropInputUsable(after), after.degenerateTriangles <= before.degenerateTriangles, !meshToolMadeWorse(before: before, after: after),
+                      after.shells == before.shells, source.low == result.low, source.high == result.high else { return .resultFailedChecks }
+                let tolerance = teardropVolumeTolerance(expectedMM3: expected, retriangulatedAreaMM2: retriangulatedArea, largestCoordinateMM: largest)
+                return abs(removed - expected) <= tolerance ? nil : .volumeMismatch
+            }()
+            if let problem {
                 return TeardropHolesResult(mesh: nil, data: nil, record: TeardropHolesRecord(holes: [], skipped: skipped, removedVolumeMM3: 0),
-                                           shellsBefore: before.shells, shellsAfter: after.shells, problem: .resultFailedChecks)
+                                           shellsBefore: before.shells, shellsAfter: after.shells, problem: problem)
             }
             let data = copy.binarySTL()
             guard let readBack = try? STLMesh.parse(data), readBack.triangleCount == copy.triangleCount else {
@@ -296,6 +313,15 @@ func teardropHolesCopy(of mesh: STLMesh, keys: Set<TeardropHoleKey>? = nil, isCa
         }
     }
     return none(.noHolesChosen, skipped: skipped, shells: before.shells)
+}
+
+/// How far the measured removed volume may differ from the new shapes' own: 1% of it (at least 0.01 mm³), plus what
+/// rounding can move the end faces that were triangulated again. On a part turned off the axes those faces' corners
+/// sit a rounding step off their plane, so a new triangulation can change the volume by up to about that much over
+/// their area (four steps at the part's largest coordinate are allowed).
+func teardropVolumeTolerance(expectedMM3: Double, retriangulatedAreaMM2: Double, largestCoordinateMM: Float) -> Double {
+    let step = Double(max(abs(largestCoordinateMM), 1).ulp)
+    return max(0.01, expectedMM3 * 0.01) + max(0, retriangulatedAreaMM2) * 4 * step
 }
 
 // MARK: - Topology
@@ -325,7 +351,8 @@ private struct TeardropFound {
 }
 
 private enum TeardropBuild {
-    case built([Float])
+    /// The new vertices, and the area of the end faces that were triangulated again.
+    case built([Float], retriangulatedAreaMM2: Double)
     /// Indices (into the plans passed) of holes whose faces couldn't be rebuilt.
     case failed([Int])
 }
@@ -701,7 +728,8 @@ private struct TeardropTopology {
         func candidate(_ skip: TeardropSkipReason?, wallAbove: Float? = nil, low: SIMD3<Float> = .zero, high: SIMD3<Float> = .zero) -> TeardropCandidate {
             TeardropCandidate(key: key, centre: SIMD3<Float>(mid), axis: SIMD3<Float>(axis), radiusMM: Float(mean),
                               startMM: Float(min(a0, a1)), endMM: Float(max(a0, a1)), through: through, wallAboveMM: wallAbove,
-                              skipped: skip, changeLow: low, changeHigh: high)
+                              skipped: skip, changeLow: low, changeHigh: high,
+                              measured: tubeProblem == nil && farEndInfo != nil)
         }
         func skip(_ reason: TeardropSkipReason) -> Examined { Examined(candidate: candidate(reason), plan: nil, farRing: rail) }
 
@@ -921,6 +949,7 @@ private struct TeardropTopology {
     func build(_ plans: [TeardropPlan]) -> TeardropBuild {
         var points = self.points
         var dropped = Set<Int>()
+        var retriangulatedArea = 0.0
         var added: [SIMD3<Int32>] = []
         // New corner ids, and each changed face's loop replacements: (loop index, removed ring vertices, the ring vertex
         // either side mapped to its corner).
@@ -978,7 +1007,12 @@ private struct TeardropTopology {
             let firstNew = Int32(self.points.count)
             let changedLoops = Set(replacements[face]!.map(\.loop))
             guard Self.loopsAreSeparate(indexed, flat, changed: changedLoops, isNew: { local[$0] >= firstNew }), let filled = try? triangulatePlanarRegion(points: flat, loops: indexed) else { return .failed(holes) }
-            for t in info.triangles { dropped.insert(t) }
+            for t in info.triangles {
+                dropped.insert(t)
+                let ids = triangles[t]
+                let a = SIMD3<Double>(points[Int(ids.x)]), b = SIMD3<Double>(points[Int(ids.y)]), c = SIMD3<Double>(points[Int(ids.z)])
+                retriangulatedArea += simd_length(simd_cross(b - a, c - a)) / 2
+            }
             added += filled.map { SIMD3(local[Int($0.x)], local[Int($0.y)], local[Int($0.z)]) }
         }
         var vertices: [Float] = []
@@ -989,7 +1023,7 @@ private struct TeardropTopology {
         for ids in added {
             for i in [ids.x, ids.y, ids.z] { let q = points[Int(i)]; vertices += [q.x, q.y, q.z] }
         }
-        return .built(vertices)
+        return .built(vertices, retriangulatedAreaMM2: retriangulatedArea)
     }
 
     /// `loop` with its contiguous run of `removed` vertices replaced by the corners of the vertices either side.
@@ -1048,6 +1082,6 @@ private struct TeardropTopology {
 private extension TeardropCandidate {
     func skipping(_ reason: TeardropSkipReason) -> TeardropCandidate {
         TeardropCandidate(key: key, centre: centre, axis: axis, radiusMM: radiusMM, startMM: startMM, endMM: endMM, through: through,
-                          wallAboveMM: nil, skipped: reason, changeLow: .zero, changeHigh: .zero)
+                          wallAboveMM: nil, skipped: reason, changeLow: .zero, changeHigh: .zero, measured: measured)
     }
 }

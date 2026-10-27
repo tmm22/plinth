@@ -291,15 +291,16 @@ final class PrintPreparationTeardropTests: XCTestCase {
     }
 
     func testWordingPromisesNothing() {
-        for text in [printPreparationTeardropConfirmText, printPreparationTeardropCaution, printPreparationTeardropOfferLine(count: 1),
+        let confirm = printPreparationTeardropConfirmText(PrintPreparationSettings(), decorative: false)
+        for text in [confirm, printPreparationTeardropCaution, printPreparationTeardropOfferLine(count: 1),
                      printPreparationTeardropOfferLine(count: 3), printPreparationTeardropsTookTooLong, printPreparationTeardropsNoneFound] {
             for word in ["strong", "safe", "guarantee", "will fit", "%"] {
                 XCTAssertFalse(text.lowercased().contains(word), "\(word) in \(text)")
             }
         }
-        XCTAssertTrue(printPreparationTeardropConfirmText.contains("45°"))
-        XCTAssertTrue(printPreparationTeardropConfirmText.contains("bottom and height are unchanged"))
-        XCTAssertTrue(printPreparationTeardropConfirmText.contains("looser"))
+        XCTAssertTrue(confirm.contains("45°"))
+        XCTAssertTrue(confirm.contains("bottom and height are unchanged"))
+        XCTAssertTrue(confirm.contains("looser"))
         XCTAssertTrue(printPreparationTeardropOfferLine(count: 1).hasPrefix("1 horizontal round hole could"))
         XCTAssertTrue(printPreparationSettingsFooter.contains("never adds fillets, thickens walls or gives holes teardrop roofs"))
     }
@@ -317,7 +318,7 @@ final class PrintPreparationTeardropTests: XCTestCase {
     func testSideHoleIsACouponFeatureAndItsCouponHoldsTheWholeHole() throws {
         let source = try Self.block()
         let features = try XCTUnwrap(fitCouponFeatures(in: source))
-        XCTAssertEqual(features.map(\.kind), [.hole, .sideHole], "\(features.map(\.label))")
+        XCTAssertEqual(features.map(\.kind), [.sideHole, .hole], "Nearest the bed first: \(features.map(\.label))")
         let side = try XCTUnwrap(features.first { $0.kind == .sideHole })
         XCTAssertTrue(side.label.hasPrefix("5.0 mm side hole"), side.label)
         XCTAssertEqual(side.topZ, 10.5, accuracy: 0.05)

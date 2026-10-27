@@ -112,7 +112,7 @@ func printAdvisoryMessage(_ kind: PrintAdvisoryKind, values v: [Double], onCopy:
         // [x, y, z, height, thickness]
         guard v.count == 5 else { return nil }
         return String(format: "Slender upright feature near %@: about %.0f mm tall and %.1f mm thick, standing up as placed. ", at(0), v[3], v[4])
-            + "Layers run across it, and the bond between layers is the weakest direction in a print, so it is likely weaker standing than lying flat. If it carries load, add a rib or gusset in Reinforce, or set its purpose and stress direction in Optimise for purpose on the original and use Make Print-Ready Copy."
+            + "Layers run across it, and the bond between layers is the weakest direction in a print, so it is likely weaker standing than lying flat. If it carries load along its length, Lay It Flat Along Its Length… in Optimise for purpose on the original usually does better, then use Make Print-Ready Copy; or add a rib or gusset in Reinforce."
     case .thinPin:
         // [x, y, z, width]
         guard v.count == 4 else { return nil }

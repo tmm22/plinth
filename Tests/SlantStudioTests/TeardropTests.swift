@@ -58,10 +58,10 @@ final class TeardropTests: XCTestCase {
         // Material above each new flat top: 20 − 10.5 and 20 − 15 mm, capped at the measuring reach.
         XCTAssertEqual(try XCTUnwrap(x.wallAboveMM), min(teardropWallReachMM, 9.5), accuracy: 0.05)
         XCTAssertEqual(try XCTUnwrap(y.wallAboveMM), 5, accuracy: 0.05)
-        XCTAssertTrue(teardropCandidateLabel(x, minimum: source.minimum).contains("through hole along X · centre Y 8.0, Z 8.0"),
-                      teardropCandidateLabel(x, minimum: source.minimum))
-        XCTAssertTrue(teardropCandidateLabel(y, minimum: source.minimum).contains("blind hole along Y · centre X 28.0, Z 12.0"),
-                      teardropCandidateLabel(y, minimum: source.minimum))
+        XCTAssertTrue(teardropCandidateDetail(x, minimum: source.minimum).contains("through hole along X · centre Y 8.0, Z 8.0"),
+                      teardropCandidateDetail(x, minimum: source.minimum))
+        XCTAssertTrue(teardropCandidateDetail(y, minimum: source.minimum).contains("blind hole along Y · centre X 28.0, Z 12.0"),
+                      teardropCandidateDetail(y, minimum: source.minimum))
     }
 
     func testCopyKeepsBottomAndHeightAndAddsOnlyShoulders() throws {

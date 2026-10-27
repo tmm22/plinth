@@ -770,7 +770,8 @@ struct ModelsView: View {
                         }
                     }
                 } else if let hint = materialPurposeHint(intent: store.selectedLocal?.partIntent, isSTL: store.selectedLocal?.supportsPreview == true,
-                                                         selectedFilamentID: store.filamentID, filaments: store.filaments) {
+                                                         selectedFilamentID: store.filamentID, filaments: store.filaments,
+                                                         preparedCopy: store.selectedLocal?.printRecipe != nil) {
                     // A suggestion from the saved purpose, never over a prepared copy's own material; only its Use
                     // button changes the material.
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -790,6 +791,14 @@ struct ModelsView: View {
                             }
                             .fixedSize()
                             .disabled(store.busy)
+                        }
+                        // The seller's explicit choice, saved for this model; not the default, no shortcut.
+                        if let model = store.selectedLocal, let intent = model.partIntent {
+                            Button("Keep Current Material") {
+                                store.savePartIntent(materialIntentKeepingCurrent(intent), modelID: model.id)
+                            }
+                            .disabled(store.busy)
+                            .help("Keeps the material as it is and stops this suggestion for this model")
                         }
                     }
                 }
