@@ -17,6 +17,13 @@ private final class StubProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class UploadStageRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stages: [UploadStage] = []
+    func append(_ stage: UploadStage) { lock.lock(); stages.append(stage); lock.unlock() }
+    var all: [UploadStage] { lock.lock(); defer { lock.unlock() }; return stages }
+}
+
 final class APIClientTests: XCTestCase {
     private func client() -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
@@ -285,8 +292,110 @@ final class APIClientTests: XCTestCase {
         do {
             _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", stage: { _ in })
             XCTFail("Expected insecure URL rejection")
-        } catch APIError.invalidResponse(let message) { XCTAssertTrue(message.contains("HTTPS")) }
+        } catch APIError.invalidResponse(let message) {
+            // Still an invalid response (unknown to Import Orders' personalised uploads); a local file isn't told to
+            // use a secure link.
+            XCTAssertEqual(message, uploadLinkMissingMessage)
+        }
         XCTAssertEqual(count, 1)
+    }
+
+    func testUserAgentGoesOnlyToSlantsAPIAndPlusIsEncoded() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("model".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let stages = UploadStageRecorder()
+        StubProtocol.handler = { request in
+            let agent = request.value(forHTTPHeaderField: "User-Agent") ?? ""
+            switch request.url?.path {
+            case "/v2/api/files/direct-upload":
+                XCTAssertEqual(agent, slantStudioUserAgent)
+                return (200, [:], Data("{\"data\":{\"presignedUrl\":\"https://storage.example/model.stl\",\"filePlaceholder\":{\"id\":\"abc\"}}}".utf8))
+            case "/model.stl":
+                XCTAssertNotEqual(agent, slantStudioUserAgent, "the storage PUT keeps URLSession's own User-Agent")
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                return (200, [:], Data())
+            case "/v2/api/files/confirm-upload":
+                XCTAssertEqual(agent, slantStudioUserAgent)
+                return (200, [:], Data("{\"data\":{\"publicFileServiceId\":\"f-1\"}}".utf8))
+            case "/v2/api/orders":
+                XCTAssertEqual(agent, slantStudioUserAgent)
+                XCTAssertTrue(request.url?.absoluteString.contains("endDate=2026-10-29T00:00:00%2B10:00") == true,
+                              request.url?.absoluteString ?? "")
+                return (200, [:], Data("{\"data\":[]}".utf8))
+            default:
+                XCTFail("Unexpected request \(request.url?.absoluteString ?? "")")
+                return (500, [:], Data())
+            }
+        }
+        _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", stage: { stages.append($0) })
+        XCTAssertEqual(stages.all, [.preparing, .uploading, .confirming])
+        _ = try await client().request("GET", path: "/orders", query: ["endDate": "2026-10-29T00:00:00+10:00"])
+    }
+
+    func testStoragePUTFailureLeavesTheStageAtUploading() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("model".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        StubProtocol.handler = { request in
+            if request.url?.path == "/v2/api/files/direct-upload" {
+                return (200, [:], Data("{\"data\":{\"presignedUrl\":\"https://storage.example/model.stl\",\"filePlaceholder\":{\"id\":\"abc\"}}}".utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/model.stl", "nothing is confirmed after a refused PUT")
+            return (403, [:], Data("<Error><Code>AccessDenied</Code></Error>".utf8))
+        }
+        let stage = UploadStageBox()
+        do {
+            _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", stage: { stage.value = $0 })
+            XCTFail("Expected the storage refusal")
+        } catch {
+            XCTAssertEqual(stage.value, .uploading)
+            XCTAssertFalse(uploadOutcomeUnknown(stage: stage.value, error: error))
+            XCTAssertTrue(uploadFailureMessage(stage: stage.value, error: error).contains("refused the upload link"))
+        }
+    }
+
+    func testModelDownloadStopsAtTheSizeCap() async throws {
+        StubProtocol.handler = { _ in (200, [:], Data(repeating: 7, count: 4096)) }
+        do {
+            let url = try await client().downloadModel(from: URL(string: "https://storage.example/big.stl")!, maxBytes: 1000)
+            try? FileManager.default.removeItem(at: url)
+            XCTFail("Expected the size cap")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, slantDownloadTooLargeMessage)
+        }
+        StubProtocol.handler = { _ in (200, ["Content-Length": "5000"], Data(repeating: 7, count: 5000)) }
+        do {
+            let url = try await client().downloadModel(from: URL(string: "https://storage.example/big.stl")!, maxBytes: 1000)
+            try? FileManager.default.removeItem(at: url)
+            XCTFail("Expected the Content-Length cap")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, slantDownloadTooLargeMessage)
+        }
+        StubProtocol.handler = { _ in (200, [:], Data()) }
+        do {
+            let url = try await client().downloadModel(from: URL(string: "https://storage.example/empty.stl")!)
+            try? FileManager.default.removeItem(at: url)
+            XCTFail("Expected an empty download to be refused")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("empty"))
+        }
+        // Exactly at the cap is accepted, and spans the 1 MB write buffer.
+        let payload = Data((0..<(1 << 20) + 17).map { UInt8($0 & 0xFF) })
+        StubProtocol.handler = { _ in (200, [:], payload) }
+        let url = try await client().downloadModel(from: URL(string: "https://storage.example/ok.stl")!, maxBytes: Int64(payload.count))
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(try Data(contentsOf: url), payload)
+    }
+
+    func testModelDownloadRefusalIsReported() async throws {
+        StubProtocol.handler = { _ in (403, [:], Data("denied".utf8)) }
+        do {
+            _ = try await client().downloadModel(from: URL(string: "https://storage.example/model.stl")!)
+            XCTFail("Expected the refusal")
+        } catch APIError.http(let status, _, _, _) {
+            XCTAssertEqual(status, 403)
+        }
     }
 
     func testModelDownloadUsesStorageSessionWithoutBearerToken() async throws {

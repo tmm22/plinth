@@ -257,6 +257,8 @@ struct PlatformDetailSheet: View {
     @State private var deadLoaded = false
     @State private var testWebhookResult: WebhookTestResult?
     @State private var resendResult: WebhookResendResult?
+    /// What each Try Again returned, by webhook ID, for this sheet only.
+    @State private var singleResendResults: [String: String] = [:]
     /// The last failed action in this sheet or its confirmations, shown inline (the main window's alert is hidden).
     @State private var actionError: String?
 
@@ -427,7 +429,9 @@ struct PlatformDetailSheet: View {
                     }
                 }
                 .disabled(store.busy)
-                if deadLoaded || store.deadWebhooks[record.id] != nil, !platformDeadWebhooks.isEmpty {
+                // The list also holds delivered and expired webhooks; Resend All is for ones Slant can still send.
+                if deadLoaded || store.deadWebhooks[record.id] != nil,
+                   platformDeadWebhooks.contains(where: { deadWebhookResendBlockedReason($0) == nil }) {
                     Button("Resend All…") { confirmResendAll = true }
                         .disabled(store.busy)
                 }
@@ -454,21 +458,35 @@ struct PlatformDetailSheet: View {
                     Text("No failed deliveries.").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(indexedRecords(platformDeadWebhooks), id: \.id) { row in
-                        HStack {
+                        let webhookID = deadWebhookID(row.record)
+                        let blocked = deadWebhookResendBlockedReason(row.record)
+                        HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(displayName(for: row.record, fallback: row.record.id)).font(.callout)
-                                Text(row.record.string("status", "error", "reason")).font(.caption2).foregroundStyle(.secondary)
+                                Text(deadWebhookTitle(row.record)).font(.callout)
+                                let caption = deadWebhookCaption(row.record)
+                                if !caption.isEmpty {
+                                    Text(caption).font(.caption2).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                if let webhookID, let result = singleResendResults[webhookID] {
+                                    Text(result).font(.caption).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer()
                             Button("Try Again") {
+                                guard let webhookID else { return }
                                 Task {
-                                    if await perform({ await store.resendDeadWebhook(platformID: record.id, webhookID: row.record.id) }) != nil {
+                                    if let result = await perform({ await store.resendDeadWebhook(platformID: record.id, webhookID: webhookID) }) {
+                                        // Say what happened before the list reloads with the row's new status.
+                                        singleResendResults[webhookID] = webhookSingleResendResultMessage(result)
                                         _ = await perform { await store.loadDeadWebhooks(platformID: record.id) }
                                         deadLoaded = true
                                     }
                                 }
                             }
-                            .disabled(store.busy || row.record.id.isEmpty)
+                            .disabled(store.busy || webhookID == nil || blocked != nil)
+                            .help(blocked ?? "Ask Slant to deliver this webhook once more")
                         }
                     }
                 }
@@ -573,6 +591,97 @@ func platformReadableFields(_ record: Record) -> some View {
     if !url.isEmpty { LabeledContent("Shop address", value: url) }
     let webhook = record.string("webhookURL", "webhookUrl")
     if !webhook.isEmpty { LabeledContent("Webhook URL", value: webhook) }
+}
+
+// MARK: - Failed deliveries
+
+/// A stored webhook's own ID (Slant's `id`), never a name; nil when missing.
+func deadWebhookID(_ record: Record) -> String? {
+    recordOwnID(record.values, keys: ["id"])
+}
+
+/// The row title: the event, such as "Order shipped" for `order.shipped`; "Webhook delivery" when Slant sends none.
+func deadWebhookTitle(_ record: Record) -> String {
+    let event = record.string("eventType").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !event.isEmpty, event.count <= 80 else { return "Webhook delivery" }
+    let words = event.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ")
+        .split(separator: " ").map { $0.lowercased() }.joined(separator: " ")
+    guard let first = words.first else { return "Webhook delivery" }
+    return first.uppercased() + words.dropFirst()
+}
+
+/// The row caption: status, the endpoint's last reply, when it was last tried and how many attempts, from whatever
+/// Slant sends (each part is left out when absent).
+func deadWebhookCaption(_ record: Record, formatter: (Date) -> String = { $0.formatted(date: .abbreviated, time: .shortened) }) -> String {
+    var parts: [String] = []
+    switch record.string("status").lowercased() {
+    case "retrying": parts.append("Retrying")
+    case "failed": parts.append("Failed")
+    case "delivered": parts.append("Delivered")
+    case "expired": parts.append("Expired")
+    default: break
+    }
+    if let status = catalogWholeNumber(record.values["lastStatus"]), (100...599).contains(status) {
+        parts.append("HTTP \(status)")
+    }
+    if let error = (record.values["lastError"] as? String).flatMap(clippedWebhookText) { parts.append(error) }
+    if let text = record.values["lastAttemptAt"] as? String, let date = parsedWebhookDate(text) {
+        parts.append("last tried \(formatter(date))")
+    }
+    if let attempts = catalogWholeNumber(record.values["attempts"]), attempts > 0 {
+        parts.append(attempts == 1 ? "1 attempt" : "\(attempts) attempts")
+    }
+    if deadWebhookFlag(record, "retryable") == false, record.string("status").lowercased() != "delivered" {
+        parts.append("your endpoint refused it, so Slant stopped retrying")
+    }
+    return parts.joined(separator: " · ")
+}
+
+/// Why Try Again is unavailable for a row, or nil. Delivered and expired webhooks can't be resent (Slant would answer
+/// alreadyDelivered or expired without sending). `retryable: false` only stops Slant's automatic retries, so a manual
+/// resend after fixing the endpoint stays available.
+func deadWebhookResendBlockedReason(_ record: Record) -> String? {
+    let status = record.string("status").lowercased()
+    if status == "delivered" || record.values["succeededAt"].map({ !($0 is NSNull) }) == true {
+        return "Already delivered."
+    }
+    if status == "expired" || deadWebhookFlag(record, "expired") == true {
+        return "Past Slant’s 30-day window, so it can’t be resent."
+    }
+    return nil
+}
+
+/// What a single resend returned, in words.
+func webhookSingleResendResultMessage(_ result: WebhookSingleResendResult) -> String {
+    if result.alreadyDelivered { return "Already delivered, so Slant didn’t send it again." }
+    if result.expired { return "Past Slant’s 30-day window, so Slant didn’t send it." }
+    if result.success {
+        return result.status.map { "Delivered. Your endpoint returned HTTP \($0)." } ?? "Delivered."
+    }
+    let error = result.error.flatMap(clippedWebhookText)
+    if let status = result.status {
+        return error.map { "Not delivered. Your endpoint returned HTTP \(status): \($0)" }
+            ?? "Not delivered. Your endpoint returned HTTP \(status)."
+    }
+    return error.map { "Not delivered: \($0)" } ?? "Not delivered. No reply came from your endpoint."
+}
+
+private func deadWebhookFlag(_ record: Record, _ key: String) -> Bool? {
+    guard let number = record.values[key] as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+    return number.boolValue
+}
+
+/// One line of an endpoint's error text, at most 160 characters.
+private func clippedWebhookText(_ text: String) -> String? {
+    guard var line = clippedAPIAlertMessage(text) else { return nil }
+    if line.count > 160 { line = String(line.prefix(159)) + "…" }
+    return line
+}
+
+private func parsedWebhookDate(_ text: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
 }
 
 func webhookRotateTypedConfirmAllowed(_ typed: String) -> Bool {

@@ -57,6 +57,22 @@ func catalogWholeNumber(_ value: Any?) -> Int? {
     return nil
 }
 
+/// A catalog price with its `priceUnit`. Slant's component `priceUnit` is a currency (the enum `["USD"]`), so a
+/// three-letter upper-case code is read as the currency: USD gives "$4.50", another code "4.50 EUR". Anything else is a
+/// unit ("$4.50 / each"); none gives "$4.50".
+func catalogPriceText(_ price: Any?, priceUnit: String) -> String {
+    let unit = priceUnit.trimmingCharacters(in: .whitespacesAndNewlines)
+    let amount = money(price)
+    guard !unit.isEmpty else { return amount }
+    let code = unit.uppercased()
+    let letters = code.count == 3 && code.unicodeScalars.allSatisfy { ("A"..."Z").contains($0) }
+    // Upper case reads as a currency; lower case only when it is a known ISO code (so "usd" is USD, "pcs" a unit).
+    let isCurrencyCode = letters && (unit == code || Locale.Currency.isoCurrencies.contains { $0.identifier == code })
+    guard isCurrencyCode else { return "\(amount) / \(unit)" }
+    if code == "USD" || amount == "—" { return amount }
+    return "\(amount.hasPrefix("$") ? String(amount.dropFirst()) : amount) \(code)"
+}
+
 private func catalogText(_ record: Record, _ key: String) -> String {
     guard let text = record.values[key] as? String else { return "" }
     return text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -69,8 +85,7 @@ private func catalogText(_ record: Record, _ key: String) -> String {
 func stationeryFactRows(_ record: Record) -> [(String, String)] {
     var rows: [(String, String)] = []
     if catalogNumberText(record.values["price"]) != nil {
-        let unit = catalogText(record, "priceUnit")
-        rows.append(("Price", unit.isEmpty ? money(record.values["price"]) : "\(money(record.values["price"])) / \(unit)"))
+        rows.append(("Price", catalogPriceText(record.values["price"], priceUnit: catalogText(record, "priceUnit"))))
     }
     let dimensions = catalogText(record, "dimensions")
     if !dimensions.isEmpty {

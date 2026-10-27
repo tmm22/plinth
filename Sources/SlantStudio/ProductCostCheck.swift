@@ -122,6 +122,11 @@ func productCostParts(
                 parts.append(part(.unavailable("It’s no longer offered in the catalog.")))
                 continue
             }
+            // Like an out-of-stock material: Slant marks it not available, so it isn't priced as if it could be ordered.
+            if filamentAvailability(record) == false {
+                parts.append(part(.unavailable("Slant marks it as not available, so its price isn’t counted.")))
+                continue
+            }
             switch productCostCatalogPrice(record) {
             case .success(let price):
                 let each = money(NSDecimalNumber(decimal: price))
