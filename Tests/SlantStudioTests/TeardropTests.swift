@@ -16,6 +16,9 @@ final class TeardropTests: XCTestCase {
         Mesh.cylinder(radius: radius, height: y1 - y0, slices: slices).translated(by: Vector(x, (y0 + y1) / 2, z))
     }
     private static let block = Mesh.cube(center: Vector(20, 15, 10), size: Vector(40, 30, 20))
+    /// The same block for `r12HoledBlock`, whose exact holes need no Boolean (most of these tests' time). The Euclid
+    /// fixtures stay where Euclid's own tessellation is what's tested.
+    private static let blockSize = SIMD3<Float>(40, 30, 20)
 
     /// 40 × 30 × 20 mm block: a ⌀5 mm X through hole at y 8, z 8, and a ⌀6 mm Y blind hole from the +Y face to y 14,
     /// at x 28, z 12.
@@ -134,7 +137,7 @@ final class TeardropTests: XCTestCase {
     }
 
     func testFineHoleMatchesTheTruncatedTeardropArea() throws {
-        let source = try Self.exported(Self.block.subtracting(Self.holeX(radius: 4, y: 12, z: 9, slices: 96)))
+        let source = try r12HoledBlock(Self.blockSize, xHoles: [r12Hole(SIMD2(12, 9), radius: 4, segments: 96)], zHoles: [])
         let result = try teardropHolesCopy(of: source)
         XCTAssertEqual(result.record.count, 1, "\(result.record.skipped) \(String(describing: result.problem))")
         let perMM = result.record.removedVolumeMM3 / 40
@@ -169,10 +172,9 @@ final class TeardropTests: XCTestCase {
     }
 
     func testSmallHolesThinRoofsVerticalHolesAndPlainBlocks() throws {
-        let small = Self.holeX(radius: 1, y: 6, z: 6)
-        let thin = Self.holeX(radius: 2.5, y: 20, z: 16.8)
-        let vertical = Mesh.cylinder(radius: 2.5, height: 30, slices: 48).rotated(by: Rotation(pitch: .halfPi)).translated(by: Vector(10, 26, 10))
-        let source = try Self.exported(Self.block.subtracting(small).subtracting(thin).subtracting(vertical))
+        let source = try r12HoledBlock(Self.blockSize, xHoles: [r12Hole(SIMD2(6, 6), radius: 1, segments: 48),
+                                                                r12Hole(SIMD2(20, 16.8), radius: 2.5, segments: 48)],
+                                       zHoles: [r12Hole(SIMD2(10, 26), radius: 2.5, segments: 48)])
         let found = try teardropCandidates(in: source)
         XCTAssertEqual(found.count, 2, "Vertical holes aren't listed: \(found)")
         let skipped = Dictionary(uniqueKeysWithValues: found.map { (Int($0.diameterMM.rounded()), $0.skipped) })
@@ -185,7 +187,7 @@ final class TeardropTests: XCTestCase {
         XCTAssertEqual(Set(result.record.skipped.map(\.reason)), [.tooSmall, .thinRoof])
         XCTAssertTrue(result.record.skipped.allSatisfy { teardropSkipNote($0).hasPrefix("⌀") })
 
-        let plain = try Self.exported(Self.block)
+        let plain = try r12HoledBlock(Self.blockSize, xHoles: [], zHoles: [])
         XCTAssertTrue(try teardropCandidates(in: plain).isEmpty)
         // A horizontal pin isn't a hole.
         let pin = try Self.exported(Self.block.union(Self.holeX(radius: 2.5, y: 15, z: 10, from: 39, to: 50)))
@@ -195,8 +197,8 @@ final class TeardropTests: XCTestCase {
     func testHolesSharingFacesThinSideWallsAndKeepClearRegions() throws {
         // Three holes through the same two faces. The third is 0.9 mm from the +Y side, but the shoulders sit inside the
         // circle's own width, so that wall isn't thinned and the hole can still take a teardrop.
-        let source = try Self.exported(Self.block.subtracting(Self.holeX(radius: 2.5, y: 7, z: 8))
-            .subtracting(Self.holeX(radius: 2.5, y: 16, z: 8)).subtracting(Self.holeX(radius: 2.5, y: 26.6, z: 8)))
+        let source = try r12HoledBlock(Self.blockSize, xHoles: [Float(7), 16, 26.6].map { r12Hole(SIMD2($0, 8), radius: 2.5, segments: 48) },
+                                       zHoles: [])
         let found = try teardropCandidates(in: source)
         XCTAssertEqual(found.count, 3, "\(found)")
         XCTAssertEqual(found.filter(\.eligible).count, 3, "\(found.map(\.skipped))")
@@ -279,44 +281,13 @@ final class TeardropTests: XCTestCase {
         XCTAssertEqual(try Self.geometryDigest(), try Self.geometryDigest())
     }
 
-    /// Run only as a subprocess by the test below: writes the copy's hash to the named file.
+    /// Run only as a subprocess by `PrintPreparationFixesTests.testPipelineBytesMatchAcrossHashSeeds`: writes the copy's
+    /// hash to the named file.
     func testHashSeedProbeWritesTeardropHash() throws {
         guard let out = ProcessInfo.processInfo.environment["SLANT_TEARDROP_HASH_OUT"] else { return }
         try Self.geometryDigest().write(toFile: out, atomically: true, encoding: .utf8)
     }
 
-    /// The same model gives the same bytes whatever the process's hash seed.
-    func testTeardropBytesMatchAcrossHashSeeds() throws {
-        guard ProcessInfo.processInfo.environment["SLANT_TEARDROP_HASH_OUT"] == nil else { return }
-        let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
-        guard FileManager.default.isExecutableFile(atPath: xcrun.path) else { throw XCTSkip("xcrun isn't available") }
-        let bundle = Bundle(for: Self.self).bundlePath
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioTeardropSeed-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        func launch(_ deterministic: Bool) throws -> Process {
-            var environment = ProcessInfo.processInfo.environment
-            environment["SLANT_TEARDROP_HASH_OUT"] = folder.appendingPathComponent(deterministic ? "fixed.txt" : "random.txt").path
-            if deterministic { environment["SWIFT_DETERMINISTIC_HASHING"] = "1" } else { environment.removeValue(forKey: "SWIFT_DETERMINISTIC_HASHING") }
-            let process = Process()
-            process.executableURL = xcrun
-            process.arguments = ["xctest", "-XCTest", "SlantStudioTests.TeardropTests/testHashSeedProbeWritesTeardropHash", bundle]
-            process.environment = environment
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            return process
-        }
-        let fixed = try launch(true), random = try launch(false)
-        defer { for process in [fixed, random] where process.isRunning { process.terminate() } }
-        let local = try Self.geometryDigest()
-        let deadline = Date().addingTimeInterval(120)
-        for process in [fixed, random] {
-            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-            if process.isRunning { process.terminate(); XCTFail("The subprocess didn't finish") }
-        }
-        for name in ["fixed.txt", "random.txt"] {
-            XCTAssertEqual(try String(contentsOfFile: folder.appendingPathComponent(name).path, encoding: .utf8), local, name)
-        }
-    }
+    // Compared across hash seeds by `PrintPreparationFixesTests.testPipelineBytesMatchAcrossHashSeeds`, with the other
+    // geometry probes, so the bundle is launched once per seed.
 }

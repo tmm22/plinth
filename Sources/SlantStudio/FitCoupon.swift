@@ -2,7 +2,7 @@ import Foundation
 import simd
 
 // Fit coupons: a small test piece cut from a model, round one fitting feature (a round hole opening through the bed
-// face, or a pin) or as a slice of its whole footprint, so the seller can order it and check how it fits a mating part
+// face, a round hole running sideways, or a pin) or as a slice of its whole footprint, so the seller can order it and check how it fits a mating part
 // before ordering the full part. The piece is the model's own geometry inside a box that always starts at the model's
 // lowest point, so it keeps the bed face, the first layers and the way up (layers run as in the full print), and slots
 // that open through the bed face stay open: no closed void can appear. Everything is pure and deterministic, walking
@@ -29,15 +29,23 @@ let fitCouponBottomSliceRangeMM: ClosedRange<Double> = 1...20
 
 enum FitCouponFeatureKind: String, Equatable, Sendable {
     case hole, pin
+    /// A round hole running sideways (within 5° of horizontal), as Teardrop holes finds them (`teardropCandidates`):
+    /// a hinge, axle or pin hole through a wall.
+    case sideHole
+
+    /// "hole" or "pin", for sentences.
+    var word: String { self == .pin ? "pin" : "hole" }
 }
 
 /// A feature a coupon can be cut round, in the mesh's own coordinates.
 struct FitCouponFeature: Equatable, Sendable {
     let kind: FitCouponFeatureKind
     let centre: SIMD2<Float>
-    /// Across X and Y: a hole's diameter both ways, a pin's section.
+    /// Across X and Y: a hole's diameter both ways, a pin's section, a side hole's extent seen from above (its length
+    /// along its axis, its diameter across).
     let sizeMM: SIMD2<Float>
-    /// Where the feature ends: a blind hole's ceiling, the top of the material round a through hole, a pin's top.
+    /// Where the feature ends: a blind hole's ceiling, the top of the material round a through hole, a pin's top, a side
+    /// hole's top.
     let topZ: Float
     /// A hole that runs up through the part, with no ceiling above it.
     let throughHole: Bool
@@ -75,11 +83,14 @@ func fitCouponPositionWords(_ point: SIMD2<Float>, low: SIMD2<Float>, high: SIMD
     return words.isEmpty ? "in the middle" : "near the " + words.joined(separator: " ")
 }
 
-/// "10.0 mm hole", "4.0 mm pin" or "3.0 × 6.0 mm post" for a section that isn't square.
-func fitCouponFeatureName(_ kind: FitCouponFeatureKind, sizeMM: SIMD2<Float>) -> String {
+/// "10.0 mm hole", "4.0 mm pin", "3.0 × 6.0 mm post" for a section that isn't square, or "5.0 mm side hole" (from
+/// `diameterMM`).
+func fitCouponFeatureName(_ kind: FitCouponFeatureKind, sizeMM: SIMD2<Float>, diameterMM: Float? = nil) -> String {
     switch kind {
     case .hole:
         return String(format: "%.1f mm hole", sizeMM.max())
+    case .sideHole:
+        return String(format: "%.1f mm side hole", diameterMM ?? sizeMM.min())
     case .pin:
         if abs(sizeMM.x - sizeMM.y) > 0.3 {
             return String(format: "%.1f × %.1f mm post", sizeMM.x, sizeMM.y)
@@ -118,8 +129,9 @@ func fitCouponRoundHoles(points: [SIMD3<Float>], loops: [[Int]]) -> [InternalWal
 }
 
 /// Features a fit coupon can be cut round: round holes that open through the bed face (flat, downward faces at the
-/// lowest point, the internal walls' rule), then flat-topped pins and posts that rise from the part (not from the bed).
-/// Each kind is sorted by X, then Y; at most `fitCouponMaximumFeatures`. Labels that would repeat get the position
+/// lowest point, the internal walls' rule), round holes running sideways (`fitCouponSideHoles`), then flat-topped pins
+/// and posts that rise from the part (not from the bed). Each kind is sorted by X, then Y; at most
+/// `fitCouponMaximumFeatures`. Labels that would repeat get the position
 /// from the model's lowest corner. Nil when cancelled.
 func fitCouponFeatures(in mesh: STLMesh, isCancelled: () -> Bool = { false }) -> [FitCouponFeature]? {
     let count = mesh.triangleCount
@@ -141,7 +153,10 @@ func fitCouponFeatures(in mesh: STLMesh, isCancelled: () -> Bool = { false }) ->
     guard let rays = TriangleRayIndex(mesh, isCancelled: isCancelled), !isCancelled() else { return nil }
     let up = SIMD3<Float>(0, 0, 1)
 
-    struct Found { let kind: FitCouponFeatureKind; let centre: SIMD2<Float>; let size: SIMD2<Float>; let top: Float; let through: Bool }
+    struct Found {
+        let kind: FitCouponFeatureKind; let centre: SIMD2<Float>; let size: SIMD2<Float>; let top: Float; let through: Bool
+        var diameter: Float? = nil
+    }
     var holes: [Found] = []
     if let outline = internalWallsBedOutline(mesh, isBed: isBed) {
         for hole in fitCouponRoundHoles(points: outline.points, loops: outline.loops) {
@@ -223,6 +238,10 @@ func fitCouponFeatures(in mesh: STLMesh, isCancelled: () -> Bool = { false }) ->
         pins.append(Found(kind: .pin, centre: centre, size: size, top: top.z, through: false))
     }
 
+    // Round holes running sideways, as Teardrop holes finds them.
+    guard let side = fitCouponSideHoles(in: mesh, isCancelled: isCancelled) else { return nil }
+    let sideHoles = side.map { Found(kind: .sideHole, centre: $0.centre, size: $0.sizeMM, top: $0.topZ, through: $0.through, diameter: $0.diameterMM) }
+
     // By X, then Y, to the nearest 0.1 mm, so centres a rounding step apart don't decide the order.
     func ordered(_ list: [Found]) -> [Found] {
         func key(_ f: Found) -> SIMD2<Float> { (f.centre * 10).rounded(.toNearestOrAwayFromZero) }
@@ -233,9 +252,11 @@ func fitCouponFeatures(in mesh: STLMesh, isCancelled: () -> Bool = { false }) ->
             return a.offset < b.offset
         }.map(\.element)
     }
-    let found = Array((ordered(holes) + ordered(pins)).prefix(fitCouponMaximumFeatures))
+    let found = Array((ordered(holes) + ordered(sideHoles) + ordered(pins)).prefix(fitCouponMaximumFeatures))
     let lowXY = SIMD2(bounds.low.x, bounds.low.y), highXY = SIMD2(bounds.high.x, bounds.high.y)
-    let labels = found.map { "\(fitCouponFeatureName($0.kind, sizeMM: $0.size)) \(fitCouponPositionWords($0.centre, low: lowXY, high: highXY))" }
+    let labels = found.map {
+        "\(fitCouponFeatureName($0.kind, sizeMM: $0.size, diameterMM: $0.diameter)) \(fitCouponPositionWords($0.centre, low: lowXY, high: highXY))"
+    }
     return found.indices.map { i in
         let f = found[i]
         var label = labels[i]
@@ -243,6 +264,36 @@ func fitCouponFeatures(in mesh: STLMesh, isCancelled: () -> Bool = { false }) ->
             label += String(format: " (X %.0f, Y %.0f)", f.centre.x - lowXY.x, f.centre.y - lowXY.y)
         }
         return FitCouponFeature(kind: f.kind, centre: f.centre, sizeMM: f.size, topZ: f.top, throughHole: f.through, label: label)
+    }
+}
+
+/// A round hole running sideways, seen from above: its centre, its extent (length along the axis, diameter across),
+/// its top and size.
+struct FitCouponSideHole: Equatable, Sendable {
+    let centre: SIMD2<Float>
+    let sizeMM: SIMD2<Float>
+    let topZ: Float
+    let diameterMM: Float
+    let through: Bool
+}
+
+/// Teardrop holes' horizontal round holes (`teardropCandidates`) that are round, level and measured end to end, whether
+/// or not they could take a teardrop roof: a 2 mm pin hole is as much a fitting feature as a 6 mm one. Tilted, out of
+/// round, stepped or tapered holes, whose ends weren't measured, and any past the finder's 64 are left out. In the finder's
+/// order; nil when cancelled.
+func fitCouponSideHoles(in mesh: STLMesh, isCancelled: () -> Bool = { false }) -> [FitCouponSideHole]? {
+    let candidates: [TeardropCandidate]
+    do { candidates = try teardropCandidates(in: mesh, isCancelled: isCancelled) } catch { return nil }
+    let unmeasured: Set<TeardropSkipReason> = [.notRound, .tilted, .notPlainTube, .endNotFlat, .notChecked]
+    return candidates.compactMap { hole in
+        if let reason = hole.skipped, unmeasured.contains(reason) { return nil }
+        let axis = SIMD2(abs(hole.axis.x), abs(hole.axis.y))
+        let length = hole.lengthMM, diameter = hole.diameterMM
+        guard length > 0, diameter > 0, length.isFinite, diameter.isFinite else { return nil }
+        let mid = hole.centre
+        let size = SIMD2(axis.x * length + axis.y * diameter, axis.y * length + axis.x * diameter)
+        return FitCouponSideHole(centre: SIMD2(mid.x, mid.y), sizeMM: size, topZ: mid.z + hole.radiusMM,
+                                 diameterMM: diameter, through: hole.through)
     }
 }
 
@@ -408,7 +459,8 @@ func fitCouponFeatureNote(_ feature: FitCouponFeature) -> String {
     let reach = feature.kind == .hole && feature.throughHole
         ? "up to the top of the material round it"
         : "up to \(meshFitHeightText(fitCouponHeadroomMM)) mm above its \(feature.kind == .hole ? "ceiling" : "top")"
-    return "Cut from the bed \(reach), with at least \(margin) mm all round the \(feature.kind.rawValue) and at least \(Int(fitCouponMinimumWidthMM)) mm across where the model allows."
+    let round = feature.kind == .sideHole ? "the hole and past its ends" : "the \(feature.kind.word)"
+    return "Cut from the bed \(reach), with at least \(margin) mm all round \(round) and at least \(Int(fitCouponMinimumWidthMM)) mm across where the model allows."
 }
 
 /// "Bracket (fit coupon)".

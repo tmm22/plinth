@@ -427,47 +427,12 @@ final class FitCouponTests: XCTestCase {
         return outputs.map(digest).joined(separator: " ") + " " + (try existingMeshFitDigest())
     }
 
-    /// Run only as a subprocess by `testCouponBytesMatchAcrossHashSeeds`.
+    /// Run only as a subprocess by `PrintPreparationFixesTests.testPipelineBytesMatchAcrossHashSeeds`.
     func testHashSeedProbeWritesCouponHash() throws {
         guard let out = ProcessInfo.processInfo.environment["SLANT_R12_COUPON_HASH_OUT"] else { return }
         try Self.couponDigest().write(toFile: out, atomically: true, encoding: .utf8)
     }
 
-    /// Runs the probe in two subprocesses, one with `SWIFT_DETERMINISTIC_HASHING=1` and one with a random seed, side by
-    /// side, against this process's own result.
-    func testCouponBytesMatchAcrossHashSeeds() throws {
-        let variable = "SLANT_R12_COUPON_HASH_OUT"
-        guard ProcessInfo.processInfo.environment[variable] == nil else { return }
-        let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
-        guard FileManager.default.isExecutableFile(atPath: xcrun.path) else { throw XCTSkip("xcrun isn't available") }
-        let bundle = Bundle(for: Self.self).bundlePath
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioCouponSeed-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        func launch(deterministic: Bool) throws -> Process {
-            var environment = ProcessInfo.processInfo.environment
-            environment[variable] = folder.appendingPathComponent(deterministic ? "fixed.txt" : "random.txt").path
-            if deterministic { environment["SWIFT_DETERMINISTIC_HASHING"] = "1" } else { environment.removeValue(forKey: "SWIFT_DETERMINISTIC_HASHING") }
-            let process = Process()
-            process.executableURL = xcrun
-            process.arguments = ["xctest", "-XCTest", "SlantStudioTests.FitCouponTests/testHashSeedProbeWritesCouponHash", bundle]
-            process.environment = environment
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            return process
-        }
-        let fixed = try launch(deterministic: true), random = try launch(deterministic: false)
-        defer { for process in [fixed, random] where process.isRunning { process.terminate() } }
-        let local = try Self.couponDigest()
-        let deadline = Date().addingTimeInterval(120)
-        for process in [fixed, random] {
-            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-            if process.isRunning { process.terminate(); XCTFail("The subprocess didn't finish") }
-        }
-        for mode in ["fixed", "random"] {
-            let file = folder.appendingPathComponent("\(mode).txt").path
-            XCTAssertEqual(try String(contentsOfFile: file, encoding: .utf8), local, "\(mode) seed")
-        }
-    }
+    // Compared across hash seeds by `PrintPreparationFixesTests.testPipelineBytesMatchAcrossHashSeeds`, with the other
+    // geometry probes, so the bundle is launched once per seed.
 }

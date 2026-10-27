@@ -48,7 +48,7 @@ let printPreparationAlsoManualNote = "Also used by Make Print-Ready Copy."
 let printPreparationInternalWallsCaption = "Rings round holes and slots through pins and thin sections, open through the base, make Slant’s printer add walls there. Slots through thick regions are added for any saved purpose except Decorative (including Enclosure and Custom): in one Slant estimate for a 40 × 40 × 20 mm block (25 Oct 2026), they added about 27% to the price. \(printPreparationAlsoManualNote)"
 let printPreparationBottomChamferCaption = "Keeps the first layer’s spread inside the part’s outline. Hole entries keep their size. With this on, almost every new STL gets a print-ready copy, because most parts have a flat bottom edge. \(printPreparationAlsoManualNote)"
 let printPreparationChamferCaution = "Chamfers fill the space under overhanging ledges: check any ledge something hooks or slides under."
-let printPreparationSettingsFooter = "When you import an STL, open one from Finder, save an STL copy of an OBJ or 3MF, or save a replica, Studio makes a separate “(print-ready)” copy. In order, it repairs the mesh if needed; places the part on the bed with the fewest overhangs, turned square to the printer’s axes; adds bridging layers over counterbores and chamfers under free ledges; adds a 0.4 mm chamfer round the bottom edge, if chosen; and adds internal walls, if chosen: rings round holes and slots through pins and thin sections, plus slots through thick regions for any saved purpose except Decorative (including Enclosure and Custom). It then lists overhangs, thin walls and other print risks on the copy. It never changes the original, never uploads or sends anything, never fills hidden pockets (the copy offers Fill Hidden Pockets), and never adds fillets or thickens walls, which can change how parts fit; the copy offers those separately. \(printPreparationChamferCaution) Personalised models, designed accessories and copies made by Studio’s tools are left alone; use Make Print-Ready Copy in a model’s More menu for any of them."
+let printPreparationSettingsFooter = "When you import an STL, open one from Finder, save an STL copy of an OBJ or 3MF, or save a replica, Studio makes a separate “(print-ready)” copy. In order, it repairs the mesh if needed; places the part on the bed with the fewest overhangs, turned square to the printer’s axes; adds bridging layers over counterbores and chamfers under free ledges; adds a 0.4 mm chamfer round the bottom edge, if chosen; and adds internal walls, if chosen: rings round holes and slots through pins and thin sections, plus slots through thick regions for any saved purpose except Decorative (including Enclosure and Custom). It then lists overhangs, thin walls and other print risks on the copy. It never changes the original, never uploads or sends anything, never fills hidden pockets (the copy offers Fill Hidden Pockets), and never adds fillets, thickens walls or gives holes teardrop roofs, which can change how parts fit; the copy offers those separately. \(printPreparationChamferCaution) Personalised models, designed accessories and copies made by Studio’s tools are left alone; use Make Print-Ready Copy in a model’s More menu for any of them."
 let printPreparationNoticeText = "Studio now makes a print-ready copy of each new STL, with a 0.4 mm chamfer round its bottom edge, so almost every new STL gets one. Change this in Settings › Design Tools."
 
 /// The no-status caption on an STL's panel: the steps Make Print-Ready Copy would run with the current settings.
@@ -85,8 +85,9 @@ enum ModelImportOrigin: Equatable, Sendable {
     case designedAccessory
     /// A file the API Workbench saved from a response (a developer tool). Not prepared.
     case workbench
-    /// A copy made by one of Studio's tools: repaired, simplified, scaled, flat base, plinth, prepared, reinforced,
-    /// auto-improved, reviewed, print-ready, edge-improved. Never prepared automatically, so preparation can never loop.
+    /// A copy made by one of Studio's tools: repaired, simplified, scaled, flat base, plinth, fit coupon, pockets filled,
+    /// prepared, reinforced, auto-improved, reviewed, print-ready (including teardrop holes), edge-improved. Never
+    /// prepared automatically, so preparation can never loop, and a fit coupon stays the piece the seller cut.
     case studioToolCopy
 
     var mayPrepareForPrinting: Bool {
@@ -188,14 +189,22 @@ func printPreparationStatusKeepingCopy(_ status: PrintPreparationStatus, previou
 /// In the order they run. The bottom chamfer runs before the internal walls, so the walls are planned against the
 /// finished surface: every ring and slot keeps its full clearance from the chamfer, and the chamfer never meets a
 /// ring's inner island, which it would otherwise take for an outer edge and cut into.
+/// `teardrops` runs only in Add Teardrop Holes…'s copy, after bridging and chamfers (whose ledge rule could otherwise
+/// take a blind hole's new flat top for a ledge) and before the bottom chamfer and internal walls, which then see the
+/// final holes.
 enum PrintPreparationStep: String, Codable, CaseIterable, Sendable {
-    case repair, orientation, treatments, bottomChamfer, internalWalls
+    case repair, orientation, treatments, teardrops, bottomChamfer, internalWalls
+
+    /// The steps every preparation plans. Teardrop holes are never automatic: only the seller's Add Teardrop Holes…
+    /// adds them.
+    static let planned: [PrintPreparationStep] = [.repair, .orientation, .treatments, .bottomChamfer, .internalWalls]
 
     var title: String {
         switch self {
         case .repair: return "Repair"
         case .orientation: return "Placement"
         case .treatments: return "Bridging and chamfers"
+        case .teardrops: return "Teardrop holes"
         case .bottomChamfer: return "Bottom-edge chamfer"
         case .internalWalls: return "Internal walls"
         }
@@ -216,7 +225,8 @@ let printPreparationScaleFirst = "This model is under 3 mm across, so it may hav
 
 /// Whether each step runs, checked against the mesh as it stands when that step is reached (repair can change the
 /// triangle count). Steps always run in `PrintPreparationStep.allCases` order: repair, placement, bridging and chamfers,
-/// the bottom-edge chamfer, then internal walls; the last two need the bed face down.
+/// teardrop holes (only when the seller chose them), the bottom-edge chamfer, then internal walls; the last two need
+/// the bed face down.
 func printPreparationDecision(_ step: PrintPreparationStep, triangles: Int, meshSound: Bool, internalWallsOn: Bool,
                               decorative: Bool = false, keptPlacement: String? = nil,
                               bottomChamferOn: Bool = true) -> PrintPreparationDecision {
@@ -227,6 +237,8 @@ func printPreparationDecision(_ step: PrintPreparationStep, triangles: Int, mesh
         return keptPlacement.map { .skip($0) } ?? .run
     case .treatments:
         return triangles > meshToolsReinforceTriangleLimit ? .skip(printPreparationTreatmentsTooLarge) : .run
+    case .teardrops:
+        return triangles > teardropMaximumTriangles ? .skip("Skipped: " + TeardropCopyProblem.tooManyTriangles.message) : .run
     case .bottomChamfer:
         guard bottomChamferOn else { return .skip(printPreparationChamferOff) }
         return triangles > bottomChamferMaximumTriangles ? .skip("Skipped: " + BottomChamferSkipReason.tooManyTriangles.message) : .run
@@ -240,7 +252,7 @@ func printPreparationDecision(_ step: PrintPreparationStep, triangles: Int, mesh
 func printPreparationPlan(triangles: Int, meshSound: Bool, internalWallsOn: Bool, decorative: Bool = false,
                           keptPlacement: String? = nil,
                           bottomChamferOn: Bool = true) -> [(step: PrintPreparationStep, decision: PrintPreparationDecision)] {
-    PrintPreparationStep.allCases.map {
+    PrintPreparationStep.planned.map {
         ($0, printPreparationDecision($0, triangles: triangles, meshSound: meshSound, internalWallsOn: internalWallsOn,
                                       decorative: decorative, keptPlacement: keptPlacement, bottomChamferOn: bottomChamferOn))
     }
@@ -429,21 +441,26 @@ struct PrintPreparationRecord: Codable, Equatable, Sendable {
     /// At most `printAdvisoryMaximumCount`, in `PrintAdvisoryKind` order.
     var advisories: [PrintPreparationAdvisoryRecord]
     var hiddenPockets: PrintPreparationPockets?
+    /// Round 12: the holes Add Teardrop Holes… reshaped in this copy (and the chosen ones it left alone); nil on every
+    /// other print-ready copy.
+    var teardropHoles: TeardropHolesRecord?
 
     init(sourceID: UUID, sourceName: String, created: Date, steps: [PrintPreparationStepRecord], orientation: PrintOrientation,
          treatments: [AutoImprovementStep], internalWalls: PrintPreparationWalls?, notes: [String], thinAreasUnder1MM: Int? = nil,
          bottomChamfer: PrintPreparationChamfer? = nil, overhangs: PrintPreparationOverhangs? = nil,
-         advisories: [PrintPreparationAdvisoryRecord] = [], hiddenPockets: PrintPreparationPockets? = nil) {
+         advisories: [PrintPreparationAdvisoryRecord] = [], hiddenPockets: PrintPreparationPockets? = nil,
+         teardropHoles: TeardropHolesRecord? = nil) {
         self.sourceID = sourceID; self.sourceName = sourceName; self.created = created; self.steps = steps
         self.orientation = orientation; self.treatments = treatments; self.internalWalls = internalWalls; self.notes = notes
         self.thinAreasUnder1MM = thinAreasUnder1MM
         self.bottomChamfer = bottomChamfer; self.overhangs = overhangs
         self.advisories = printPreparationCappedAdvisories(advisories); self.hiddenPockets = hiddenPockets
+        self.teardropHoles = teardropHoles
     }
 
     private enum CodingKeys: String, CodingKey {
         case sourceID, sourceName, created, steps, orientation, treatments, internalWalls, notes, thinAreasUnder1MM
-        case bottomChamfer, overhangs, advisories, hiddenPockets
+        case bottomChamfer, overhangs, advisories, hiddenPockets, teardropHoles
     }
 
     /// Lenient: never throws, because models.json loads as a whole and a damaged record must not stop the library
@@ -465,6 +482,8 @@ struct PrintPreparationRecord: Codable, Equatable, Sendable {
         hiddenPockets = (try? c?.decode(PrintPreparationPockets.self, forKey: .hiddenPockets)).flatMap {
             $0.count >= 0 && $0.shellsInside >= 0 ? $0 : nil
         }
+        // A record that reshaped nothing is never saved, so one that reads as empty is dropped.
+        teardropHoles = (try? c?.decode(TeardropHolesRecord.self, forKey: .teardropHoles)).flatMap { $0.count > 0 ? $0 : nil }
     }
 
     var appliedSteps: [PrintPreparationStepRecord] { steps.filter(\.applied) }
@@ -612,10 +631,11 @@ func printPreparationAdvisoryRecords(_ advisories: [PrintAdvisory]) -> [PrintPre
     })
 }
 
-/// Cautions for the copy's panel: the chamfer caution when chamfers were added, and thin areas.
+/// Cautions for the copy's panel: the chamfer caution when chamfers were added, teardrop holes, and thin areas.
 func printPreparationCautions(_ record: PrintPreparationRecord) -> [String] {
     var lines: [String] = []
     if record.chamferCount > 0 { lines.append(printPreparationChamferCaution) }
+    if record.teardropHoles != nil { lines.append(printPreparationTeardropCaution) }
     if let thin = record.thinAreasUnder1MM, let line = printPreparationThinAreasLine(thin) { lines.append(line) }
     return lines
 }
@@ -634,6 +654,9 @@ func printPreparationStepSentence(_ step: PrintPreparationStepRecord, record: Pr
         if record.bridgeCount > 0 { parts.append(record.bridgeCount == 1 ? "1 bridging layer" : "\(record.bridgeCount) bridging layers") }
         if record.chamferCount > 0 { parts.append(record.chamferCount == 1 ? "1 chamfer under a ledge" : "\(record.chamferCount) chamfers under ledges") }
         return "Bridging and chamfers: \(parts.isEmpty ? "added" : parts.joined(separator: ", "))."
+    case .teardrops:
+        let count = record.teardropHoles?.count ?? 0
+        return count == 1 ? "Teardrop holes: a teardrop roof on 1 horizontal hole." : "Teardrop holes: teardrop roofs on \(count) horizontal holes."
     case .bottomChamfer:
         let size = record.bottomChamfer.map { String(format: "%.1f", $0.sizeMM) } ?? "0.4"
         return "Bottom-edge chamfer: \(size) mm round the bottom edge; hole entries keep their size."
@@ -672,6 +695,9 @@ func printPreparationCaption(_ record: PrintPreparationRecord) -> String {
         case .treatments:
             if record.bridgeCount > 0 { parts.append(record.bridgeCount == 1 ? "1 bridging layer" : "\(record.bridgeCount) bridging layers") }
             if record.chamferCount > 0 { parts.append(record.chamferCount == 1 ? "1 chamfer" : "\(record.chamferCount) chamfers") }
+        case .teardrops:
+            let count = record.teardropHoles?.count ?? 0
+            parts.append(count == 1 ? "1 teardrop hole" : "\(count) teardrop holes")
         case .bottomChamfer:
             parts.append("bottom-edge chamfer")
         case .internalWalls:
@@ -686,6 +712,7 @@ func printPreparationCaption(_ record: PrintPreparationRecord) -> String {
 
 /// Activity: title, counts and status only (no model name, no geometry).
 let printPreparationActivityTitle = "Prepare for printing"
+let printPreparationTeardropActivityTitle = "Add teardrop holes"
 func printPreparationActivityDetail(_ status: PrintPreparationStatus, applied: Int = 0, skipped: Int = 0) -> String {
     switch status.outcome {
     case .madeCopy: return "Print-ready copy saved · \(applied) applied, \(skipped) skipped"
@@ -703,19 +730,29 @@ enum PrintPreparationError: LocalizedError, Equatable {
     case tookTooLong
     /// The internal walls step hit its time limit: trying again would take as long.
     case wallsTookTooLong
+    /// The teardrop holes step hit its time limit (`printPreparationTeardropTimeLimit`).
+    case teardropsTookTooLong
     var errorDescription: String? {
         switch self {
         case .stopped: return "Preparing for printing stopped. Nothing was saved."
         case .tookTooLong: return printPreparationTookTooLong
         case .wallsTookTooLong: return printPreparationWallsTookTooLong
+        case .teardropsTookTooLong: return printPreparationTeardropsTookTooLong
         }
     }
+    /// A time limit, rather than the seller's Stop: the status keeps the reason.
+    var isTimeLimit: Bool { self == .tookTooLong || self == .wallsTookTooLong || self == .teardropsTookTooLong }
 }
 
 let printPreparationWallsTookTooLong = "Preparation stopped: adding internal walls took too long, so no copy was made. Turn off Add internal walls in Settings › Design Tools, or simplify a copy, then use Make Print-Ready Copy."
 
 /// The internal walls step stops after this long, as Auto-improve does after 240 s, and the copy isn't saved.
 let printPreparationWallsTimeLimit: TimeInterval = 120
+
+/// The teardrop holes step stops after this long and the copy isn't saved, so its output never depends on machine
+/// speed. Finding and reshaping holes is a direct construction that takes well under a second on most parts.
+let printPreparationTeardropTimeLimit: TimeInterval = 60
+let printPreparationTeardropsTookTooLong = "Adding teardrop holes took too long, so no copy was made. Simplify a copy of the original, or tick fewer holes."
 
 struct PrintPreparationInput: Sendable {
     var sourceID: UUID
@@ -732,6 +769,10 @@ struct PrintPreparationInput: Sendable {
     var bottomChamfer = true
     /// The internal walls step's time limit (`printPreparationWallsTimeLimit`); tests shorten it.
     var wallsTimeLimit: TimeInterval = printPreparationWallsTimeLimit
+    /// Add Teardrop Holes…: the holes the seller ticked and the earlier copy's placement, or nil for every other run.
+    var teardrops: PrintPreparationTeardropChoice? = nil
+    /// The teardrop step's time limit (`printPreparationTeardropTimeLimit`); tests shorten it.
+    var teardropTimeLimit: TimeInterval = printPreparationTeardropTimeLimit
     var decorative: Bool { savedIntent?.purpose == .decorative }
 }
 
@@ -766,11 +807,12 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     var overhangs: PrintPreparationOverhangs?
     var advisories: [PrintPreparationAdvisoryRecord] = []
     var pockets: PrintPreparationPockets?
+    var teardrops: TeardropHolesRecord?
     func record() -> PrintPreparationRecord {
         PrintPreparationRecord(sourceID: input.sourceID, sourceName: input.sourceName, created: now, steps: steps,
                                orientation: orientation, treatments: treatments, internalWalls: walls, notes: notes,
                                thinAreasUnder1MM: thinAreas, bottomChamfer: chamfer, overhangs: overhangs,
-                               advisories: advisories, hiddenPockets: pockets)
+                               advisories: advisories, hiddenPockets: pockets, teardropHoles: teardrops)
     }
     func blocked(_ reason: String) -> PrintPreparationResult {
         PrintPreparationResult(record: record(), mesh: nil, data: nil, blocked: reason)
@@ -817,32 +859,39 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     // 2. Placement. Slant prints the part as uploaded, so this decides which way the layers run. The preferred
     //    placement is turned about Z so faces drawn at an angle line up with the printer's axes.
     let placement = printPreparationPlacementIntent(saved: input.savedIntent)
-    switch decision(.orientation) {
-    case .skip(let reason):
-        steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [reason]))
-    case .run:
-        progress("Choosing the print placement…")
-        let assessments = mesh.orientationAssessments()
-        try check()
-        let asImported = assessments.first { $0.orientation == .zUp }
-        if let chosen = printPlacement(assessments, in: mesh, intent: placement.intent, allowTurn: true) {
-            if chosen.orientation != .zUp {
-                orientation = chosen.orientation
-                // The placement without its turn: the step's sentence gives the turn, once.
-                var lines = ["\(chosen.orientation.base.label).", placement.note]
-                if let asImported {
-                    lines.append(String(format: "Overhangs steeper than 45°: %.0f mm² as imported, %.0f mm² now. Bed contact: %.0f mm².",
-                                        asImported.overhangArea, chosen.assessment.overhangArea, chosen.assessment.contactArea))
+    if let fixed = input.teardrops {
+        // Add Teardrop Holes…: the earlier copy's placement, so the holes the seller ticked on it are the same holes.
+        orientation = fixed.orientation
+        steps.append(fixed.placementStep ?? PrintPreparationStepRecord(step: .orientation, applied: fixed.orientation != .zUp,
+                                                                       lines: [printPreparationTeardropPlacementLine]))
+    } else {
+        switch decision(.orientation) {
+        case .skip(let reason):
+            steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [reason]))
+        case .run:
+            progress("Choosing the print placement…")
+            let assessments = mesh.orientationAssessments()
+            try check()
+            let asImported = assessments.first { $0.orientation == .zUp }
+            if let chosen = printPlacement(assessments, in: mesh, intent: placement.intent, allowTurn: true) {
+                if chosen.orientation != .zUp {
+                    orientation = chosen.orientation
+                    // The placement without its turn: the step's sentence gives the turn, once.
+                    var lines = ["\(chosen.orientation.base.label).", placement.note]
+                    if let asImported {
+                        lines.append(String(format: "Overhangs steeper than 45°: %.0f mm² as imported, %.0f mm² now. Bed contact: %.0f mm².",
+                                            asImported.overhangArea, chosen.assessment.overhangArea, chosen.assessment.contactArea))
+                    }
+                    steps.append(PrintPreparationStepRecord(step: .orientation, applied: true, lines: lines))
+                } else {
+                    steps.append(PrintPreparationStepRecord(step: .orientation, applied: false,
+                                                            lines: ["Kept as imported: it already sits well on the bed.", placement.note]))
                 }
-                steps.append(PrintPreparationStepRecord(step: .orientation, applied: true, lines: lines))
             } else {
-                steps.append(PrintPreparationStepRecord(step: .orientation, applied: false,
-                                                        lines: ["Kept as imported: it already sits well on the bed.", placement.note]))
+                steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [
+                    "Kept as imported: no placement with a flat face on the bed fits Slant’s \(Int(slantBuildVolumeMM)) mm build volume.",
+                ]))
             }
-        } else {
-            steps.append(PrintPreparationStepRecord(step: .orientation, applied: false, lines: [
-                "Kept as imported: no placement with a flat face on the bed fits Slant’s \(Int(slantBuildVolumeMM)) mm build volume.",
-            ]))
         }
     }
     // Always from the origin, so the bed face is at Z = 0 for the steps below. A translation alone isn't a change.
@@ -881,6 +930,33 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
         } catch {
             try check()
             steps.append(PrintPreparationStepRecord(step: .treatments, applied: false, lines: ["Skipped: \(error.localizedDescription)"]))
+        }
+    }
+    try check()
+
+    // 3b. Teardrop holes, only in Add Teardrop Holes…'s copy: the ticked holes, matched on the mesh as it stands now.
+    //     A copy without them would only repeat the earlier one, so none reshaped saves nothing.
+    if let choice = input.teardrops {
+        if case .skip(let reason) = decision(.teardrops) { return blocked(reason) }
+        progress("Reshaping horizontal holes…")
+        let deadline = Date().addingTimeInterval(input.teardropTimeLimit)
+        let stop: () -> Bool = { isCancelled() || Date() > deadline }
+        do {
+            let found = try teardropCandidates(in: mesh, isCancelled: stop)
+            let matched = printPreparationTeardropMatches(chosen: choice.holes, found: found)
+            guard !matched.keys.isEmpty else { return blocked(printPreparationTeardropsNoneFound) }
+            let result = try teardropHolesCopy(of: mesh, keys: matched.keys, isCancelled: stop)
+            guard let reshaped = result.mesh, result.shellsAfter == health.shells else {
+                return blocked((result.problem ?? .resultFailedChecks).message)
+            }
+            mesh = reshaped
+            teardrops = result.record
+            var lines = [teardropHolesSummary(result.record)] + result.record.skipped.map(teardropSkipNote)
+            if let missing = printPreparationTeardropsMissingLine(matched.unmatched) { lines.append(missing) }
+            steps.append(PrintPreparationStepRecord(step: .teardrops, applied: true, lines: lines))
+        } catch TeardropError.stopped {
+            if isCancelled() { throw PrintPreparationError.stopped }
+            throw PrintPreparationError.teardropsTookTooLong
         }
     }
     try check()
@@ -1019,6 +1095,133 @@ func soundTreatedMesh(_ mesh: STLMesh, shells: Int, isCancelled: () -> Bool = { 
     return (repaired.mesh, ["Tidied after the treatments: " + meshRepairSummaryLines(repaired.summary).joined(separator: " ")])
 }
 
+// MARK: - Add Teardrop Holes…
+
+/// What Add Teardrop Holes… asks for: the ticked holes, by their keys on the placed original
+/// (`printPreparationTeardropOffer`), and the earlier copy's placement and its step record, so the new copy is placed
+/// the same way and the ticked holes are the same holes.
+struct PrintPreparationTeardropChoice: Equatable, Sendable {
+    var holes: [TeardropHoleKey]
+    var orientation: PrintOrientation
+    var placementStep: PrintPreparationStepRecord?
+}
+
+private func teardropKeyOrder(_ a: TeardropHoleKey, _ b: TeardropHoleKey) -> Bool {
+    (a.centre.x, a.centre.y, a.centre.z, a.heading, a.diameter) < (b.centre.x, b.centre.y, b.centre.z, b.heading, b.diameter)
+}
+
+/// The choice for the ticked `keys` on the print-ready copy whose record is `record`, keys in a fixed order.
+func printPreparationTeardropChoice(_ keys: [TeardropHoleKey], record: PrintPreparationRecord) -> PrintPreparationTeardropChoice {
+    PrintPreparationTeardropChoice(holes: Array(Set(keys)).sorted(by: teardropKeyOrder), orientation: record.orientation,
+                                   placementStep: record.steps.first { $0.step == .orientation })
+}
+
+/// "Owl (print-ready, teardrop holes)": Add Teardrop Holes…'s copy, beside the earlier "(print-ready)" one.
+func printReadyTeardropCopyName(_ name: String) -> String {
+    "\(meshFitCopyBaseName(name)) (print-ready, teardrop holes)"
+}
+
+let printPreparationTeardropPlacementLine = "Placed as the earlier print-ready copy was."
+let printPreparationTeardropsNoneFound = "None of the ticked holes could be found again after bridging and chamfers, so no copy was made."
+
+func printPreparationTeardropsMissingLine(_ count: Int) -> String? {
+    guard count > 0 else { return nil }
+    return count == 1 ? "1 ticked hole couldn’t be found again after bridging and chamfers, so it was left as it is."
+        : "\(count) ticked holes couldn’t be found again after bridging and chamfers, so they were left as they are."
+}
+
+/// How far a found hole's key may differ from a ticked one, in key units (0.01 mm and 0.1°): bridging and chamfers
+/// rebuild the mesh, which may move a measured centre by a rounding step.
+let printPreparationTeardropMatchTolerance: Int32 = 5
+
+/// The found eligible holes that match the ticked keys (exactly, else the nearest within the tolerance; each found hole
+/// matches at most once), and how many ticked keys matched none. Ticked keys are taken in a fixed order and found holes
+/// in index order, so the match never depends on hashing.
+func printPreparationTeardropMatches(chosen: [TeardropHoleKey], found: [TeardropCandidate]) -> (keys: Set<TeardropHoleKey>, unmatched: Int) {
+    let eligible = found.filter(\.eligible).map(\.key)
+    var used = [Bool](repeating: false, count: eligible.count)
+    var keys = Set<TeardropHoleKey>(), unmatched = 0
+    func gap(_ a: TeardropHoleKey, _ b: TeardropHoleKey) -> Int32 {
+        let d = a.centre &- b.centre
+        return [abs(d.x), abs(d.y), abs(d.z), abs(a.heading &- b.heading), abs(a.diameter &- b.diameter)].max() ?? .max
+    }
+    for key in Array(Set(chosen)).sorted(by: teardropKeyOrder) {
+        var best: Int?
+        var bestGap = printPreparationTeardropMatchTolerance + 1
+        for (index, candidate) in eligible.enumerated() where !used[index] {
+            let g = gap(key, candidate)
+            if g < bestGap { best = index; bestGap = g }
+        }
+        if let best { used[best] = true; keys.insert(eligible[best]) } else { unmatched += 1 }
+    }
+    return (keys, unmatched)
+}
+
+/// Whether a print-ready copy offers Add Teardrop Holes…: its holes weren't reshaped already, its pockets weren't
+/// filled (a new preparation from the original would bring them back), and its original is still in the library.
+/// Whether it has holes to offer is `printPreparationTeardropOffer`'s.
+func printPreparationTeardropOfferApplies(_ model: LocalModel, library: [LocalModel]) -> Bool {
+    guard model.supportsPreview, let record = model.printPreparation, record.teardropHoles == nil,
+          record.hiddenPockets?.filled == nil, model.filledPockets != true else { return false }
+    return library.contains { $0.id == record.sourceID && $0.supportsPreview }
+}
+
+/// The original as its print-ready copy's preparation placed it: repaired when the mesh check fails (as the pipeline
+/// does, deterministically), then turned to the copy's placement with its bed face at Z = 0. Nil when repair can't make
+/// it sound. Throws `TeardropError.stopped` when cancelled.
+func printPreparationPlacedOriginal(_ source: STLMesh, orientation: PrintOrientation,
+                                    isCancelled: () -> Bool = { false }) throws -> STLMesh? {
+    guard let health = analyzeMeshHealth(source, isCancelled: isCancelled) else { throw TeardropError.stopped }
+    var mesh = source
+    if !meshHealthIsSound(health) {
+        do {
+            let repaired = try repairMesh(source, isCancelled: isCancelled)
+            guard repaired.summary.isSound else { return nil }
+            mesh = repaired.mesh
+        } catch MeshToolError.cancelled {
+            throw TeardropError.stopped
+        } catch {
+            return nil
+        }
+    }
+    return mesh.oriented(orientation)
+}
+
+/// The horizontal round holes on a print-ready copy's original as the copy placed it, for Add Teardrop Holes…'s list,
+/// with that mesh's lowest corner for the positions. Offered only when some are eligible.
+struct PrintPreparationTeardropOffer: Sendable {
+    let holes: [TeardropCandidate]
+    let minimum: SIMD3<Float>
+    var eligible: [TeardropCandidate] { holes.filter(\.eligible) }
+    var leftAlone: [TeardropCandidate] { holes.filter { !$0.eligible } }
+}
+
+func printPreparationTeardropOffer(original: STLMesh, record: PrintPreparationRecord,
+                                   isCancelled: () -> Bool = { false }) throws -> PrintPreparationTeardropOffer {
+    guard let placed = try printPreparationPlacedOriginal(original, orientation: record.orientation, isCancelled: isCancelled) else {
+        return PrintPreparationTeardropOffer(holes: [], minimum: .zero)
+    }
+    return PrintPreparationTeardropOffer(holes: try teardropCandidates(in: placed, isCancelled: isCancelled), minimum: placed.minimum)
+}
+
+/// The copy's line beside Add Teardrop Holes….
+func printPreparationTeardropOfferLine(count: Int) -> String {
+    let holes = count == 1 ? "1 horizontal round hole" : "\(count) horizontal round holes"
+    return "\(holes) could take a teardrop roof, so \(count == 1 ? "its top prints" : "their tops print") without drooping. Only for holes whose shoulders don’t have to fit anything."
+}
+
+/// Add Teardrop Holes…'s confirmation. It promises nothing about fit or strength.
+let printPreparationTeardropConfirmText = "The tops of the ticked holes get 45° shoulders up to a flat top at the hole’s own top, so each hole’s bottom and height are unchanged, but anything that must fit against the top shoulders will be looser. Studio makes a new print-ready copy from the original, placed as this one, and adds the bottom-edge chamfer and internal walls round the new shapes. This copy stays as it is. Slant decides supports, so a hole may still get support inside it."
+
+/// The caution on a copy with teardrop holes.
+let printPreparationTeardropCaution = "Teardrop holes: anything that fits against the top of a reshaped hole will be looser there."
+
+/// Shown under Add Teardrop Holes… on the copy it was asked from when no copy was saved.
+struct PrintPreparationTeardropOutcome: Equatable, Sendable {
+    let sourceID: UUID
+    let message: String
+}
+
 // MARK: - Temporary folders
 
 /// Folders Studio's copy tools write through on their way into the library. Each is the prefix followed by a UUID and
@@ -1054,6 +1257,8 @@ struct PrintPreparationJob: Equatable, Sendable {
     /// The automatic trigger (true) or Make Print-Ready Copy (false).
     let automatic: Bool
     let keptPlacement: String?
+    /// Add Teardrop Holes… (always a manual job); nil for every other job.
+    var teardrops: PrintPreparationTeardropChoice? = nil
 }
 
 /// One model at a time, off the main actor. The work only reads the library file, so it runs whatever else is
@@ -1119,6 +1324,21 @@ struct PrintPreparationJob: Equatable, Sendable {
         }
     }
 
+    /// Add Teardrop Holes…'s last outcome without a copy, shown on the copy it was asked from.
+    @Published private(set) var teardropOutcome: PrintPreparationTeardropOutcome?
+
+    func recordTeardropOutcome(sourceID: UUID, status: PrintPreparationStatus) {
+        guard status.outcome != .madeCopy else { teardropOutcome = nil; return }
+        let fallback = status.outcome == .stopped ? "Stopped. Nothing was saved." : "No copy was made."
+        teardropOutcome = PrintPreparationTeardropOutcome(sourceID: sourceID, message: status.lines.first ?? fallback)
+    }
+
+    /// The Add Teardrop Holes… job for `sourceID` (the original) running now or waiting, if any.
+    func teardropJob(for sourceID: UUID) -> (job: PrintPreparationJob, running: Bool)? {
+        if let current, current.modelID == sourceID, current.teardrops != nil { return (current, true) }
+        return pending.first { $0.modelID == sourceID && $0.teardrops != nil }.map { ($0, false) }
+    }
+
     func dismissFirstCopyNotice() {
         UserDefaults.standard.set(true, forKey: printPreparationNoticeDismissedDefaultsKey)
         showsFirstCopyNotice = false
@@ -1155,9 +1375,10 @@ struct PrintPreparationJob: Equatable, Sendable {
     private func run(_ job: PrintPreparationJob, settings: PrintPreparationSettings, flag: PrintPreparationCancelFlag) async {
         // Removed from the library while it waited: nothing to prepare, and nothing to report.
         guard store?.localModels.contains(where: { $0.id == job.modelID }) == true else { return }
-        let input = PrintPreparationInput(sourceID: job.modelID, sourceName: job.name, savedIntent: job.savedIntent,
+        var input = PrintPreparationInput(sourceID: job.modelID, sourceName: job.name, savedIntent: job.savedIntent,
                                           internalWalls: settings.internalWalls, automatic: job.automatic, keptPlacement: job.keptPlacement,
                                           bottomChamfer: settings.bottomChamfer)
+        input.teardrops = job.teardrops
         let url = job.url
         let report: @Sendable (String) -> Void = { [weak self] text in
             Task { @MainActor in if !flag.isSet, self?.current?.modelID == job.modelID { self?.status = text } }
@@ -1184,7 +1405,7 @@ struct PrintPreparationJob: Equatable, Sendable {
         switch outcome {
         case .failure(PrintPreparationError.stopped):
             store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .stopped, date: Date()), counts: (0, 0))
-        case .failure(let error as PrintPreparationError) where error == .tookTooLong || error == .wallsTookTooLong:
+        case .failure(let error as PrintPreparationError) where error.isTimeLimit:
             store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .stopped, lines: [error.localizedDescription], date: Date()),
                                          counts: (0, 0))
         case .failure(let error):
@@ -1256,6 +1477,18 @@ extension StudioStore {
                                                           keptPlacement: printPreparationKeptPlacementReason(model, origin: nil)))
     }
 
+    /// Add Teardrop Holes…: the seller's confirmed request, from a print-ready copy, for a new print-ready copy of its
+    /// original with the ticked holes reshaped, placed as `copy` is. Local only; it queues the work and never uploads.
+    /// Called from the confirmation's own button (never a menu or shortcut), so it doesn't wait for modal UI to close.
+    func addTeardropHoles(from copy: LocalModel, keys: [TeardropHoleKey]) {
+        guard !keys.isEmpty, let record = copy.printPreparation, printPreparationTeardropOfferApplies(copy, library: localModels),
+              let original = localModels.first(where: { $0.id == record.sourceID }) else { return }
+        printPreparationQueue.enqueue(PrintPreparationJob(modelID: original.id, url: original.url, name: original.name,
+                                                          savedIntent: designEditIntent(original), automatic: false,
+                                                          keptPlacement: nil,
+                                                          teardrops: printPreparationTeardropChoice(keys, record: record)))
+    }
+
     /// Saves the outcome on the original (metadata only; its file is never touched).
     func recordPrintPreparationStatus(_ status: PrintPreparationStatus, for modelID: UUID) {
         guard let index = localModels.firstIndex(where: { $0.id == modelID }) else { return }
@@ -1265,7 +1498,8 @@ extension StudioStore {
 
     func finishPrintPreparation(_ job: PrintPreparationJob, status: PrintPreparationStatus, counts: (applied: Int, skipped: Int)) {
         recordPrintPreparationStatus(status, for: job.modelID)
-        activities.insert(Activity(title: printPreparationActivityTitle,
+        if job.teardrops != nil { printPreparationQueue.recordTeardropOutcome(sourceID: job.modelID, status: status) }
+        activities.insert(Activity(title: job.teardrops == nil ? printPreparationActivityTitle : printPreparationTeardropActivityTitle,
                                    detail: printPreparationActivityDetail(status, applied: counts.applied, skipped: counts.skipped),
                                    success: status.outcome != .noCopy), at: 0)
     }
@@ -1279,7 +1513,9 @@ extension StudioStore {
             return false
         }
         let named = file.deletingLastPathComponent()
-            .appendingPathComponent(exportFileName(modelName: printReadyCopyName(original.name), fileExtension: "stl"))
+            .appendingPathComponent(exportFileName(modelName: record.teardropHoles == nil ? printReadyCopyName(original.name)
+                                                                                           : printReadyTeardropCopyName(original.name),
+                                                   fileExtension: "stl"))
         do { try FileManager.default.moveItem(at: file, to: named) } catch {
             finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .noCopy, lines: ["The copy couldn’t be saved: \(error.localizedDescription)"], date: Date()), counts: (0, 0))
             return false

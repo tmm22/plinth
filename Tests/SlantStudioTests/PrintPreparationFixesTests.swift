@@ -383,7 +383,8 @@ final class PrintPreparationFixesTests: XCTestCase {
 
     /// The same models give the same bytes whatever the process's hash seed. One run of this test bundle with
     /// `SWIFT_DETERMINISTIC_HASHING=1` and one with a random seed, side by side, each running the round 11 probes (the
-    /// whole print-ready pipeline here, internal walls of every kind, the bottom chamfer and Fill Hidden Pockets),
+    /// whole print-ready pipeline here, internal walls of every kind, the bottom chamfer and Fill Hidden Pockets; round
+    /// 12's teardrop holes, fit coupons and the teardrop print-ready copy),
     /// against this process's own results.
     func testPipelineBytesMatchAcrossHashSeeds() throws {
         // Here, the part runs every step but repair (its source is already repaired), with a ring and slots.
@@ -399,6 +400,12 @@ final class PrintPreparationFixesTests: XCTestCase {
             ("SLANT_PIPELINE_HASH_OUT", "PrintPreparationFixesTests/testHashSeedProbeWritesPipelineHash", localPipeline),
             ("SLANT_WALLS_HASH_OUT", "InternalWallsKindsTests/testHashSeedProbeWritesWallsHash", InternalWallsKindsTests.wallsDigest),
             ("SLANT_R11_GEOMETRY_HASH_OUT", "BottomChamferTests/testHashSeedProbeWritesGeometryHashes", BottomChamferTests.geometryDigest),
+            // Round 12, run here rather than in subprocesses of their own: teardrop holes, fit coupons and Add Teardrop
+            // Holes…'s print-ready copy (teardrops, bottom chamfer and walls round the new shoulders).
+            ("SLANT_TEARDROP_HASH_OUT", "TeardropTests/testHashSeedProbeWritesTeardropHash", TeardropTests.geometryDigest),
+            ("SLANT_R12_COUPON_HASH_OUT", "FitCouponTests/testHashSeedProbeWritesCouponHash", FitCouponTests.couponDigest),
+            ("SLANT_R12_FOLLOWUP_HASH_OUT", "PrintPreparationTeardropTests/testHashSeedProbeWritesFollowUpHash",
+             PrintPreparationTeardropTests.followUpDigest),
         ]
         guard probes.allSatisfy({ ProcessInfo.processInfo.environment[$0.variable] == nil }) else { return }
         let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")

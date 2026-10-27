@@ -138,7 +138,8 @@ enum AutoImprover {
         try check()
         if Date() > deadline { timedOut = true }
         if timedOut { skipped.append("Time limit reached; the remaining treatments were not tried.") }
-        manual += reviewNotes(mesh, stop: cancelled)
+        // The print-ready copy (`.fitSafe`) offers Add Teardrop Holes… on its own panel instead of this note.
+        manual += reviewNotes(mesh, stop: cancelled, teardrops: profile != .fitSafe)
         try check()
         return AutoImprovementResult(mesh: mesh, orientation: orientation, applied: applied, skipped: skipped, manual: manual,
                                      timedOut: timedOut)
@@ -341,7 +342,7 @@ enum AutoImprover {
 
     /// Treatments that depend on fit or fastener use are reported, not applied. Horizontal holes are counted by the
     /// teardrop finder, so the note counts exactly the holes Find Horizontal Holes would offer.
-    private static func reviewNotes(_ mesh: STLMesh, stop: () -> Bool = { false }) -> [String] {
+    private static func reviewNotes(_ mesh: STLMesh, stop: () -> Bool = { false }, teardrops: Bool = true) -> [String] {
         let topology = Topology(mesh)
         var vertical = Set<SIMD3<Int32>>()
         for facet in topology.facets where facet.normal.z != 0 {
@@ -353,8 +354,10 @@ enum AutoImprover {
             }
         }
         var notes: [String] = []
-        let teardrops = ((try? teardropCandidates(in: mesh, isCancelled: stop)) ?? []).filter(\.eligible).count
-        if let note = teardropReviewNote(eligibleCount: teardrops) { notes.append(note) }
+        if teardrops {
+            let eligible = ((try? teardropCandidates(in: mesh, isCancelled: stop)) ?? []).filter(\.eligible).count
+            if let note = teardropReviewNote(eligibleCount: eligible) { notes.append(note) }
+        }
         if !vertical.isEmpty {
             notes.append("\(vertical.count) vertical bore\(vertical.count == 1 ? "" : "s") found. Mounting collars depend on where fasteners go, so none were added. Add them in Reinforce this part.")
         }
