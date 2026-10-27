@@ -287,7 +287,7 @@ struct DesignImprovementsCard: View {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: folder) }
             let name = URL(fileURLWithPath: model.name).lastPathComponent
-            let url = folder.appendingPathComponent("\(name)-edge-improved.stl")
+            let url = folder.appendingPathComponent(studioCopyName(name, suffix: "edge-improved") + ".stl")
             try preview.binarySTL().write(to: url, options: .atomic)
             // Lock-bearing records go with the copy, so a Z-up-locked model's copy stays locked (`requiresZUp`).
             store.importModel(url, improvement: record, intent: designEditIntent(model), reinforcement: model.reinforcement,

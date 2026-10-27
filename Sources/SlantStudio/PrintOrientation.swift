@@ -1022,7 +1022,7 @@ struct PrintOrientationCard: View {
                     let folder = studioTempFolderURL(prefix: preparedCopyTempFolderPrefix)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     let safeName = URL(fileURLWithPath: name).lastPathComponent
-                    let url = folder.appendingPathComponent("\(safeName)-\(recipe.intent.purpose.rawValue.lowercased())-prepared.stl")
+                    let url = folder.appendingPathComponent(studioCopyName(safeName, suffix: "prepared") + ".stl")
                     do { try mesh.oriented(orientation).binarySTL().write(to: url, options: .atomic) }
                     catch { try? FileManager.default.removeItem(at: folder); throw error }
                     return url

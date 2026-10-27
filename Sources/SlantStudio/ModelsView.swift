@@ -1474,7 +1474,7 @@ func money(_ value: Any?) -> String {
     let formatter = NumberFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.numberStyle = .decimal
-    formatter.usesGroupingSeparator = false
+    formatter.usesGroupingSeparator = true
     formatter.minimumFractionDigits = 2
     formatter.maximumFractionDigits = 2
     return formatter.string(from: NSDecimalNumber(decimal: decimal)).map { "$\($0)" } ?? "—"
