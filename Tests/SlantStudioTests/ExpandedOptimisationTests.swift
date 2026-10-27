@@ -54,7 +54,9 @@ final class ExpandedOptimisationTests: XCTestCase {
         ]
         XCTAssertEqual(recommendedMaterials(for: .rigid, in: records).map(\.id), ["a"])
         XCTAssertEqual(recommendedMaterials(for: .impact, in: records).map(\.id), ["b"])
-        for goal in [MaterialGoal.keepCurrent, .warm, .repeatedFlex] {
+        // Outdoors, sun or warmth: OPM first, then PETG.
+        XCTAssertEqual(recommendedMaterials(for: .warm, in: records).map(\.id), ["f", "b"])
+        for goal in [MaterialGoal.keepCurrent, .repeatedFlex] {
             XCTAssertTrue(recommendedMaterials(for: goal, in: records).isEmpty)
         }
         XCTAssertTrue(recommendedMaterials(for: .rigid, in: []).isEmpty)

@@ -587,6 +587,175 @@ extension STLMesh {
     }
 }
 
+// MARK: - Lay It Flat Along Its Length
+
+/// The longest side counts as the part's length only when it is at least this many times its shortest side.
+let layFlatMinimumLengthRatio: Float = 1.5
+/// Sides within this share of the longest count as equally long; the first of X, Y, Z is then chosen.
+let layFlatTieTolerance: Float = 0.005
+/// The length lies along the bed when it rises no more than this from it once placed.
+let layFlatMaximumRiseDegrees: Float = 15
+
+/// The original axis with the largest extent, or nil for an empty or non-finite size. Ties (within
+/// `layFlatTieTolerance` of the longest) go to the first of X, Y, Z, so the choice never depends on rounding.
+func layFlatLengthAxis(extents: SIMD3<Float>) -> PrintLoadAxis? {
+    let sides = [extents.x, extents.y, extents.z]
+    guard sides.allSatisfy({ $0.isFinite && $0 >= 0 }), let longest = sides.max(), longest > 0 else { return nil }
+    let index = sides.firstIndex { $0 >= longest * (1 - layFlatTieTolerance) } ?? 0
+    return [PrintLoadAxis.x, .y, .z][index]
+}
+
+/// Under the Lay It Flat button when it is offered.
+let layFlatCaption = "The bond between layers is the weakest direction in a print, so a part loaded along its length usually does better lying down."
+
+/// Why Lay It Flat isn't offered, with the line that says so.
+enum LayFlatUnavailable: Equatable, Sendable {
+    case zUpLocked, keptPlacement, fromPrintReadyCopy, preparedCopy, decorative, needsDescription, noClearLength, alreadySet
+    case noPlacement, noFlatSide, placementStandsItUp
+
+    var message: String {
+        switch self {
+        case .preparedCopy:
+            return "This copy is already placed for its purpose, and its directions describe the original. Use Lay It Flat on the original instead."
+        case .zUpLocked:
+            return "This copy keeps Z up because its features depend on the print layers. Use Lay It Flat on the original instead."
+        case .keptPlacement:
+            return "Its way up was chosen in Which way is up?, so Studio keeps that placement."
+        case .fromPrintReadyCopy:
+            return "This is a copy of a print-ready copy, and its directions describe the original. Use Lay It Flat on the original instead."
+        case .decorative:
+            return "Decorative parts are placed for fewer overhangs and a steady base, so a stress direction is ignored."
+        case .needsDescription:
+            return "Describe what the part does first."
+        case .noClearLength:
+            return "Its sides are close in length, so it has no clear length to lay along. Choose the stress direction yourself."
+        case .alreadySet:
+            return "The stress direction already runs along its length."
+        case .noPlacement:
+            return "No flat-bed placement fits among the positions checked."
+        case .noFlatSide:
+            return "It has no flat side to lie on: add a flat base in Size and base first."
+        case .placementStandsItUp:
+            return "Placement would still stand it on end: for this purpose, fewer overhangs and a steadier bed face count for more. If it carries load, choose Bracket, Clip or Custom as its purpose."
+        }
+    }
+}
+
+/// What Lay It Flat would save and how the part would then be placed, for the seller to see before saving.
+struct LayFlatPlan: Equatable, Sendable {
+    /// The intent to save: the same purpose, details and material requirement, with the load along the length.
+    let intent: PartIntent
+    let axis: PrintLoadAxis
+    let lengthMM: Float
+    /// The placement the existing ranking chooses for `intent`.
+    let placement: PrintPlacementChoice
+    /// The part as imported, for the overhang comparison; nil when it wasn't measured.
+    let asImported: OrientationAssessment?
+
+    /// The placement, before any turn about Z, differs from the file's own way up.
+    var changesPlacement: Bool { placement.assessment.orientation != .zUp }
+
+    var lines: [String] {
+        let axisName = "the original \(axis.rawValue.suffix(1)) axis"
+        var result = [String(format: "Sets the main stress direction to %@, its longest side (about %.0f mm), and keeps the purpose (%@).",
+                             axisName, lengthMM, intent.purpose.rawValue.lowercased())]
+        result.append(changesPlacement
+            ? "Placement then lays it down (\(placement.orientation.base.label)), so layers run along its length instead of across it."
+            : "It already lies along its length as imported, so the placement stays as it is and layers run along its length.")
+        let laid = placement.assessment
+        if let asImported, changesPlacement {
+            result.append(String(format: "Overhangs steeper than 45°: about %.0f mm² as imported, %.0f mm² laid flat. Bed contact: about %.0f mm².",
+                                 asImported.overhangArea, laid.overhangArea, laid.contactArea))
+        } else {
+            result.append(String(format: "Overhangs steeper than 45°: about %.0f mm². Bed contact: about %.0f mm².",
+                                 laid.overhangArea, laid.contactArea))
+        }
+        return result + placement.lines
+    }
+}
+
+enum LayFlatOutcome: Equatable, Sendable {
+    case plan(LayFlatPlan)
+    case unavailable(LayFlatUnavailable)
+
+    var plan: LayFlatPlan? { if case .plan(let plan) = self { return plan }; return nil }
+    var unavailable: LayFlatUnavailable? { if case .unavailable(let reason) = self { return reason }; return nil }
+}
+
+/// Lay It Flat Along Its Length: sets the saved load direction to the original axis with the largest extent
+/// (`layFlatLengthAxis`), keeping the purpose, so the existing placement ranking lays it along the bed. Never
+/// automatic: it only describes what pressing the button would save. Refused for Z-up-locked copies, kept placements
+/// (replicas), copies of print-ready copies, Optimise & Save Copy's prepared copies (`preparedCopy`: their saved
+/// directions describe the original) and decorative parts. A round part (pin, rod) whose lying placements touch
+/// the bed less than Studio looks for gets `.noFlatSide` rather than a placement that could roll.
+/// - `extents`: the original mesh's size along X, Y, Z.
+/// - `assessments`: its `orientationAssessments()`; `turns`: turns about Z by placement ID, as Optimise for purpose
+///   measures them (none means no turn).
+func layFlatOutcome(intent: PartIntent, extents: SIMD3<Float>, assessments: [OrientationAssessment], turns: [String: Float] = [:],
+                    requiresZUp: Bool, keepsPlacement: Bool, fromPrintReadyCopy: Bool, preparedCopy: Bool = false) -> LayFlatOutcome {
+    if requiresZUp { return .unavailable(.zUpLocked) }
+    if keepsPlacement { return .unavailable(.keptPlacement) }
+    if fromPrintReadyCopy { return .unavailable(.fromPrintReadyCopy) }
+    if preparedCopy { return .unavailable(.preparedCopy) }
+    if intent.purpose == .decorative { return .unavailable(.decorative) }
+    if intent.purpose == .custom && intent.details.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return .unavailable(.needsDescription)
+    }
+    guard let axis = layFlatLengthAxis(extents: extents), let vector = axis.vector else { return .unavailable(.noPlacement) }
+    let lengths = [extents.x, extents.y, extents.z]
+    let length = lengths.max() ?? 0
+    if length < layFlatMinimumLengthRatio * (lengths.min() ?? 0) { return .unavailable(.noClearLength) }
+    if intent.load == axis { return .unavailable(.alreadySet) }
+    var laid = intent
+    laid.load = axis
+    guard let best = preferredOrientation(assessments, intent: laid) else { return .unavailable(.noPlacement) }
+    let rise = Float(sin(Double(layFlatMaximumRiseDegrees) * .pi / 180))
+    func liesFlat(_ assessment: OrientationAssessment) -> Bool { abs(assessment.orientation.rotate(vector).z) <= rise }
+    guard liesFlat(best) else {
+        // Lying placements the ranking may pick from: they fit, rest on a flat face and touch the bed enough.
+        let canLie = assessments.contains {
+            liesFlat($0) && $0.fits && $0.meetsMinimumContact && $0.surfaceArea.isFinite && $0.surfaceArea > 0
+        }
+        return .unavailable(canLie ? .placementStandsItUp : .noFlatSide)
+    }
+    // Lying on a sliver of a round side would roll: a flat base is the fix, never such a placement.
+    guard best.meetsMinimumContact else { return .unavailable(.noFlatSide) }
+    let choice = PrintPlacementChoice(assessment: best, zTurnDegrees: turns[best.id] ?? 0)
+    return .plan(LayFlatPlan(intent: laid, axis: axis, lengthMM: length, placement: choice,
+                             asImported: assessments.first { $0.orientation == .zUp }))
+}
+
+extension STLMesh {
+    /// `layFlatOutcome` for this (original) mesh and `model`, measuring its placements and the chosen one's turn.
+    func layFlatOutcome(for model: LocalModel) -> LayFlatOutcome {
+        let intent = model.partIntent ?? PartIntent()
+        let lineage = studioCopyLineage(model)
+        // Refusals first, so a locked copy is never measured.
+        let quick = SlantStudio.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: [],
+                                               requiresZUp: lineage.inheritsZUpLock, keepsPlacement: lineage.keepsPlacement,
+                                               fromPrintReadyCopy: lineage.fromPrintReadyCopy, preparedCopy: model.printRecipe != nil)
+        guard quick.unavailable == .noPlacement else { return quick }
+        let assessments = orientationAssessments()
+        let outcome = SlantStudio.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: assessments,
+                                                 requiresZUp: false, keepsPlacement: false, fromPrintReadyCopy: false)
+        guard let plan = outcome.plan else { return outcome }
+        let turn = placementTurnDegrees(after: plan.placement.assessment.orientation)
+        return SlantStudio.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: assessments,
+                                          turns: [plan.placement.assessment.id: turn],
+                                          requiresZUp: false, keepsPlacement: false, fromPrintReadyCopy: false)
+    }
+}
+
+/// For callers outside Optimise for purpose (such as the print-ready copy's slender-upright advisory): the intent
+/// Lay It Flat would save on `model`, the original, with `mesh` read from its file, or the reason it isn't offered.
+/// Saving the intent is the caller's explicit action (`StudioStore.savePartIntent`); nothing is saved here.
+func layFlatIntent(for model: LocalModel, mesh: STLMesh) -> (intent: PartIntent?, reason: String?) {
+    switch mesh.layFlatOutcome(for: model) {
+    case .plan(let plan): return (plan.intent, nil)
+    case .unavailable(let reason): return (nil, reason.message)
+    }
+}
+
 struct PrintOrientationCard: View {
     @EnvironmentObject var store: StudioStore
     let model: LocalModel
@@ -599,6 +768,8 @@ struct PrintOrientationCard: View {
     @State private var expanded = false
     /// Turns about Z by placement ID, measured with the assessments (none for locked or kept placements).
     @State private var turns: [String: Float] = [:]
+    /// Lay It Flat's plan, shown for the seller to confirm before anything is saved.
+    @State private var layFlatPreview: LayFlatPlan?
 
     private var best: PrintPlacementChoice? {
         preferredOrientation(assessments, intent: intent).map { PrintPlacementChoice(assessment: $0, zTurnDegrees: turns[$0.id] ?? 0) }
@@ -615,7 +786,7 @@ struct PrintOrientationCard: View {
                     } else if let failure {
                         Text(failure)
                     } else if let mesh {
-                        purposeForm
+                        purposeForm(mesh)
                         if model.requiresZUp {
                             Text("Keeps Z up: this copy has features that depend on the print layers, such as cells, gaps, teardrop holes, bridging or matched walls. Prepare a different orientation from the source before adding them.")
                                 .font(.callout).foregroundStyle(.secondary)
@@ -655,7 +826,7 @@ struct PrintOrientationCard: View {
         .task(id: model.id) {
             loaded = false
             intent = model.partIntent ?? PartIntent()
-            mesh = nil; assessments = []; failure = nil; turns = [:]
+            mesh = nil; assessments = []; failure = nil; turns = [:]; layFlatPreview = nil
             guard model.supportsPreview, model.printRecipe == nil else { return }
             let url = model.url
             let keepCellRoofsUp = model.requiresZUp
@@ -683,12 +854,14 @@ struct PrintOrientationCard: View {
             loaded = true
         }
         .onChange(of: intent) { _, value in
+            // A plan describes the intent it was made from.
+            layFlatPreview = nil
             guard loaded else { return }
             store.savePartIntent(value, modelID: model.id)
         }
     }
 
-    private var purposeForm: some View {
+    private func purposeForm(_ mesh: STLMesh) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Picker("Part purpose", selection: $intent.purpose) {
                 ForEach(PartPurpose.allCases) { Text($0.rawValue).tag($0) }
@@ -710,29 +883,72 @@ struct PrintOrientationCard: View {
                 if intent.purpose.needsDirection && intent.load == .unknown {
                     Text("Choose a direction to prepare this part for its purpose.").font(.caption)
                 }
+                layFlatControls(mesh)
             }
         }
         .disabled(preparing)
     }
 
+    /// Lay It Flat Along Its Length: the seller presses it, sees what it would save and how the part would be placed,
+    /// then confirms. Nothing changes until Set Stress Direction.
+    @ViewBuilder private func layFlatControls(_ mesh: STLMesh) -> some View {
+        let outcome = layFlatOutcome(intent: intent, extents: mesh.maximum - mesh.minimum, assessments: assessments, turns: turns,
+                                     requiresZUp: model.requiresZUp, keepsPlacement: model.keepsPlacement == true,
+                                     fromPrintReadyCopy: model.derivesFromPrintReadyCopy, preparedCopy: model.printRecipe != nil)
+        if let preview = layFlatPreview {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(preview.lines, id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
+                HStack {
+                    Button("Cancel") { layFlatPreview = nil }
+                    Button("Set Stress Direction") {
+                        let saved = preview.intent
+                        layFlatPreview = nil
+                        intent = saved
+                    }
+                    .disabled(store.busy)
+                }
+            }
+            .padding(10)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+            .fixedSize(horizontal: false, vertical: true)
+        } else if outcome.unavailable != .alreadySet && outcome.unavailable != .noClearLength {
+            // Not shown at all for a boxy part (no clear length) or when the direction is already set.
+            VStack(alignment: .leading, spacing: 4) {
+                Button("Lay It Flat Along Its Length…") { layFlatPreview = outcome.plan }
+                    .disabled(outcome.plan == nil || store.busy)
+                    .help("Sets the stress direction to its longest side, so layers run along it. Shows what changes first.")
+                Text(outcome.unavailable?.message ?? layFlatCaption)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     /// Optional guidance under the placement. The material itself is chosen in Print configuration; a suggestion
-    /// changes it only when picked here.
+    /// changes it only when picked here. Without the seller's own requirement, the purpose's suggestion is shown
+    /// (`materialAdviceGoal`) and nothing is saved until the seller picks one.
     private var materialAdvice: some View {
         DisclosureGroup("Material suggestions for this use") {
             VStack(alignment: .leading, spacing: 10) {
-                Picker("Main requirement", selection: Binding(get: { intent.materialGoal ?? .keepCurrent }, set: { intent.materialGoal = $0 })) {
-                    ForEach(MaterialGoal.allCases) { Text($0.rawValue).tag($0) }
+                let advice = materialAdviceGoal(intent)
+                Picker("Main requirement", selection: Binding(get: { advice?.goal ?? .keepCurrent }, set: { intent.materialGoal = $0 })) {
+                    ForEach(MaterialGoal.allCases) { Text($0.label).tag($0) }
                 }
                 .fixedSize()
-                if let goal = intent.materialGoal, goal != .keepCurrent {
-                    Text(goal.guidance).font(.callout).foregroundStyle(.secondary)
-                    let options = recommendedMaterials(for: goal, in: store.filaments)
-                    if options.isEmpty && goal.profile != nil {
+                if let advice {
+                    if !advice.chosen {
+                        Text(materialSuggestedCaption(intent.purpose))
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    Text(advice.goal.guidance).font(.callout).foregroundStyle(.secondary)
+                    let options = recommendedMaterials(for: advice.goal, in: store.filaments)
+                    if options.isEmpty && !advice.goal.profiles.isEmpty {
                         Text("No matching material is currently listed as available. Keep the material chosen in Print configuration.")
                             .font(.callout).foregroundStyle(.secondary)
                     } else {
                         let selected = options.first(where: { $0.id == store.filamentID })
                         let others = options.filter { $0.id != store.filamentID }
+                        let showsType = Set(options.map(filamentType)).count > 1
                         if let selected {
                             Label("Print configuration already uses \(selected.name).", systemImage: "checkmark.circle")
                                 .font(.callout).foregroundStyle(.secondary)
@@ -741,7 +957,7 @@ struct PrintOrientationCard: View {
                         if !others.isEmpty {
                             Menu(selected == nil ? "Use a Suggested Material" : "Use Another Suggested Material") {
                                 ForEach(others) { material in
-                                    Button(material.name) { store.filamentID = material.id }
+                                    Button(showsType ? "\(filamentType(material)) · \(material.name)" : material.name) { store.filamentID = material.id }
                                 }
                             }
                             .fixedSize()
@@ -750,6 +966,7 @@ struct PrintOrientationCard: View {
                         }
                     }
                 }
+                Text(materialAdviceFoodNote).font(.callout).foregroundStyle(.secondary)
             }.padding(.top, 8)
         }.studioDisclosureStyle()
         .font(.callout)
