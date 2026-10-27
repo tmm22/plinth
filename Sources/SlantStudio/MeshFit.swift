@@ -295,12 +295,20 @@ private func requireClosedSolid(_ mesh: STLMesh, isCancelled: () -> Bool) throws
 private func planeCut(_ mesh: STLMesh, height: Float, isCancelled: () -> Bool) throws -> PlaneCut {
     let extent = mesh.maximum - mesh.minimum
     guard height.isFinite, height > 0, height < extent.z else { throw MeshFitError.invalidCutHeight }
-    let count = mesh.triangleCount
-    let v = mesh.vertices
+    return try planeCut(vertices: mesh.vertices, at: mesh.minimum.z + height, below: mesh.maximum.z, requireCrossing: true,
+                        isCancelled: isCancelled)
+}
+
+/// Cuts closed, consistently oriented triangles (nine coordinates each in `v`) with the plane z = `requested`, nudged
+/// up to clear every vertex, and keeps the part above. The nudged plane must stay below `top`. Without
+/// `requireCrossing`, a plane that crosses no triangle (one between separate parts) keeps the triangles above it,
+/// with no outline.
+private func planeCut(vertices v: [Float], at requested: Float, below top: Float, requireCrossing: Bool,
+                      isCancelled: () -> Bool) throws -> PlaneCut {
+    let count = v.count / 9
     let check = 8192
 
     // Nudge the plane up, past vertex heights in ascending order, until it is at least 0.2 µm from every vertex.
-    let requested = mesh.minimum.z + height
     var near: [Float] = []
     for i in stride(from: 2, to: v.count, by: 3)
     where v[i] >= requested - cutVertexClearance && v[i] <= requested + cutMaximumNudge + cutVertexClearance {
@@ -312,7 +320,7 @@ private func planeCut(_ mesh: STLMesh, height: Float, isCancelled: () -> Bool) t
         h = max(h, z + cutVertexClearance)
     }
     guard h <= requested + cutMaximumNudge else { throw MeshFitError.invalidCutHeight }
-    guard h < mesh.maximum.z else { throw MeshFitError.invalidCutHeight }
+    guard h < top else { throw MeshFitError.invalidCutHeight }
 
     // Weld identical coordinates in first-seen order, as the mesh check does.
     var ids = [Int32](repeating: 0, count: count * 3)
@@ -372,7 +380,10 @@ private func planeCut(_ mesh: STLMesh, height: Float, isCancelled: () -> Bool) t
             continue
         }
     }
-    guard !segments.isEmpty, !cut.kept.isEmpty else { throw MeshFitError.invalidCutHeight }
+    guard !segments.isEmpty, !cut.kept.isEmpty else {
+        if !requireCrossing, segments.isEmpty { return cut }
+        throw MeshFitError.invalidCutHeight
+    }
 
     // Each crossing edge starts exactly one outline segment and ends one, so the segments chain into loops.
     var next = [Int](repeating: -1, count: cut.cutPoints.count)
@@ -527,6 +538,59 @@ private func flipPlanarSlivers(_ triangles: inout [SIMD3<Int32>], points: [SIMD2
             flipped = true
         }
         if !flipped { break }
+    }
+}
+
+/// Lawson flips towards the constrained Delaunay triangulation of a filled planar region: an edge shared by two
+/// triangles is flipped when the far corner of one lies clearly inside the other's circumcircle and both new triangles
+/// are anticlockwise and not slivers. The region's outline is never changed, so the fill still meets it exactly. Edges
+/// are taken from a stack seeded in triangle order, and the work is capped, so the result is deterministic.
+func delaunayFlipPlanar(_ triangles: inout [SIMD3<Int32>], points: [SIMD2<Double>]) {
+    func key(_ p: Int32, _ q: Int32) -> UInt64 { UInt64(UInt32(p)) << 32 | UInt64(UInt32(q)) }
+    func p(_ i: Int32) -> SIMD2<Double> { points[Int(i)] }
+    var owner: [UInt64: Int] = [:]
+    var repeated = Set<UInt64>()
+    for t in triangles.indices {
+        let v = triangles[t]
+        for (a, b) in [(v.x, v.y), (v.y, v.z), (v.z, v.x)] {
+            if owner[key(a, b)] != nil { repeated.insert(key(a, b)) } else { owner[key(a, b)] = t }
+        }
+    }
+    var stack: [(Int32, Int32)] = []
+    for t in triangles.indices.reversed() {
+        let v = triangles[t]
+        for (a, b) in [(v.z, v.x), (v.y, v.z), (v.x, v.y)] where a < b { stack.append((a, b)) }
+    }
+    var budget = 50 * max(triangles.count, 1)
+    while let (a, b) = stack.popLast(), budget > 0 {
+        budget -= 1
+        guard !repeated.contains(key(a, b)), !repeated.contains(key(b, a)),
+              let first = owner[key(a, b)], let second = owner[key(b, a)], first != second else { continue }
+        let one = triangles[first], other = triangles[second]
+        guard let m = [one.x, one.y, one.z].first(where: { $0 != a && $0 != b }),
+              let r = [other.x, other.y, other.z].first(where: { $0 != a && $0 != b }), m != r else { continue }
+        // Inside the circumcircle of the anticlockwise (a, b, m), by a clear margin, so cocircular points never flip
+        // back and forth.
+        let pa = p(a), pb = p(b), pm = p(m), pr = p(r)
+        let d = 2 * ((pb.x - pa.x) * (pm.y - pa.y) - (pb.y - pa.y) * (pm.x - pa.x))
+        guard d > 0 else { continue }
+        let bb = simd_length_squared(pb - pa), mm = simd_length_squared(pm - pa)
+        let centre = pa + SIMD2((pm.y - pa.y) * bb - (pb.y - pa.y) * mm, (pb.x - pa.x) * mm - (pm.x - pa.x) * bb) / d
+        let radius2 = simd_distance_squared(centre, pa)
+        guard simd_distance_squared(centre, pr) < radius2 * (1 - 1e-9) else { continue }
+        // The quad a, r, b, m must be convex: both new triangles anticlockwise, and neither a sliver.
+        guard signedArea2D(pa, pr, pm) > 0, signedArea2D(pr, pb, pm) > 0,
+              !planarSliver(pa, pr, pm), !planarSliver(pr, pb, pm),
+              owner[key(r, m)] == nil, owner[key(m, r)] == nil else { continue }
+        for (t, v) in [(first, one), (second, other)] {
+            for (x, y) in [(v.x, v.y), (v.y, v.z), (v.z, v.x)] where owner[key(x, y)] == t { owner[key(x, y)] = nil }
+        }
+        triangles[first] = SIMD3(a, r, m)
+        triangles[second] = SIMD3(r, b, m)
+        for (t, v) in [(first, triangles[first]), (second, triangles[second])] {
+            for (x, y) in [(v.x, v.y), (v.y, v.z), (v.z, v.x)] { owner[key(x, y)] = t }
+        }
+        stack.append(contentsOf: [(min(a, r), max(a, r)), (min(r, b), max(r, b)), (min(b, m), max(b, m)), (min(m, a), max(m, a))])
     }
 }
 
@@ -704,10 +768,13 @@ func meshFitResultProblem(_ report: MeshHealthReport, inputZeroArea: Int, inputS
 
 /// Cap triangles for a cut, facing down. The outline loops run the way the kept surface's open edges do; the cap
 /// runs them backwards so every edge pairs up, and is triangulated mirrored so its triangles face −Z.
-private func capTriangles(_ cut: PlaneCut, isCancelled: () -> Bool) throws -> (corners: [SIMD3<Float>], area: Double) {
+/// With `delaunay`, the fill is then flipped towards the constrained Delaunay triangulation (`delaunayFlipPlanar`),
+/// so a later cut across it doesn't meet fans of thin triangles.
+private func capTriangles(_ cut: PlaneCut, delaunay: Bool = false, isCancelled: () -> Bool) throws -> (corners: [SIMD3<Float>], area: Double) {
     let mirrored = cut.cutPoints.map { SIMD2<Double>(-Double($0.x), Double($0.y)) }
     let loops = cut.loops.map { Array($0.reversed()) }
-    let triangles = try triangulatePlanarRegion(points: mirrored, loops: loops, isCancelled: isCancelled)
+    var triangles = try triangulatePlanarRegion(points: mirrored, loops: loops, isCancelled: isCancelled)
+    if delaunay { delaunayFlipPlanar(&triangles, points: mirrored) }
     var corners: [SIMD3<Float>] = []
     corners.reserveCapacity(triangles.count * 3)
     var area = 0.0
@@ -728,6 +795,125 @@ extension STLMesh {
         return try checkedResult(cut.kept + cap.corners, cutHeight: cut.height - minimum.z, contact: cap.area,
                                  inputZeroArea: input.degenerateTriangles, inputShells: input.shells, isCancelled: isCancelled)
     }
+}
+
+// MARK: - Box crop
+
+/// A rotation taking world axis `axis` (0 x, 1 y, 2 z) to the cut's local z, turned over (local y and z negated) when
+/// the part below the plane is kept. Coordinates are only moved round cyclically and negated in pairs, so it is exact
+/// and keeps every triangle's winding; the z-up frame is the identity.
+private struct CutFrame {
+    let axis: Int
+    let keepAbove: Bool
+
+    func local(_ p: SIMD3<Float>) -> SIMD3<Float> {
+        let a = p[(axis + 1) % 3], b = p[(axis + 2) % 3], c = p[axis]
+        return keepAbove ? SIMD3(a, b, c) : SIMD3(a, -b, -c)
+    }
+
+    func world(_ q: SIMD3<Float>) -> SIMD3<Float> {
+        var p = SIMD3<Float>()
+        p[(axis + 1) % 3] = q.x
+        p[(axis + 2) % 3] = keepAbove ? q.y : -q.y
+        p[axis] = keepAbove ? q.z : -q.z
+        // Adding zero turns −0 into +0, as the welds do.
+        return p + 0
+    }
+}
+
+/// The part of a closed, consistently oriented, outward-facing mesh inside an axis-aligned box that starts at the
+/// mesh's lowest point: cut at `topZ`, then at x = `low.x`, x = `high.x`, y = `low.y` and y = `high.y`, each cut filled
+/// flat as the flat base is. The bottom is never cut. A side that lies outside the part, or within `skipWithinMM` of
+/// its edge, isn't cut. Before each cut the plane moves outward (keeping more) to the first position at least
+/// `planeClearanceMM` from every vertex on its axis, including those earlier cuts made, within `maximumPlaneMoveMM`;
+/// failing that it may still move up to 0.1 mm towards the kept part to clear vertices. With a clearance, a cut that
+/// adds zero-area triangles is tried again further out (`meshFitCropRetrySteps`). Returns the kept triangles'
+/// corners; it throws when a box misses the part or a cut outline can't be filled. Callers check the result.
+func meshFitBoxCropCorners(_ mesh: STLMesh, low: SIMD2<Float>, high: SIMD2<Float>, topZ: Float, skipWithinMM: Float = 0.5,
+                           planeClearanceMM: Float = 0, maximumPlaneMoveMM: Float = 0,
+                           isCancelled: () -> Bool = { false }) throws -> [SIMD3<Float>] {
+    let v = mesh.vertices
+    var corners: [SIMD3<Float>] = []
+    corners.reserveCapacity(v.count / 3)
+    for i in stride(from: 0, to: v.count - 2, by: 3) { corners.append(SIMD3(v[i], v[i + 1], v[i + 2])) }
+    let cuts: [(axis: Int, keepAbove: Bool, value: Float)] = [
+        (2, false, topZ), (0, true, low.x), (0, false, high.x), (1, true, low.y), (1, false, high.y),
+    ]
+    for cut in cuts {
+        if isCancelled() { throw MeshFitError.stopped }
+        guard cut.value.isFinite else { throw MeshFitError.invalidCutHeight }
+        let frame = CutFrame(axis: cut.axis, keepAbove: cut.keepAbove)
+        var local: [Float] = []
+        local.reserveCapacity(corners.count * 3)
+        var lowest = Float.greatestFiniteMagnitude, highest = -Float.greatestFiniteMagnitude
+        for p in corners {
+            let q = frame.local(p)
+            local.append(q.x); local.append(q.y); local.append(q.z)
+            lowest = min(lowest, q.z); highest = max(highest, q.z)
+        }
+        let requested = cut.keepAbove ? cut.value : -cut.value
+        // Outside the part, or so close to its edge that only a sliver would go: this side keeps its own surface.
+        if meshFitClearedPlane(requested, heights: local, clearance: planeClearanceMM,
+                               maximumMove: maximumPlaneMoveMM) <= lowest + skipWithinMM { continue }
+        // With a clearance, a cut that adds zero-area triangles (where it crosses a fan of thin triangles close
+        // together) is tried again a little further out, at fixed steps; the last try stands, for the caller to check.
+        let steps: [Float] = planeClearanceMM > 0 ? meshFitCropRetrySteps : [0]
+        let before = planeClearanceMM > 0 ? meshFitZeroAreaCount(local) : 0
+        var made: [SIMD3<Float>] = []
+        for (attempt, step) in steps.enumerated() {
+            let plane = meshFitClearedPlane(requested - step, heights: local, clearance: planeClearanceMM,
+                                            maximumMove: maximumPlaneMoveMM)
+            if plane <= lowest { made = []; break }
+            guard plane < highest else { throw MeshFitError.invalidCutHeight }
+            let part = try planeCut(vertices: local, at: plane, below: highest, requireCrossing: false, isCancelled: isCancelled)
+            let cap = try capTriangles(part, delaunay: true, isCancelled: isCancelled)
+            made = part.kept + cap.corners
+            guard !made.isEmpty else { throw MeshFitError.invalidCutHeight }
+            if attempt == steps.count - 1 { break }
+            var floats: [Float] = []
+            floats.reserveCapacity(made.count * 3)
+            for q in made { floats.append(q.x); floats.append(q.y); floats.append(q.z) }
+            if meshFitZeroAreaCount(floats) <= before { break }
+        }
+        // Moved out past the part's edge: nothing on this side is cut.
+        if made.isEmpty { continue }
+        corners = made.map(frame.world)
+    }
+    return corners
+}
+
+/// How much further out (in mm) a box crop's side is tried when a cut adds zero-area triangles: uneven steps, so a
+/// model drawn on a regular grid doesn't meet the same problem at each.
+let meshFitCropRetrySteps: [Float] = [0, 0.13, 0.29, 0.47, 0.71]
+
+/// Triangles (nine coordinates each) that are zero-area by the mesh check's rule, `meshTriangleIsZeroArea`, or have a
+/// repeated corner.
+private func meshFitZeroAreaCount(_ v: [Float]) -> Int {
+    var count = 0
+    for i in stride(from: 0, to: v.count - 8, by: 9) {
+        let a = SIMD3<Double>(Double(v[i]), Double(v[i + 1]), Double(v[i + 2]))
+        let b = SIMD3<Double>(Double(v[i + 3]), Double(v[i + 4]), Double(v[i + 5]))
+        let c = SIMD3<Double>(Double(v[i + 6]), Double(v[i + 7]), Double(v[i + 8]))
+        if a == b || b == c || a == c || meshTriangleIsZeroArea(a, b, c) { count += 1 }
+    }
+    return count
+}
+
+/// `plane` moved down (towards the part a cut keeps above it, so it keeps more) to the first position at least
+/// `clearance` from every z in `heights` (nine coordinates per triangle, z every third), within `maximumMove`;
+/// unchanged when no such position exists or `clearance` is zero.
+func meshFitClearedPlane(_ plane: Float, heights: [Float], clearance: Float, maximumMove: Float) -> Float {
+    guard clearance > 0, maximumMove > 0, plane.isFinite else { return plane }
+    // Distances below the plane, of the heights that might be in the way, sorted.
+    var near: [Float] = []
+    for i in stride(from: 2, to: heights.count, by: 3) {
+        let d = plane - heights[i]
+        if d > -clearance, d < maximumMove + clearance { near.append(d) }
+    }
+    near.sort()
+    var move: Float = 0
+    for d in near where abs(d - move) < clearance { move = d + clearance }
+    return move <= maximumMove ? plane - move : plane
 }
 
 // MARK: - Plinth
