@@ -138,7 +138,8 @@ enum AutoImprover {
         try check()
         if Date() > deadline { timedOut = true }
         if timedOut { skipped.append("Time limit reached; the remaining treatments were not tried.") }
-        manual += reviewNotes(mesh)
+        manual += reviewNotes(mesh, stop: cancelled)
+        try check()
         return AutoImprovementResult(mesh: mesh, orientation: orientation, applied: applied, skipped: skipped, manual: manual,
                                      timedOut: timedOut)
     }
@@ -338,23 +339,22 @@ enum AutoImprover {
         return (adjust(run.start, -1), adjust(run.end, 1))
     }
 
-    /// Treatments that depend on fit or fastener use are reported, not applied.
-    private static func reviewNotes(_ mesh: STLMesh) -> [String] {
+    /// Treatments that depend on fit or fastener use are reported, not applied. Horizontal holes are counted by the
+    /// teardrop finder, so the note counts exactly the holes Find Horizontal Holes would offer.
+    private static func reviewNotes(_ mesh: STLMesh, stop: () -> Bool = { false }) -> [String] {
         let topology = Topology(mesh)
-        var horizontal = Set<SIMD3<Int32>>(), vertical = Set<SIMD3<Int32>>()
-        for facet in topology.facets {
+        var vertical = Set<SIMD3<Int32>>()
+        for facet in topology.facets where facet.normal.z != 0 {
             guard let loops = topology.loops(facet), loops.count > 1 else { continue }
             let circles = loops.compactMap { topology.circle($0, normal: facet.normal) }
             guard let outer = loops.map({ abs(topology.signedArea($0, normal: facet.normal)) }).max() else { continue }
             for circle in circles where abs(circle.area) < outer && circle.radius >= 0.6 {
-                let key = SIMD3<Int32>(Int32(facet.normal.axisIndex), Int32((circle.centre.x * 10).rounded()), Int32((circle.centre.y * 10).rounded()))
-                if facet.normal.z == 0 { horizontal.insert(key) } else { vertical.insert(key) }
+                vertical.insert(SIMD3<Int32>(Int32(facet.normal.axisIndex), Int32((circle.centre.x * 10).rounded()), Int32((circle.centre.y * 10).rounded())))
             }
         }
         var notes: [String] = []
-        if !horizontal.isEmpty {
-            notes.append("\(horizontal.count) horizontal round hole\(horizontal.count == 1 ? "" : "s") found. A teardrop roof prints without supports but enlarges the top of the hole, so it was not applied. Add it in Reinforce this part where the top is not fit-critical.")
-        }
+        let teardrops = ((try? teardropCandidates(in: mesh, isCancelled: stop)) ?? []).filter(\.eligible).count
+        if let note = teardropReviewNote(eligibleCount: teardrops) { notes.append(note) }
         if !vertical.isEmpty {
             notes.append("\(vertical.count) vertical bore\(vertical.count == 1 ? "" : "s") found. Mounting collars depend on where fasteners go, so none were added. Add them in Reinforce this part.")
         }

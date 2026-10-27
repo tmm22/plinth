@@ -14,6 +14,9 @@ struct ReinforcementCard: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if let record = model.reinforcement {
                         Text("\(record.settings.kind.rawValue) applied to this copy.")
+                        if let teardrops = record.teardropHoles {
+                            Text(teardropHolesSummary(teardrops)).font(.callout).foregroundStyle(.secondary)
+                        }
                         Text("Original preserved · Review the fit and test the print for its intended use.")
                             .font(.callout).foregroundStyle(.secondary)
                         if mesh != nil { Button("Add Another Reinforcement…") { reviewing = true }.disabled(store.busy) }
@@ -72,8 +75,18 @@ private struct ReinforcementReview: View {
     @State private var section = false
     @State private var task: Task<Void, Never>?
     @State private var generation = UUID()
+    /// Teardrop hole roof: the holes Find Horizontal Holes listed, the ones ticked (none until the seller chooses), and
+    /// the ticked set the current preview was made from.
+    @State private var holes: [TeardropCandidate]?
+    @State private var chosenHoles: Set<TeardropHoleKey> = []
+    @State private var previewHoles: Set<TeardropHoleKey> = []
 
-    private var current: Bool { preview != nil && previewSettings == settings }
+    /// The ticked holes that the preview reshapes instead of the placed region.
+    private var activeHoles: [TeardropCandidate] {
+        guard settings.kind == .teardrop, let holes else { return [] }
+        return holes.filter { $0.eligible && chosenHoles.contains($0.key) }
+    }
+    private var current: Bool { preview != nil && previewSettings == settings && previewHoles == Set(activeHoles.map(\.key)) }
     /// A copy never has more separate shells than its source: a new one is a closed void Slant bills as a body.
     private var shellsHeld: Bool { preview.map { $0.shellsAfter <= $0.shellsBefore } ?? false }
     var body: some View {
@@ -89,6 +102,7 @@ private struct ReinforcementReview: View {
                         ForEach(ReinforcementKind.offered) { Text($0.rawValue).tag($0) }
                     }
                     Text(settings.kind.explanation).font(.callout).foregroundStyle(.secondary)
+                    if settings.kind == .teardrop { teardropHolesSection }
                     if settings.kind == .internalWalls {
                         Text(String(format: "Model envelope: %.2f × %.2f × %.2f mm · Slots cover the whole part; no placement is needed", source.maximum.x-source.minimum.x, source.maximum.y-source.minimum.y, source.maximum.z-source.minimum.z))
                             .font(.caption).foregroundStyle(.secondary)
@@ -143,7 +157,7 @@ private struct ReinforcementReview: View {
                         }.padding(.top, 10)
                     }.studioDisclosureStyle()
                     HStack {
-                        if settings.kind != .internalWalls {
+                        if settings.kind != .internalWalls && settings.kind != .teardrop {
                             Button("Suggest Position") { suggestPosition() }.disabled(working)
                         }
                         Button(working ? "Preparing Preview…" : "Update Preview") { updatePreview() }.disabled(working)
@@ -210,7 +224,45 @@ private struct ReinforcementReview: View {
             cancelPreview(); preview = nil; previewSettings = nil; failure = nil
             confirmed = false; experimentalConfirmed = false
         }
+        .onChange(of: chosenHoles) { _, _ in
+            cancelPreview(); preview = nil; previewSettings = nil; failure = nil
+            confirmed = false; experimentalConfirmed = false
+        }
         .onDisappear { cancelPreview() }
+    }
+
+    @ViewBuilder private var teardropHolesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button(holes == nil ? "Find Horizontal Holes" : "Find Again") { findHoles() }.disabled(working)
+                if let holes {
+                    let count = holes.filter(\.eligible).count
+                    Text(count == 0 ? "None can take a teardrop roof" : "\(count) can take a teardrop roof · \(chosenHoles.count) ticked")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let holes {
+                if holes.isEmpty {
+                    Text("No horizontal round holes found. You can still place a pointed roof by hand under Placement and dimensions.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(holes.filter(\.eligible)) { hole in
+                        Toggle(teardropCandidateLabel(hole, minimum: source.minimum), isOn: Binding(
+                            get: { chosenHoles.contains(hole.key) },
+                            set: { on in if on { chosenHoles.insert(hole.key) } else { chosenHoles.remove(hole.key) } }))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if holes.contains(where: \.eligible) {
+                        Text("Tick the holes whose shoulders don’t need to fit anything. While any hole is ticked, the preview reshapes those holes and Placement and dimensions isn’t used.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(holes.filter { !$0.eligible }) { hole in
+                        Text(teardropCandidateLabel(hole, minimum: source.minimum) + " · " + (hole.skipped?.message ?? ""))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     private func numberField(_ binding: Binding<Float>) -> some View {
@@ -258,18 +310,40 @@ private struct ReinforcementReview: View {
             }
         }
     }
-    private func updatePreview() {
-        cancelPreview(); working = true; failure = nil; preview = nil; confirmed = false; experimentalConfirmed = false
-        let request = settings, token = generation, mesh = source
+    private func findHoles() {
+        cancelPreview(); working = true; failure = nil
+        let token = generation, mesh = source
         task = Task {
             let worker = Task.detached(priority: .userInitiated) {
-                Result { try ReinforcementEngine.preview(mesh, settings: request, cancelled: { Task.isCancelled }) }
+                Result { try teardropCandidates(in: mesh, isCancelled: { Task.isCancelled }) }
             }
             let result = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
             guard !Task.isCancelled, generation == token else { return }
             working = false
             switch result {
-            case .success(let value): preview = value; previewSettings = request
+            case .success(let value):
+                holes = value
+                chosenHoles = chosenHoles.filter { key in value.contains { $0.eligible && $0.key == key } }
+            case .failure(let error): failure = error.localizedDescription
+            }
+        }
+    }
+    private func updatePreview() {
+        cancelPreview(); working = true; failure = nil; preview = nil; confirmed = false; experimentalConfirmed = false
+        let request = settings, token = generation, mesh = source, chosen = activeHoles
+        task = Task {
+            let worker = Task.detached(priority: .userInitiated) {
+                Result {
+                    chosen.isEmpty
+                        ? try ReinforcementEngine.preview(mesh, settings: request, cancelled: { Task.isCancelled })
+                        : try ReinforcementEngine.teardropHolesPreview(mesh, holes: chosen, protectedRegions: request.protectedRegions, cancelled: { Task.isCancelled })
+                }
+            }
+            let result = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+            guard !Task.isCancelled, generation == token else { return }
+            working = false
+            switch result {
+            case .success(let value): preview = value; previewSettings = request; previewHoles = Set(chosen.map(\.key))
             case .failure(let error): failure = error.localizedDescription
             }
         }
@@ -283,7 +357,8 @@ private struct ReinforcementReview: View {
             defer { try? FileManager.default.removeItem(at: folder) }
             let name = URL(fileURLWithPath: model.name).lastPathComponent
             let parts = [preview.mesh] + (preview.secondPart.map { [$0] } ?? [])
-            let record = ReinforcementRecord(sourceID: model.id, settings: settings, addedVolumeMM3: preview.addedVolume, removedVolumeMM3: preview.removedVolume, created: Date(), inheritedCellRoofs: model.requiresZUp ? true : nil)
+            let record = ReinforcementRecord(sourceID: model.id, settings: settings, addedVolumeMM3: preview.addedVolume, removedVolumeMM3: preview.removedVolume, created: Date(), inheritedCellRoofs: model.requiresZUp ? true : nil,
+                                             teardropHoles: preview.teardrops)
             var imported = true
             for (index, part) in parts.enumerated() {
                 let suffix = parts.count > 1 ? "\(settings.kind.fileSuffix)-\(index + 1)" : settings.kind.fileSuffix

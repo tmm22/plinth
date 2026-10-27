@@ -25,7 +25,7 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .fillet: return "Adds a rounded transition along an inside junction. Place its two flat sides into the adjoining surfaces."
         case .overhang: return "Fills under a flat downward ledge with a 45° slope (up to Slant’s 50° when the region is a little shorter than it is deep) so it prints without supports. Put the region’s local −Y side into the wall and its top into the ledge; turn about Z to face another wall."
         case .thicken: return "Measures the wall through the region centre along local Y and thickens its +Y side to the next whole number of extrusion lines, avoiding weak gap fill. Slant publishes 1 mm walls, 25% infill and 0.2 mm layers, but not its line width, so the width here is an estimate."
-        case .teardrop: return "Adds a 45° point to the top of an existing horizontal hole along local X so it prints without sagging or supports. This enlarges the hole at the top; use only where the top of the hole is not fit-critical."
+        case .teardrop: return "Reshapes the top of a horizontal round hole so it prints without drooping. Find Horizontal Holes lists round holes \(Int(teardropMinimumDiameterMM))–\(Int(teardropMaximumDiameterMM)) mm across for you to tick: each gets 45° shoulders up to a flat top at the hole’s own top, so its bottom and height are unchanged and only its shoulders widen slightly. Or place a pointed 45° roof by hand on a hole along local X, which raises the hole’s top. Use either only where the hole’s shoulders aren’t fit-critical."
         case .bridge: return "For a counterbore that opens downward, cuts two single-layer steps into its ceiling so each layer bridges between solid edges. Set position Z at the ceiling and the region footprint to the counterbore diameter. Slightly reduces the screw-head bearing area."
         case .internalWalls: return "Cuts thin \(String(format: "%.2f", internalWallsSlotWidthMM)) mm slots up from the bed face into thick, solid regions, at least \(Int(internalWallsClearanceMM)) mm from every other surface. Slant’s slicer prints its 1 mm walls round each slot, which adds internal walls where the part would otherwise be 25% infill. Every slot opens through the bed face, so the part stays one body. Applies to the whole part, which must stand on a flat face at its lowest point; keep-clear regions are left uncut. Uses more filament, so request a new Slant quote."
         case .shell, .cells: return reinforcementClosedVoidWithdrawal
@@ -159,6 +159,8 @@ struct ReinforcementRecord: Codable, Equatable, Sendable {
     var testPrintApproved = false
     /// Stored under its original name; set when any earlier copy had Z-up-dependent features.
     var inheritedCellRoofs: Bool? = nil
+    /// Teardrop hole roof copies made from found holes: what was reshaped. Nil for every other copy.
+    var teardropHoles: TeardropHolesRecord? = nil
     var requiresZUp: Bool { settings.kind.keepsZUp || inheritedCellRoofs == true }
 }
 
@@ -179,6 +181,8 @@ struct ReinforcementPreview: Sendable {
     var exploded: STLMesh? = nil
     /// The validated result before STL rounding, for chaining further changes without a Float round trip.
     var solid: Mesh? = nil
+    /// Teardrop holes from found holes only: what the copy reshapes.
+    var teardrops: TeardropHolesRecord? = nil
 }
 
 private func vector(_ p: SIMD3<Float>) -> Vector { Vector(Double(p.x), Double(p.y), Double(p.z)) }
@@ -887,6 +891,47 @@ enum ReinforcementEngine {
         try check()
         return ReinforcementPreview(mesh: output, originalSection: try? stl(beforeSection), proposedSection: try? stl(afterSection), addedVolume: added, removedVolume: removed,
                                     shellsBefore: shells.before, shellsAfter: shells.after, solid: stitched)
+    }
+
+    /// Teardrop roofs on the chosen found holes (`teardropHolesCopy`), checked against the keep-clear regions, with a
+    /// cutaway across the first hole. Stops after `previewTimeLimit`; a stopped preview saves nothing.
+    static func teardropHolesPreview(_ source: STLMesh, holes: [TeardropCandidate], protectedRegions: [ReinforcementBox],
+                                     cancelled: @escaping @Sendable () -> Bool = { false }) throws -> ReinforcementPreview {
+        let deadline = Date().addingTimeInterval(previewTimeLimit)
+        let stop: @Sendable () -> Bool = { cancelled() || Date() > deadline }
+        guard !holes.isEmpty else { throw StudioError("Tick at least one hole, or place the teardrop by hand.") }
+        guard protectedRegions.count <= 8 else { throw StudioError("Use up to eight keep-clear regions.") }
+        for region in protectedRegions {
+            guard [region.offset.x, region.offset.y, region.offset.z, region.size.x, region.size.y, region.size.z].allSatisfy({ $0.isFinite }), region.size.min() > 0 else {
+                throw StudioError("Keep-clear regions need finite positions and positive dimensions.")
+            }
+            let low = source.minimum + region.offset, high = low + region.size
+            for hole in holes where hole.eligible && (simd_min(hole.changeHigh, high) - simd_max(hole.changeLow, low)).min() > 0 {
+                throw StudioError(String(format: "The ⌀%.1f mm hole’s new shoulders enter a keep-clear region. Untick it or move the region.", hole.diameterMM))
+            }
+        }
+        let result: TeardropHolesResult
+        do { result = try teardropHolesCopy(of: source, candidates: holes, isCancelled: stop) }
+        catch TeardropError.stopped { throw StudioError("Preview stopped. Try a simpler mesh or fewer holes.") }
+        guard let mesh = result.mesh else { throw StudioError((result.problem ?? .resultFailedChecks).message) }
+        if let problem = reinforcementShellGrowthProblem(before: result.shellsBefore, after: result.shellsAfter) { throw StudioError(problem) }
+        // Display only: the part on one side of the first hole's centre, across its axis, where Euclid can read it.
+        var sections: (STLMesh, STLMesh)?
+        if let first = holes.first(where: \.eligible), source.triangleCount <= 20_000, mesh.triangleCount <= 20_000,
+           let original = try? source.reinforcementSolid(), let copy = try? mesh.reinforcementSolid() {
+            let axis = abs(first.axis.x) >= abs(first.axis.y) ? 0 : 1
+            var size = source.maximum - source.minimum + SIMD3(repeating: 2)
+            size[axis] = first.centre[axis] - source.minimum[axis] + 1
+            let keep = box(source.minimum - SIMD3(repeating: 1), size)
+            if let before = try? stl(original.intersection(keep, isCancelled: stop)), let after = try? stl(copy.intersection(keep, isCancelled: stop)), !stop() {
+                sections = (before, after)
+            }
+        }
+        if cancelled() { throw StudioError("Preview stopped. Try a simpler mesh or fewer holes.") }
+        let detail = ([teardropHolesSummary(result.record)] + result.record.skipped.map(teardropSkipNote)).joined(separator: " ")
+        return ReinforcementPreview(mesh: mesh, originalSection: sections?.0, proposedSection: sections?.1, addedVolume: 0,
+                                    removedVolume: result.record.removedVolumeMM3, shellsBefore: result.shellsBefore, shellsAfter: result.shellsAfter,
+                                    detail: detail, teardrops: result.record)
     }
 
     /// Separate shells in the source and the most in any output, by the mesh check's vertex connectivity. A closed void

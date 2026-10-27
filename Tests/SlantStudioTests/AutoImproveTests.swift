@@ -140,7 +140,11 @@ final class AutoImproveTests: XCTestCase {
         let source = try exported(cube20.subtracting(hole))
         let result = try AutoImprover.improve(source, intent: PartIntent(), orientation: .zUp)
         XCTAssertFalse(kinds(result).contains(.teardrop))
-        XCTAssertTrue(result.manual.contains { $0.contains("1 horizontal round hole") }, "\(result.manual)")
+        XCTAssertTrue(result.manual.contains { $0.contains("1 horizontal round hole") && $0.contains("Find Horizontal Holes") }, "\(result.manual)")
+        // A hole too small for a teardrop gets no note.
+        let small = Mesh.cylinder(radius: 1.0, height: 30, slices: 32).rotated(by: Rotation(roll: .halfPi)).translated(by: Vector(10,10,10))
+        let smallResult = try AutoImprover.improve(try exported(cube20.subtracting(small)), intent: PartIntent(), orientation: .zUp)
+        XCTAssertFalse(smallResult.manual.contains { $0.contains("horizontal round hole") }, "\(smallResult.manual)")
     }
 
     func testOrientationIsLockedForPreparedCopiesAndCancellationStops() throws {
