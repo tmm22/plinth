@@ -125,13 +125,23 @@ func orderAPIValueTitle(_ raw: String) -> String {
     return words.prefix(1).uppercased() + words.dropFirst()
 }
 
-/// Extra order fields Slant returns that the detail pane shows only when present: when the order was processed, the
-/// requested shipping provider and the fulfillment delivery instructions.
+/// Slant's `updatedAt` as "28 Oct 2026, 09:14" for the detail's Updated fact, or nil when absent, unreadable or within
+/// a minute of `createdAt` (an order nothing has changed since it was made).
+func orderDetailUpdatedLabel(_ order: [String: Any]) -> String? {
+    guard let raw = order["updatedAt"] as? String, let updated = orderTimestamp(raw) else { return nil }
+    if let created = orderCreatedDate(order), abs(updated.timeIntervalSince(created)) < 60 { return nil }
+    return updated.formatted(date: .abbreviated, time: .shortened)
+}
+
+/// Extra order fields Slant returns that the detail pane shows only when present: when the order was placed
+/// (`processedAt`; Slant's docs call a DRAFT "not yet processed"), when Slant last changed it (`updatedAt`), the requested shipping
+/// provider and the fulfillment delivery instructions.
 func orderDetailFacts(_ order: [String: Any]) -> [(String, String)] {
     var rows: [(String, String)] = []
     if let processed = order["processedAt"] as? String, !processed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        rows.append(("Processed", orderDateLabel(processed)))
+        rows.append(("Placed", orderDateLabel(processed)))
     }
+    if let updated = orderDetailUpdatedLabel(order) { rows.append(("Updated", updated)) }
     if let provider = (order["options"] as? [String: Any])?["shippingProvider"] as? String {
         let title = orderShippingProviderTitle(provider)
         if !title.isEmpty { rows.append(("Shipping provider", title)) }
@@ -301,7 +311,7 @@ func orderComposerDiscardMessage(outcomeUnknown: Bool) -> String {
 func orderSearchHint(typed: String, searchActive: Bool) -> String? {
     if searchActive { return "Showing what Slant found. Clear the search to return to the list." }
     guard !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-    // Slant's search finds order numbers only (see shouldFallbackOrderSearchToPublicId), so don't promise more.
+    // Slant's lookup finds order numbers only (see orderSearchQueryItems), so don't promise more.
     return "Showing loaded orders that match. Press Return to look up an order number on Slant."
 }
 

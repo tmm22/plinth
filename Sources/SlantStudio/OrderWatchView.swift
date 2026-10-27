@@ -106,7 +106,7 @@ struct OrderWatchSettingsSection: View {
         } header: {
             Text("Order updates")
         } footer: {
-            Text("Every few minutes, Studio reads your newest and most recently updated orders on the default platform and lists status changes in Orders. Only each order’s ID, status and when it was seen are saved on this Mac, and they’re forgotten when you change the default platform or disconnect. Notifications (shipped, delivered, cancelled, in review or a payment problem) show the order number and status, never customer details; clicking one opens the order.")
+            Text("Every few minutes, Studio reads your newest and most recently updated orders on the default platform and lists status changes in Orders. Only each order’s ID, status and when it was seen are saved on this Mac, and they’re forgotten when you change the default platform or disconnect. Notifications (an order shipped or was cancelled) show the order number and status, never customer details; clicking one opens the order.")
                 .settingsFooterLayout()
         }
         .confirmationDialog("Forget saved order statuses?", isPresented: $confirmForget, titleVisibility: .visible) {

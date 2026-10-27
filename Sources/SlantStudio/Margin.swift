@@ -166,8 +166,7 @@ enum ProfitSlantTotal: Equatable {
 /// precedence as the order list: total, totalCost, then printing + delivery cost. A partial cost isn't a total, so
 /// printing without delivery (or the reverse) is reported as unavailable rather than understated.
 func profitCheckSlantTotal(_ order: [String: Any]) -> ProfitSlantTotal {
-    let status = ((order["status"] as? String) ?? "").uppercased()
-    if status == "CANCELED" || status == "CANCELLED" {
+    if orderStatusIsCancelled((order["status"] as? String) ?? "") {
         return .unavailable("This order was cancelled, so there’s no sale to check.")
     }
     if let currency = (order["currency"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),

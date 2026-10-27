@@ -34,7 +34,7 @@ final class OrderWatchTests: XCTestCase {
     }
 
     func testStatusChangeBecomesUnseenAndSummarised() {
-        var snap = orderWatchApplying([obs("A", "PRINTING"), obs("B", "PAID"), obs("C", "QUEUED"), obs("D", "AWAITING_SHIPMENT")],
+        var snap = orderWatchApplying([obs("A", "PRINTING"), obs("B", "PAID"), obs("C", "SUBMITTED"), obs("D", "AWAITING_SHIPMENT")],
                                       to: OrderWatchSnapshot(), now: t0).snapshot
         let later = t0.addingTimeInterval(240)
         let applied = orderWatchApplying([obs("A", "SHIPPED"), obs("B", "PAYMENT_ERROR"), obs("C", "PRINTING"), obs("D", "SHIPPED")],
@@ -93,7 +93,7 @@ final class OrderWatchTests: XCTestCase {
         let changes = ["PRINTING", "SHIPPED", "IN_REVIEW", "QUEUED", "SHIPPED", "MYSTERY_STATE", "DELIVERED", "CANCELED"]
             .enumerated().map { OrderWatchChange(id: "\($0.offset)", from: "PAID", to: $0.element) }
         XCTAssertEqual(orderWatchSummaryGroups(changes).map(\.status),
-                       ["IN_REVIEW", "CANCELED", "DELIVERED", "SHIPPED", "QUEUED", "PRINTING", "MYSTERY_STATE"])
+                       ["IN_REVIEW", "CANCELLED", "DELIVERED", "SHIPPED", "QUEUED", "PRINTING", "MYSTERY_STATE"])
         XCTAssertEqual(orderWatchSummaryText([]), "")
     }
 

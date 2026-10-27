@@ -36,8 +36,10 @@ let orderWatchShowFetchLimit = 10
 let orderWatchNotificationOrderIDKey = "orderID"
 
 /// Changes worth a sidebar badge and a notification: the order needs attention, or it reached the customer's door.
-let orderWatchNotableStatuses: Set<String> = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELED", "SHIPPED", "DELIVERED"]
-private let orderWatchAttentionOrder = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELED", "DELIVERED", "SHIPPED"]
+/// Of Slant's live statuses (since 26 Oct 2026) only SHIPPED and CANCELLED are notable; the earlier ones stay for
+/// saved snapshots and any old reply.
+let orderWatchNotableStatuses: Set<String> = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELLED", "CANCELED", "SHIPPED", "DELIVERED"]
+private let orderWatchAttentionOrder = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELLED", "DELIVERED", "SHIPPED"]
 
 // MARK: - Snapshot
 
@@ -184,12 +186,29 @@ func orderWatchFetchedOrderFitsPlatform(_ order: [String: Any], platformID: Stri
     return named.contains(current)
 }
 
+/// Whether a saved status moving to a live one is only Slant's re-labelling of 26 Oct 2026, not news: an earlier
+/// production stage (Paid, Queued, Processing, On the shelf, Finishing, Completed, In review, Awaiting shipment) now
+/// reads Submitted or Printing (orders paid the week before read PRINTING on 28 Oct 2026), CANCELED is spelt
+/// CANCELLED, and Delivered (no longer a status) reads Shipped. A payment problem that now reads Submitted or Printing
+/// was resolved, which is news, and every other move from an earlier status (Queued → Shipped, say) is real.
+func orderWatchChangeIsSlantRelabel(from: String, to: String) -> Bool {
+    guard orderLegacyStatuses.contains(from) else { return false }
+    switch to {
+    case "SUBMITTED", "PRINTING": return !["PAYMENT_ERROR", "CANCELED", "DELIVERED"].contains(from)
+    case "CANCELLED": return from == "CANCELED"
+    case "SHIPPED": return from == "DELIVERED"
+    default: return false
+    }
+}
+
 /// Whether a change is listed under "Since you last looked". Placing a draft is the seller's own action, so
 /// Draft → Paid isn't reported (later progress, or a payment problem, is). Live Slant also returns SUBMITTED for a
 /// just-placed order (26 Oct 2026), in an order not yet confirmed relative to PAID, so any move among Draft,
-/// Submitted and Paid that ends in Submitted or Paid counts as placing too.
+/// Submitted and Paid that ends in Submitted or Paid counts as placing too. Slant's re-labelling of a saved status
+/// (`orderWatchChangeIsSlantRelabel`) isn't reported either.
 func orderWatchChangeIsReported(from: String, to: String) -> Bool {
     guard from != to else { return false }
+    if orderWatchChangeIsSlantRelabel(from: from, to: to) { return false }
     let placing: Set<String> = ["PAID", "SUBMITTED"]
     return !((from == "DRAFT" || placing.contains(from)) && placing.contains(to))
 }
@@ -219,7 +238,8 @@ func orderWatchApplying(_ observations: [OrderWatchObservation], to snapshot: Or
                 entry.seenStatus = observation.status
             }
             entry.status = observation.status
-            entry.changedAt = now
+            // A re-label isn't a change: an unseen change keeps its time (and its place in the banner's list).
+            if !orderWatchChangeIsSlantRelabel(from: previous, to: observation.status) { entry.changedAt = now }
         }
         next.orders[observation.id] = entry
     }
@@ -314,7 +334,8 @@ private let orderWatchProgressOrder = [
 /// Unseen changes counted by new status: attention first, then shipped/delivered, then progress in Slant's order.
 func orderWatchSummaryGroups(_ changes: [OrderWatchChange]) -> [(status: String, count: Int)] {
     var counts: [String: Int] = [:]
-    for change in changes { counts[change.to, default: 0] += 1 }
+    // Both spellings of cancelled are one group, so the banner never reads "1 cancelled · 1 cancelled".
+    for change in changes { counts[change.to == "CANCELED" ? "CANCELLED" : change.to, default: 0] += 1 }
     func rank(_ status: String) -> Int {
         if let index = orderWatchAttentionOrder.firstIndex(of: status) { return index }
         if let index = orderWatchProgressOrder.firstIndex(of: status) { return 100 + index }
@@ -375,7 +396,7 @@ private func orderWatchNotificationPhrase(_ status: String) -> String {
     switch status {
     case "SHIPPED": "has shipped"
     case "DELIVERED": "was delivered"
-    case "CANCELED": "was cancelled"
+    case "CANCELED", "CANCELLED": "was cancelled"
     case "PAYMENT_ERROR": "has a payment problem"
     case "IN_REVIEW": "is in review"
     default: "is now \(orderStatusTitle(status).lowercased())"
@@ -925,7 +946,8 @@ extension StudioStore {
     /// and filter), then reads, one at a time, up to `orderWatchShowFetchLimit` of `ids` that aren't on that page
     /// (`GET /orders/{id}`, read-only) and adds them to the loaded orders. The updated-first check finds changes to
     /// orders older than the newest 100, so they aren't always on the reloaded page. An order Slant says doesn't exist
-    /// (404) is skipped; any other failure stops the reads and is shown as usual. True when the reload succeeded.
+    /// (404, or live Slant's 400 "Order not found.": `orderNotFoundError`) is skipped; any other failure stops the
+    /// reads and is shown as usual. True when the reload succeeded.
     func reloadOrdersIncludingWatched(_ ids: [String]) async -> Bool {
         guard await applyOrderFilter(OrderFilter()) else { return false }
         let missing = orderWatchIDsToFetch(wanted: ids, loaded: Set(orders.map(\.id)))
@@ -935,7 +957,7 @@ extension StudioStore {
                 let response: APIResponse
                 do {
                     response = try await client.request("GET", path: "/orders/\(encodedSegment(id))")
-                } catch APIError.http(404, _, _, _) {
+                } catch where orderNotFoundError(error) {
                     continue
                 }
                 noteBackgroundRateLimit(from: response)

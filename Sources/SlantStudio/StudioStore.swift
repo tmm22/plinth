@@ -38,15 +38,49 @@ func responsePagination(_ response: APIResponse) -> [String: Any]? {
     if let data = root["data"] as? [String: Any], let pagination = data["pagination"] as? [String: Any] { return pagination }
     return nil
 }
+/// A whole, non-negative number from a pagination field: a JSON number or digits sent as text. Nil for booleans,
+/// fractions and anything else, so an odd reply falls back to the page-size rule instead of being misread.
+func paginationInteger(_ value: Any?) -> Int? {
+    guard let value, !(value is NSNull) else { return nil }
+    if let number = value as? NSNumber {
+        guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let raw = number.doubleValue
+        guard raw.isFinite, raw >= 0, raw == raw.rounded(), raw < 1e12 else { return nil }
+        return number.intValue
+    }
+    if let text = value as? String, let parsed = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)), parsed >= 0 {
+        return parsed
+    }
+    return nil
+}
+/// Slant's `pagination.count`: the number of rows across every page of the list (live `GET /orders`, 28 Oct 2026).
+func listPaginationTotalCount(_ pagination: [String: Any]?) -> Int? {
+    paginationInteger(pagination?["count"])
+}
+/// Whether the list has a page after `currentPage`, decided from Slant's raw page (never from rows Studio trimmed).
+/// An empty page is always the end, so Load More can never loop. Then `totalPages`; then `count` when it can only be a
+/// total (more than the rows read so far means more remain; a count equal to a full page could also be a per-page
+/// count, so that case falls through); otherwise a full page suggests more.
 func listHasMorePages(pagination: [String: Any]?, recordCount: Int, currentPage: Int, pageSize: Int) -> Bool {
-    if let totalPages = pagination?["totalPages"] as? Int {
+    guard recordCount > 0 else { return false }
+    if let totalPages = paginationInteger(pagination?["totalPages"]) {
         return currentPage < totalPages
     }
-    if let totalPages = pagination?["totalPages"] as? NSNumber {
-        return currentPage < totalPages.intValue
+    if let total = listPaginationTotalCount(pagination) {
+        let limit = paginationInteger(pagination?["limit"]).flatMap { $0 > 0 ? $0 : nil } ?? pageSize
+        let read = max(0, currentPage - 1) * limit + recordCount
+        if total > read { return true }
+        if total == read, recordCount < limit { return false }
     }
     return recordCount == pageSize
 }
+/// Whether a later page's `pagination.count` shows the list changed on Slant since page 1 was read (an order added,
+/// or one leaving a status filter), so later pages may have shifted and skipped orders. Unknown counts never count.
+func orderListChangedWhilePaging(firstCount: Int?, latestCount: Int?) -> Bool {
+    guard let firstCount, let latestCount else { return false }
+    return firstCount != latestCount
+}
+let orderListChangedWhileLoadingNote = "Orders changed on Slant while loading. Reload to see them all."
 
 struct LocalModel: Codable, Identifiable {
     var id = UUID()
@@ -326,21 +360,56 @@ struct WebhookSingleResendResult: Equatable {
     var expired: Bool
 }
 
-func orderFilterDateString(_ date: Date) -> String {
+/// The Mac's calendar days, as the Orders date filter's From and To mean them.
+func orderFilterCalendar(timeZone: TimeZone = .current) -> Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    return calendar
+}
+func orderFilterDateString(_ date: Date, timeZone: TimeZone = .current) -> String {
     let formatter = DateFormatter()
     formatter.calendar = Calendar(identifier: .gregorian)
     formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = .current
+    formatter.timeZone = timeZone
     formatter.dateFormat = "yyyy-MM-dd"
     return formatter.string(from: date)
 }
-/// endDate means “created before this date”; send the day after the chosen To date so that day is included.
-func orderFilterEndDateQueryValue(_ endDate: Date) -> String {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = .current
+/// Slant reads `startDate`/`endDate` as dates without saying in which time zone, so the list asks for a day's margin
+/// either side (as the Spending Report does) and `orderFilterTrimmed` keeps only orders created on the chosen days in
+/// the Mac's calendar. `startDate` is the day before From.
+func orderFilterStartDateQueryValue(_ startDate: Date, timeZone: TimeZone = .current) -> String {
+    let calendar = orderFilterCalendar(timeZone: timeZone)
+    let start = calendar.startOfDay(for: startDate)
+    return orderFilterDateString(calendar.date(byAdding: .day, value: -1, to: start) ?? start, timeZone: timeZone)
+}
+/// `endDate` means “created before this date”: the day after To includes that day, and one more day is the margin.
+func orderFilterEndDateQueryValue(_ endDate: Date, timeZone: TimeZone = .current) -> String {
+    let calendar = orderFilterCalendar(timeZone: timeZone)
     let start = calendar.startOfDay(for: endDate)
-    let dayAfter = calendar.date(byAdding: .day, value: 1, to: start) ?? start
-    return orderFilterDateString(dayAfter)
+    return orderFilterDateString(calendar.date(byAdding: .day, value: 2, to: start) ?? start, timeZone: timeZone)
+}
+/// The filter's dates as an interval in the Mac's calendar: from the start of From to the end of To (nil: unbounded).
+func orderFilterLocalInterval(_ filter: OrderFilter, timeZone: TimeZone = .current) -> (start: Date?, end: Date?) {
+    let calendar = orderFilterCalendar(timeZone: timeZone)
+    let start = filter.startDate.map { calendar.startOfDay(for: $0) }
+    let end = filter.endDate.map { date -> Date in
+        let day = calendar.startOfDay(for: date)
+        return calendar.date(byAdding: .day, value: 1, to: day) ?? day
+    }
+    return (start, end)
+}
+/// The rows of a date-filtered page that were created on the chosen days in the Mac's calendar; the margin days Slant
+/// returned are dropped. Rows without a readable creation date are kept (they can't be judged), and without dates the
+/// page is returned unchanged. Has-more is still decided from the raw page.
+func orderFilterTrimmed(_ records: [Record], filter: OrderFilter, timeZone: TimeZone = .current) -> [Record] {
+    let interval = orderFilterLocalInterval(filter, timeZone: timeZone)
+    guard interval.start != nil || interval.end != nil else { return records }
+    return records.filter { record in
+        guard let created = orderCreatedDate(orderObject(record.values)) else { return true }
+        if let start = interval.start, created < start { return false }
+        if let end = interval.end, created >= end { return false }
+        return true
+    }
 }
 func normalizedOrderSortOrder(_ sortOrder: String) -> String {
     sortOrder.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "ASC" ? "ASC" : "DESC"
@@ -355,7 +424,7 @@ func orderFilterQueryItems(_ filter: OrderFilter, page: Int, limit: Int, platfor
     var query = ["page": String(page), "limit": String(limit), "sortBy": "createdAt", "sortOrder": normalizedOrderSortOrder(filter.sortOrder)]
     if !platformID.isEmpty { query["platformId"] = platformID }
     if let status = filter.status, !status.isEmpty { query["status"] = status }
-    if let start = filter.startDate { query["startDate"] = orderFilterDateString(start) }
+    if let start = filter.startDate { query["startDate"] = orderFilterStartDateQueryValue(start) }
     if let end = filter.endDate { query["endDate"] = orderFilterEndDateQueryValue(end) }
     return query
 }
@@ -526,13 +595,34 @@ func orderSearchPublicID(_ typed: String) -> String {
     if !trimmed.isEmpty, trimmed.allSatisfy(\.isASCII), trimmed.allSatisfy(\.isNumber) { return "SLANT_" + trimmed }
     return trimmed.uppercased()
 }
-/// Prefer /orders/search; fall back to the publicId filter when search is missing (404) or answers like an order
-/// lookup. Slant routes /orders/search as /orders/{publicOrderId} (seen 23 Oct 2026): every query, even an exact order
-/// number, gets 400 "Order not found.", the same reply as GET /orders/xyz.
-func shouldFallbackOrderSearchToPublicId(status: Int, body: String = "") -> Bool {
+/// Slant's answer for an order that doesn't exist: 404, or the 400 "Order not found." live `GET /orders/{id}` gives
+/// (seen 23 and 28 Oct 2026). Any other 400 is a real refusal and isn't treated as not found.
+func orderNotFoundStatus(_ status: Int, body: String = "") -> Bool {
     if status == 404 { return true }
     guard status == 400, let message = shortAPIMessage(from: body) else { return false }
     return message.lowercased().contains("order not found")
+}
+func orderNotFoundError(_ error: Error) -> Bool {
+    guard case .http(let status, let body, _, _)? = error as? APIError else { return false }
+    return orderNotFoundStatus(status, body: body)
+}
+/// Return in the Orders search box: `GET /orders?publicId=` for the typed order number. `/orders/search` isn't used:
+/// Slant routes it as an order lookup (every query gets 400 "Order not found.", seen 23 and 28 Oct 2026).
+func orderSearchQueryItems(_ typed: String, platformID: String) -> [String: String] {
+    var query = ["publicId": orderSearchPublicID(typed), "limit": String(listPageSize), "page": "1"]
+    let platform = platformID.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !platform.isEmpty { query["platformId"] = platform }
+    return query
+}
+/// Only rows whose order number is the one looked up (ignoring case), so a reply that ignored `publicId` (the newest
+/// orders) is never shown as search results.
+func orderSearchMatchingRecords(_ records: [Record], typed: String) -> [Record] {
+    let wanted = orderSearchPublicID(typed)
+    guard !wanted.isEmpty else { return [] }
+    return records.filter { record in
+        guard let publicID = orderObject(record.values)["publicId"] as? String else { return false }
+        return publicID.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(wanted) == .orderedSame
+    }
 }
 
 func filamentAvailability(_ record: Record) -> Bool? {
@@ -702,6 +792,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var orderPage = 0
     @Published private(set) var filesHasMore = false
     @Published private(set) var ordersHasMore = false
+    /// Load More saw Slant's `pagination.count` differ from page 1's: orders were added or left the filter while the
+    /// pages loaded, so some may have been skipped. Cleared by the next reload, search or filter.
+    @Published private(set) var ordersChangedWhileLoading = false
+    /// Page 1's `pagination.count` for the loaded order list (nil when Slant didn't send one).
+    private var ordersFirstPageCount: Int?
     /// Bumped by File › Export Orders…; the Orders screen exports the rows its list shows (after search and sort).
     @Published var ordersExportRequest = 0
     @Published private(set) var orderSearchActive = false
@@ -1104,6 +1199,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         accountLoaded = false; filesLoaded = false; ordersLoaded = false; loadedCatalogs = []
         orderSearchActive = false; fileSearchActive = false
         filePage = 0; orderPage = 0; filesHasMore = false; ordersHasMore = false
+        ordersChangedWhileLoading = false; ordersFirstPageCount = nil
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
         disabledPlatformsThisSession = []; deadWebhooks = [:]; componentCategories = []
         importedSaleAmounts = [:]
@@ -1244,10 +1340,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let ordersResponse = try await client.request("GET", path: "/orders", query: orderQuery)
             noteRateLimit(from: ordersResponse)
             let orderRecords = responseRecords(ordersResponse)
-            orders = orderRecords
+            orders = orderFilterTrimmed(orderRecords, filter: orderFilter)
             orderPage = 1
             ordersLoaded = true
-            ordersHasMore = listHasMorePages(pagination: responsePagination(ordersResponse), recordCount: orderRecords.count, currentPage: 1, pageSize: listPageSize)
+            noteOrderListFirstPage(ordersResponse, rawCount: orderRecords.count)
             orderSearchActive = false; fileSearchActive = false
             filesLoaded = true; ordersLoaded = true; accountLoaded = true
             loadedCatalogs.formUnion([.materials, .platforms])
@@ -1281,24 +1377,14 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             return
         }
         _ = await run("Search orders", retryable: true, retry: .searchOrders(trimmed)) {
-            do {
-                let response = try await client.request("GET", path: "/orders/search", query: ["query": trimmed])
-                noteRateLimit(from: response)
-                orders = responseRecords(response)
-            } catch let error as APIError {
-                if case .http(let status, let body, _, _) = error, shouldFallbackOrderSearchToPublicId(status: status, body: body) {
-                    var query = ["publicId": orderSearchPublicID(trimmed), "limit": String(listPageSize), "page": "1"]
-                    if !platformID.isEmpty { query["platformId"] = platformID }
-                    let response = try await client.request("GET", path: "/orders", query: query)
-                    noteRateLimit(from: response)
-                    orders = responseRecords(response)
-                } else {
-                    throw error
-                }
-            }
+            let response = try await client.request("GET", path: "/orders", query: orderSearchQueryItems(trimmed, platformID: platformID))
+            noteRateLimit(from: response)
+            orders = orderSearchMatchingRecords(responseRecords(response), typed: trimmed)
             orderSearchActive = true
             orderPage = 1
             ordersHasMore = false
+            ordersChangedWhileLoading = false
+            ordersFirstPageCount = nil
             ordersLoaded = true
         }
     }
@@ -1317,9 +1403,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let response = try await client.request("GET", path: "/orders", query: query)
             noteRateLimit(from: response)
             let records = responseRecords(response)
-            orders = records
+            orders = orderFilterTrimmed(records, filter: filter)
             orderPage = 1
-            ordersHasMore = listHasMorePages(pagination: responsePagination(response), recordCount: records.count, currentPage: 1, pageSize: listPageSize)
+            noteOrderListFirstPage(response, rawCount: records.count)
             ordersLoaded = true
             reloaded = true
         }
@@ -1334,10 +1420,22 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             noteRateLimit(from: response)
             let more = responseRecords(response)
             let known = Set(orders.map(\.id))
-            orders.append(contentsOf: more.filter { !known.contains($0.id) })
+            orders.append(contentsOf: orderFilterTrimmed(more, filter: orderFilter).filter { !known.contains($0.id) })
             orderPage = next; ordersLoaded = true
-            ordersHasMore = listHasMorePages(pagination: responsePagination(response), recordCount: more.count, currentPage: next, pageSize: listPageSize)
+            // Decided from Slant's raw page, never from the rows the date filter kept.
+            let pagination = responsePagination(response)
+            ordersHasMore = listHasMorePages(pagination: pagination, recordCount: more.count, currentPage: next, pageSize: listPageSize)
+            if orderListChangedWhilePaging(firstCount: ordersFirstPageCount, latestCount: listPaginationTotalCount(pagination)) {
+                ordersChangedWhileLoading = true
+            }
         }
+    }
+    /// Page 1 of the order list (refresh or filter): has-more from Slant's raw page, and its total for Load More to compare.
+    private func noteOrderListFirstPage(_ response: APIResponse, rawCount: Int) {
+        let pagination = responsePagination(response)
+        ordersHasMore = listHasMorePages(pagination: pagination, recordCount: rawCount, currentPage: 1, pageSize: listPageSize)
+        ordersFirstPageCount = listPaginationTotalCount(pagination)
+        ordersChangedWhileLoading = false
     }
     func loadCatalog(_ kind: Destination) async {
         _ = await run("Load \(kind.rawValue.lowercased())", retryable: true, retry: .loadCatalog(kind)) {

@@ -309,7 +309,8 @@ final class ShellUXTests: XCTestCase {
         XCTAssertEqual(items["sortOrder"], "DESC")
         XCTAssertEqual(items["status"], "QUEUED")
         XCTAssertEqual(items["platformId"], "plat-1")
-        XCTAssertEqual(items["startDate"], orderFilterDateString(filter.startDate!))
+        XCTAssertEqual(items["startDate"], orderFilterStartDateQueryValue(filter.startDate!))
+        XCTAssertNotEqual(items["startDate"], orderFilterDateString(filter.startDate!))
         XCTAssertTrue(items["startDate"]?.count == 10)
         XCTAssertTrue(OrderFilter(status: "DRAFT").isActive)
         XCTAssertFalse(OrderFilter().isActive)
@@ -339,14 +340,14 @@ final class ShellUXTests: XCTestCase {
         XCTAssertEqual(orderSearchPublicID("١٢٣"), "١٢٣")
     }
 
-    func testOrderSearchFallsBackWhenSearchIsMissingOrRoutedAsAnOrderLookup() {
-        XCTAssertTrue(shouldFallbackOrderSearchToPublicId(status: 404))
-        // Live Slant answers every /orders/search with the order-lookup refusal.
+    func testOrderNotFoundCoversLiveSlantsOrderLookupRefusal() {
+        XCTAssertTrue(orderNotFoundStatus(404))
+        // Live Slant answers GET /orders/{unknown} (and /orders/search) with 400 "Order not found."
         let lookup = #"{"success":false,"error":{"message":"Order not found.","statusCode":400}}"#
-        XCTAssertTrue(shouldFallbackOrderSearchToPublicId(status: 400, body: lookup))
-        XCTAssertFalse(shouldFallbackOrderSearchToPublicId(status: 400))
-        XCTAssertFalse(shouldFallbackOrderSearchToPublicId(status: 400, body: #"{"message":"query is required"}"#))
-        XCTAssertFalse(shouldFallbackOrderSearchToPublicId(status: 500, body: lookup))
+        XCTAssertTrue(orderNotFoundStatus(400, body: lookup))
+        XCTAssertFalse(orderNotFoundStatus(400))
+        XCTAssertFalse(orderNotFoundStatus(400, body: #"{"message":"query is required"}"#))
+        XCTAssertFalse(orderNotFoundStatus(500, body: lookup))
     }
 
     func testUploadTypeParameterOmitsSTLIncludesOBJAnd3MF() {

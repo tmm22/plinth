@@ -13,8 +13,9 @@ import SwiftUI
 /// PROCESSING with no assignments, seen 23 Oct 2026), and cancelled, shipped or delivered orders are past it.
 let orderProgressHiddenStatuses: Set<String> = ["DRAFT", "CANCELED", "CANCELLED", "SHIPPED", "DELIVERED", "PAYMENT_ERROR"]
 
-/// One item's production progress from Slant's documented `estimatedPrintCompletion` and `assignments` fields. The
-/// bundled OpenAPI doesn't list either, so both are read defensively and nothing is shown when they're absent.
+/// One item's production progress from Slant's `estimatedPrintCompletion` and `assignments` fields. Neither is in the
+/// bundled OpenAPI, and Slant's docs stopped mentioning `assignments` with the status change of 26 Oct 2026 (item
+/// status now always equals the order's), so both are read defensively and nothing is shown when they're absent.
 struct OrderItemProgress: Equatable {
     /// "Printing", or counts such as "2 printing · 1 on the shelf" when the item's assignments differ.
     var stage: String?

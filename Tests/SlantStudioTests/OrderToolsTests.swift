@@ -87,7 +87,7 @@ final class OrderToolsTests: XCTestCase {
             "options": ["shippingProvider": "SHIPSTATION"],
             "fulfillment": ["deliveryInstructions": " Leave at the side door "]
         ])
-        XCTAssertEqual(facts.map(\.0), ["Processed", "Shipping provider", "Delivery instructions"])
+        XCTAssertEqual(facts.map(\.0), ["Placed", "Shipping provider", "Delivery instructions"])
         XCTAssertEqual(facts[1].1, "ShipStation")
         XCTAssertEqual(facts[2].1, "Leave at the side door")
         XCTAssertEqual(orderDetailFacts(["options": ["shippingProvider": "FEDEX_DIRECT"]]).first?.1, "FEDEX_DIRECT")
