@@ -51,7 +51,7 @@ final class OrdersUXTests: XCTestCase {
     }
 
     func testCancellationEligibilityAndBlockedReasons() {
-        for status in orderKnownStatuses where status != "CANCELED" && status != "DRAFT" {
+        for status in orderKnownStatuses where !orderStatusIsCancelled(status) && status != "DRAFT" {
             XCTAssertTrue(orderCanRequestCancellation(status), status)
             XCTAssertNil(orderCancellationBlockedReason(status), status)
         }
@@ -66,6 +66,9 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertFalse(workbenchCancelAllowed(status: "DRAFT", loaded: true).0)
         XCTAssertTrue(orderKnownStatuses.contains("PROCESSING"))
         XCTAssertFalse(orderCanRequestCancellation("CANCELED"))
+        XCTAssertFalse(orderCanRequestCancellation("CANCELLED"))
+        XCTAssertEqual(orderStatusTitle("CANCELLED"), "Cancelled")
+        XCTAssertNil(orderDetailCancelBlockedNote("CANCELLED"))
         XCTAssertFalse(orderCanRequestCancellation(""))
         XCTAssertFalse(orderCanRequestCancellation("UNKNOWN"))
         XCTAssertEqual(orderCancellationBlockedReason("CANCELED"), "This order was already cancelled.")
@@ -77,7 +80,7 @@ final class OrdersUXTests: XCTestCase {
 
     func testOrderDetailCancelNoteSkipsFinishedStatuses() {
         // The status heading already says the order is finished, so the detail pane doesn't repeat it.
-        for status in ["CANCELED", "canceled", "SHIPPED", "DELIVERED", "COMPLETE"] {
+        for status in ["CANCELED", "canceled", "CANCELLED", "SHIPPED", "DELIVERED"] {
             XCTAssertNil(orderDetailCancelBlockedNote(status), status)
         }
         // Still explained where it's informative; the review sheet and Workbench keep the full reason.

@@ -216,11 +216,23 @@ struct OrderFilter: Equatable {
     var sortOrder: String = "desc"
     var isActive: Bool { status != nil || startDate != nil || endDate != nil }
 }
-/// The bundled `GET /orders` status enum, plus SUBMITTED after Paid (seen live; see `orderUndocumentedLiveStatuses`).
-let orderStatusFilterOptions = [
-    "DRAFT", "PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING",
-    "COMPLETED", "IN_REVIEW", "AWAITING_SHIPMENT", "SHIPPED", "DELIVERED", "CANCELED", "PAYMENT_ERROR"
+/// Slant's order statuses since 26 Oct 2026 (live OpenAPI and docs; checked with read-only GETs on 28 Oct 2026, when
+/// orders paid earlier read PRINTING). `GET /orders?status=` refuses any other value with 400 "Invalid status filter".
+let orderLiveStatuses = ["DRAFT", "SUBMITTED", "PRINTING", "SHIPPED", "CANCELLED"]
+/// The earlier status set. Slant no longer returns these, but Studio still recognises them in saved order-watch
+/// snapshots and any old reply, with their earlier meaning. Never offer them as a filter: Slant refuses them.
+let orderLegacyStatuses: Set<String> = [
+    "PAID", "QUEUED", "PROCESSING", "ITEMS_ON_SHELF", "POST_PROCESSING", "COMPLETED", "IN_REVIEW",
+    "AWAITING_SHIPMENT", "DELIVERED", "CANCELED", "PAYMENT_ERROR"
 ]
+let orderKnownStatuses = Set(orderLiveStatuses).union(orderLegacyStatuses)
+/// The toolbar Status menu offers exactly the values `GET /orders` accepts.
+let orderStatusFilterOptions = orderLiveStatuses
+/// CANCELLED (live) or CANCELED (the earlier spelling), in any case.
+func orderStatusIsCancelled(_ status: String) -> Bool {
+    let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return normalized == "CANCELLED" || normalized == "CANCELED"
+}
 let maxPlatforms = 5
 let listPageSize = 100
 

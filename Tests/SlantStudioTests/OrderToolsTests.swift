@@ -148,17 +148,19 @@ final class OrderToolsTests: XCTestCase {
         let parameters = try XCTUnwrap(get["parameters"] as? [[String: Any]])
         let status = try XCTUnwrap(parameters.first { $0["name"] as? String == "status" })
         let accepted = try XCTUnwrap((status["schema"] as? [String: Any])?["enum"] as? [String])
-        // Plus SUBMITTED, which live Slant returns but the bundled OpenAPI doesn't list, offered after Paid.
-        XCTAssertEqual(orderStatusFilterOptions.filter { !orderUndocumentedLiveStatuses.contains($0) }, accepted)
-        XCTAssertEqual(orderStatusFilterOptions.firstIndex(of: "SUBMITTED"), (orderStatusFilterOptions.firstIndex(of: "PAID") ?? -1) + 1)
+        // Live Slant refuses any other value with 400 "Invalid status filter" (28 Oct 2026).
+        XCTAssertEqual(orderStatusFilterOptions, accepted)
+        XCTAssertEqual(orderStatusFilterOptions, ["DRAFT", "SUBMITTED", "PRINTING", "SHIPPED", "CANCELLED"])
+        XCTAssertTrue(orderLegacyStatuses.isDisjoint(with: orderStatusFilterOptions))
     }
 
     func testEveryDocumentedOrderStatusHasALabelAndCancelCopy() throws {
         let schemas = try XCTUnwrap((try spec()["components"] as? [String: Any])?["schemas"] as? [String: Any])
         let order = try XCTUnwrap(((schemas["Order"] as? [String: Any])?["properties"] as? [String: Any])?["status"] as? [String: Any])
         let statuses = try XCTUnwrap(order["enum"] as? [String])
-        XCTAssertEqual(Set(statuses).union(orderUndocumentedLiveStatuses), orderKnownStatuses)
-        for status in statuses + Array(orderUndocumentedLiveStatuses) {
+        XCTAssertEqual(statuses, orderLiveStatuses)
+        XCTAssertEqual(Set(statuses).union(orderLegacyStatuses), orderKnownStatuses)
+        for status in statuses + orderLegacyStatuses.sorted() {
             let title = orderStatusTitle(status)
             XCTAssertFalse(title.isEmpty || title == "Order" || title.contains("_"), status)
             XCTAssertFalse(orderCancelButtonBaseTitle(status).isEmpty, status)

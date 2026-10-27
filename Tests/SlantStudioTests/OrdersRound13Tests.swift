@@ -16,9 +16,8 @@ final class OrdersRound13Tests: XCTestCase {
         XCTAssertEqual(orderCancelActionTitle("SUBMITTED"), "Cancel & Refund…")
         XCTAssertEqual(orderCancelSheetBody("SUBMITTED"), orderCancelSheetBody("PAID"))
         XCTAssertNil(orderDetailCancelBlockedNote("SUBMITTED"))
-        // Toolbar Status menu: right after Paid.
-        let paid = try? XCTUnwrap(orderStatusFilterOptions.firstIndex(of: "PAID"))
-        XCTAssertEqual(orderStatusFilterOptions.firstIndex(of: "SUBMITTED"), paid.map { $0 + 1 })
+        // Toolbar Status menu: right after Draft (Slant's live order).
+        XCTAssertEqual(orderStatusFilterOptions.firstIndex(of: "SUBMITTED"), 1)
         // Counted spend, Needs attention's not-shipped rule, tracking and Report a Problem's Late.
         XCTAssertTrue(spendReportCountedStatuses.contains("SUBMITTED"))
         XCTAssertTrue(orderAttentionProductionStatuses.contains("SUBMITTED"))

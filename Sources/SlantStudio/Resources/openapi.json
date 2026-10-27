@@ -337,11 +337,13 @@
           "status": {
             "type": "string",
             "enum": [
-              "PROCESSING",
-              "READY",
+              "DRAFT",
+              "SUBMITTED",
+              "PRINTING",
               "SHIPPED",
-              "DELIVERED"
-            ]
+              "CANCELLED"
+            ],
+            "description": "Always matches the order status"
           },
           "price": {
             "type": "string",
@@ -413,20 +415,12 @@
             "type": "string",
             "enum": [
               "DRAFT",
-              "PAID",
-              "QUEUED",
-              "PROCESSING",
+              "SUBMITTED",
               "PRINTING",
-              "ITEMS_ON_SHELF",
-              "POST_PROCESSING",
-              "COMPLETED",
-              "IN_REVIEW",
-              "AWAITING_SHIPMENT",
               "SHIPPED",
-              "DELIVERED",
-              "CANCELED",
-              "PAYMENT_ERROR"
-            ]
+              "CANCELLED"
+            ],
+            "description": "DRAFT: not yet processed. SUBMITTED: paid and waiting to print. PRINTING: in production. SHIPPED: with the carrier. CANCELLED: cancelled before shipping"
           },
           "platformId": {
             "type": "string",
@@ -2942,22 +2936,13 @@
               "type": "string",
               "enum": [
                 "DRAFT",
-                "PAID",
-                "QUEUED",
-                "PROCESSING",
+                "SUBMITTED",
                 "PRINTING",
-                "ITEMS_ON_SHELF",
-                "POST_PROCESSING",
-                "COMPLETED",
-                "IN_REVIEW",
-                "AWAITING_SHIPMENT",
                 "SHIPPED",
-                "DELIVERED",
-                "CANCELED",
-                "PAYMENT_ERROR"
-              ],
-              "x-slant-studio-source": "docs"
-            }
+                "CANCELLED"
+              ]
+            },
+            "description": "Case insensitive. Any other value is refused with 400 \"Invalid status filter\" (live, 28 Oct 2026)."
           },
           {
             "name": "startDate",

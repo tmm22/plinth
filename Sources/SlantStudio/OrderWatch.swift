@@ -305,13 +305,19 @@ func orderWatchShouldApplyRateLimit(current: RateLimitInfo?, incoming: RateLimit
     return remaining <= known
 }
 
+/// Slant's progress order, live statuses with the earlier ones (still read from saved snapshots) in their old place.
+private let orderWatchProgressOrder = [
+    "DRAFT", "PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING",
+    "COMPLETED", "IN_REVIEW", "AWAITING_SHIPMENT", "SHIPPED", "DELIVERED", "CANCELLED", "CANCELED", "PAYMENT_ERROR"
+]
+
 /// Unseen changes counted by new status: attention first, then shipped/delivered, then progress in Slant's order.
 func orderWatchSummaryGroups(_ changes: [OrderWatchChange]) -> [(status: String, count: Int)] {
     var counts: [String: Int] = [:]
     for change in changes { counts[change.to, default: 0] += 1 }
     func rank(_ status: String) -> Int {
         if let index = orderWatchAttentionOrder.firstIndex(of: status) { return index }
-        if let index = orderStatusFilterOptions.firstIndex(of: status) { return 100 + index }
+        if let index = orderWatchProgressOrder.firstIndex(of: status) { return 100 + index }
         return 1000
     }
     return counts.map { (status: $0.key, count: $0.value) }.sorted { lhs, rhs in

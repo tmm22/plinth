@@ -2249,20 +2249,11 @@ func orderMatchesSearch(_ order: Record, query: String, modelNames: [String: Str
     return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
 }
 
-/// The bundled OpenAPI's statuses plus `SUBMITTED`, which live Slant returned for an order the owner had just paid
-/// (26 Oct 2026) and which the OpenAPI doesn't list. It is treated as placed everywhere, like PAID.
-let orderKnownStatuses: Set<String> = [
-    "DRAFT", "PAID", "SUBMITTED", "QUEUED", "PROCESSING", "PRINTING", "ITEMS_ON_SHELF", "POST_PROCESSING",
-    "COMPLETED", "IN_REVIEW", "AWAITING_SHIPMENT", "SHIPPED", "DELIVERED", "CANCELED", "PAYMENT_ERROR"
-]
-/// Statuses Slant returns that its bundled OpenAPI doesn't list (seen live).
-let orderUndocumentedLiveStatuses: Set<String> = ["SUBMITTED"]
-
 func orderCanRequestCancellation(_ status: String) -> Bool {
     let normalized = status.uppercased()
     guard orderKnownStatuses.contains(normalized) else { return false }
     // Slant refuses DELETE on drafts ("Can not cancel a draft order", seen 23 Oct 2026), so drafts offer no cancel.
-    return normalized != "CANCELED" && normalized != "DRAFT"
+    return !orderStatusIsCancelled(normalized) && normalized != "DRAFT"
 }
 func orderCancellationIsRefundOnly(_ status: String) -> Bool {
     ["SHIPPED", "DELIVERED"].contains(status.uppercased())
@@ -2270,7 +2261,7 @@ func orderCancellationIsRefundOnly(_ status: String) -> Bool {
 func orderCancellationBlockedReason(_ status: String) -> String? {
     if orderCanRequestCancellation(status) { return nil }
     switch status.uppercased() {
-    case "CANCELED": return "This order was already cancelled."
+    case "CANCELED", "CANCELLED": return "This order was already cancelled."
     case "DRAFT": return "Slant doesn’t cancel drafts. A draft costs nothing unless you place it."
     case "": return "This order can’t be cancelled."
     default: return "This order can’t be cancelled."
@@ -2280,7 +2271,7 @@ func orderCancellationBlockedReason(_ status: String) -> String? {
 /// delivered, complete), whose status heading already says why; kept where it tells the user something.
 func orderDetailCancelBlockedNote(_ status: String) -> String? {
     // Drafts say why they have no Cancel in their caption under the buttons (`orderDetailDraftCaption`).
-    let finished: Set<String> = ["CANCELED", "SHIPPED", "DELIVERED", "COMPLETE", "DRAFT"]
+    let finished: Set<String> = ["CANCELED", "CANCELLED", "SHIPPED", "DELIVERED", "DRAFT"]
     if finished.contains(status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()) { return nil }
     return orderCancellationBlockedReason(status)
 }
@@ -2346,7 +2337,7 @@ func orderStatusTitle(_ status: String) -> String {
     case "AWAITING_SHIPMENT": "Awaiting shipment"
     case "SHIPPED": "Shipped"
     case "DELIVERED": "Delivered"
-    case "CANCELED": "Cancelled"
+    case "CANCELED", "CANCELLED": "Cancelled"
     case "PAYMENT_ERROR": "Payment problem"
     case "": "Order"
     default: status.replacingOccurrences(of: "_", with: " ").capitalized
