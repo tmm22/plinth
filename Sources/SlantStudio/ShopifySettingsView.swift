@@ -84,8 +84,8 @@ struct ShopifySettingsSection: View {
                     ForEach(ShopifySignInKind.allCases) { Text($0.title).tag($0) }
                 }
                 if kind == .app {
-                    TextField("Client ID", text: $clientID)
-                    SecureField("Client secret", text: $clientSecret)
+                    TextField("Client ID", text: $clientID, prompt: Text("Required"))
+                    SecureField("Client secret", text: $clientSecret, prompt: Text("Required"))
                 } else {
                     SecureField("Admin API access token", text: $accessToken, prompt: Text("shpat_…"))
                 }

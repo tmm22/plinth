@@ -301,6 +301,12 @@ struct JSONView: View {
     }
 }
 
+/// What VoiceOver says for an Activity entry's status icon. An entry that didn't succeed may have failed, been
+/// stopped or have an unknown outcome; its detail says which.
+func activityStatusAccessibilityLabel(success: Bool) -> String {
+    success ? "Succeeded" : "Didn’t succeed"
+}
+
 struct ActivityView: View {
     @EnvironmentObject var store: StudioStore
     @State private var search = ""
@@ -322,6 +328,8 @@ struct ActivityView: View {
                     HStack(alignment: .top, spacing: 14) {
                         Image(systemName: event.success ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                             .foregroundStyle(event.success ? .green : .orange)
+                            // Otherwise VoiceOver reads the symbol's own name ("Selected").
+                            .accessibilityLabel(activityStatusAccessibilityLabel(success: event.success))
                         VStack(alignment: .leading, spacing: 5) {
                             Text(event.title).font(.headline)
                             Text(event.detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)

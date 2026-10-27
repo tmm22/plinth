@@ -391,15 +391,26 @@ var accessoryForecastRenderTokens: Int {
 /// tokens. Anthropic's invoice is what counts; the sheet shows the real running cost from each reply's usage.
 func accessoryCostForecast(photoSizes: [(width: Int, height: Int)], textCharacters: Int,
                            limits: AccessoryDesignLimits = AccessoryDesignLimits(), typicalReplies: Int = 5) -> AccessoryCostForecast {
-    let fixed = (accessorySystemPrompt.count + AnthropicJSON.array(accessoryTools.map(\.json)).encodedString.count) * 2 / 7
     let photos = photoSizes.reduce(0) { $0 + accessoryImageTokens(pixelWidth: $1.width, pixelHeight: $1.height) }
-    let first = fixed + photos + textCharacters * 2 / 7 + 50
+    let first = accessoryForecastFixedTokens + photos + textCharacters * 2 / 7 + 50
+    return accessoryRoundForecast(firstTurnTokens: first, maximumReplies: limits.maxReplies, typicalReplies: typicalReplies)
+}
+
+/// The system prompt and tools, sent with every request.
+private var accessoryForecastFixedTokens: Int {
+    (accessorySystemPrompt.count + AnthropicJSON.array(accessoryTools.map(\.json)).encodedString.count) * 2 / 7
+}
+
+/// A round of up to `maximumReplies` replies whose first request carries `firstTurnTokens`, all written to the cache
+/// (a later round's history may no longer be cached); each later reply reads the conversation so far from the cache,
+/// adds one render's facts and pictures, and writes about 8,000 tokens.
+private func accessoryRoundForecast(firstTurnTokens: Int, maximumReplies: Int, typicalReplies: Int) -> AccessoryCostForecast {
     let renderTokens = accessoryForecastRenderTokens
     func cost(replies: Int) -> AnthropicCostEstimate {
         var usage = AnthropicUsage()
         var context = 0
         for reply in 0..<max(1, replies) {
-            let added = reply == 0 ? first : accessoryForecastHistoryTokensPerReply + renderTokens
+            let added = reply == 0 ? firstTurnTokens : accessoryForecastHistoryTokensPerReply + renderTokens
             usage.cacheReadInputTokens += context
             usage.cacheCreationInputTokens += added
             usage.outputTokens += accessoryForecastOutputTokensPerReply
@@ -408,10 +419,61 @@ func accessoryCostForecast(photoSizes: [(width: Int, height: Int)], textCharacte
         usage.cacheCreation5mInputTokens = usage.cacheCreationInputTokens
         return anthropicEstimatedCost(usage, model: anthropicDefaultModel)
     }
-    let typical = min(max(1, typicalReplies), limits.maxReplies)
-    return AccessoryCostForecast(firstReply: cost(replies: 1), typical: cost(replies: typical), maximum: cost(replies: limits.maxReplies),
-                                 typicalReplies: typical, maximumReplies: limits.maxReplies)
+    let maximum = max(1, maximumReplies)
+    let typical = min(max(1, typicalReplies), maximum)
+    return AccessoryCostForecast(firstReply: cost(replies: 1), typical: cost(replies: typical), maximum: cost(replies: maximum),
+                                 typicalReplies: typical, maximumReplies: maximum)
 }
+
+/// Rough input tokens of the conversation so far, for the next send's forecast: the system prompt and tools, each
+/// photo at the largest size Studio sends Claude, each render picture at its own size, and the text (Claude's turns
+/// as stored, which overstates a little).
+func accessoryConversationTokens(_ messages: [AnthropicMessageParam]) -> Int {
+    let photo = accessoryImageTokens(pixelWidth: 1568, pixelHeight: 1176)
+    let picture = accessoryImageTokens(pixelWidth: accessoryRenderPixelSize, pixelHeight: accessoryRenderPixelSize)
+    var characters = 0
+    var tokens = accessoryForecastFixedTokens
+    for message in messages {
+        for block in message.content {
+            switch block {
+            case .text(let text, _): characters += text.count
+            case .image: tokens += photo
+            case .toolResult(_, let content, _, _):
+                for item in content {
+                    switch item {
+                    case .text(let text): characters += text.count
+                    case .image: tokens += picture
+                    }
+                }
+            case .raw(let json): characters += json.encodedString.count
+            }
+        }
+    }
+    return tokens + characters * 2 / 7
+}
+
+/// The cost of the next send in a design that has started: Send Answer or Skip carry on in the current round with the
+/// replies it has left; Send to Claude and Send Again start a new round. Nil when nothing would be sent (no replies
+/// left in the round).
+func accessoryNextSendForecast(messages: [AnthropicMessageParam], repliesLeft: Int, typicalReplies: Int = 5) -> AccessoryCostForecast? {
+    guard repliesLeft > 0 else { return nil }
+    // The seller's answer or note is short; allow for it.
+    return accessoryRoundForecast(firstTurnTokens: accessoryConversationTokens(messages) + 300, maximumReplies: repliesLeft,
+                                  typicalReplies: typicalReplies)
+}
+
+/// "Estimated cost of sending: about $0.40 if Claude needs 5 replies, at most about $1.10 if it uses all 10. …", shown
+/// beside the buttons that send again once a design has started.
+func accessoryNextSendForecastText(_ forecast: AccessoryCostForecast, newRound: Bool) -> String {
+    let limit = newRound ? "all \(forecast.maximumReplies)" : "the \(forecast.maximumReplies) left in this round"
+    let estimate = forecast.typicalReplies < forecast.maximumReplies
+        ? "\(anthropicCostText(forecast.typical)) if Claude needs \(forecast.typicalReplies) replies, at most \(anthropicCostText(forecast.maximum)) if it uses \(limit)"
+        : "at most \(anthropicCostText(forecast.maximum)) if Claude uses \(limit)"
+    return "Estimated cost of sending: \(estimate). Anthropic bills your account."
+}
+
+/// Said once in Design an Accessory (and its Ideas) when no Claude key is saved.
+let accessoryMissingClaudeKeyText = "Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic)."
 
 /// "Estimated cost: about $0.90 for a typical design (5 replies), at most about $1.90 if Claude uses all 10. …"
 func accessoryCostForecastText(_ forecast: AccessoryCostForecast) -> String {
@@ -1378,7 +1440,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
 /// The bounded conversation with Claude. Each round (Start Design, or each note the seller sends) allows
 /// `limits.maxReplies` replies and `limits.maxRenders` renders. Nothing is sent again by itself: a failure, a refusal,
 /// a cut-off reply or a limit stops the round, and only the seller's click starts the next. The history is append-only;
-/// a turn Anthropic never answered is the only one that may still change (Try Again resends it as it is).
+/// a turn Anthropic never answered is the only one that may still change (Send Again resends it as it is).
 @MainActor final class AccessoryDesignRun: ObservableObject {
     typealias Send = @MainActor (AnthropicRequest, @escaping @MainActor @Sendable (AnthropicStreamProgress) -> Void) async throws -> AnthropicMessage
     /// Renders the code as written (`.design`) or its fit-test piece (`.fitTest`), locally.
@@ -1423,7 +1485,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
 
     var isWorking: Bool { if case .working = phase { return true }; return false }
     var hasStarted: Bool { phase != .ready }
-    /// The last turn was never answered (a failed or stopped send): Try Again resends it.
+    /// The last turn was never answered (a failed or stopped send): Send Again resends it.
     var canTryAgain: Bool { hasStarted && !isWorking && !refused && !imageLimitReached && questionToolUseID == nil && messages.last?.role == .user }
     /// The seller may write to Claude to start another round.
     var canSendNote: Bool { hasStarted && !isWorking && !refused && !imageLimitReached && questionToolUseID == nil && !messages.isEmpty }
@@ -1591,7 +1653,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
                 return
             }
             guard !reply.historyContent.isEmpty else {
-                halt("Claude sent an empty reply. Try Again sends the same request.")
+                halt("Claude sent an empty reply. Send Again sends the same request.")
                 return
             }
             if Task.isCancelled { halt("Stopped. Nothing more was sent."); return }
@@ -1724,13 +1786,13 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
 func accessorySetAsideText(_ stopReason: AnthropicStopReason?) -> String {
     switch stopReason {
     case .maxTokens?:
-        return "Claude’s reply was cut off before it finished, so Studio set it aside. Try Again sends the same request."
+        return "Claude’s reply was cut off before it finished, so Studio set it aside. Send Again sends the same request."
     case .other("model_context_window_exceeded")?:
-        return "Claude’s reply was cut off because the conversation reached the model’s length limit, so Studio set it aside. Start Over with fewer or smaller photos or a shorter brief; Try Again would most likely stop the same way."
+        return "Claude’s reply was cut off because the conversation reached the model’s length limit, so Studio set it aside. Start Over with fewer or smaller photos or a shorter brief; Send Again would most likely stop the same way."
     case .other(let raw)?:
-        return "Claude’s reply ended before it finished (\(accessoryClipped(raw, 60))), so Studio set it aside. Try Again sends the same request."
+        return "Claude’s reply ended before it finished (\(accessoryClipped(raw, 60))), so Studio set it aside. Send Again sends the same request."
     default:
-        return "Claude’s reply ended before it finished, so Studio set it aside. Try Again sends the same request."
+        return "Claude’s reply ended before it finished, so Studio set it aside. Send Again sends the same request."
     }
 }
 

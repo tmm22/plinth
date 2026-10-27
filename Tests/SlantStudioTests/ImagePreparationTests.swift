@@ -151,8 +151,8 @@ final class ImagePreparationTests: XCTestCase {
 @MainActor final class ImageSharingConsentTests: XCTestCase {
     func testConsentTextNamesServiceAndWhatIsSent() {
         let claude = imageSharingConsentText(.anthropic)
-        XCTAssertEqual(claude.title, "Send photos to Anthropic (Claude)?")
-        XCTAssertTrue(claude.message.contains("Studio sends Anthropic (Claude) the photo you choose, the details you type"))
+        XCTAssertEqual(claude.title, "Send photos to Claude (Anthropic)?")
+        XCTAssertTrue(claude.message.contains("Studio sends Claude (Anthropic) the photo you choose, the details you type"))
         XCTAssertTrue(claude.message.contains("location"))
         XCTAssertEqual(claude.allowButton, "Allow and Send")
         XCTAssertEqual(claude.cancelButton, "Don’t Send")

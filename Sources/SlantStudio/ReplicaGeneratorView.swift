@@ -606,7 +606,7 @@ struct ReplicaGeneratorSheet: View {
                     .labelsHidden()
                     .accessibilityLabel("Measured along")
                     .fixedSize()
-                    TextField("Size in millimetres", text: $sizeText, prompt: Text("120"))
+                    TextField("Size in millimetres", text: $sizeText, prompt: Text("Such as 120"))
                         .labelsHidden()
                         .accessibilityLabel("Size in millimetres")
                         .frame(width: 80)
@@ -649,7 +649,7 @@ struct ReplicaGeneratorSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Change in Settings…") { store.requestSettings(.designTools) }
-                    .help("Choose Meshy or Tripo3D and add its API key in Settings › Design Tools › 3D generation.")
+                    .help("Choose Meshy or Tripo and add its API key in Settings › Design Tools › 3D generation.")
                 Button("Check Balance") { checkBalance() }
                     .disabled(!connection.hasKey(service) || checkingBalance || session.isRunning)
                     .help("Reads your \(service.title) credits. Nothing is spent.")
@@ -844,7 +844,7 @@ struct ReplicaGeneratorSheet: View {
             if session.isRunning {
                 Button("Stop") { session.stop() }.disabled(session.stopping)
             }
-            Button(session.phase == .saved ? "Done" : "Close") { close() }
+            Button("Close") { close() }
                 .keyboardShortcut(.cancelAction)
                 .disabled(session.isRunning)
             switch session.phase {

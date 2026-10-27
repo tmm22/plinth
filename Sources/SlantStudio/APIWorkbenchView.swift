@@ -75,7 +75,7 @@ struct EndpointView: View {
                 Text(endpoint.path).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
                 Text(endpoint.description).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                 if endpoint.sessionOnly {
-                    Card { VStack(alignment: .leading, spacing: 12) { Label("Manage this in your Slant dashboard", systemImage: "safari").font(.headline); Text("This operation requires a signed-in website session and does not accept API-key authentication."); Link("Open Slant dashboard", destination: URL(string: "https://slant3dapi.com")!) } }
+                    Card { VStack(alignment: .leading, spacing: 12) { Label("Manage this in your Slant dashboard", systemImage: "safari").font(.headline); Text("This operation requires a signed-in website session and does not accept API-key authentication."); Link("Open Slant Dashboard", destination: URL(string: "https://slant3dapi.com")!) } }
                 } else {
                     if !endpoint.parameters.isEmpty {
                         Card {
@@ -112,9 +112,9 @@ struct EndpointView: View {
                     HStack {
                         Group {
                             if hasOpenSCADResult {
-                                Button(endpoint.method == "GET" ? "Fetch response" : "Review request") { prepare() }.buttonStyle(.bordered)
+                                Button(endpoint.method == "GET" ? "Fetch Response" : "Review Request…") { prepare() }.buttonStyle(.bordered)
                             } else {
-                                Button(endpoint.method == "GET" ? "Fetch response" : "Review request") { prepare() }.buttonStyle(.borderedProminent)
+                                Button(endpoint.method == "GET" ? "Fetch Response" : "Review Request…") { prepare() }.buttonStyle(.borderedProminent)
                             }
                         }
                         .keyboardShortcut(.return, modifiers: .command)
@@ -138,7 +138,7 @@ struct EndpointView: View {
                             }
                             JSONView(text: displayedResponseText).frame(minHeight: 220, idealHeight: 350)
                             if hasOpenSCADResult {
-                                Button("Import generated STL into library") { importGenerated() }.buttonStyle(.borderedProminent)
+                                Button("Import Generated STL into Library") { importGenerated() }.buttonStyle(.borderedProminent)
                             }
                         }
                     }

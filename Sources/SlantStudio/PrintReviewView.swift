@@ -314,6 +314,33 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
 
 // MARK: - Sheet
 
+struct PrintReviewCloseConfirmation: Equatable {
+    let title: String
+    let message: String
+}
+
+/// Whether a sheet that talks to Claude (Review for Printing, Design an Accessory) should now begin holding the key
+/// (`AnthropicConnection.beginSession`): once a key is set up, and only once per sheet. Before a key exists the sheet
+/// can't hold a conversation, so Settings may add one; after that the key can't change until the sheet closes.
+func claudeSheetShouldBeginKeySession(configured: Bool, holding: Bool) -> Bool {
+    configured && !holding
+}
+
+/// What Close asks before it discards something billed, or nil to close at once: while Claude is replying (closing
+/// stops it part-way), or while a plan is shown and no "(reviewed)" copy has been saved from it. Nothing sent to Claude
+/// yet, or a copy already saved, closes without asking.
+func printReviewCloseConfirmation(hasPlan: Bool, asking: Bool, savedCopy: Bool) -> PrintReviewCloseConfirmation? {
+    if asking {
+        return PrintReviewCloseConfirmation(
+            title: "Stop Claude and close this review?",
+            message: "Claude is still replying. Closing stops the reply; Anthropic may bill the part already written, and reviewing again sends a new request.")
+    }
+    guard hasPlan, !savedCopy else { return nil }
+    return PrintReviewCloseConfirmation(
+        title: "Close this review?",
+        message: "Claude’s plan isn’t kept. Reviewing again sends a new request, which is billed again.")
+}
+
 struct PrintReviewSheet: View {
     @EnvironmentObject var store: StudioStore
     @Environment(\.dismiss) private var dismiss
@@ -331,6 +358,8 @@ struct PrintReviewSheet: View {
     /// True between this sheet's `beginSession` and `endSession`, so each is called once.
     @State private var holdsClaudeSession = false
     @State private var reinforceConfirmation: LocalModel?
+    /// Close (or Escape) waiting for "Close this review?".
+    @State private var confirmClose = false
     let request: PrintReviewRequest
 
     /// What is sent: the context passed in, with the seller's purpose and real size.
@@ -349,12 +378,35 @@ struct PrintReviewSheet: View {
             } message: { _ in
                 Text("Claude’s plan isn’t kept. Reviewing again sends a new request.")
             }
+            .confirmationDialog(closeConfirmation?.title ?? "Close this review?", isPresented: $confirmClose,
+                                titleVisibility: .visible) {
+                Button("Close Review", role: .destructive) { close() }
+                // Return keeps reviewing.
+                Button("Keep Reviewing", role: .cancel) {}
+                    .keyboardShortcut(.defaultAction)
+            } message: {
+                Text(closeConfirmation?.message ?? "")
+            }
+    }
+
+    private var closeConfirmation: PrintReviewCloseConfirmation? {
+        printReviewCloseConfirmation(hasPlan: session.plan != nil, asking: session.isAsking,
+                                     savedCopy: { if case .saved = session.run { return true }; return false }())
+    }
+
+    private func requestClose() {
+        if closeConfirmation != nil { confirmClose = true } else { close() }
+    }
+
+    private func close() {
+        session.cancelAll()
+        dismiss()
     }
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Review for printing").font(.title2.weight(.bold))
+                Text("Review for printing with Claude").font(.title2.weight(.bold))
                 Text(model?.name ?? "This model is no longer in your library.")
                     .font(.callout).foregroundStyle(.secondary)
                 Text("Studio measures the model on this Mac first. Nothing is sent until you press Ask Claude, and nothing changes until you run the steps you tick.")
@@ -390,22 +442,18 @@ struct PrintReviewSheet: View {
                 Text("Claude’s plan is advice. Studio’s own measurements are shown beside it.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Close") {
-                    session.cancelAll()
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
+                // Escape too. Closing would lose a plan Anthropic billed for (or stop a reply part-way), so it asks
+                // first then; Keep Reviewing is the default.
+                Button("Close") { requestClose() }
+                    .keyboardShortcut(.cancelAction)
             }
             .padding(20)
         }
         .frame(minWidth: 620, idealWidth: 700, minHeight: 560, idealHeight: 760)
         .imageSharingConsent($consentRequest)
+        .onChange(of: claudeConnection.isConfigured) { _, _ in holdClaudeSessionIfConfigured() }
         .onAppear {
-            if !holdsClaudeSession {
-                // The Claude key can't change while this sheet is open.
-                holdsClaudeSession = true
-                AnthropicConnection.shared.beginSession()
-            }
+            holdClaudeSessionIfConfigured()
             guard model == nil, let found = store.localModels.first(where: { $0.id == request.modelID }) else { return }
             model = found
             purpose = printReviewInitialPurpose(context: request.context, partIntent: found.partIntent)
@@ -422,6 +470,14 @@ struct PrintReviewSheet: View {
                 AnthropicConnection.shared.endSession()
             }
         }
+    }
+
+    /// The Claude key can't change while this sheet is open with a key set up. Without one there is nothing to protect,
+    /// so Open Settings can add a key; the hold starts once one is saved and lasts until the sheet closes.
+    private func holdClaudeSessionIfConfigured() {
+        guard claudeSheetShouldBeginKeySession(configured: claudeConnection.isConfigured, holding: holdsClaudeSession) else { return }
+        holdsClaudeSession = true
+        AnthropicConnection.shared.beginSession()
     }
 
     /// Closes the review and takes the seller to this model's Reinforce card. Any run in progress stops unsaved.
