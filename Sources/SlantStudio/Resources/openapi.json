@@ -3455,15 +3455,16 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "public_ids"
+                  "publicIds"
                 ],
                 "properties": {
-                  "public_ids": {
+                  "publicIds": {
                     "type": "array",
                     "items": {
                       "type": "string"
                     },
-                    "description": "Array of public order IDs"
+                    "description": "Array of public order IDs. Live Slant accepts only publicIds and refuses public_ids (the original spec's name) with 400 \"No public IDs provided\"; the reply is data: [order].",
+                    "x-slant-studio-source": "live"
                   }
                 }
               }

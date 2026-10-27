@@ -144,13 +144,19 @@ final class WorkflowTests: XCTestCase {
         XCTAssertEqual(money(nil), "—")
     }
 
-    func testOrdersBatchAcceptsRenderedDocumentationKey() throws {
-        let normalized = try XCTUnwrap(normalizedRequestBody(["publicIds": ["SLANT_1"]], endpointID: "POST /orders/batch") as? [String: Any])
-        XCTAssertNil(normalized["publicIds"])
-        XCTAssertEqual(normalized["public_ids"] as? [String], ["SLANT_1"])
+    func testOrdersBatchSendsTheKeyLiveSlantAccepts() throws {
+        // Live Slant refuses `public_ids` with 400 "No public IDs provided"; only `publicIds` works.
+        let normalized = try XCTUnwrap(normalizedRequestBody(["public_ids": ["SLANT_1"]], endpointID: "POST /orders/batch") as? [String: Any])
+        XCTAssertNil(normalized["public_ids"])
+        XCTAssertEqual(normalized["publicIds"] as? [String], ["SLANT_1"])
+        let kept = try XCTUnwrap(normalizedRequestBody(["publicIds": ["SLANT_2"]], endpointID: "POST /orders/batch") as? [String: Any])
+        XCTAssertEqual(kept["publicIds"] as? [String], ["SLANT_2"])
+        XCTAssertNil(kept["public_ids"])
         let endpoint = try XCTUnwrap(EndpointCatalog.load().first { $0.id == "POST /orders/batch" })
         let schema = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(endpoint.bodySchema.utf8)) as? [String: Any])
         XCTAssertNoThrow(try validateJSON(normalized, schema: schema))
+        XCTAssertThrowsError(try validateJSON(["public_ids": ["SLANT_1"]], schema: schema), "the bundled spec requires publicIds")
+        XCTAssertTrue(endpoint.bodyTemplate.contains("publicIds"))
     }
 
     func testRequestValidationChecksNestedRequiredFieldsAndBounds() throws {

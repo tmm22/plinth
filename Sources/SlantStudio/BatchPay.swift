@@ -191,15 +191,21 @@ let batchPayUnconfirmedCreateNotice = "A draft created this session wasn’t con
 // MARK: After paying
 
 /// After a 2xx: whether the lock stays because the charge may still happen (Slant still shows a draft, or returned
-/// no readable status). A placed order, a payment problem or a cancellation is a definite outcome.
+/// no readable status). Any status past DRAFT (placed, a payment problem, a cancellation, or one Studio doesn't
+/// recognise) is a definite outcome. Shared by the single review, Pay Several Drafts and the API Workbench.
 func batchPayAcceptedOutcomeStaysLocked(_ order: [String: Any]?) -> Bool {
     let status = ((order?["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     return status.isEmpty || status == "DRAFT"
 }
 
+/// Statuses that show an order was placed: every known status (live and legacy) past DRAFT except a cancellation
+/// (CANCELLED, or the earlier CANCELED) and a payment problem.
+let orderPlacedStatuses = orderKnownStatuses.subtracting(["DRAFT", "CANCELLED", "CANCELED", "PAYMENT_ERROR"])
+
 /// Whether a 2xx payment reply really placed the order, from the order Slant returned (the refresh, else the reply).
-/// Only a status past DRAFT that isn't a cancellation or a payment problem counts as placed; anything else stops the
-/// batch. Nil (no readable order) is unclear: it may have been placed, so it is never offered again either.
+/// Only a known placed status (`orderPlacedStatuses`, such as SUBMITTED or PRINTING) counts as placed; anything else
+/// stops the batch. A status Studio doesn't recognise is past DRAFT, so it isn't paid again, but it isn't counted as
+/// placed either. Nil (no readable order) is unclear: it may have been placed, so it is never offered again either.
 func batchPayOutcomeAfterSuccess(_ order: [String: Any]?) -> BatchPayOutcome {
     let raw = ((order?["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     switch raw {
@@ -207,8 +213,28 @@ func batchPayOutcomeAfterSuccess(_ order: [String: Any]?) -> BatchPayOutcome {
     case "DRAFT": return .notPlaced("Slant accepted the request but still shows it as a draft, so it may still be charged. Reload it before paying it again.")
     case "PAYMENT_ERROR": return .notPlaced("Slant reported a payment problem. Check the payment method on your Slant account.")
     case "CANCELED", "CANCELLED": return .notPlaced("Slant shows it as cancelled.")
-    default: return .placed
+    default: return orderPlacedStatuses.contains(raw) ? .placed : .unrecognised(raw)
     }
+}
+
+/// The single review's note after a 2xx Pay, from `batchPayOutcomeAfterSuccess`; nil for an outcome that keeps the
+/// lock (still a draft, or no readable status), which the review explains itself.
+func orderPayAcceptedMessage(_ outcome: BatchPayOutcome) -> String? {
+    switch outcome {
+    case .placed: return "Order placed."
+    case .notPlaced(let reason): return "Slant accepted the payment request, but the order wasn’t placed. " + reason
+    case .unrecognised(let status):
+        return "Slant accepted the payment request and now shows the order as “\(status)”, a status Studio doesn’t recognise. Check it in your Slant dashboard before doing anything else with it."
+    case .changed, .refused, .unknown, .notSent, .unclear: return nil
+    }
+}
+
+/// After a 2xx to a pay: the order to judge it by. The refreshed GET when it is this order, else the pay reply when it
+/// is; nil when neither is (the outcome is then unclear and the lock stays).
+func orderPayAcceptedOrder(replied: [String: Any]?, refreshed: [String: Any]?, orderID: String) -> [String: Any]? {
+    if let refreshed, orderBelongs(refreshed, to: orderID) { return refreshed }
+    if let replied, orderBelongs(replied, to: orderID) { return replied }
+    return nil
 }
 
 func batchPayMoneyText(_ amount: Decimal) -> String { money(NSDecimalNumber(decimal: amount)) }
@@ -266,6 +292,9 @@ enum BatchPayOutcome: Equatable {
     case notPlaced(String)
     /// Slant accepted the payment request but returned no readable order, so whether it was placed isn't known.
     case unclear
+    /// Slant accepted the payment request and the order is past DRAFT, but with a status Studio doesn't recognise
+    /// (upper-cased here). The lock lifts, since it's no longer a draft, but the batch stops.
+    case unrecognised(String)
 }
 
 /// A failed payment request: a definite refusal, or an outcome that is unknown (timeout, transport error, 5xx, 408/409).
@@ -296,6 +325,8 @@ func batchPayNextStep(after outcome: BatchPayOutcome) -> BatchPayNextStep {
         return .stop("Stopped: an order wasn’t placed after paying, so nothing after it was paid.")
     case .unclear:
         return .stop("Stopped: Slant’s reply didn’t show whether an order was placed. Reload Orders and check it before paying anything else.")
+    case .unrecognised:
+        return .stop("Stopped: after paying, Slant showed an order with a status Studio doesn’t recognise, so nothing after it was paid. Check that order in your Slant dashboard.")
     }
 }
 
@@ -310,6 +341,8 @@ enum BatchPayRowState: Equatable {
     case unclear
     /// An unknown outcome resolved by reloading the order: its status now.
     case reloaded(String)
+    /// Sent and accepted, and now past DRAFT with a status Studio doesn't recognise.
+    case unrecognised(String)
 }
 
 func batchPayRowState(for outcome: BatchPayOutcome) -> BatchPayRowState {
@@ -321,6 +354,7 @@ func batchPayRowState(for outcome: BatchPayOutcome) -> BatchPayRowState {
     case .notSent(let reason): return .notPaid(reason)
     case .notPlaced(let reason): return .notPaid(reason)
     case .unclear: return .unclear
+    case .unrecognised(let status): return .unrecognised(status)
     }
 }
 
@@ -334,6 +368,8 @@ func batchPayStateText(_ state: BatchPayRowState) -> String {
     case .notPaid(let reason): return "Not paid: \(reason)"
     case .unclear: return "Sent, but Slant’s reply didn’t show whether it was placed. Reload Orders and check it before paying anything else."
     case .reloaded(let status): return "Reloaded: now \(orderStatusTitle(status))."
+    case .unrecognised(let status):
+        return "Sent. Slant now shows it as “\(status)”, a status Studio doesn’t recognise. Check it in your Slant dashboard."
     }
 }
 
@@ -350,7 +386,7 @@ func batchPayTally(_ states: [BatchPayRowState]) -> BatchPayTally {
         switch state {
         case .placed: tally.placed += 1
         case .refused: tally.refused += 1
-        case .unknown, .unclear: tally.unknown += 1
+        case .unknown, .unclear, .unrecognised: tally.unknown += 1
         case .queued, .paying, .notPaid: tally.notPaid += 1
         case .reloaded: break
         }
@@ -534,7 +570,12 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
         // The batch holds the app-wide busy flag, so no other Slant task runs between its payments.
         store.busy = true
         store.progress = "Paying orders"
-        Task { await self.executePayments(queue, store: store, onCompleted: onCompleted) }
+        // Quit asks first while the batch runs (SlantStudioApp.swift).
+        let write = SlantWritesInFlight.shared.begin(.payDrafts)
+        Task {
+            await self.executePayments(queue, store: store, onCompleted: onCompleted)
+            SlantWritesInFlight.shared.end(write)
+        }
     }
 
     private func executePayments(_ queue: [BatchPayReviewedDraft], store: StudioStore,
@@ -573,7 +614,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             inFlight = false
             states[draft.id] = batchPayRowState(for: result.outcome)
             switch result.outcome {
-            case .placed, .notPlaced, .unclear: placedIDs.insert(draft.id) // accepted by Slant: never paid again from here
+            case .placed, .notPlaced, .unclear, .unrecognised: placedIDs.insert(draft.id) // accepted by Slant: never paid again from here
             case .changed, .refused, .unknown, .notSent: break
             }
             if let completed = result.completed { onCompleted(draft.id, completed) }
@@ -633,20 +674,20 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             return (outcome, nil, error)
         }
         noteRateLimit(payResponse, store: store)
-        // A confirmed success lifts the lock, as in the single review.
-        store.clearOutcomeUnknown(orderID: id)
+        // The lock stays held while the order is re-read; it is decided once, from what Slant then shows.
         let paid = mergeOrderDraftEnvelope(responseObject(payResponse))
-        var completed: [String: Any]? = orderBelongs(paid, to: id) ? paid : nil
+        var refreshedOrder: [String: Any]?
         if let refreshed = try? await store.client.request("GET", path: path) {
             noteRateLimit(refreshed, store: store)
-            let order = mergeOrderDraftEnvelope(responseObject(refreshed))
-            if orderBelongs(order, to: id) { completed = order }
+            refreshedOrder = mergeOrderDraftEnvelope(responseObject(refreshed))
         }
+        let completed = orderPayAcceptedOrder(replied: paid, refreshed: refreshedOrder, orderID: id)
         // The batch goes on only when the order Slant returned is actually placed. Accepted but still a draft (or no
-        // readable status) means the charge may still happen: keep the lock until a reload shows the outcome.
+        // readable status) means the charge may still happen: the lock stays until a reload shows the outcome. Any
+        // other status is past DRAFT, a definite outcome, so the lock lifts (an unrecognised one still stops the batch).
         let outcome = batchPayOutcomeAfterSuccess(completed)
-        if batchPayAcceptedOutcomeStaysLocked(completed) {
-            store.markOutcomeUnknown(orderID: id, action: .pay, reviewedStatus: latest["status"] as? String)
+        if !batchPayAcceptedOutcomeStaysLocked(completed) {
+            store.clearOutcomeUnknown(orderID: id)
         }
         return (outcome, completed, nil)
     }
@@ -749,10 +790,12 @@ struct BatchPaySheet: View {
     private var chosen: [String] { batchPayOrderedSelection(selection, available: draftIDs) }
     private var modelNames: [String: String] { orderItemModelNames(localModels: store.localModels, files: store.files) }
     private var lockNotice: String? {
-        let numbers = store.unknownOutcomeOrderIDs.map { id -> String in
-            guard let record = store.orders.first(where: { $0.id == id }) else { return id }
+        // One entry per order: IDs locked together (a Workbench ID and the `publicId` Slant returned) name it once.
+        let numbers = store.unknownOutcomeOrderGroups.map { group -> String in
+            let ids = group.sorted()
+            guard let record = store.orders.first(where: { group.contains($0.id) }) else { return ids.first ?? "" }
             let number = orderNumber(orderObject(record.values))
-            return number.isEmpty ? id : number
+            return number.isEmpty ? record.id : number
         }
         return batchPayLockNotice(lockedOrderNumbers: numbers)
     }
@@ -1129,7 +1172,7 @@ struct BatchPayDraftCard<Extra: View>: View {
             Text(text).foregroundStyle(.secondary)
         case .unknown:
             Label(text, systemImage: "exclamationmark.octagon.fill").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-        case .unclear:
+        case .unclear, .unrecognised:
             Label(text, systemImage: "questionmark.circle.fill").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
         case .refused, .notPaid:
             Label(text, systemImage: "xmark.circle").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)

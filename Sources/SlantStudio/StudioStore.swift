@@ -256,6 +256,55 @@ struct UnknownOutcomeContext: Equatable {
     var action: OutcomeAction
     var reviewedStatus: String
 }
+/// The session's pay/cancel lock: locked order IDs, what was attempted for each, and IDs that name the same order.
+/// Marking with aliases locks every ID of the group; clearing any ID of a group clears the whole group. Memory only.
+struct OrderOutcomeLocks: Equatable {
+    private(set) var ids: Set<String> = []
+    private(set) var contexts: [String: UnknownOutcomeContext] = [:]
+    private var aliases: [String: Set<String>] = [:]
+
+    mutating func mark(_ orderID: String, action: OutcomeAction?, reviewedStatus: String?, aliases extra: [String] = []) {
+        let id = orderID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        var group: Set<String> = [id]
+        for alias in extra {
+            let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { group.insert(trimmed) }
+        }
+        // Join any group a member already belongs to, so one lift still clears every ID of the order.
+        for member in group { group.formUnion(aliases[member] ?? []) }
+        for member in group {
+            ids.insert(member)
+            if let action {
+                contexts[member] = UnknownOutcomeContext(action: action, reviewedStatus: (reviewedStatus ?? "").uppercased())
+            } else {
+                contexts[member] = nil
+            }
+            aliases[member] = group.count > 1 ? group : nil
+        }
+    }
+
+    mutating func clear(_ orderID: String) {
+        let id = orderID.trimmingCharacters(in: .whitespacesAndNewlines)
+        for member in (aliases[id] ?? []).union([id, orderID]) {
+            ids.remove(member)
+            contexts[member] = nil
+            aliases[member] = nil
+        }
+    }
+
+    /// Each locked order once: a group of aliases, or a single ID.
+    var groups: [Set<String>] {
+        var seen = Set<String>()
+        var result: [Set<String>] = []
+        for id in ids.sorted() where !seen.contains(id) {
+            let group = aliases[id] ?? [id]
+            seen.formUnion(group)
+            result.append(group)
+        }
+        return result
+    }
+}
 
 struct WebhookTestResult: Equatable {
     var attempted: Bool
@@ -321,11 +370,34 @@ func unknownOutcomeResolvedByReload(context: UnknownOutcomeContext?, reloadedSta
 /// A pay/cancel error that shows Slant did not act: the request failed before it was sent, or Slant refused it with a
 /// definite client error. Timeouts, transport failures, 5xx, 408 and 409 leave the outcome unknown.
 func orderMutationErrorProvesNoEffect(_ error: Error) -> Bool {
+    if let urlError = error as? URLError { return orderMutationURLErrorIsBeforeSending(urlError.code) }
     switch error as? APIError {
     case .invalidRequest?: return true
     case .http(let status, _, _, _)?: return (400..<500).contains(status) && status != 408 && status != 409
     default: return false
     }
+}
+/// URL failures that happen before any of the request leaves the Mac: Slant's host name couldn't be resolved, or the
+/// URL was refused locally. Every other failure (no connection, a connection refused or lost, a timeout, a cancel, TLS
+/// and the rest) may have reached Slant, so it leaves the outcome unknown.
+func orderMutationURLErrorIsBeforeSending(_ code: URLError.Code) -> Bool {
+    switch code {
+    case .cannotFindHost, .dnsLookupFailed, .badURL, .unsupportedURL, .appTransportSecurityRequiresSecureConnection:
+        return true
+    default:
+        return false
+    }
+}
+/// The IDs one pay/cancel lock is kept under: the ID the request was sent for, plus the `publicId` and `id` of the
+/// order Slant returned for it when they differ (the API Workbench takes a typed ID, which may not be the one Orders
+/// lists). Lifting the lock under any of them lifts it under all (`StudioStore.markOutcomeUnknown(aliases:)`).
+func orderOutcomeLockIDs(requested: String, order: [String: Any]?) -> [String] {
+    var ids: [String] = []
+    for candidate in [requested, order?["publicId"] as? String, order?["id"] as? String] {
+        let trimmed = (candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, !ids.contains(trimmed) { ids.append(trimmed) }
+    }
+    return ids
 }
 func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStatus: String) -> Bool {
     switch action {
@@ -659,7 +731,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// creation (`unconfirmedDraftAttemptsOverflowed`).
     @Published var unconfirmedDraftCreatesOverflowed = false
     var draftCreateOutcomeUnknown: Bool { !unconfirmedDraftCreates.isEmpty || unconfirmedDraftCreatesOverflowed }
-    private(set) var unknownOutcomeContexts: [String: UnknownOutcomeContext] = [:]
+    /// The pay/cancel lock's IDs, contexts and aliases; `unknownOutcomeOrderIDs` mirrors its IDs for observers.
+    private var outcomeLocks = OrderOutcomeLocks()
     // MARK: Model library actions (see ModelLibraryActions.swift)
     /// Local model whose rename sheet is open; set from the context menu, inspector or Model menu.
     @Published var renamingModelID: UUID?
@@ -1045,25 +1118,34 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         platformID = ""
         cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""
     }
-    func markOutcomeUnknown(orderID: String, action: OutcomeAction? = nil, reviewedStatus: String? = nil) {
-        let id = orderID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else { return }
-        unknownOutcomeOrderIDs.insert(id)
-        if let action {
-            unknownOutcomeContexts[id] = UnknownOutcomeContext(action: action, reviewedStatus: (reviewedStatus ?? "").uppercased())
-        } else {
-            unknownOutcomeContexts[id] = nil
-        }
+    /// Records an order whose pay/cancel outcome is unknown. `aliases` are other IDs of the same order (such as the
+    /// `publicId` Slant returned for an ID typed in the Workbench): the lock is kept under each of them, and lifting it
+    /// under any lifts it under all.
+    func markOutcomeUnknown(orderID: String, action: OutcomeAction? = nil, reviewedStatus: String? = nil, aliases: [String] = []) {
+        outcomeLocks.mark(orderID, action: action, reviewedStatus: reviewedStatus, aliases: aliases)
+        unknownOutcomeOrderIDs = outcomeLocks.ids
     }
     func clearOutcomeUnknown(orderID: String) {
-        unknownOutcomeOrderIDs.remove(orderID)
-        unknownOutcomeContexts[orderID] = nil
+        outcomeLocks.clear(orderID)
+        unknownOutcomeOrderIDs = outcomeLocks.ids
     }
     func unknownOutcomeContext(orderID: String) -> UnknownOutcomeContext? {
-        unknownOutcomeContexts[orderID]
+        outcomeLocks.contexts[orderID]
     }
+    /// The lock's distinct orders: each group of aliases counts once.
+    var unknownOutcomeOrderGroups: [Set<String>] { outcomeLocks.groups }
     func isOutcomeUnknown(orderID: String) -> Bool {
         unknownOutcomeOrderIDs.contains(orderID)
+    }
+    /// Records one Create Draft press (the composer's or the API Workbench's `POST /orders`) in the session's
+    /// unconfirmed-draft guard: an unknown outcome adds the attempt, a confirmed creation clears the guard, and a
+    /// definite refusal or a request never sent leaves it as it was.
+    func noteDraftCreateAttempt(_ attempt: DraftCreateAttempt, recipient: String, date: Date, marker: String?, platformID: String) {
+        unconfirmedDraftCreatesOverflowed = unconfirmedDraftAttemptsOverflowed(
+            previous: unconfirmedDraftCreates, overflowed: unconfirmedDraftCreatesOverflowed, attempt: attempt)
+        unconfirmedDraftCreates = unconfirmedDraftAttempts(previous: unconfirmedDraftCreates, attempt: attempt,
+                                                           recipient: recipient, date: date,
+                                                           marker: marker, platformID: platformID)
     }
     func connect(key: String) async {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)

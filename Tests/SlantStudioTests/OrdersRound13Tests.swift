@@ -87,8 +87,10 @@ final class OrdersRound13Tests: XCTestCase {
         let unknown = APIError.http(status: 503, body: "", retryAfter: nil, rateLimitReset: nil)
         XCTAssertFalse(orderComposerCreateFailureMessage(unknown).isEmpty)
         XCTAssertFalse(orderComposerCreateFailureMessage(unknown).contains("didn’t create"), "A 5xx is unknown, not a refusal")
+        // Round 14: a reply without an order number leaves the outcome unknown, so the note says the draft may exist.
         XCTAssertEqual(orderComposerCreateFailureMessage(StudioError("Slant didn’t return an order number.")),
-                       "Slant didn’t return an order number.")
+                       "Slant’s reply didn’t confirm the draft, so this draft may have been created. Use the notice in this "
+                       + "form to look for it, or check your drafts (Orders toolbar › Status › Draft), before creating it again.")
     }
 
     func testLookForDraftFailureSaysNothingWasConfirmed() {

@@ -944,11 +944,15 @@ struct OrderComposerView: View {
                     failure = orderComposerCreateFailureMessage(error)
                     return true
                 }) {
+                    // Quit asks first until this create has its answer (SlantStudioApp.swift).
+                    let write = SlantWritesInFlight.shared.begin(.draft)
+                    defer { SlantWritesInFlight.shared.end(write) }
                     let response = try await store.client.request("POST", path: "/orders", body: body)
                     let data = responseObject(response)
                     let order = mergeOrderDraftEnvelope(data)
-                    // The POST went through, so a draft may exist: this failure leaves the outcome unknown.
-                    guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return an order number. Check Orders before creating another draft.") }
+                    // The POST went through, so a draft may exist: a reply without the order's `publicId` or `id` (a
+                    // name alone isn't one) leaves the outcome unknown.
+                    guard orderCreatedID(order) != nil else { throw StudioError("Slant didn’t return an order number.") }
                     attempt = .succeeded
                     store.draft = ["order": order]
                     // A duplicated order's address belongs to that order's customer; don't make it the next draft's default.
@@ -958,11 +962,8 @@ struct OrderComposerView: View {
                     store.destination = .orders; dismiss()
                 }
                 if ran {
-                    store.unconfirmedDraftCreatesOverflowed = unconfirmedDraftAttemptsOverflowed(
-                        previous: store.unconfirmedDraftCreates, overflowed: store.unconfirmedDraftCreatesOverflowed, attempt: attempt)
-                    store.unconfirmedDraftCreates = unconfirmedDraftAttempts(previous: store.unconfirmedDraftCreates, attempt: attempt,
-                                                                             recipient: recipient, date: attemptDate,
-                                                                             marker: marker, platformID: sentPlatformID)
+                    store.noteDraftCreateAttempt(attempt, recipient: recipient, date: attemptDate,
+                                                 marker: marker, platformID: sentPlatformID)
                     // An earlier Check Slant result no longer describes the notice.
                     draftCheckOutcome = nil
                     if let failure { validation = failure }
@@ -1721,6 +1722,7 @@ struct OrdersView: View {
             let ran = await store.run("Get order") {
                 let response = try await store.client.request("GET", path: "/orders/\(encodedSegment(id))")
                 let order = mergeOrderDraftEnvelope(responseObject(response))
+                guard orderBelongs(order, to: id) else { throw StudioError(orderReviewDifferentOrderMessage) }
                 if selection == id { detail = order }
                 let record = Record(values: order)
                 if !record.id.isEmpty, let index = store.orders.firstIndex(where: { $0.id == id }) { store.orders[index] = record }
@@ -1759,6 +1761,11 @@ struct OrderActionConfirmSheet: View {
     @State private var writeAttempted = false
     @State private var successMessage: String?
     @State private var capturedRefundOnly = false
+    /// Slant accepted the Pay but the order it then showed wasn't placed (cancelled, a payment problem, or a status
+    /// Studio doesn't recognise): no Review Next Draft… then.
+    @State private var payNotPlaced = false
+    /// Why the review couldn't load, shown in this sheet (a window alert would wait behind it).
+    @State private var loadFailure: String?
     var isPay: Bool { method == "POST" }
     var status: String? { fresh.flatMap { $0["status"] as? String } }
     var refundOnly: Bool { orderCancellationIsRefundOnly(status ?? "") }
@@ -1799,6 +1806,9 @@ struct OrderActionConfirmSheet: View {
             case .failed:
                 VStack(alignment: .leading, spacing: 10) {
                     Text(isPay ? "Couldn’t load this order’s costs." : "Couldn’t load this order.").font(.callout).foregroundStyle(.orange)
+                    if let loadFailure {
+                        Text(loadFailure).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     Button("Try Again") { loadFresh() }.disabled(store.busy || writing)
                 }
             case .loaded:
@@ -1833,7 +1843,16 @@ struct OrderActionConfirmSheet: View {
                             LabeledContent("Delivery cost") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
                             LabeledContent("Total") { Text("\(orderTotalMoney(order)) USD").monospacedDigit().fontWeight(.semibold) }
                             LabeledContent("Recipient") { Text(orderRecipientDisplay(order)).lineLimit(2) }
-                            if let reference {
+                            // A likely duplicate (another loaded order for the same marketplace order) replaces the
+                            // Marketplace row with a warning naming it, so the list's height is unchanged. Advisory
+                            // only: Pay and the defaults are the same either way.
+                            if let duplicate = marketplaceDuplicateNotice(order) {
+                                Label(duplicate, systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(1).truncationMode(.tail)
+                                    .help(duplicate)
+                                    .accessibilityLabel(duplicate)
+                            } else if let reference {
                                 LabeledContent("Marketplace") { Text(reference).lineLimit(1).truncationMode(.middle) }
                             }
                             // From Import Orders' amounts (memory only): one line, informational, never affects Pay.
@@ -1863,7 +1882,7 @@ struct OrderActionConfirmSheet: View {
                 // One…): never the default button, and kept away from the trailing Pay position so a repeated click
                 // can't land on the next review's Pay. Not offered once a Pay was sent without a confirmed result.
                 if isPay, let onReviewNext, let next = nextDraft?(orderID),
-                   orderReviewOffersNextDraft(inRun: inReviewRun, writeSucceeded: writeSucceeded,
+                   orderReviewOffersNextDraft(inRun: inReviewRun, writeSucceeded: writeSucceeded && !payNotPlaced,
                                               writeAttempted: writeAttempted, writing: writing) {
                     VStack(alignment: .leading, spacing: 2) {
                         Button(writeSucceeded ? "Review Next Draft…" : "Skip to Next Draft…") { onReviewNext(next.id) }
@@ -1916,6 +1935,12 @@ struct OrderActionConfirmSheet: View {
                 loadFresh(keepUnknownMessage: writeAttempted)
             }
         }
+    }
+    /// Before paying: a warning when a loaded order for the same marketplace order was already placed, or another loaded
+    /// draft is for it (`orderReviewMarketplaceDuplicateNotice`). Never affects whether Pay is enabled.
+    func marketplaceDuplicateNotice(_ order: [String: Any]) -> String? {
+        guard isPay, !writeAttempted, !writeSucceeded else { return nil }
+        return orderReviewMarketplaceDuplicateNotice(order, orderID: orderID, loaded: store.orders)
     }
     /// Estimated profit before paying, only from this session's imported amounts and only until Pay is pressed.
     func reviewProfitEstimate(_ order: [String: Any]) -> ImportedSaleReviewEstimate? {
@@ -1973,12 +1998,20 @@ struct OrderActionConfirmSheet: View {
         }
         awaitingBusy = false
         loadState = .loading
+        loadFailure = nil
         fresh = nil
         Task {
             var succeeded = false
-            let ran = await store.run("Load order for review") {
+            var failure: String?
+            // A failure is explained in this sheet (`loadFailure`), not in a window alert behind it.
+            let ran = await store.run("Load order for review", handlesError: { error in
+                failure = friendlyAPIMessage(error)
+                return true
+            }) {
                 let response = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
                 let loaded = mergeOrderDraftEnvelope(responseObject(response))
+                // Only this order may be reviewed, paid or used to lift its lock.
+                guard orderBelongs(loaded, to: orderID) else { throw StudioError(orderReviewDifferentOrderMessage) }
                 fresh = loaded
                 succeeded = true
                 if store.isOutcomeUnknown(orderID: orderID),
@@ -1990,6 +2023,7 @@ struct OrderActionConfirmSheet: View {
                 }
             }
             loadState = orderConfirmLoadStateAfterRun(succeeded: succeeded, skippedBusy: !ran)
+            loadFailure = failure
             if !ran { awaitingBusy = true }
             if keepUnknownMessage, writeAttempted, !writeSucceeded {
                 actionMessage = orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
@@ -2009,12 +2043,20 @@ struct OrderActionConfirmSheet: View {
             var didWrite = false
             var attemptedWrite = false
             var payAcceptedUnconfirmed = false
+            var payOutcome: BatchPayOutcome?
             var rejected = false
             var refusal: String?
-            // A definite refusal is explained here in the review, so it doesn't also raise the window's alert.
-            let ran = await store.run(isPay ? "Process order" : "Cancel order", handlesError: { _ in rejected }) {
+            var failure: String?
+            // Every failure is explained here in the review: a window alert would wait behind this sheet, and after a
+            // write was sent its "try again" advice would be wrong.
+            let ran = await store.run(isPay ? "Process order" : "Cancel order", handlesError: { error in
+                failure = friendlyAPIMessage(error)
+                return true
+            }) {
                 let preview = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
                 let latest = mergeOrderDraftEnvelope(responseObject(preview))
+                // Only this order may be paid or cancelled (as Pay Several Drafts checks).
+                guard orderBelongs(latest, to: orderID) else { throw StudioError(orderReviewDifferentOrderMessage) }
                 latestOrder = latest
                 outcome = orderConfirmRecheck(method: method, shown: shown, latest: latest)
                 if let abort = orderConfirmRecheckAbortError(outcome) { throw abort }
@@ -2024,12 +2066,16 @@ struct OrderActionConfirmSheet: View {
                 attemptedWrite = true
                 writeAttempted = true
                 capturedRefundOnly = successRefundOnly
+                // Quit asks first until this write has its answer (SlantStudioApp.swift).
+                let write = SlantWritesInFlight.shared.begin(isPay ? .payment : .cancellation)
+                defer { SlantWritesInFlight.shared.end(write) }
                 let mutateResponse: APIResponse
                 do {
                     mutateResponse = try await store.client.request(method, path: "/orders/\(encodedSegment(orderID))")
                 } catch {
                     if orderMutationErrorProvesNoEffect(error) {
-                        // Slant refused it, so nothing is pending: lift the lock and return to the review.
+                        // Slant refused it (or it was never sent), so nothing is pending: lift the lock and return to
+                        // the review.
                         store.clearOutcomeUnknown(orderID: orderID)
                         attemptedWrite = false
                         writeAttempted = false
@@ -2039,16 +2085,26 @@ struct OrderActionConfirmSheet: View {
                     throw error
                 }
                 mutateOrder = mergeOrderDraftEnvelope(responseObject(mutateResponse))
-                do {
-                    let refreshed = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
-                    completedOrder = mergeOrderDraftEnvelope(responseObject(refreshed))
-                } catch {
-                    completedOrder = mutateOrder
+                var refreshedOrder: [String: Any]?
+                if let refreshed = try? await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))") {
+                    refreshedOrder = mergeOrderDraftEnvelope(responseObject(refreshed))
                 }
-                // A 2xx to a pay whose order still shows DRAFT, or no readable status, isn't a confirmed charge: the lock
-                // stays until a reload shows the outcome (as Pay Several Drafts does).
-                if isPay, batchPayAcceptedOutcomeStaysLocked(completedOrder ?? mutateOrder) {
-                    payAcceptedUnconfirmed = true
+                // Only an order that is this one counts: the refresh, else the reply.
+                completedOrder = orderPayAcceptedOrder(replied: mutateOrder, refreshed: refreshedOrder, orderID: orderID)
+                if isPay {
+                    // A 2xx to a pay whose order still shows DRAFT, or no readable status, isn't a confirmed charge:
+                    // the lock stays until a reload shows the outcome (as Pay Several Drafts does). Any other status
+                    // is past DRAFT, a definite outcome, so the lock lifts, but only a placed one is reported as placed.
+                    let result = batchPayOutcomeAfterSuccess(completedOrder)
+                    payOutcome = result
+                    if batchPayAcceptedOutcomeStaysLocked(completedOrder) {
+                        payAcceptedUnconfirmed = true
+                    } else {
+                        didWrite = true
+                        store.clearOutcomeUnknown(orderID: orderID)
+                    }
+                    // Activity records "Completed" only for a placed order.
+                    if result != .placed { throw StudioError(orderPayActivityDetail(result)) }
                 } else {
                     didWrite = true
                     store.clearOutcomeUnknown(orderID: orderID)
@@ -2059,15 +2115,22 @@ struct OrderActionConfirmSheet: View {
             if !ran { awaitingBusy = true; return }
             if let latest = latestOrder { fresh = latest; loadState = .loaded }
             if didWrite {
-                let best = completedOrder ?? mutateOrder ?? latestOrder ?? shown
+                let best = completedOrder ?? latestOrder ?? shown
                 fresh = best
                 loadState = .loaded
                 writeSucceeded = true
-                successMessage = isPay ? "Order placed." : (capturedRefundOnly ? "Refund requested." : "Cancellation requested.")
-                actionMessage = nil
+                if isPay, let payOutcome, payOutcome != .placed {
+                    // Accepted, but not placed: say why, and offer no next draft.
+                    payNotPlaced = true
+                    successMessage = nil
+                    actionMessage = orderPayAcceptedMessage(payOutcome)
+                } else {
+                    successMessage = isPay ? "Order placed." : (capturedRefundOnly ? "Refund requested." : "Cancellation requested.")
+                    actionMessage = nil
+                }
                 onCompleted(orderID, best)
             } else if payAcceptedUnconfirmed {
-                if let shownOrder = completedOrder ?? mutateOrder { fresh = shownOrder; loadState = .loaded }
+                if let shownOrder = completedOrder { fresh = shownOrder; loadState = .loaded }
                 actionMessage = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Reload the order before doing anything else."
             } else if attemptedWrite {
                 actionMessage = orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
@@ -2077,7 +2140,7 @@ struct OrderActionConfirmSheet: View {
                 switch outcome {
                 case .priceChanged: actionMessage = "The price changed. Review the new total."
                 case .statusBlocked(let reason): actionMessage = reason
-                case .proceed: break
+                case .proceed: actionMessage = failure
                 }
             }
         }
@@ -2115,15 +2178,57 @@ func orderConfirmRefusalMessage(isPay: Bool, error: Error) -> String {
     return detail.isEmpty ? lead + " Review the order before trying again." : detail
 }
 /// The composer's note after Create Draft failed: for a definite refusal (400/422) Slant's own words, otherwise the
-/// usual message. An unknown outcome is also explained by the unconfirmed-draft notice.
+/// usual message. When the outcome is unknown (a timeout, transport error, 5xx, 408/409 or a reply without an order
+/// number) the draft may exist, so the note says so and never suggests trying again; the unconfirmed-draft notice and
+/// Look for Draft on Slant are the way forward.
 func orderComposerCreateFailureMessage(_ error: Error) -> String {
     if case .http(let status, let body, _, _)? = error as? APIError, status == 400 || status == 422,
        let message = shortAPIMessage(from: body)?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
         let sentence = message.last.map { ".!?".contains($0) } == true ? message : message + "."
         return "Slant didn’t create the draft. Slant said: “" + sentence + "”"
     }
+    if !orderMutationErrorProvesNoEffect(error) {
+        return "\(orderCreateUnknownReason(error)), so this draft may have been created. Use the notice in this form "
+            + "to look for it, or check your drafts (\(draftCreateCheckDraftsPath)), before creating it again."
+    }
     let detail = friendlyAPIMessage(error).trimmingCharacters(in: .whitespacesAndNewlines)
     return detail.isEmpty ? "The draft wasn’t created." : detail
+}
+/// Why a draft create's outcome is unknown, as the start of a sentence.
+func orderCreateUnknownReason(_ error: Error) -> String {
+    if case .http(let status, _, _, _)? = error as? APIError { return "Slant replied with an error (HTTP \(status))" }
+    if let urlError = error as? URLError, urlError.code == .timedOut { return "Slant didn’t reply in time" }
+    if error is URLError || error is CancellationError { return "The connection to Slant was interrupted" }
+    return "Slant’s reply didn’t confirm the draft"
+}
+/// The single review and the Workbench refuse to act on a reply for another order.
+let orderReviewDifferentOrderMessage = "Slant returned a different order. Reload Orders and review this order again."
+/// Activity's detail for a 2xx Pay that didn't place the order (never "Completed"): counts and statuses only.
+func orderPayActivityDetail(_ outcome: BatchPayOutcome) -> String {
+    switch outcome {
+    case .placed: return "Completed"
+    case .notPlaced(let reason): return "Accepted, but not placed. " + reason
+    case .unrecognised(let status): return "Accepted; Slant now shows the status \(status), which Studio doesn’t recognise"
+    case .unclear: return "Accepted, but Slant’s reply didn’t show the order’s status, so it may still be charged"
+    case .changed, .refused, .unknown, .notSent: return "Not confirmed"
+    }
+}
+/// The pay review's warning when this draft's marketplace order (`batchPayMarketplaceKey`) already has a placed order
+/// among the loaded orders, or another loaded draft is for it. Advisory only: it never changes whether Pay is enabled
+/// or which button is the default. Nil when the draft has no marketplace reference or nothing matches.
+func orderReviewMarketplaceDuplicateNotice(_ order: [String: Any], orderID: String, loaded: [Record]) -> String? {
+    guard let key = batchPayMarketplaceKey(order), let line = orderMarketplaceReferenceLine(order) else { return nil }
+    let others = loaded.filter { record in
+        !record.id.isEmpty && record.id != orderID && !orderBelongs(orderObject(record.values), to: orderID)
+    }
+    if batchPayPlacedMarketplaceKeys(others).contains(key) {
+        return "\(line) already has a placed order, so this draft may be a duplicate."
+    }
+    let otherDraft = others.contains { record in
+        let other = orderObject(record.values)
+        return batchPayIsDraft(other) && batchPayMarketplaceKey(other) == key
+    }
+    return otherDraft ? "Another loaded draft is also for \(line). Check this isn’t a duplicate." : nil
 }
 /// True for a Cancel press (or Escape) that follows a popover closing so closely that it is the same keystroke.
 func composerCancelFollowsPopoverClose(closedAt: Date?, now: Date) -> Bool {

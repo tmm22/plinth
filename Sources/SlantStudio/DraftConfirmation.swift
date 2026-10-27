@@ -50,6 +50,41 @@ func orderDraftMarker(_ order: [String: Any]) -> String? {
     return trimmed.isEmpty ? nil : trimmed
 }
 
+/// The created order's number from a 2xx `POST /orders` reply: its `publicId`, else its `id` (text, or a number).
+/// A reply naming only a `name` doesn't confirm a draft, although `Record.id` would fall back to it.
+func orderCreatedID(_ order: [String: Any]) -> String? {
+    for key in ["publicId", "id"] {
+        if let text = order[key] as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        } else if let number = order[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            return number.stringValue
+        }
+    }
+    return nil
+}
+
+/// The API Workbench's `POST /orders` body with a fresh marker added the way the composer adds it, and the marker to
+/// remember for Look for Draft on Slant. The body is unchanged (and the marker nil) when it isn't an object, when its
+/// `metadata` is something other than an object, or when the metadata has no room or already uses the key.
+func workbenchDraftBodyAddingMarker(_ body: Any?, marker: String) -> (body: Any?, marker: String?) {
+    guard var object = body as? [String: Any] else { return (body, nil) }
+    let existing = object["metadata"]
+    if let existing, !(existing is NSNull), !(existing is [String: Any]) { return (body, nil) }
+    let marked = orderMetadataAddingDraftMarker(existing as? [String: Any] ?? [:], marker: marker)
+    guard marked[studioDraftMarkerKey] != nil else { return (body, nil) }
+    object["metadata"] = marked
+    return (object, orderDraftMarkerSent(object, generated: marker))
+}
+
+/// The recipient's name in a draft body (`customer.details.address.name`), for the unconfirmed-draft notice; "" when
+/// there is none. Memory only, like the rest of that notice.
+func orderDraftBodyRecipient(_ body: Any?) -> String {
+    let customer = (body as? [String: Any])?["customer"] as? [String: Any]
+    let address = (customer?["details"] as? [String: Any])?["address"] as? [String: Any]
+    return ((address?["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 /// Marker → the first order carrying it, among `records`, for the markers being looked for.
 func ordersCarryingDraftMarkers(_ records: [Record], markers: Set<String>) -> [String: Record] {
     let wanted = Set(markers.map { $0.lowercased() })

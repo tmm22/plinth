@@ -1088,10 +1088,13 @@ func orderImportDraftsFilter() -> OrderFilter {
     return filter
 }
 
-/// A 2xx reply is a created draft only when it names the order; otherwise the outcome is unknown.
+/// A 2xx reply is a created draft only when it names the order by `publicId` or `id` (`orderCreatedID`; a name alone
+/// isn't an order number); otherwise the outcome is unknown.
 func orderImportOutcome(response object: [String: Any]) -> OrderImportOutcome {
-    let id = Record(values: mergeOrderDraftEnvelope(object)).id.trimmingCharacters(in: .whitespacesAndNewlines)
-    return id.isEmpty ? .unknown("Slant didn’t return an order number. \(orderImportUnknownAdvice)") : .created(orderID: id)
+    guard let id = orderCreatedID(mergeOrderDraftEnvelope(object)) else {
+        return .unknown("Slant didn’t return an order number. \(orderImportUnknownAdvice)")
+    }
+    return .created(orderID: id)
 }
 
 /// Refused only when the error proves Slant didn't act (`orderMutationErrorProvesNoEffect`); timeouts, transport
@@ -1252,7 +1255,12 @@ enum OrderImportRowState: Equatable {
         // The batch holds the app-wide busy flag so no other Slant task interleaves with it.
         store.busy = true
         store.progress = "Importing orders"
-        Task { await self.execute(jobs, store: store) }
+        // Quit asks first while the batch runs (SlantStudioApp.swift).
+        let write = SlantWritesInFlight.shared.begin(.importOrders)
+        Task {
+            await self.execute(jobs, store: store)
+            SlantWritesInFlight.shared.end(write)
+        }
     }
 
     func requestStop() {

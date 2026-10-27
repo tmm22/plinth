@@ -256,3 +256,59 @@ struct StudioHelpView: View {
         window.makeKeyAndOrderFront(nil)
     }
 }
+
+// MARK: - Quitting while a Slant write is in flight
+
+/// What kind of Slant write is waiting for its reply; named in the quit question.
+enum SlantWriteKind: String, CaseIterable {
+    case payment = "a payment"
+    case cancellation = "a cancellation"
+    case draft = "a new draft"
+    case importOrders = "Import Orders"
+    case payDrafts = "Pay Several Drafts"
+}
+
+/// Slant writes still waiting for a reply: a pay or cancel (Orders or the API Workbench), a draft create (the composer
+/// or the Workbench), or an Import Orders or Pay Several Drafts batch from start to finish. The unknown-outcome lock
+/// and the unconfirmed-draft guard last only for the session, so quitting mid-request would lose the record of a write
+/// that may have reached Slant: Quit asks first (`slantWritesQuitQuestion`). Memory only; nothing else reads it.
+@MainActor final class SlantWritesInFlight {
+    static let shared = SlantWritesInFlight()
+    private var active: [UUID: SlantWriteKind] = [:]
+
+    func begin(_ kind: SlantWriteKind) -> UUID {
+        let token = UUID()
+        active[token] = kind
+        return token
+    }
+
+    func end(_ token: UUID) { active[token] = nil }
+
+    var kinds: [SlantWriteKind] { Array(active.values) }
+}
+
+/// The quit question's title and message while writes are in flight, or nil (quit at once) when none are.
+func slantWritesQuitQuestion(_ kinds: [SlantWriteKind]) -> (title: String, message: String)? {
+    let named = SlantWriteKind.allCases.filter { kinds.contains($0) }.map(\.rawValue)
+    guard let last = named.last else { return nil }
+    let list = named.count == 1 ? last : named.dropLast().joined(separator: ", ") + " and " + last
+    return ("Quit while Slant is still answering?",
+            "Slant Studio is waiting for Slant’s reply to \(list). If you quit now, Studio can’t record whether it went "
+            + "through, so it can’t warn you before you pay for or create that order again. Wait for it to finish, then quit.")
+}
+
+extension SlantStudioAppDelegate {
+    /// Asks before quitting while a Slant write is in flight, with Don't Quit as the default; quits at once otherwise.
+    @objc func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let question = slantWritesQuitQuestion(SlantWritesInFlight.shared.kinds) else { return .terminateNow }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = question.title
+            alert.informativeText = question.message
+            alert.addButton(withTitle: "Don’t Quit")
+            alert.addButton(withTitle: "Quit Anyway")
+            return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+        }
+    }
+}
