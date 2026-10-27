@@ -5,12 +5,13 @@ import simd
 // Mac; nothing is uploaded. Edits are STL-only and saved as separate library copies.
 
 enum MeshFitTool: String, Sendable {
-    case scale, flatBase, plinth
+    case scale, flatBase, plinth, fitCoupon
     var title: String {
         switch self {
         case .scale: return "Scale to Size"
         case .flatBase: return "Add Flat Base"
         case .plinth: return "Add Plinth"
+        case .fitCoupon: return "Make Fit Coupon"
         }
     }
 }
@@ -44,6 +45,9 @@ func meshFitEditBlockedReason(_ model: LocalModel, tool: MeshFitTool) -> String?
         return model.requiresZUp
             ? "This copy has features that depend on its print layers. Add the base to the original, then reinforce that copy."
             : nil
+    case .fitCoupon:
+        // The coupon keeps the bed face and the way up, so copies locked Z up (print-ready ones included) can have one.
+        return nil
     }
 }
 
@@ -119,13 +123,15 @@ struct MeshFitCard: View {
                 VStack(alignment: .leading, spacing: 14) {
                     editTools
                     Divider()
+                    couponSection
+                    Divider()
                     thicknessSection
                 }
                 .padding(.top, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             } label: {
                 SectionHeading(title: "Size and base",
-                               caption: "Scale to a real size, flatten the bottom, add a plinth or check wall thickness")
+                               caption: "Scale to a real size, flatten the bottom, add a plinth, cut a fit coupon or check wall thickness")
             }
             .studioDisclosureStyle()
         }
@@ -153,6 +159,18 @@ struct MeshFitCard: View {
                 Text("Each saves a separate copy; this model is kept as it is.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var couponSection: some View {
+        HStack(spacing: 12) {
+            Button("\(MeshFitTool.fitCoupon.title)…") { store.beginMeshFit(.fitCoupon, model: model, loaded: loaded) }
+                .disabled(store.busy || meshFitEditBlockedReason(model, tool: .fitCoupon) != nil)
+                .help(meshFitEditBlockedReason(model, tool: .fitCoupon)
+                      ?? "Saves a small test piece cut round a hole or pin, or a slice of the base, as a separate copy")
+            Text("A small test piece, to check a fit before ordering the full part")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -228,6 +246,17 @@ struct MeshFitCard: View {
 
 // MARK: - Sheet
 
+/// What a shown fit coupon was made for.
+struct FitCouponKey: Hashable, Sendable {
+    let choice: FitCouponChoice
+    let sliceHeightMM: Double?
+}
+
+struct FitCouponOutcome: Sendable {
+    let key: FitCouponKey
+    let result: Result<FitCouponResult, FitCouponError>
+}
+
 struct MeshFitSheet: View {
     @EnvironmentObject var store: StudioStore
     @Environment(\.dismiss) private var dismiss
@@ -245,6 +274,12 @@ struct MeshFitSheet: View {
     @State private var marginText = "3"
     @State private var thicknessText = "3"
     @State private var joinText = "0.5"
+    // Make Fit Coupon
+    @State private var couponFeatures: [FitCouponFeature]?
+    @State private var couponChoice = FitCouponChoice.bottomSlice
+    @State private var sliceText = meshFitHeightText(Float(fitCouponBottomSliceDefaultMM))
+    /// The piece made for the current choice, so Save writes exactly what was shown.
+    @State private var coupon: FitCouponOutcome?
 
     @State private var saving = false
     @State private var failure: String?
@@ -267,6 +302,7 @@ struct MeshFitSheet: View {
                 case .scale: scaleForm
                 case .flatBase: flatBaseForm
                 case .plinth: plinthForm
+                case .fitCoupon: couponForm
                 }
                 if let failure {
                     Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -284,15 +320,48 @@ struct MeshFitSheet: View {
                 .keyboardShortcut(.cancelAction)
                 Spacer()
                 if saving { ProgressView().controlSize(.small) }
-                Button(saveTitle, action: save)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSave || saving || model == nil)
+                if request.tool == .fitCoupon {
+                    // Not the default button and no shortcut: the seller presses it after reading the piece's size.
+                    Button(saveTitle, action: save)
+                        .disabled(!canSave || saving || model == nil)
+                } else {
+                    Button(saveTitle, action: save)
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canSave || saving || model == nil)
+                }
             }
             .padding(20)
         }
         .frame(minWidth: 480, idealWidth: 520, minHeight: 420)
         .onDisappear { worker?.cancel() }
+        .task {
+            guard request.tool == .fitCoupon else { return }
+            let mesh = request.mesh
+            let job = Task.detached(priority: .userInitiated) { fitCouponFeatures(in: mesh, isCancelled: { Task.isCancelled }) }
+            // Closing the sheet stops the search.
+            let found = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            guard !Task.isCancelled, let found else { return }
+            couponFeatures = found
+            if !found.isEmpty, couponChoice == .bottomSlice { couponChoice = .feature(0) }
+        }
+        .task(id: couponKey) {
+            guard request.tool == .fitCoupon, let key = couponKey, let region = couponRegion else { return }
+            if coupon?.key == key { return }
+            coupon = nil
+            let mesh = request.mesh
+            // Debounced so typing a height doesn't queue a cut per keystroke.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let job = Task.detached(priority: .userInitiated) { () -> Result<FitCouponResult, FitCouponError> in
+                do { return .success(try fitCouponCopy(of: mesh, region: region, isCancelled: { Task.isCancelled })) }
+                catch let error as FitCouponError { return .failure(error) }
+                catch { return .failure(.cutFailed(error.localizedDescription)) }
+            }
+            let result = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            guard !Task.isCancelled else { return }
+            coupon = FitCouponOutcome(key: key, result: result)
+        }
         .task {
             guard request.tool == .flatBase else { return }
             let mesh = request.mesh
@@ -320,7 +389,27 @@ struct MeshFitSheet: View {
         case .scale: return "Save Scaled Copy"
         case .flatBase: return "Save Copy with Flat Base"
         case .plinth: return "Save Copy with Plinth"
+        case .fitCoupon: return "Save Fit Coupon"
         }
+    }
+
+    private var couponSliceHeight: Double? { meshFitMillimetres(sliceText) }
+
+    private var couponRegion: FitCouponRegion? {
+        guard let features = couponFeatures else { return nil }
+        return fitCouponRegion(for: couponChoice, features: features, sliceHeightMM: couponSliceHeight,
+                               meshMinimum: request.mesh.minimum, meshMaximum: request.mesh.maximum)
+    }
+
+    private var couponKey: FitCouponKey? {
+        guard request.tool == .fitCoupon, couponFeatures != nil, couponRegion != nil else { return nil }
+        return FitCouponKey(choice: couponChoice, sliceHeightMM: couponChoice == .bottomSlice ? couponSliceHeight : nil)
+    }
+
+    /// The piece made for the current choice, when it passed every check.
+    private var couponReady: FitCouponResult? {
+        guard let coupon, coupon.key == couponKey, case .success(let result) = coupon.result else { return nil }
+        return result
     }
 
     private var scalePlan: ScaleToSizePlan? {
@@ -342,6 +431,7 @@ struct MeshFitSheet: View {
             guard let height = meshFitMillimetres(heightText) else { return false }
             return height < Double(extent.z)
         case .plinth: return plinthSettings.map { plinthSettingsProblem($0) == nil } ?? false
+        case .fitCoupon: return couponReady != nil
         }
     }
 
@@ -430,6 +520,68 @@ struct MeshFitSheet: View {
         }
     }
 
+    @ViewBuilder
+    private var couponForm: some View {
+        Section {
+            if let features = couponFeatures {
+                Picker("Cut round", selection: $couponChoice) {
+                    ForEach(features.indices, id: \.self) { Text(features[$0].label).tag(FitCouponChoice.feature($0)) }
+                    Text("Bottom slice").tag(FitCouponChoice.bottomSlice)
+                }
+                if couponChoice == .bottomSlice {
+                    TextField("Slice height (mm)", text: $sliceText)
+                }
+                LabeledContent("Piece") {
+                    Text(couponSizeText).monospacedDigit()
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Finding holes and pins…").foregroundStyle(.secondary)
+                }
+            }
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let problem = couponProblem {
+                    Text(problem).foregroundStyle(.orange)
+                }
+                if couponFeatures?.isEmpty == true {
+                    Text("No round holes through the base or pins standing on the part were found, so only the Bottom slice is offered.")
+                }
+                if let note = couponChoiceNote { Text(note) }
+                Text(fitCouponCaption)
+                if model?.derivesFromPrintReadyCopy == false { Text(fitCouponPrintReadyHint) }
+            }
+            .settingsFooterLayout()
+        }
+    }
+
+    private var couponSizeText: String {
+        if let ready = couponReady {
+            return "\(meshFitSizeLabel(ready.sizeMM)) · \(Int(ready.volumeMM3.rounded()).formatted()) mm³"
+        }
+        if couponKey != nil, coupon?.key != couponKey { return "…" }
+        return "—"
+    }
+
+    private var couponProblem: String? {
+        if couponFeatures != nil, couponChoice == .bottomSlice, couponRegion == nil {
+            return fitCouponSliceHeightProblem(modelHeightMM: Double(extent.z))
+        }
+        guard let coupon, coupon.key == couponKey, case .failure(let error) = coupon.result else { return nil }
+        return error.localizedDescription
+    }
+
+    private var couponChoiceNote: String? {
+        switch couponChoice {
+        case .feature(let index):
+            guard let features = couponFeatures, features.indices.contains(index) else { return nil }
+            return fitCouponFeatureNote(features[index])
+        case .bottomSlice:
+            return "The whole footprint, from the bed up to the slice height, to check how the base and its holes fit a mating part."
+        }
+    }
+
     // MARK: Save
 
     private func save() {
@@ -455,6 +607,13 @@ struct MeshFitSheet: View {
             name = plinthCopyName(model.name)
             title = "Add plinth"
             job = { try mesh.plinthCopy(settings, isCancelled: { Task.isCancelled }).data }
+        case .fitCoupon:
+            // Saves exactly the piece shown, already checked.
+            guard let ready = couponReady else { saving = false; return }
+            let data = ready.data
+            name = fitCouponCopyName(model.name)
+            title = "Make fit coupon"
+            job = { data }
         }
         let details = request.fileDetails
         worker = Task {
