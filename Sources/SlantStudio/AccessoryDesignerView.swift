@@ -172,7 +172,8 @@ struct AccessoryDesignerSheet: View {
     @State private var consentRequest: ImageSharingConsentRequest?
     @State private var run: AccessoryDesignRun?
     @State private var confirmClose = false
-    /// The Claude key stays locked while this sheet is open (`AnthropicConnection.beginSession`); balanced exactly once.
+    /// The Claude key stays locked while this sheet is open with a key set up (`AnthropicConnection.beginSession`);
+    /// balanced exactly once.
     @State private var claudeSessionOpen = false
     /// The seller's "What is it?" for Suggest Accessories. Memory only.
     @State private var objectHint = ""
@@ -214,11 +215,10 @@ struct AccessoryDesignerSheet: View {
             }
         }
         .frame(minWidth: 820, idealWidth: 960, minHeight: 620, idealHeight: 760)
+        // The key is held only once one is set up, so Open Settings can add a missing key while this sheet is open.
+        .onChange(of: anthropic.isConfigured) { _, _ in holdClaudeSessionIfConfigured() }
         .onAppear {
-            if !claudeSessionOpen {
-                claudeSessionOpen = true
-                AnthropicConnection.shared.beginSession()
-            }
+            holdClaudeSessionIfConfigured()
             if !lookedForOpenSCAD { lookForOpenSCAD() }
         }
         .onDisappear {
@@ -237,6 +237,12 @@ struct AccessoryDesignerSheet: View {
         } message: {
             Text(closeConfirmation?.message ?? "Studio doesn’t keep the photos or anything you haven’t saved.")
         }
+    }
+
+    private func holdClaudeSessionIfConfigured() {
+        guard claudeSheetShouldBeginKeySession(configured: anthropic.isConfigured, holding: claudeSessionOpen) else { return }
+        claudeSessionOpen = true
+        AnthropicConnection.shared.beginSession()
     }
 
     private func lookForOpenSCAD() {
@@ -306,6 +312,18 @@ struct AccessoryDesignerSheet: View {
 
     private var briefFormContent: some View {
         Form {
+            if !anthropic.isConfigured {
+                // Said once, here at the top; Suggest Accessories and Start Design stay disabled without repeating it.
+                Section {
+                    HStack {
+                        Label(accessoryMissingClaudeKeyText, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button("Open Settings") { store.requestSettings(.designTools) }
+                    }
+                }
+            }
             Section {
                 photoStrip
                 HStack {
@@ -480,7 +498,8 @@ struct AccessoryDesignerSheet: View {
                             .disabled(separateSuggestAgainBlockedReason != nil)
                             .help("Replaces these ideas with a new set. One request, billed again; Studio asks first.")
                     }
-                    if let reason = suggestBlockedReason {
+                    // A missing key is explained once, at the top of the form.
+                    if let reason = suggestBlockedReason, anthropic.isConfigured {
                         Text(reason).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
@@ -692,15 +711,9 @@ struct AccessoryDesignerSheet: View {
 
     private var prerequisitesSection: some View {
         Section {
+            // A missing key is shown once, at the top of the form.
             if anthropic.isConfigured {
                 Label("Claude (Anthropic) is set up.", systemImage: "checkmark.circle").foregroundStyle(.secondary)
-            } else {
-                HStack {
-                    Label("Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic).", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                    Spacer()
-                    Button("Open Settings") { store.requestSettings(.designTools) }
-                }
             }
             if openSCAD != nil {
                 Label("OpenSCAD is installed; Studio renders each design with it on this Mac.", systemImage: "checkmark.circle")
@@ -731,7 +744,13 @@ struct AccessoryDesignerSheet: View {
     }
 
     private var blockedReason: String? {
-        if !anthropic.isConfigured { return "Add your Anthropic API key in Settings first." }
+        if !anthropic.isConfigured { return accessoryMissingClaudeKeyText }
+        return blockedReasonOtherThanKey
+    }
+
+    /// What else stops Start Design. The footer shows this instead of repeating the missing key, which the top of the
+    /// form already explains.
+    private var blockedReasonOtherThanKey: String? {
         if openSCAD == nil { return "Install OpenSCAD first." }
         if preparingPhotos > 0 { return "Preparing photos…" }
         if suggestions.isWorking { return "Wait for Claude’s ideas, or stop them." }
@@ -740,7 +759,7 @@ struct AccessoryDesignerSheet: View {
 
     private var briefFooter: some View {
         HStack(spacing: 12) {
-            if let problem = startProblem ?? blockedReason {
+            if let problem = startProblem ?? blockedReasonOtherThanKey {
                 Text(problem).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -926,8 +945,10 @@ private struct AccessoryDesignRunView: View {
                     .lineLimit(1...4)
                     .labelsHidden()
                     .accessibilityLabel("Answer to Claude’s question")
+                nextSendEstimate(newRound: false)
                 HStack {
                     Spacer()
+                    // Both carry on with Claude, so both are billed; neither is the default or has a shortcut.
                     Button("Skip") { send(answer: nil) }
                     Button("Send Answer") { send(answer: answer) }
                         .disabled(answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -942,6 +963,9 @@ private struct AccessoryDesignRunView: View {
                         .labelsHidden()
                         .accessibilityLabel("Note to Claude")
                 }
+                if run.canTryAgain || run.canSendNote {
+                    nextSendEstimate(newRound: true)
+                }
                 HStack {
                     if case .stopped = run.phase {
                         Button("Start Over") { startOver() }
@@ -949,7 +973,9 @@ private struct AccessoryDesignRunView: View {
                     }
                     Spacer()
                     if run.canTryAgain {
-                        Button("Try Again") { run.tryAgain() }
+                        // "Send Again", not "Try Again": unlike the free retry in Studio's alerts, this is billed.
+                        // Never the default and no shortcut.
+                        Button("Send Again") { run.tryAgain() }
                             .help("Sends the same request again. It is billed again.")
                     }
                     if run.canSendNote {
@@ -972,6 +998,17 @@ private struct AccessoryDesignRunView: View {
                 Button("Close") { close() }
                     .keyboardShortcut(.cancelAction)
             }
+        }
+    }
+
+    /// The estimated cost of the next billed send, beside the buttons that make it (the running total is below).
+    @ViewBuilder
+    private func nextSendEstimate(newRound: Bool) -> some View {
+        let repliesLeft = newRound ? run.limits.maxReplies : run.limits.maxReplies - run.repliesThisRound
+        if let forecast = accessoryNextSendForecast(messages: run.messages, repliesLeft: repliesLeft) {
+            Text(accessoryNextSendForecastText(forecast, newRound: newRound))
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

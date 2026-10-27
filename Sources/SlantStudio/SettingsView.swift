@@ -298,7 +298,7 @@ struct AdvancedSettingsTab: View {
                 }
                 TextField("Owner ID", text: $store.ownerID, prompt: Text("Optional"))
             } header: {
-                Text("Advanced identifiers")
+                Text("Identifiers")
             } footer: {
                 Text("Choose the default platform in Account. Owner ID is optional and is sent with uploads and order drafts.")
                     .settingsFooterLayout()

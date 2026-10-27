@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - One-time consent to send photos to a service
 //
-// Before the first photo goes to Anthropic, Meshy or Tripo3D, Studio says what will be sent and asks once per
+// Before the first photo goes to Anthropic, Meshy or Tripo, Studio says what will be sent and asks once per
 // service. Only a yes/no and the date it was given are kept, in preferences; never the image, the details typed or
 // anything about a customer. Settings › Design Tools › Photo sharing shows each answer and can reset it.
 
@@ -13,9 +13,9 @@ enum ImageSharingService: String, CaseIterable, Identifiable, Sendable {
 
     var displayName: String {
         switch self {
-        case .anthropic: return "Anthropic (Claude)"
+        case .anthropic: return "Claude (Anthropic)"
         case .meshy: return "Meshy"
-        case .tripo: return "Tripo3D"
+        case .tripo: return "Tripo"
         }
     }
 

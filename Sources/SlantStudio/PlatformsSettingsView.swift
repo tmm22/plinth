@@ -210,10 +210,10 @@ struct PlatformsSettingsSheets: ViewModifier {
                 Text(candidate.id).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
             }
             HStack {
+                Spacer()
                 Button("Cancel") { state.confirmEnable = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
-                Spacer()
                 Button("Enable") {
                     Task {
                         state.error = nil
@@ -274,51 +274,61 @@ struct PlatformDetailSheet: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack {
-                    Text(displayName(for: livePlatform, fallback: "Untitled platform")).font(.title2.weight(.bold))
-                    if record.id == store.platformID {
-                        StudioBadge(text: "Default", tone: .accent)
-                    }
-                    Spacer()
-                    Button("Done") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .accessibilityLabel("Done")
-                }
-                platformReadableFields(livePlatform)
-                actionErrorLabel
-                platformManagement
-                DisclosureGroup("Technical details") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Button("Copy ID") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(record.id, forType: .string)
-                        }
-                        .accessibilityLabel("Copy ID")
-                        JSONView(text: prettyJSON(hidingSecrets(livePlatform.values))).frame(height: 220)
-                    }
-                }.studioDisclosureStyle()
-                // Already the default: the header's Default badge says so, and Done closes the sheet.
-                if platformDetailOffersUseAsDefault(platformID: record.id, defaultPlatformID: store.platformID) {
-                    HStack {
-                        Spacer()
-                        Button("Use as Default") {
-                            store.platformID = record.id
-                            dismiss()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(store.busy)
-                    }
-                }
-            }
-            .padding(28)
+        VStack(spacing: 0) {
+            ScrollView { details }
+            Divider()
+            footer
         }
         .frame(width: 600, height: 620)
         .sheet(isPresented: $confirmDisable) { disableConfirmSheet }
         .sheet(isPresented: $confirmResendAll) { resendAllConfirmSheet }
         .sheet(isPresented: $rotatePrompt) { rotateSecretSheet }
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Text(displayName(for: livePlatform, fallback: "Untitled platform")).font(.title2.weight(.bold))
+                if record.id == store.platformID {
+                    StudioBadge(text: "Default", tone: .accent)
+                }
+                Spacer()
+            }
+            platformReadableFields(livePlatform)
+            actionErrorLabel
+            platformManagement
+            DisclosureGroup("Technical details") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Button("Copy ID") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(record.id, forType: .string)
+                    }
+                    .accessibilityLabel("Copy ID")
+                    JSONView(text: prettyJSON(hidingSecrets(livePlatform.values))).frame(height: 220)
+                }
+            }.studioDisclosureStyle()
+        }
+        .padding(28)
+    }
+
+    /// The management actions act (after their own confirmations) as they are pressed, so closing abandons nothing.
+    private var footer: some View {
+        HStack {
+            Spacer()
+            Button("Close") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            // Already the default: the header's Default badge says so. A local preference; nothing is sent.
+            if platformDetailOffersUseAsDefault(platformID: record.id, defaultPlatformID: store.platformID) {
+                Button("Use as Default") {
+                    store.platformID = record.id
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(store.busy)
+            }
+        }
+        .padding(20)
     }
 
     @ViewBuilder
@@ -473,10 +483,10 @@ struct PlatformDetailSheet: View {
                 .foregroundStyle(.secondary)
             actionErrorLabel
             HStack {
+                Spacer()
                 Button("Cancel") { confirmDisable = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
-                Spacer()
                 Button("Disable Platform", role: .destructive) {
                     Task {
                         actionError = nil
@@ -500,10 +510,10 @@ struct PlatformDetailSheet: View {
             Text("Slant will attempt delivery for every failed webhook on this platform.")
                 .foregroundStyle(.secondary)
             HStack {
+                Spacer()
                 Button("Cancel") { confirmResendAll = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
-                Spacer()
                 Button("Resend All") {
                     Task {
                         if let result = await perform({ await store.resendDeadWebhooks(platformID: record.id) }) {
@@ -532,10 +542,10 @@ struct PlatformDetailSheet: View {
                 .disabled(store.busy)
             actionErrorLabel
             HStack {
+                Spacer()
                 Button("Cancel") { rotatePrompt = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
-                Spacer()
                 Button("Rotate Secret") {
                     Task {
                         if let secret = await perform({ await store.rotateWebhookSecret(platformID: record.id) }) {
@@ -559,9 +569,10 @@ func platformReadableFields(_ record: Record) -> some View {
     let description = record.string("description")
     if !description.isEmpty { Text(description).foregroundStyle(.secondary) }
     let url = record.string("url")
-    if !url.isEmpty { LabeledContent("URL", value: url) }
+    // The same names as the platform composer's fields (Slant's `url` is the application URL: where the seller sells).
+    if !url.isEmpty { LabeledContent("Shop address", value: url) }
     let webhook = record.string("webhookURL", "webhookUrl")
-    if !webhook.isEmpty { LabeledContent("Webhook", value: webhook) }
+    if !webhook.isEmpty { LabeledContent("Webhook URL", value: webhook) }
 }
 
 func webhookRotateTypedConfirmAllowed(_ typed: String) -> Bool {
@@ -595,7 +606,7 @@ struct PlatformComposerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(editing == nil ? "Create a platform" : "Edit platform").font(.title2.weight(.bold))
+                Text(editing == nil ? "Create platform" : "Edit platform").font(.title2.weight(.bold))
                 Text("A platform groups your uploads and orders.").foregroundStyle(.secondary)
             }.padding(24)
             Divider()
@@ -632,15 +643,17 @@ struct PlatformComposerView: View {
             }.formStyle(.grouped)
             Divider()
             HStack {
+                Spacer()
+                if store.busy { ProgressView().controlSize(.small) }
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
                     .help(store.busy ? "Working…" : "Cancel")
-                Spacer()
-                if store.busy { ProgressView().controlSize(.small) }
+                // Never the default button and no shortcut: both write to Slant's production API (POST or PATCH
+                // /platforms), and a platform can only be disabled afterwards, never deleted. Return in a field must
+                // not send it.
                 Button(editing == nil ? "Create Platform" : "Save Changes") { submit() }
                     .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
                     .disabled(store.busy || !store.hasKey)
             }.padding(20)
         }.frame(width: 560, height: 520)

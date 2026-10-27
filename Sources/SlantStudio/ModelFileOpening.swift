@@ -51,24 +51,71 @@ func queuedImportNote(count: Int) -> String? {
         scheduleDrain()
     }
 
-    /// Also used by order notification clicks (OrderWatch.swift).
-    func revealMainWindow() {
+    /// Also used by order notification clicks (OrderWatch.swift), the Dock icon, Window › Slant Studio and the menu
+    /// commands that act in the main window. Returns true when the window had been closed and a new one was asked for.
+    @discardableResult
+    func revealMainWindow() -> Bool {
         // A hidden app's windows report not visible, which would look like a closed window and open a second one.
         if NSApp.isHidden { NSApp.unhide(nil) }
-        // The Settings window can become main too, but files never import into it.
-        let mainWindows = NSApp.windows.filter {
-            $0.canBecomeMain && !($0 is NSPanel) && $0.identifier?.rawValue.localizedCaseInsensitiveContains("settings") != true
-        }
-        if let window = mainWindows.first(where: { $0.isVisible || $0.isMiniaturized }) {
+        if let window = existingMainWindow() {
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
-        } else {
-            openMainWindow?()
+            return false
+        }
+        // One main window only (the store is shared): a second request while the first window is still opening, such
+        // as a double click on the Dock icon, waits for it instead of opening another.
+        if let asked = mainWindowRequestedAt, Date().timeIntervalSince(asked) < 2 { return true }
+        mainWindowRequestedAt = Date()
+        openMainWindow?()
+        return true
+    }
+
+    /// The main window while it is open (shown or minimised), or nil once it has been closed.
+    func existingMainWindow() -> NSWindow? {
+        NSApp.windows.first { window in
+            isMainStudioWindowCandidate(identifier: window.identifier?.rawValue, isPanel: window is NSPanel,
+                                        canBecomeMain: window.canBecomeMain)
+                && (window.isVisible || window.isMiniaturized)
         }
     }
 
+    /// True while the main window is on screen and not minimised.
+    var mainWindowIsShown: Bool {
+        guard !NSApp.isHidden, let window = existingMainWindow() else { return false }
+        return window.isVisible && !window.isMiniaturized
+    }
+
+    /// Runs a menu command that acts in the main window, raising the window first. When the window had been closed,
+    /// the command waits for the new window's content, so a sheet it opens has a window to appear in. A command still
+    /// waiting after a few seconds is dropped rather than run later by surprise. Each command keeps its own checks.
+    func performInMainWindow(_ action: @escaping @MainActor () -> Void) {
+        if revealMainWindow() {
+            actionsAwaitingMainWindow.append((Date(), action))
+        } else {
+            action()
+        }
+    }
+
+    /// Called when the main window's content appears: runs the menu commands that were waiting for it.
+    private func mainWindowContentAppeared() {
+        mainWindowRequestedAt = nil
+        let fresh = actionsAwaitingMainWindow.filter { Date().timeIntervalSince($0.date) < 5 }.map(\.action)
+        actionsAwaitingMainWindow = []
+        guard !fresh.isEmpty else { return }
+        Task { @MainActor in
+            // Let the new window finish its first layout, so its sheets are attached before a command shows one.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            for action in fresh { action() }
+        }
+    }
+
+    private var mainWindowRequestedAt: Date?
+    private var actionsAwaitingMainWindow: [(date: Date, action: @MainActor () -> Void)] = []
+
+    /// Called when the main window's content appears (each time the window is opened).
     func attach(_ store: StudioStore) {
         self.store = store
+        mainWindowContentAppeared()
         scheduleDrain()
     }
 
@@ -87,6 +134,11 @@ func queuedImportNote(count: Int) -> String? {
     /// Opens the main window when files arrive after every window was closed. Set by the window's content.
     var openMainWindow: (() -> Void)?
 
+    /// The app-level open action from the menu commands, used only until a window's content has set its own.
+    func provideOpenMainWindowIfMissing(_ open: @escaping () -> Void) {
+        if openMainWindow == nil { openMainWindow = open }
+    }
+
     private func drainIfIdle() {
         guard let store, !pending.isEmpty else { return }
         guard externalOpenCanImport(storeSheetPresented: store.isPresentingSheet, appModalUIPresented: appIsPresentingModalUI(),
@@ -100,11 +152,19 @@ func queuedImportNote(count: Int) -> String? {
         pending = []
         if isWaiting { isWaiting = false }
         for url in urls { store.importModel(url, origin: .imported) }
-        if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { openMainWindow?() }
+        if existingMainWindow() == nil { revealMainWindow() }
     }
 }
 
 let mainWindowID = "main"
+
+/// Whether a window could be the main window: not a panel (open and save panels, the About panel), the Settings
+/// window or the Help window, which can all become main too.
+func isMainStudioWindowCandidate(identifier: String?, isPanel: Bool, canBecomeMain: Bool) -> Bool {
+    guard canBecomeMain, !isPanel else { return false }
+    guard let identifier else { return true }
+    return !identifier.localizedCaseInsensitiveContains("settings") && identifier != helpWindowIdentifier
+}
 
 /// Receives Open With, double-click and Dock-icon drops. Imports copy the file into the library, as the Import panel does.
 final class SlantStudioAppDelegate: NSObject, NSApplicationDelegate {
@@ -112,10 +172,24 @@ final class SlantStudioAppDelegate: NSObject, NSApplicationDelegate {
     /// the app is delivered (OrderWatch.swift holds it until the window and store exist).
     func applicationWillFinishLaunching(_ notification: Notification) {
         if orderWatchNotificationsAvailable() { UNUserNotificationCenter.current().delegate = OrderWatchNotificationDelegate.shared }
+        // One main window only (the store is shared): no window tabs, whose + button would open a second one. Set
+        // before the first window, so the tab menu items never appear.
+        NSWindow.allowsAutomaticWindowTabbing = false
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated { ExternalModelOpenQueue.shared.enqueue(urls) }
+    }
+
+    /// A click on the Dock icon (or `open` / an AppleScript reopen) brings the main window back after it was closed or
+    /// minimised, even while only Settings is showing. Raising it doesn't dismiss or act on anything presented in it.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MainActor.assumeIsolated {
+            let queue = ExternalModelOpenQueue.shared
+            if queue.mainWindowIsShown { return true }
+            queue.revealMainWindow()
+            return false
+        }
     }
 }
 

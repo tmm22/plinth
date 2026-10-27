@@ -33,16 +33,18 @@ struct SellerAddressSettingsSection: View {
 
     var body: some View {
         Section {
-            TextField("Name", text: $draft.name)
-            TextField("Email", text: $draft.email)
+            // Prompts make empty fields visible in the grouped form; the requirements match `sellerAddressSaveBlockedReason`.
+            TextField("Name", text: $draft.name, prompt: Text("Required"))
+            TextField("Email", text: $draft.email, prompt: Text("name@example.com"))
             // Country first: it decides whether State is required and how the postcode is checked.
             countryPicker
-            TextField("Street address", text: $draft.line1)
-            TextField("Apartment, suite, etc. (optional)", text: $draft.line2)
-            TextField("City", text: $draft.city)
-            TextField(orderStateIsRequired(draft.country) ? "State / province" : "State / province (optional)", text: $draft.state)
+            TextField("Street address", text: $draft.line1, prompt: Text("Required"))
+            TextField("Apartment, suite, etc.", text: $draft.line2, prompt: Text("Optional"))
+            TextField("City", text: $draft.city, prompt: Text("Required"))
+            TextField("State / province", text: $draft.state,
+                      prompt: Text(orderStateIsRequired(draft.country) ? "Required" : "Optional"))
             VStack(alignment: .leading, spacing: 4) {
-                TextField("Postal code", text: $draft.zip)
+                TextField("Postal code", text: $draft.zip, prompt: Text("Required"))
                     .focused($postcodeFocused)
                 if let warning = postcodeFormatWarning(draft.zip, country: draft.country, whileEditing: postcodeFocused) {
                     Text(warning).font(.caption).foregroundStyle(.orange)

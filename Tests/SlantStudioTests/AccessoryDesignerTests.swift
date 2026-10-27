@@ -642,7 +642,7 @@ final class AccessoryDesignerTests: XCTestCase {
             XCTAssertEqual(reason, accessorySetAsideText(stop))
         }
         XCTAssertTrue(accessorySetAsideText(.other("model_context_window_exceeded")).contains("Start Over"))
-        XCTAssertTrue(accessorySetAsideText(.maxTokens).contains("Try Again"))
+        XCTAssertTrue(accessorySetAsideText(.maxTokens).contains("Send Again"))
         XCTAssertTrue(accessorySetAsideText(.other("x")).contains("(x)"))
     }
 
