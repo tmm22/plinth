@@ -35,7 +35,7 @@ The app rejects fixes older than 60 seconds or with horizontal uncertainty over 
 
 ## Orders, fulfillment, cancel / refund
 
-- **Full status enum** (bundled schema): `DRAFT`, `PAID`, `QUEUED`, `PROCESSING`, `PRINTING`, `ITEMS_ON_SHELF`, `POST_PROCESSING`, `COMPLETED`, `IN_REVIEW`, `AWAITING_SHIPMENT`, `SHIPPED`, `DELIVERED`, `CANCELED`, `PAYMENT_ERROR`. Docs lifecycle highlight: DRAFT → QUEUED → PRINTING → AWAITING_SHIPMENT; **CANCELED** covers cancelled and refunded orders; fulfillment examples also show SHIPPED / DELIVERED.
+- **Full status enum** (bundled schema): `DRAFT`, `PAID`, `QUEUED`, `PROCESSING`, `PRINTING`, `ITEMS_ON_SHELF`, `POST_PROCESSING`, `COMPLETED`, `IN_REVIEW`, `AWAITING_SHIPMENT`, `SHIPPED`, `DELIVERED`, `CANCELED`, `PAYMENT_ERROR`. Docs lifecycle highlight: DRAFT → QUEUED → PRINTING → AWAITING_SHIPMENT; **CANCELED** covers cancelled and refunded orders; fulfillment examples also show SHIPPED / DELIVERED. **Live, not in the bundled schema:** `SUBMITTED`, returned for an order the owner had just paid (seen 26 Oct 2026; Slant charged it). Its place relative to `PAID` is unconfirmed. Studio treats it as placed (Spending Report, Needs attention, Pay Several Drafts, marketplace duplicates) and cancellable like `PAID`; order watch treats moves among Draft, Paid and Submitted as the seller placing the order. `GET /orders?status=SUBMITTED` is accepted (read-only, 28 Oct 2026: it returned that order).
 - `GET /orders` `limit` maximum **200** (docs; OpenAPI originally listed 100 — Studio resolves to 200 with `x-slant-studio-source: docs`).
 - Fulfillment object (docs): `status`, `provider`, `deliveryMethod`, `address`, `trackingNumbers[]`, `deliveryInstructions`, `providerStatus`.
 - `options.shippingProvider`: **SHIPPO** | **SHIPSTATION**.
@@ -112,7 +112,7 @@ Secret is the platform `webhookSecret` (trim before use; used exactly as submitt
 - `GET /orders/search` is answered like `GET /orders/{publicOrderId}` with the ID `search`: every query, even an exact order number, returns 400 “Order not found.” (seen 23 Oct 2026; `GET /orders/xyz` gives the same reply). `search` and `q` parameters on `GET /orders` are ignored. Studio therefore falls back to `GET /orders?publicId=` (upper-cased, `SLANT_` added to a bare number), which matches exact order numbers only, and the search hint promises only that.
 - `startDate` / `endDate`: ISO 8601. Docs describe endDate as returning orders **up to that point**; file filters phrase endDate as “created **before this date**” (exclusive upper bound). Studio’s guided Orders filter sends the day after the chosen “To” date so the selected day is included.
 - `sortOrder`: `ASC` | `DESC` (invalid sort/limit → 400 naming the parameter).
-- Status filter includes the full enum listed above; a test checks the guided filter offers exactly the bundled `GET /orders` `status` enum.
+- Status filter includes the full enum listed above plus `SUBMITTED` (after Paid); a test checks the guided filter offers the bundled `GET /orders` `status` enum plus `SUBMITTED`.
 
 ## Shopify (optional, seller's own store)
 

@@ -294,7 +294,11 @@ struct OrderComposerView: View {
         // An Escape that reaches the sheet some other way (no text field focused, as in a duplicate's address
         // summary) takes the same path as Cancel: the popover guard and the discard check.
         // Like Cancel, it does nothing while a request runs.
-        .onExitCommand { if !store.busy && !composerPopoverShown { requestClose(fromCancelButton: true) } }
+        .onExitCommand {
+            // An Escape that reaches the sheet while a popover is open closes only the popover.
+            if composerPopoverShown { showAddressPaste = false; showAddSavedProduct = false }
+            else if !store.busy { requestClose(fromCancelButton: true) }
+        }
         .confirmationDialog("Discard this order draft?", isPresented: $confirmDiscard) {
             Button("Discard Draft", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) {}
@@ -1861,13 +1865,15 @@ struct OrderActionConfirmSheet: View {
                 if isPay, let onReviewNext, let next = nextDraft?(orderID),
                    orderReviewOffersNextDraft(inRun: inReviewRun, writeSucceeded: writeSucceeded,
                                               writeAttempted: writeAttempted, writing: writing) {
-                    Button(writeSucceeded ? "Review Next Draft…" : "Skip to Next Draft…") { onReviewNext(next.id) }
-                        .disabled(store.busy || writing)
-                        .help(writeSucceeded
-                              ? "Close this and review the next draft in the list. Nothing is paid until you press Pay in that review."
-                              : "Leave this draft unpaid and review the next one in the list. Nothing is paid until you press Pay in that review.")
-                    Text(next.caption).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        .layoutPriority(-1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Button(writeSucceeded ? "Review Next Draft…" : "Skip to Next Draft…") { onReviewNext(next.id) }
+                            .disabled(store.busy || writing)
+                            .help(writeSucceeded
+                                  ? "Close this and review the next draft in the list. Nothing is paid until you press Pay in that review."
+                                  : "Leave this draft unpaid and review the next one in the list. Nothing is paid until you press Pay in that review.")
+                        Text(next.caption).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    }
+                    .layoutPriority(-1)
                 }
                 Spacer()
                 if writeSucceeded {
