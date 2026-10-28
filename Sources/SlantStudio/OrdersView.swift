@@ -986,7 +986,12 @@ struct OrderComposerView: View {
 struct OrderTableRow: Identifiable {
     let record: Record
     let recipient: String
+    /// The status shown (`orderDisplayStatusTitle`): the shipping record's word when Slant's order status lags it.
     let status: String
+    /// Sorting stays on Slant's own order status, as its Status filter does.
+    let statusSortKey: String
+    /// Why `status` differs from Slant's order status (`orderStatusLagNote`), for the cell's hover hint.
+    let statusNote: String?
     let created: String
     let total: String
     let number: String
@@ -1005,7 +1010,9 @@ struct OrderTableRow: Identifiable {
         self.record = record
         let order = orderObject(record.values)
         recipient = orderListTitle(order)
-        status = orderStatusTitle((order["status"] as? String) ?? "")
+        status = orderDisplayStatusTitle(order)
+        statusSortKey = orderStatusTitle((order["status"] as? String) ?? "")
+        statusNote = orderStatusLagNote(order)
         created = orderCreatedDisplay(order) ?? ""
         total = orderTotalMoney(order)
         number = orderNumber(order)
@@ -1122,9 +1129,10 @@ struct OrdersView: View {
                     // sideways only at the narrowest window; the recipient gets the most room, the order number
                     // (also in the detail) the least, and Created always fits a full "23 Oct 2026".
                     .width(min: 96, ideal: 160)
-                    TableColumn("Status", value: \.status) { (row: OrderTableRow) in
-                        // With the Needs Attention marker when the order is late or stuck (OrderFollowUp.swift).
-                        OrderStatusCell(status: row.status, attention: row.attention)
+                    TableColumn("Status", value: \.statusSortKey) { (row: OrderTableRow) in
+                        // With the Needs Attention marker when the order is late or stuck (OrderFollowUp.swift), and
+                        // a hover hint when the status shown comes from Slant's shipping record.
+                        OrderStatusCell(status: row.status, attention: row.attention, note: row.statusNote)
                     }
                     .width(min: 64, ideal: 112, max: 160)
                     TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
@@ -1164,6 +1172,16 @@ struct OrdersView: View {
                 if needsAttentionOnly {
                     Text(orderAttentionFilterHint(moreOnServer: store.ordersHasMore && !store.orderSearchActive))
                         .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                }
+                // Slant's Status filter uses its order status, which can lag its shipping record (OrderFollowUp.swift).
+                if !store.orderSearchActive, !store.orders.isEmpty,
+                   let hint = orderStatusFilterLagHintText(status: store.orderFilter.status, loaded: store.orders) {
+                    Text(hint)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.top, 6)
@@ -1644,11 +1662,19 @@ struct OrdersView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack {
                         let detailStatus = (displayed["status"] as? String) ?? selected.string("status")
-                        SectionHeading(title: orderDetailCaption(displayed), caption: orderStatusTitle(detailStatus))
-                            .help(orderStatusHelp(detailStatus) ?? "")
+                        // The shipping record's word when Slant's order status lags it (`orderDisplayStatus`); display
+                        // only: Cancel and every check use Slant's own status.
+                        let lagNote = orderStatusLagNote(displayed)
+                        SectionHeading(title: orderDetailCaption(displayed),
+                                       caption: displayed["status"] is String ? orderDisplayStatusTitle(displayed) : orderStatusTitle(detailStatus))
+                            .help(lagNote ?? orderStatusHelp(detailStatus) ?? "")
                         Spacer()
                         Button { load(selected.id) } label: { Image(systemName: "arrow.clockwise") }
                             .accessibilityLabel("Reload order").help("Reload order").disabled(store.busy)
+                    }
+                    if let lagNote = orderStatusLagNote(displayed) {
+                        Text(lagNote).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     // Why this order needs attention (OrderFollowUp.swift), which the list shows only as a marker.
                     if let attention = orderAttention(displayed, now: Date()) {
@@ -1679,8 +1705,9 @@ struct OrdersView: View {
                                 .help("Put together a message about this order for Slant support, to copy")
                         }
                         if canCancelSelected {
-                            let status = (displayed["status"] as? String) ?? ""
-                            Button(orderCancelActionTitle(status), role: .destructive) {
+                            // Offered by Slant's own status (`canCancelSelected`); only the wording follows the
+                            // shipping record ("Request Refund…" once it says the order shipped).
+                            Button(orderCancelActionTitle(orderDisplayStatus(displayed)), role: .destructive) {
                                 pendingConfirm = PendingOrderConfirm(method: "DELETE", orderID: selected.id)
                             }
                             .disabled(store.busy)
@@ -1799,8 +1826,12 @@ struct OrderActionConfirmSheet: View {
     /// Why the review couldn't load, shown in this sheet (a window alert would wait behind it).
     @State private var loadFailure: String?
     var isPay: Bool { method == "POST" }
+    /// Slant's own order status: every gate, re-check and the lock use this.
     var status: String? { fresh.flatMap { $0["status"] as? String } }
-    var refundOnly: Bool { orderCancellationIsRefundOnly(status ?? "") }
+    /// For wording only (`orderDisplayStatus`): the shipping record's word when Slant's order status lags it, so a
+    /// cancel review of an order the record says shipped reads as a refund request.
+    var copyStatus: String { fresh.map(orderDisplayStatus) ?? "" }
+    var refundOnly: Bool { orderCancellationIsRefundOnly(copyStatus) }
     var mutationLock: (Bool, String?) { orderConfirmMutationSendAllowed(attempted: writeAttempted, succeeded: writeSucceeded) }
     /// Set by an earlier Orders or Workbench attempt whose result is unknown; survives closing and reopening this sheet.
     var sharedOutcomeLock: Bool { store.isOutcomeUnknown(orderID: orderID) }
@@ -1816,13 +1847,13 @@ struct OrderActionConfirmSheet: View {
     }
     var sheetTitle: String {
         if isPay { return "Place this order?" }
-        return orderCancelSheetTitle(status ?? "")
+        return orderCancelSheetTitle(copyStatus)
     }
     var sheetBodyCopy: String {
         if isPay {
             return "This charges the payment method associated with your Slant account and starts fulfilment. Costs below are loaded fresh from Slant."
         }
-        return orderCancelSheetBody(status ?? "")
+        return orderCancelSheetBody(order: fresh)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1876,7 +1907,9 @@ struct OrderActionConfirmSheet: View {
                         }
                         // A receipt: labels on the left, values in a right-aligned column.
                         VStack(alignment: .leading, spacing: 6) {
-                            LabeledContent("Status") { Text(orderStatusTitle(status ?? "")) }
+                            LabeledContent("Status") {
+                                Text(orderStatusTitle(copyStatus)).help(orderStatusLagNote(order) ?? "")
+                            }
                             // "Print cost", as in the order detail: "Printing" is also a status, shown just above.
                             LabeledContent("Print cost") { Text("\(money(order["printingCost"])) USD").monospacedDigit() }
                             LabeledContent("Delivery cost") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
@@ -1966,7 +1999,7 @@ struct OrderActionConfirmSheet: View {
                         if loadState == .loaded, !finalActionEnabled, let reason = orderCancelConfirmAllowed(status: status, loaded: true).1 {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
-                        Button(orderCancelSheetButtonTitle(status ?? ""), role: .destructive) { confirmAction() }
+                        Button(orderCancelSheetButtonTitle(copyStatus), role: .destructive) { confirmAction() }
                             .disabled(!finalActionEnabled)
                     }
                 }
@@ -2081,7 +2114,8 @@ struct OrderActionConfirmSheet: View {
         guard let shown = fresh, !writeSucceeded, !writeAttempted, !writing, !sharedOutcomeLock else { return }
         actionMessage = nil
         writing = true
-        let successRefundOnly = orderCancellationIsRefundOnly((shown["status"] as? String) ?? "")
+        // Wording only: "Refund requested." also when only the shipping record says the order shipped.
+        let successRefundOnly = orderCancellationIsRefundOnly(orderDisplayStatus(shown))
         Task {
             var outcome: OrderConfirmRecheckResult = .proceed
             var latestOrder: [String: Any]?
@@ -2213,11 +2247,14 @@ func orderFilterEmptyDetail(_ filter: OrderFilter, search: String = "", moreOnSe
     case (nil, false): base = "No orders"
     }
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+    // An order Slant's shipping record says shipped may still be listed under Printing (`orderStatusFilterLagHint`).
+    let lagHint = (filter.status ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "SHIPPED"
+        ? " " + orderStatusFilterLagHint : ""
     if moreOnServer {
         let matching = query.isEmpty ? base : base + " match “\(query)”"
-        return matching + " on the pages loaded so far. Load More reads the next page from Slant."
+        return matching + " on the pages loaded so far. Load More reads the next page from Slant." + lagHint
     }
-    return query.isEmpty ? base + (filter.isActive ? "." : " match.") : base + " match “\(query)”."
+    return (query.isEmpty ? base + (filter.isActive ? "." : " match.") : base + " match “\(query)”.") + lagHint
 }
 /// Under a draft's actions: what placing does, and why there's no Cancel.
 let orderDetailDraftCaption = "Placing charges your saved payment method. Slant doesn’t cancel drafts; a draft costs nothing unless you place it."
@@ -2350,6 +2387,12 @@ func orderConfirmRecheck(method: String, shown: [String: Any], latest: [String: 
         if shownStatus.uppercased() != status.uppercased() {
             return .statusBlocked("This order’s status changed. Review it again.")
         }
+        // Slant's order status can lag its shipping record, so a record or tracking that changed since the review
+        // (the parcel may have shipped) stops the cancel too, before the lock is recorded or anything is sent. It can
+        // only stop: eligibility below is still decided by Slant's own status alone.
+        if orderShippingDetails(shown) != orderShippingDetails(latest) {
+            return .statusBlocked(orderShippingDetailsChangedMessage)
+        }
         if !orderCanRequestCancellation(status) {
             return .statusBlocked(orderCancellationBlockedReason(status) ?? "This order can’t be cancelled.")
         }
@@ -2422,6 +2465,9 @@ func orderMatchesSearch(_ order: Record, query: String, modelNames: [String: Str
         orderStatusTitle(order.string("status")),
         // Slant's own status word too, so "canceled" still finds orders shown as "Cancelled".
         order.string("status").replacingOccurrences(of: "_", with: " "),
+        // And the status shown when the shipping record says it shipped (`orderDisplayStatus`), so "shipped" and
+        // "printing" both find such an order.
+        orderDisplayStatusTitle(values),
         orderRecipientName(values),
         orderCity(values)
     ]
@@ -2515,6 +2561,16 @@ func orderCancelSheetBody(_ status: String) -> String {
     default:
         return "Cancellation may be possible. A refund isn’t promised for this status."
     }
+}
+/// The cancel review's explanation for the order shown. When Slant's shipping record says the order shipped while its
+/// status still says it's being made (`orderStatusLagsShippingRecord`), Slant may only refund it; otherwise the
+/// status's own wording. Wording only: whether Cancel is offered is still decided by Slant's own status.
+func orderCancelSheetBody(order: [String: Any]?) -> String {
+    guard let order else { return orderCancelSheetBody("") }
+    if orderStatusLagsShippingRecord(order) {
+        return "Slant’s shipping record says this order has shipped, so Slant may only refund it; it can’t stop the delivery."
+    }
+    return orderCancelSheetBody((order["status"] as? String) ?? "")
 }
 /// A hover hint for live statuses whose title alone is vague, in Slant's own words (docs, read 28 Oct 2026), or nil.
 func orderStatusHelp(_ status: String) -> String? {
@@ -2993,8 +3049,9 @@ struct OrderSummary: View {
                         if showsItemStatus, let itemStatus = orderItemStatusTitle(item) {
                             Text("Item status: \(itemStatus)").font(.caption).foregroundStyle(.secondary)
                         }
-                        // Slant's per-item production progress (OrderDetailExtras.swift); never shown for drafts.
-                        if let progress = orderItemProgressLine(item, orderStatus: status) {
+                        // Slant's per-item production progress (OrderDetailExtras.swift); never shown for drafts, nor
+                        // once the shipping record says the order shipped (`orderDisplayStatus`).
+                        if let progress = orderItemProgressLine(item, orderStatus: orderDisplayStatus(order)) {
                             Text("Production: \(progress)").font(.caption).foregroundStyle(.secondary)
                         }
                     }

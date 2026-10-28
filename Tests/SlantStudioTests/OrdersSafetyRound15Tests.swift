@@ -374,6 +374,146 @@ final class OrdersSafetyRound15Tests: XCTestCase {
         }
     }
 
+    // MARK: Slant's shipping record beside its order status (round 16)
+
+    private struct ShippingRecordMeaning {
+        let status: String
+        let fulfillment: Any
+        /// What the list, detail and Tracking for Your Shop show.
+        let title: String
+        let lags: Bool
+        /// orderAttention for an order past its arrive-by date, and for one placed 6 days ago with no arrive-by date.
+        let late: Bool
+        let notShipped: Bool
+        let progressShown: Bool
+        let problemCanBeDamaged: Bool
+        let problemCanBeLate: Bool
+        /// The cancel review's wording (gating stays on the raw status).
+        let cancelButton: String
+    }
+
+    private var shippingRecordTable: [ShippingRecordMeaning] {
+        let shipped: [String: Any] = ["status": "SHIPPED", "provider": "SHIPPO", "deliveryMethod": "INTERNATIONAL",
+                                      "trackingNumbers": ["TEST0001US"], "labelPrinted": true, "providerStatus": NSNull()]
+        func row(_ status: String, _ fulfillment: Any, _ title: String, lags: Bool, late: Bool, notShipped: Bool,
+                 progress: Bool, damaged: Bool, problemLate: Bool, cancelButton: String) -> ShippingRecordMeaning {
+            ShippingRecordMeaning(status: status, fulfillment: fulfillment, title: title, lags: lags, late: late,
+                                  notShipped: notShipped, progressShown: progress, problemCanBeDamaged: damaged,
+                                  problemCanBeLate: problemLate, cancelButton: cancelButton)
+        }
+        return [
+            // The live shape of 29 Oct 2026.
+            row("PRINTING", shipped, "Shipped", lags: true, late: false, notShipped: false, progress: false, damaged: true,
+                problemLate: true, cancelButton: "Request Refund"),
+            row("SUBMITTED", shipped, "Shipped", lags: true, late: false, notShipped: false, progress: false, damaged: true,
+                problemLate: true, cancelButton: "Request Refund"),
+            row("PRINTING", ["status": "DELIVERED"], "Delivered", lags: true, late: false, notShipped: false, progress: false,
+                damaged: true, problemLate: false, cancelButton: "Request Refund"),
+            // Slant's own docs example: a label may be made before the parcel ships.
+            row("PRINTING", ["status": "AWAITING_SHIPMENT", "labelPrinted": true], "Printing", lags: false, late: true,
+                notShipped: true, progress: true, damaged: false, problemLate: true, cancelButton: "Cancel & Refund"),
+            row("PRINTING", ["trackingNumbers": ["1Z"]], "Printing", lags: false, late: true, notShipped: true, progress: true,
+                damaged: false, problemLate: true, cancelButton: "Cancel & Refund"),
+            row("PRINTING", ["status": "LABEL_CREATED"], "Printing", lags: false, late: true, notShipped: true, progress: true,
+                damaged: false, problemLate: true, cancelButton: "Cancel & Refund"),
+            row("PRINTING", ["status": 3], "Printing", lags: false, late: true, notShipped: true, progress: true,
+                damaged: false, problemLate: true, cancelButton: "Cancel & Refund"),
+            row("PRINTING", "SHIPPED", "Printing", lags: false, late: true, notShipped: true, progress: true,
+                damaged: false, problemLate: true, cancelButton: "Cancel & Refund"),
+            row(" printing ", ["status": " shipped\n"], "Shipped", lags: true, late: false, notShipped: false, progress: false,
+                damaged: true, problemLate: true, cancelButton: "Request Refund"),
+            row("CANCELLED", shipped, "Cancelled", lags: false, late: false, notShipped: false, progress: false,
+                damaged: false, problemLate: false, cancelButton: "Cancel Order"),
+            row("DRAFT", shipped, "Draft", lags: false, late: true, notShipped: false, progress: false, damaged: false,
+                problemLate: false, cancelButton: "Cancel Draft"),
+            row("ON_HOLD", shipped, "On Hold", lags: false, late: false, notShipped: false, progress: true, damaged: false,
+                problemLate: false, cancelButton: "Cancel Order"),
+        ]
+    }
+
+    /// The shipping record changes only what is shown and read-only advice. Every write gate, the lock, pay outcomes,
+    /// Pay Several Drafts and the Spending Report see exactly what they see without it.
+    func testTheShippingRecordChangesOnlyWhatIsShown() throws {
+        let now = try XCTUnwrap(orderTimestamp("2026-10-29T12:00:00Z"))
+        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        for meaning in shippingRecordTable {
+            let message = "\(meaning.status) + \(meaning.fulfillment)"
+            let base: [String: Any] = [
+                "publicId": "SLANT_1", "status": meaning.status, "createdAt": "2026-10-23T09:00:00.000Z",
+                "processedAt": "2026-10-23T09:01:00.000Z", "printingCost": "14.20", "deliveryCost": "41.20",
+                "items": [["type": "PRINT", "price": "14.20", "currency": "USD", "quantity": 1]],
+                "metadata": ["source": "etsy", "sourceOrderId": "3141"],
+                "customer": ["details": ["address": ["name": "Ada", "country": "GB"]]]
+            ]
+            var order = base
+            order["fulfillment"] = meaning.fulfillment
+            let raw = (order["status"] as? String) ?? ""
+
+            // Shown: the list, the detail, search, Tracking for Your Shop.
+            XCTAssertEqual(orderDisplayStatusTitle(order), meaning.title, message)
+            XCTAssertEqual(OrderTableRow(record: Record(values: order), now: now).status, meaning.title, message)
+            XCTAssertEqual(OrderTableRow(record: Record(values: order), now: now).statusSortKey, orderStatusTitle(raw), message)
+            XCTAssertEqual(orderStatusLagsShippingRecord(order), meaning.lags, message)
+            XCTAssertEqual(orderStatusLagNote(order) != nil, meaning.lags, message)
+            XCTAssertTrue(orderMatchesSearch(Record(values: order), query: meaning.title), message)
+            XCTAssertTrue(orderMatchesSearch(Record(values: order), query: orderStatusTitle(raw)), message)
+
+            // Read-only advice.
+            var late = order
+            late["arriveByDate"] = "2026-10-25"
+            late["createdAt"] = "2026-10-28T09:00:00.000Z"
+            late["processedAt"] = "2026-10-28T09:01:00.000Z"
+            if case .pastArriveBy? = orderAttention(late, now: now, timeZone: utc) {
+                XCTAssertTrue(meaning.late, message)
+            } else {
+                XCTAssertFalse(meaning.late, message)
+            }
+            if case .notShipped? = orderAttention(order, now: now, timeZone: utc) {
+                XCTAssertTrue(meaning.notShipped, message)
+            } else {
+                XCTAssertFalse(meaning.notShipped, message)
+            }
+            let item: [String: Any] = ["estimatedPrintCompletion": "2026-11-02T10:00:00Z"]
+            XCTAssertEqual(orderItemProgress(item, orderStatus: orderDisplayStatus(order)) != nil, meaning.progressShown, message)
+            let kinds = orderProblemKinds(status: orderDisplayStatus(order))
+            XCTAssertEqual(kinds.contains(.damaged), meaning.problemCanBeDamaged, message)
+            XCTAssertEqual(kinds.contains(.late), meaning.problemCanBeLate, message)
+            XCTAssertEqual(orderCancelSheetButtonTitle(orderDisplayStatus(order)), meaning.cancelButton, message)
+
+            // Raw only: cancel gating, the re-checks, the lock, pay outcomes, Pay Several Drafts and spend.
+            XCTAssertEqual(orderCanRequestCancellation(raw), orderCanRequestCancellation((base["status"] as? String) ?? ""), message)
+            XCTAssertEqual(orderCancelConfirmAllowed(status: raw, loaded: true).0,
+                           orderCancelConfirmAllowed(status: meaning.status, loaded: true).0, message)
+            XCTAssertEqual(workbenchCancelAllowed(status: raw, loaded: true).0,
+                           workbenchCancelAllowed(status: meaning.status, loaded: true).0, message)
+            for method in ["POST", "DELETE"] {
+                XCTAssertEqual(orderConfirmRecheck(method: method, shown: order, latest: order),
+                               orderConfirmRecheck(method: method, shown: base, latest: base), "\(method) \(message)")
+            }
+            XCTAssertEqual(workbenchOrderPreviewMatches(order, order), workbenchOrderPreviewMatches(base, base), message)
+            XCTAssertEqual(batchPayOutcomeAfterSuccess(order), batchPayOutcomeAfterSuccess(base), message)
+            XCTAssertEqual(batchPayAcceptedOutcomeStaysLocked(order), batchPayAcceptedOutcomeStaysLocked(base), message)
+            XCTAssertEqual(batchPayIsDraft(order), batchPayIsDraft(base), message)
+            XCTAssertEqual(batchPayExclusionReason(orderID: "SLANT_1", order: order, loadFailure: nil, locked: false),
+                           batchPayExclusionReason(orderID: "SLANT_1", order: base, loadFailure: nil, locked: false), message)
+            XCTAssertEqual(batchPayPlacedMarketplaceKeys([Record(values: order)]),
+                           batchPayPlacedMarketplaceKeys([Record(values: base)]), message)
+            let spend = spendReport(orders: [Record(values: order)], calendar: Calendar(identifier: .gregorian))
+            let spendBase = spendReport(orders: [Record(values: base)], calendar: Calendar(identifier: .gregorian))
+            XCTAssertEqual(spend.countedOrders, spendBase.countedOrders, message)
+            XCTAssertEqual(spend.totalSpend, spendBase.totalSpend, message)
+            XCTAssertEqual(spend.excludedUnrecognised, spendBase.excludedUnrecognised, message)
+
+            // The lock records Slant's status as the review re-fetched it, and a reload of the same order (shipping
+            // record and all) never counts as the cancel's outcome.
+            var locks = OrderOutcomeLocks()
+            locks.mark("SLANT_1", action: .cancel, reviewedStatus: order["status"] as? String)
+            XCTAssertEqual(locks.contexts["SLANT_1"]?.reviewedStatus, raw.uppercased(), message)
+            XCTAssertFalse(unknownOutcomeResolvedByReload(context: locks.contexts["SLANT_1"],
+                                                          reloadedStatus: (order["status"] as? String) ?? ""), message)
+        }
+    }
+
     // MARK: A confirmed draft clears only its own recipient's warning
 
     private let date = Date(timeIntervalSince1970: 1_000)

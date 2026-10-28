@@ -9,8 +9,9 @@ import SwiftUI
 
 // MARK: Production progress (unverified fields)
 
-/// Order statuses whose production progress isn't worth showing: drafts haven't started (Slant reports their items as
-/// PROCESSING with no assignments, seen 23 Oct 2026), and cancelled, shipped or delivered orders are past it.
+/// Order statuses whose production progress isn't worth showing: drafts haven't started (Slant reported their items as
+/// PROCESSING with no assignments on 23 Oct 2026, and as DRAFT on 29 Oct 2026), and cancelled, shipped or delivered
+/// orders are past it. Callers pass `orderDisplayStatus`, so an order whose shipping record says it shipped is too.
 let orderProgressHiddenStatuses: Set<String> = ["DRAFT", "CANCELED", "CANCELLED", "SHIPPED", "DELIVERED", "PAYMENT_ERROR"]
 
 /// One item's production progress from Slant's `estimatedPrintCompletion` and `assignments` fields. Neither is in the
@@ -276,7 +277,14 @@ func orderProblemMessage(order: [String: Any], problem: OrderProblemKind, detail
     var lines = ["Hello Slant team,", "", "I’d like to report a problem with \(reference): \(problem.title.lowercased()).", ""]
     if !number.isEmpty { lines.append("Order number: \(number)") }
     let status = (order["status"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if !status.isEmpty { lines.append("Status: \(orderStatusTitle(status))") }
+    // Slant's order status and, when it says something else, its shipping record's (which can be ahead of it):
+    // "Status: Printing · Shipping record: Shipped".
+    var statusParts: [String] = []
+    if !status.isEmpty { statusParts.append("Status: \(orderStatusTitle(status))") }
+    if let shipping = orderFulfillmentStatus(order), shipping != status.uppercased() {
+        statusParts.append("Shipping record: \(orderStatusTitle(orderStatusQuoted(shipping)))")
+    }
+    if !statusParts.isEmpty { lines.append(statusParts.joined(separator: " · ")) }
     if let created = orderCreatedDisplay(order) { lines.append("Created: \(created)") }
     for (label, value) in trackingFacts(order["fulfillment"]) where label == "Tracking number" {
         lines.append("Tracking number: \(value)")
@@ -351,7 +359,9 @@ struct OrderProblemReportSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             Picker("Problem", selection: $problem) {
                 Text("Choose…").tag(OrderProblemKind?.none)
-                ForEach(orderProblemKinds(status: (order["status"] as? String) ?? "")) { Text($0.title).tag(OrderProblemKind?.some($0)) }
+                // From the status shown (`orderDisplayStatus`): an order Slant's shipping record says shipped can
+                // also be damaged, wrong or missing.
+                ForEach(orderProblemKinds(status: orderDisplayStatus(order))) { Text($0.title).tag(OrderProblemKind?.some($0)) }
             }
             .fixedSize()
             VStack(alignment: .leading, spacing: 4) {
