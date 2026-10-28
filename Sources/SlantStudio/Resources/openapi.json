@@ -1391,7 +1391,8 @@
           "200": {
             "description": "File imported; see File schema"
           }
-        }
+        },
+        "x-slant-studio-source": "docs"
       }
     },
     "/files/owner/{ownerId}": {
@@ -2959,10 +2960,9 @@
             "in": "query",
             "schema": {
               "type": "string",
-              "format": "date-time",
-              "x-slant-studio-source": "docs"
+              "format": "date"
             },
-            "description": "Only return orders up to this point (ISO 8601). Docs/file filters: exclusive “before this date”; guided UI sends day-after for inclusive To date.",
+            "description": "Only return orders up to this date (YYYY-MM-DD). Docs/file filters: exclusive “before this date”; the guided filters ask for two days after To and trim to the Mac’s calendar.",
             "x-slant-studio-source": "docs"
           },
           {
@@ -2990,10 +2990,11 @@
             "name": "publicId",
             "in": "query",
             "required": false,
-            "description": "Filter by public order ID",
+            "description": "Filter by public order ID. Live (23 Oct 2026): matches exact order numbers only.",
             "schema": {
               "type": "string"
-            }
+            },
+            "x-slant-studio-source": "live"
           },
           {
             "name": "orderId",
@@ -3002,25 +3003,28 @@
             "description": "Alias for publicId; takes precedence if both supplied",
             "schema": {
               "type": "string"
-            }
+            },
+            "x-slant-studio-source": "docs"
           },
           {
             "name": "sortBy",
             "in": "query",
             "required": false,
-            "description": "createdAt, updatedAt or status; documented on Orders page",
+            "description": "createdAt, updatedAt or status; documented on Orders page. Live (24 Oct 2026): updatedAt accepted.",
             "schema": {
               "type": "string"
-            }
+            },
+            "x-slant-studio-source": "live"
           },
           {
             "name": "sortOrder",
             "in": "query",
             "required": false,
-            "description": "ASC or DESC; documented on Orders page",
+            "description": "ASC or DESC; documented on Orders page. Live: both accepted; an invalid value is refused with 400 naming the parameter.",
             "schema": {
               "type": "string"
-            }
+            },
+            "x-slant-studio-source": "live"
           }
         ],
         "responses": {
@@ -3161,11 +3165,13 @@
                         },
                         "name": {
                           "type": "string",
-                          "description": "Optional item title"
+                          "description": "Optional item title",
+                          "x-slant-studio-source": "docs"
                         },
                         "SKU": {
                           "type": "string",
-                          "description": "Optional item SKU"
+                          "description": "Optional item SKU",
+                          "x-slant-studio-source": "docs"
                         },
                         "options": {
                           "type": "object",
@@ -3174,7 +3180,8 @@
                               "type": "object",
                               "description": "Slicer override container. No active individual overrides are currently documented; support_enable was removed. Support is determined internally at upload."
                             }
-                          }
+                          },
+                          "x-slant-studio-source": "docs"
                         }
                       }
                     }
@@ -3466,7 +3473,8 @@
                     "description": "Array of public order IDs. Live Slant accepts only publicIds and refuses public_ids (the original spec's name) with 400 \"No public IDs provided\"; the reply is data: [order].",
                     "x-slant-studio-source": "live"
                   }
-                }
+                },
+                "x-slant-studio-source": "live"
               }
             }
           }
