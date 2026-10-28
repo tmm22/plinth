@@ -54,6 +54,195 @@ func orderTotalAmount(_ order: [String: Any]) -> Decimal? {
     return print ?? delivery
 }
 
+// MARK: - Cost fields Studio doesn't add
+
+// Slant's Order has no total of its own (live spec, 28 Oct 2026): Studio shows `printingCost` + `deliveryCost`. If Slant
+// silently added a tax or fee field, the charge review would show too low a total without a word, so any other
+// money-like field (or a Slant total that disagrees with the sum) is named in the single pay review and keeps the order
+// out of Pay Several Drafts. Never changes whether Pay is enabled in the single review.
+
+/// The cost fields Studio adds up into an order's total (`orderTotalAmount`, `orderTotalMoney`).
+let orderCostFieldsStudioAdds: Set<String> = ["printingCost", "deliveryCost"]
+/// Slant totals that Studio compares with the sum of those two costs, rather than naming them as extra fields: at the
+/// top level (`total`, `totalCost`) and inside a `totals` object (the draft envelope's `totals.totalCost`).
+let orderSlantTotalFields = ["total", "totalCost"]
+/// Words that make a field look like money, matched case-insensitively anywhere in the key. Deliberately broad: a
+/// false alarm (`costCentre`) only asks the seller to check the order on Slant, while a miss could under-state a charge.
+let orderMoneyKeyWords = ["cost", "fee", "tax", "total", "price", "charge", "surcharge", "discount", "amount", "vat", "duty"]
+/// The notice names at most this many fields ("and 2 more" after them).
+let orderUnlistedCostNameLimit = 3
+/// Slant's total may differ from print + delivery by rounding: up to half a cent isn't a mismatch.
+let orderTotalMismatchTolerance = Decimal(sign: .plus, exponent: -3, significand: 5)
+/// A field name is shown with at most this many characters.
+let orderUnlistedCostNameMaxLength = 40
+
+func orderKeyLooksLikeMoney(_ key: String) -> Bool {
+    let lower = key.lowercased()
+    return orderMoneyKeyWords.contains { lower.contains($0) }
+}
+
+/// What the pay review says about an order's costs beyond the two Studio adds.
+struct OrderUnlistedCosts: Equatable {
+    /// Money-like fields Studio doesn't add into the total, sanitised and sorted, at most `orderUnlistedCostNameLimit`.
+    /// Fields inside `totals` are named `totals.<key>`.
+    var fields: [String] = []
+    /// How many more such fields there were than are named.
+    var moreFields = 0
+    /// Slant's own total and the sum of print and delivery costs, when they differ by more than half a cent.
+    var slantTotal: Decimal?
+    var costsSum: Decimal?
+    var isEmpty: Bool { fields.isEmpty && moreFields == 0 && slantTotal == nil }
+}
+
+/// A plain amount: a JSON number (not a boolean, not NaN) or a string of digits with an optional sign and decimals.
+/// Stricter than `decimalAmount`, which reads "12 USD" as 12.
+func orderStrictAmount(_ value: Any?) -> Decimal? {
+    guard let value, !(value is NSNull) else { return nil }
+    if let number = value as? NSNumber {
+        guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let decimal = number.decimalValue
+        return decimal.isNaN ? nil : decimal
+    }
+    guard let text = value as? String else { return nil }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.range(of: #"^[-+]?[0-9]+(\.[0-9]+)?$"#, options: .regularExpression) != nil else { return nil }
+    return Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX"))
+}
+
+/// Whether a money-like field could add to the charge. Absent, null, a boolean, a zero amount and an empty list or
+/// object can't; anything else (a non-zero amount, unreadable text, an object) might.
+private func orderCostValueMatters(_ value: Any?) -> Bool {
+    guard let value, !(value is NSNull) else { return false }
+    if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() { return false }
+    if let amount = orderStrictAmount(value) { return amount != 0 }
+    if let text = value as? String { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    if let list = value as? [Any] { return !list.isEmpty }
+    if let object = value as? [String: Any] { return !object.isEmpty }
+    return true
+}
+
+/// A field name as shown: letters, digits, `_`, `.` and `-` only, at most `orderUnlistedCostNameMaxLength` characters.
+func orderCostFieldDisplayName(_ key: String) -> String {
+    let allowed = key.unicodeScalars.filter { scalar in
+        scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "_.-".unicodeScalars.contains(scalar))
+    }
+    let cleaned = String(String.UnicodeScalarView(allowed))
+    guard !cleaned.isEmpty else { return "an unnamed field" }
+    return cleaned.count > orderUnlistedCostNameMaxLength ? String(cleaned.prefix(orderUnlistedCostNameMaxLength)) + "…" : cleaned
+}
+
+/// A stable description of a field's value, for telling whether it changed between the review and the payment.
+private func orderCostValueSignature(_ value: Any?) -> String {
+    guard let value, !(value is NSNull) else { return "null" }
+    if let amount = orderStrictAmount(value) { return NSDecimalNumber(decimal: amount).stringValue }
+    if JSONSerialization.isValidJSONObject(value),
+       let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]),
+       let text = String(data: data, encoding: .utf8) {
+        return String(text.prefix(2_000))
+    }
+    return String(String(describing: value).prefix(2_000))
+}
+
+/// Every field the notice is about (raw key, value signature), and the first Slant total that disagrees with the sum.
+private func orderUnlistedCostFindings(_ order: [String: Any]) -> (fields: [(key: String, value: String)], mismatch: (slant: Decimal, sum: Decimal)?) {
+    var fields: [(key: String, value: String)] = []
+    var mismatch: (slant: Decimal, sum: Decimal)?
+    let print = decimalAmount(order["printingCost"]).flatMap { $0.isNaN ? nil : $0 }
+    let delivery = decimalAmount(order["deliveryCost"]).flatMap { $0.isNaN ? nil : $0 }
+    let sum = print.flatMap { print in delivery.map { print + $0 } }
+    func compareTotal(_ key: String, _ value: Any?) {
+        guard let value, !(value is NSNull) else { return }
+        guard let amount = orderStrictAmount(value) else {
+            fields.append((key, orderCostValueSignature(value)))
+            return
+        }
+        if let sum, mismatch == nil, abs(amount - sum) > orderTotalMismatchTolerance {
+            mismatch = (amount, sum)
+        }
+    }
+    for key in orderSlantTotalFields { compareTotal(key, order[key]) }
+    let totals = order["totals"] as? [String: Any]
+    if let totals {
+        for key in orderSlantTotalFields { compareTotal("totals.\(key)", totals[key]) }
+        for (key, value) in totals where !orderCostFieldsStudioAdds.contains(key) && !orderSlantTotalFields.contains(key)
+            && orderKeyLooksLikeMoney(key) && orderCostValueMatters(value) {
+            fields.append(("totals.\(key)", orderCostValueSignature(value)))
+        }
+    }
+    for (key, value) in order where !orderCostFieldsStudioAdds.contains(key) && !orderSlantTotalFields.contains(key)
+        && !(key == "totals" && totals != nil) && orderKeyLooksLikeMoney(key) && orderCostValueMatters(value) {
+        fields.append((key, orderCostValueSignature(value)))
+    }
+    return (fields.sorted { $0.key < $1.key }, mismatch)
+}
+
+/// Money-like fields on the order (top level, and inside a `totals` object) other than `printingCost` and
+/// `deliveryCost`, and whether Slant's own total disagrees with their sum by more than half a cent. Item-level
+/// `price` and `currency` are known and not looked at. Nested objects such as `platform` aren't searched.
+func orderUnlistedCosts(_ order: [String: Any]) -> OrderUnlistedCosts {
+    let findings = orderUnlistedCostFindings(order)
+    var names: [String] = []
+    for field in findings.fields {
+        let name = orderCostFieldDisplayName(field.key)
+        if !names.contains(name) { names.append(name) }
+    }
+    names.sort { $0.localizedStandardCompare($1) == .orderedAscending }
+    return OrderUnlistedCosts(fields: Array(names.prefix(orderUnlistedCostNameLimit)),
+                              moreFields: max(0, names.count - orderUnlistedCostNameLimit),
+                              slantTotal: findings.mismatch?.slant, costsSum: findings.mismatch?.sum)
+}
+
+/// The fields and values behind the notice, for the re-check just before paying: a fee that appears or changes after
+/// the review stops the payment like a changed price.
+func orderUnlistedCostSignature(_ order: [String: Any]) -> [String] {
+    let findings = orderUnlistedCostFindings(order)
+    var signature = findings.fields.map { "\($0.key)=\($0.value)" }
+    if let mismatch = findings.mismatch {
+        signature.append("mismatch=\(NSDecimalNumber(decimal: mismatch.slant).stringValue)/\(NSDecimalNumber(decimal: mismatch.sum).stringValue)")
+    }
+    return signature
+}
+
+/// "taxCost", "taxCost and serviceFee", "a, b and c", "a, b, c and 2 more".
+private func orderUnlistedCostFieldList(_ costs: OrderUnlistedCosts) -> String {
+    var names = costs.fields
+    if costs.moreFields > 0 { names.append("\(costs.moreFields) more") }
+    guard names.count > 1 else { return names.first ?? "" }
+    return names.dropLast().joined(separator: ", ") + " and " + (names.last ?? "")
+}
+
+private func orderUnlistedCostMoney(_ amount: Decimal) -> String { money(NSDecimalNumber(decimal: amount)) }
+
+/// The single pay review's notice, or nil when Slant's order lists nothing beyond print and delivery costs. Advisory:
+/// it never changes whether Pay is enabled.
+func orderUnlistedCostNotice(_ costs: OrderUnlistedCosts) -> String? {
+    guard !costs.isEmpty else { return nil }
+    var parts: [String] = []
+    if !costs.fields.isEmpty {
+        parts.append("Slant’s order also lists \(orderUnlistedCostFieldList(costs)), which may not be included in this total.")
+    }
+    if let slant = costs.slantTotal, let sum = costs.costsSum {
+        parts.append("Slant’s own total (\(orderUnlistedCostMoney(slant)) USD) doesn’t match print cost plus delivery (\(orderUnlistedCostMoney(sum)) USD).")
+    }
+    parts.append("Slant may charge more than shown; check the order on Slant before paying.")
+    return parts.joined(separator: " ")
+}
+
+/// Why Pay Several Drafts leaves the order out, or nil: a batch gets less attention per order, so such a draft is paid
+/// on its own after checking.
+func orderUnlistedCostBatchReason(_ costs: OrderUnlistedCosts) -> String? {
+    guard !costs.isEmpty else { return nil }
+    var parts: [String] = []
+    if !costs.fields.isEmpty {
+        parts.append("Slant also lists \(orderUnlistedCostFieldList(costs)) for it, which may not be included in its total.")
+    }
+    if let slant = costs.slantTotal, let sum = costs.costsSum {
+        parts.append("Slant’s own total for it (\(orderUnlistedCostMoney(slant)) USD) doesn’t match print cost plus delivery (\(orderUnlistedCostMoney(sum)) USD).")
+    }
+    parts.append("Check it on Slant, then pay it in its own review.")
+    return parts.joined(separator: " ")
+}
+
 /// Sort value for orders without a creation date: they sort as the oldest.
 let orderMissingDateSortKey = Date.distantPast
 /// Sort value for orders without a total: they sort as the cheapest.
@@ -212,16 +401,26 @@ struct UnconfirmedDraftAttempt: Equatable {
 /// How many unconfirmed attempts the notice remembers (the most recent ones).
 let unconfirmedDraftAttemptLimit = 5
 
+/// The recipient as compared between a confirmed creation and earlier unconfirmed attempts: trimmed, runs of
+/// whitespace collapsed to one space, case-insensitive. An empty name stays empty, so it matches only another empty one.
+func draftAttemptRecipientKey(_ recipient: String) -> String {
+    recipient.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+}
+
 /// Unconfirmed Create Draft attempts after one more press. A timeout, transport failure, 5xx, 408/409 or an
-/// unreadable reply adds this attempt; only a confirmed success clears the list. A failure that proves nothing
+/// unreadable reply adds this attempt. A confirmed success removes only the attempts for the same recipient
+/// (`draftAttemptRecipientKey`; owner decision, 28 Oct 2026): creating a draft for one customer says nothing about
+/// another customer's unconfirmed draft, so that warning, and Create Anyway for it, stay. A failure that proves nothing
 /// happened (refused with a definite 4xx, or never sent) leaves the list as it was, because it says nothing about the
-/// earlier requests.
+/// earlier requests. Look for Draft on Slant confirms attempts by marker (`unconfirmedDraftAttempts(_:confirmedMarkers:)`).
 func unconfirmedDraftAttempts(previous: [UnconfirmedDraftAttempt], attempt: DraftCreateAttempt,
                               recipient: String, date: Date,
                               marker: String? = nil, platformID: String = "") -> [UnconfirmedDraftAttempt] {
     switch attempt {
     case .notSent: return previous
-    case .succeeded: return []
+    case .succeeded:
+        let confirmed = draftAttemptRecipientKey(recipient)
+        return previous.filter { draftAttemptRecipientKey($0.recipient) != confirmed }
     case .failed(let error):
         if orderMutationErrorProvesNoEffect(error) { return previous }
         let name = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -232,14 +431,14 @@ func unconfirmedDraftAttempts(previous: [UnconfirmedDraftAttempt], attempt: Draf
 }
 
 /// Whether earlier unconfirmed attempts have dropped off the list, which keeps only the most recent
-/// `unconfirmedDraftAttemptLimit`. Set when an unconfirmed attempt pushes one out; like the list, only a confirmed
-/// creation clears it, so the notice and Create Anyway stay required for an attempt that's no longer named (Look for
-/// Draft on Slant can't look for it: its marker went with it).
+/// `unconfirmedDraftAttemptLimit`. Set when an unconfirmed attempt pushes one out, and kept for the rest of the
+/// session: the dropped attempts' recipients are no longer known, so no confirmed creation can show they were for the
+/// same customer, and Look for Draft on Slant can't look for them (their markers went with them). The notice and
+/// Create Anyway stay required.
 func unconfirmedDraftAttemptsOverflowed(previous: [UnconfirmedDraftAttempt], overflowed: Bool,
                                         attempt: DraftCreateAttempt) -> Bool {
     switch attempt {
-    case .notSent: return overflowed
-    case .succeeded: return false
+    case .notSent, .succeeded: return overflowed
     case .failed(let error):
         if orderMutationErrorProvesNoEffect(error) { return overflowed }
         return overflowed || previous.count >= unconfirmedDraftAttemptLimit

@@ -52,7 +52,7 @@ final class OrdersImportFixesTests: XCTestCase {
 
     // MARK: Unconfirmed-draft guard overflow
 
-    func testAnEvictedAttemptKeepsTheGuardUntilAConfirmedCreation() {
+    func testAnEvictedAttemptKeepsTheGuardForTheSession() {
         let date = Date(timeIntervalSince1970: 1_000)
         let timeout = URLError(.timedOut)
         let refused = APIError.http(status: 422, body: "{}", retryAfter: nil, rateLimitReset: nil)
@@ -66,8 +66,10 @@ final class OrdersImportFixesTests: XCTestCase {
                       "a definite refusal proves nothing about earlier attempts")
         XCTAssertFalse(unconfirmedDraftAttemptsOverflowed(previous: full, overflowed: false, attempt: .failed(refused)))
         XCTAssertTrue(unconfirmedDraftAttemptsOverflowed(previous: [], overflowed: true, attempt: .notSent))
-        XCTAssertFalse(unconfirmedDraftAttemptsOverflowed(previous: full, overflowed: true, attempt: .succeeded),
-                       "only a confirmed creation clears it")
+        // Owner decision (28 Oct 2026): the dropped attempts' recipients are unknown, so no confirmed creation clears it.
+        XCTAssertTrue(unconfirmedDraftAttemptsOverflowed(previous: full, overflowed: true, attempt: .succeeded),
+                      "a confirmed creation can't show the dropped attempts were for the same customer")
+        XCTAssertFalse(unconfirmedDraftAttemptsOverflowed(previous: full, overflowed: false, attempt: .succeeded))
     }
 
     func testNoticeAndCreateAnywayNameUnlistedAttempts() {

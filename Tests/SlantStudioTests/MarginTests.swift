@@ -238,8 +238,9 @@ final class MarginTests: XCTestCase {
         XCTAssertEqual(after([], .failed(notSent)), [])
         XCTAssertEqual(after([earlier], .notSent), [earlier])
         XCTAssertEqual(after([], .notSent), [])
-        // Only a confirmed creation clears it.
-        XCTAssertEqual(after([earlier, ada], .succeeded), [])
+        // A confirmed creation clears only the same recipient's attempts (here Ada's), never another customer's.
+        XCTAssertEqual(after([earlier, ada], .succeeded), [earlier])
+        XCTAssertEqual(after([ada], .succeeded), [])
         // Only the most recent attempts are kept.
         let many = (0..<unconfirmedDraftAttemptLimit).map { UnconfirmedDraftAttempt(recipient: "R\($0)", date: date) }
         let capped = after(many, .failed(timeout))

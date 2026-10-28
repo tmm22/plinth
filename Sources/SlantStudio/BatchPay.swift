@@ -112,7 +112,7 @@ struct BatchPayReviewedDraft: Identifiable {
 }
 
 /// Why a reviewed draft is left out of the payment, or nil when it can be paid. Only a loaded draft of this ID, not
-/// locked, with a numeric total, is paid.
+/// locked, with a numeric total and no cost field Studio doesn't add (`orderUnlistedCosts`), is paid.
 func batchPayExclusionReason(orderID: String, order: [String: Any]?, loadFailure: String?, locked: Bool) -> String? {
     if locked { return "Its last payment or cancel request didn’t confirm. Reload it in its own review first." }
     if let loadFailure { return "Couldn’t load it. \(loadFailure)" }
@@ -126,6 +126,9 @@ func batchPayExclusionReason(orderID: String, order: [String: Any]?, loadFailure
         return "Slant didn’t return a total for it."
     }
     guard total >= 0 else { return "Its total isn’t a valid amount." }
+    // A tax or fee field Studio doesn't add, or a Slant total that disagrees with the costs: the single review shows a
+    // notice, but a batch gets less attention per order, so such a draft is paid on its own after checking.
+    if let reason = orderUnlistedCostBatchReason(orderUnlistedCosts(order)) { return reason }
     return nil
 }
 

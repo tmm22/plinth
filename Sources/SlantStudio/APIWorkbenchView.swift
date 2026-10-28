@@ -211,6 +211,10 @@ struct EndpointView: View {
                         Text("Printing: \(money(order["printingCost"]))")
                         Text("Delivery: \(money(order["deliveryCost"]))")
                         Text("Total: \(orderTotalMoney(order))")
+                        // As in the Orders review: advisory only, never changes whether Send is enabled.
+                        if isCharge, let notice = orderUnlistedCostNotice(orderUnlistedCosts(order)) {
+                            Text(notice).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        }
                         Text("Recipient: \(workbenchOrderRecipient(order))")
                     }.font(.callout).textSelection(.enabled)
                 } else if previewLoading {
@@ -575,7 +579,8 @@ struct EndpointView: View {
             }
             if request.isDraftCreate {
                 // The composer's unconfirmed-draft guard: an unknown outcome adds this attempt, a confirmed creation
-                // clears it, a refusal (or a request never sent) leaves it as it was.
+                // removes the attempts for the body's recipient (`customer.details.address.name`; an empty name only
+                // clears attempts without one), a refusal (or a request never sent) leaves it as it was.
                 store.noteDraftCreateAttempt(draftAttempt, recipient: orderDraftBodyRecipient(request.body), date: attemptDate,
                                              marker: request.draftMarker,
                                              platformID: ((request.body as? [String: Any])?["platformId"] as? String) ?? "")
@@ -702,7 +707,7 @@ func workbenchDisplayedResponse(path: String, json: Any?, fallback: String, show
     return prettyJSON(showSecrets ? json : hidingSecrets(json))
 }
 
-/// True when preview and fresh share the same status and printing/delivery/total costs.
+/// True when preview and fresh share the same status, printing/delivery/total costs and any other cost fields.
 func workbenchOrderPreviewMatches(_ preview: [String: Any], _ fresh: [String: Any]) -> Bool {
     let previewStatus = (preview["status"] as? String)?.uppercased() ?? ""
     let freshStatus = (fresh["status"] as? String)?.uppercased() ?? ""
@@ -711,6 +716,8 @@ func workbenchOrderPreviewMatches(_ preview: [String: Any], _ fresh: [String: An
     return workbenchCostEqual(preview["printingCost"], fresh["printingCost"])
         && workbenchCostEqual(preview["deliveryCost"], fresh["deliveryCost"])
         && orderTotalMoney(preview) == orderTotalMoney(fresh)
+        // A tax or fee field that appeared or changed since the review (`orderUnlistedCosts`).
+        && orderUnlistedCostSignature(preview) == orderUnlistedCostSignature(fresh)
 }
 
 func workbenchOrderPreviewMismatchMessage(preview: [String: Any], fresh: [String: Any]) -> String? {
