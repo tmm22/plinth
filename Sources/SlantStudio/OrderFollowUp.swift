@@ -80,6 +80,38 @@ let orderAttentionProductionStatuses: Set<String> = [
     "AWAITING_SHIPMENT"
 ]
 
+/// `fulfillment.status`, trimmed and upper-cased, or nil when there's no fulfilment or no status. Slant documents no
+/// values for it; live and doc examples use the earlier vocabulary (SHIPPED, AWAITING_SHIPMENT; read 29 Oct 2026).
+func orderFulfillmentStatus(_ order: [String: Any]) -> String? {
+    guard let fulfillment = order["fulfillment"] as? [String: Any], let raw = fulfillment["status"] as? String else { return nil }
+    let word = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return word.isEmpty ? nil : word
+}
+
+/// Shipping-record words that mean the parcel has left Slant.
+let orderFulfillmentShippedStatuses: Set<String> = ["SHIPPED", "DELIVERED"]
+
+/// The status Studio shows for an order. Slant's order status can lag its own shipping record: on 29 Oct 2026 two
+/// orders read PRINTING while `fulfillment.status` was SHIPPED with tracking and a printed label. So while the order
+/// status is a production status (`orderAttentionProductionStatuses`) and the shipping record says SHIPPED or
+/// DELIVERED, Studio shows the shipping record's word; otherwise Slant's order status, unchanged.
+///
+/// Display and read-only advice only. Cancel gating, the pay/cancel re-checks, the unknown-outcome lock, pay outcomes,
+/// Pay Several Drafts and the Spending Report use Slant's raw `status`, never this.
+func orderDisplayStatus(_ order: [String: Any]) -> String {
+    let raw = (order["status"] as? String) ?? ""
+    let status = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    guard orderAttentionProductionStatuses.contains(status), let shipping = orderFulfillmentStatus(order),
+          orderFulfillmentShippedStatuses.contains(shipping) else { return raw }
+    return shipping
+}
+
+/// Whether Studio shows the shipping record's word instead of Slant's order status (`orderDisplayStatus`).
+func orderStatusLagsShippingRecord(_ order: [String: Any]) -> Bool {
+    let raw = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return orderDisplayStatus(order).uppercased() != raw
+}
+
 /// Why an order needs a look. Worked out locally from the loaded order and the clock; never a request.
 enum OrderAttention: Equatable {
     case paymentProblem
