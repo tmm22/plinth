@@ -173,18 +173,41 @@ func batchPayPlacedMarketplaceKeys(_ orders: [Record]) -> Set<String> {
 /// the same marketplace order, and any draft whose marketplace order already has a placed order. A timed-out create
 /// followed by Create Anyway or a re-import can leave two drafts for one sale; a batch must never pay both. The seller
 /// can still pay one in its own review after checking.
-func batchPayDuplicateExclusions(_ drafts: [(id: String, order: [String: Any])], placedKeys: Set<String>) -> [String: String] {
+///
+/// `drafts` is every draft in the review, in the review's order, including those already left out for another reason
+/// (`excludedIDs`: a lock, a failed load, an unlisted cost, already sent for payment and so on). Such a draft still
+/// holds its marketplace order, so every other draft for that order is left out too, before or after it in the list:
+/// otherwise the batch would pay one and the seller, paying the left-out one on its own after checking it, would pay
+/// one sale twice. Reasons are returned only for drafts not in `excludedIDs`, so this never includes anything; it only
+/// leaves more out.
+func batchPayDuplicateExclusions(_ drafts: [(id: String, order: [String: Any])], placedKeys: Set<String>,
+                                 excludedIDs: Set<String> = []) -> [String: String] {
+    var leftOutKeys = Set<String>()
+    for draft in drafts where excludedIDs.contains(draft.id) {
+        if let key = batchPayMarketplaceKey(draft.order) { leftOutKeys.insert(key) }
+    }
     var seen = Set<String>()
     var reasons: [String: String] = [:]
-    for draft in drafts {
+    for draft in drafts where !excludedIDs.contains(draft.id) {
         guard let key = batchPayMarketplaceKey(draft.order), let line = orderMarketplaceReferenceLine(draft.order) else { continue }
         if placedKeys.contains(key) {
             reasons[draft.id] = "An order for \(line) was already placed, so this draft may be a duplicate. Check it in its own review."
+        } else if leftOutKeys.contains(key) {
+            reasons[draft.id] = "Another draft in this review is also for \(line) and was left out, so this one may be a duplicate. Check them in Orders."
         } else if !seen.insert(key).inserted {
             reasons[draft.id] = "Another draft in this review is also for \(line). Only the first is included; check them in Orders."
         }
     }
     return reasons
+}
+
+/// The copy of a reviewed draft that names its marketplace order for `batchPayDuplicateExclusions`: the fresh copy
+/// when Slant returned this order, else the list's copy (a draft that failed to load, or a reply for another order,
+/// still holds its marketplace order). Nil when neither is available.
+func batchPayDuplicateCheckOrder(id: String, fresh: [String: Any]?, listed: [Record]) -> [String: Any]? {
+    if let fresh, orderBelongs(fresh, to: id) { return fresh }
+    guard let record = listed.first(where: { !$0.id.isEmpty && $0.id == id }) else { return nil }
+    return orderObject(record.values)
 }
 
 /// Shown in the review while a draft create this session wasn't confirmed: a duplicate draft without a marketplace
@@ -539,11 +562,16 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             let alreadyPaid = placedIDs.contains(id) ? "It was sent for payment in this batch." : nil
             return BatchPayReviewedDraft(id: id, order: order, exclusion: alreadyPaid ?? reason)
         }
+        // Every reviewed draft holds its marketplace order, whatever else left it out (a lock, a failed load, an unlisted
+        // cost), so a later draft for the same sale is never paid here while the earlier one waits to be paid on its own.
         let duplicates = batchPayDuplicateExclusions(
-            reviewed.compactMap { draft in draft.payable ? draft.order.map { (id: draft.id, order: $0) } : nil },
-            placedKeys: batchPayPlacedMarketplaceKeys(store.orders))
+            reviewed.compactMap { draft in
+                batchPayDuplicateCheckOrder(id: draft.id, fresh: draft.order, listed: store.orders).map { (id: draft.id, order: $0) }
+            },
+            placedKeys: batchPayPlacedMarketplaceKeys(store.orders),
+            excludedIDs: Set(reviewed.filter { !$0.payable }.map(\.id)))
         reviewed = reviewed.map { draft in
-            guard let reason = duplicates[draft.id] else { return draft }
+            guard draft.payable, let reason = duplicates[draft.id] else { return draft }
             return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
         }
         phase = .review

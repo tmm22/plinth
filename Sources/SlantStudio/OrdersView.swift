@@ -929,7 +929,12 @@ struct OrderComposerView: View {
             let marker = orderDraftMarkerSent(body, generated: generatedMarker)
             let sentPlatformID = draftPlatformID
             validation = nil
-            if draftCreateNeedsConfirmation(outcomeUnknown: store.draftCreateOutcomeUnknown, confirmed: confirmedDespiteUnknownOutcome) {
+            // Create Anyway only when this draft could be one of the unconfirmed attempts: judged by the name the body
+            // sends (`draftCreateNeedsCreateAnyway`). The notice above shows whatever the name.
+            let needsCreateAnyway = draftCreateNeedsCreateAnyway(
+                attempts: store.unconfirmedDraftCreates, overflowed: store.unconfirmedDraftCreatesOverflowed,
+                recipient: orderDraftBodyRecipient(body))
+            if draftCreateNeedsConfirmation(outcomeUnknown: needsCreateAnyway, confirmed: confirmedDespiteUnknownOutcome) {
                 confirmCreateAnyway = true
                 return
             }

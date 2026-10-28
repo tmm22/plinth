@@ -410,8 +410,10 @@ let orderReviewCostNoticeLines = 2
 
 /// `maximumExtraLines`: 2 normally (the marketplace and estimate lines); the pay review raises it while it shows the
 /// unlisted-cost notice (`orderUnlistedCostNotice`, counted as `orderReviewCostNoticeLines`), which must stay in view.
+/// At least one item is always listed plainly (never a limit of 0), and the extras taken from the box never exceed
+/// `orderReviewPlainItemLimit`, so a scrolling box always shows at least two rows.
 func orderReviewItemListLayout(itemCount: Int, extraReceiptLines: Int, maximumExtraLines: Int = 2) -> (scrolls: Bool, height: CGFloat) {
-    let extras = max(0, min(max(0, maximumExtraLines), extraReceiptLines))
-    return (itemCount > orderReviewPlainItemLimit - extras,
+    let extras = max(0, min(max(0, maximumExtraLines), extraReceiptLines, orderReviewPlainItemLimit))
+    return (itemCount > max(1, orderReviewPlainItemLimit - extras),
             orderReviewItemBoxHeight - CGFloat(extras) * orderReviewExtraLineHeight)
 }

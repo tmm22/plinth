@@ -71,7 +71,8 @@ struct EndpointView: View {
     /// The confirm sheet's own note about the last send (a pay accepted but not confirmed, a refusal), shown in place
     /// of the generic unknown-result line; the window's alert would wait behind the sheet.
     @State private var mutationNote: String?
-    /// After an unconfirmed draft create (any composer), a Workbench `POST /orders` asks for Create Anyway first.
+    /// After an unconfirmed draft create (any composer), a Workbench `POST /orders` that could repeat it asks for Create
+    /// Anyway first (`draftCreateNeedsCreateAnyway`).
     @State private var confirmWorkbenchCreateAnyway = false
     var isChargeEndpoint: Bool { endpoint.method == "POST" && endpoint.path == "/orders/{publicOrderId}" }
     var isDeleteOrderEndpoint: Bool { endpoint.method == "DELETE" && endpoint.path == "/orders/{publicOrderId}" }
@@ -263,8 +264,14 @@ struct EndpointView: View {
                 } else {
                     confirmSendButton(title: "Send \(pending.endpoint.method) Request", prominent: true, destructive: pending.endpoint.method == "DELETE", enabled: sendEnabled, usesReturn: usesReturn) {
                         guard sendUnlocked else { return }
+                        // As the composer: Create Anyway only when the body's recipient could be an unconfirmed
+                        // attempt's (`draftCreateNeedsCreateAnyway`; no readable name counts as could be).
                         if pending.isDraftCreate,
-                           draftCreateNeedsConfirmation(outcomeUnknown: store.draftCreateOutcomeUnknown, confirmed: false) {
+                           draftCreateNeedsConfirmation(
+                               outcomeUnknown: draftCreateNeedsCreateAnyway(
+                                   attempts: store.unconfirmedDraftCreates, overflowed: store.unconfirmedDraftCreatesOverflowed,
+                                   recipient: orderDraftBodyRecipient(pending.body)),
+                               confirmed: false) {
                             confirmWorkbenchCreateAnyway = true
                             return
                         }
@@ -691,8 +698,11 @@ func workbenchConfirmSendUsesReturnDefault(method: String, path: String) -> Bool
     return false
 }
 
+/// The order in a Workbench reply, read exactly as the Orders review reads it (`mergeOrderDraftEnvelope`): a draft
+/// envelope's `totals` (and items and customer) are kept, so the unlisted-cost notice and the pre-send comparison both
+/// see any cost Slant lists there, and compare like with like.
 func workbenchUnwrapOrder(_ object: [String: Any]) -> [String: Any] {
-    object["order"] as? [String: Any] ?? object
+    mergeOrderDraftEnvelope(object)
 }
 
 func workbenchOrderRecipient(_ order: [String: Any]) -> String {

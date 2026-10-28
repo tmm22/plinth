@@ -68,7 +68,9 @@ let orderCostFieldsStudioAdds: Set<String> = ["printingCost", "deliveryCost"]
 let orderSlantTotalFields = ["total", "totalCost"]
 /// Words that make a field look like money, matched case-insensitively anywhere in the key. Deliberately broad: a
 /// false alarm (`costCentre`) only asks the seller to check the order on Slant, while a miss could under-state a charge.
-let orderMoneyKeyWords = ["cost", "fee", "tax", "total", "price", "charge", "surcharge", "discount", "amount", "vat", "duty"]
+/// `pric` covers price and pricing. Never `payment`: `paymentId` is a live key.
+let orderMoneyKeyWords = ["cost", "fee", "tax", "total", "pric", "charge", "surcharge", "discount", "amount", "vat", "duty",
+                          "gst", "levy", "handling", "insurance", "postage", "shipping", "billing"]
 /// The notice names at most this many fields ("and 2 more" after them).
 let orderUnlistedCostNameLimit = 3
 /// Slant's total may differ from print + delivery by rounding: up to half a cent isn't a mismatch.
@@ -219,12 +221,12 @@ func orderUnlistedCostNotice(_ costs: OrderUnlistedCosts) -> String? {
     guard !costs.isEmpty else { return nil }
     var parts: [String] = []
     if !costs.fields.isEmpty {
-        parts.append("Slant’s order also lists \(orderUnlistedCostFieldList(costs)), which may not be included in this total.")
+        parts.append("Slant also lists \(orderUnlistedCostFieldList(costs)), which this total may not include.")
     }
     if let slant = costs.slantTotal, let sum = costs.costsSum {
-        parts.append("Slant’s own total (\(orderUnlistedCostMoney(slant)) USD) doesn’t match print cost plus delivery (\(orderUnlistedCostMoney(sum)) USD).")
+        parts.append("Slant’s total (\(orderUnlistedCostMoney(slant)) USD) isn’t print plus delivery (\(orderUnlistedCostMoney(sum)) USD).")
     }
-    parts.append("Slant may charge more than shown; check the order on Slant before paying.")
+    parts.append("Check the order on Slant before paying.")
     return parts.joined(separator: " ")
 }
 
@@ -403,14 +405,16 @@ let unconfirmedDraftAttemptLimit = 5
 
 /// The recipient as compared between a confirmed creation and earlier unconfirmed attempts: trimmed, runs of
 /// whitespace collapsed to one space, case-insensitive. An empty name stays empty, so it matches only another empty one.
+/// It is the name only, not the address: two customers with the same name are one recipient here.
 func draftAttemptRecipientKey(_ recipient: String) -> String {
     recipient.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
 }
 
 /// Unconfirmed Create Draft attempts after one more press. A timeout, transport failure, 5xx, 408/409 or an
-/// unreadable reply adds this attempt. A confirmed success removes only the attempts for the same recipient
+/// unreadable reply adds this attempt. A confirmed success removes only the attempts for the same recipient name
 /// (`draftAttemptRecipientKey`; owner decision, 28 Oct 2026): creating a draft for one customer says nothing about
-/// another customer's unconfirmed draft, so that warning, and Create Anyway for it, stay. A failure that proves nothing
+/// another customer's unconfirmed draft, so that warning stays. Matching is by name only, so two customers with the
+/// same name share a warning: a confirmed draft for one clears the other's attempt too. A failure that proves nothing
 /// happened (refused with a definite 4xx, or never sent) leaves the list as it was, because it says nothing about the
 /// earlier requests. Look for Draft on Slant confirms attempts by marker (`unconfirmedDraftAttempts(_:confirmedMarkers:)`).
 func unconfirmedDraftAttempts(previous: [UnconfirmedDraftAttempt], attempt: DraftCreateAttempt,
@@ -491,9 +495,27 @@ func draftAttemptTimeText(_ date: Date) -> String {
         : date.formatted(date: .abbreviated, time: .shortened)
 }
 
-/// The composer's Create Draft needs an explicit "Create Anyway" while an earlier draft's outcome is unknown.
+/// The composer's Create Draft needs an explicit "Create Anyway" while `outcomeUnknown` (from
+/// `draftCreateNeedsCreateAnyway`) holds and the seller hasn't confirmed.
 func draftCreateNeedsConfirmation(outcomeUnknown: Bool, confirmed: Bool) -> Bool {
     outcomeUnknown && !confirmed
+}
+
+/// Whether the next Create (the composer's Create Draft, or the Workbench's `POST /orders`) needs Create Anyway (owner
+/// decision, 28 Oct 2026). The notice shows whenever any attempt is unconfirmed, but asking on every Create trains the
+/// seller to click through it, so it asks only when this draft could be one of those: its recipient matches an
+/// unconfirmed attempt's (`draftAttemptRecipientKey`, by name only), an unconfirmed attempt has no recipient, older
+/// attempts dropped off the list (`overflowed`), or this draft has no recipient. `recipient` is the name the request
+/// actually sends.
+func draftCreateNeedsCreateAnyway(attempts: [UnconfirmedDraftAttempt], overflowed: Bool, recipient: String) -> Bool {
+    if overflowed { return true }
+    guard !attempts.isEmpty else { return false }
+    let key = draftAttemptRecipientKey(recipient)
+    if key.isEmpty { return true }
+    return attempts.contains { attempt in
+        let attemptKey = draftAttemptRecipientKey(attempt.recipient)
+        return attemptKey.isEmpty || attemptKey == key
+    }
 }
 
 /// The discard prompt mustn't claim nothing was sent once a create request may have reached Slant.

@@ -10,7 +10,12 @@ Run before every release and whenever the app's API change check fires:
 2. Compares it, as parsed JSON, with Sources/SlantStudio/Resources/
    slant-openapi-upstream.json (Slant's spec as last reviewed), separating
    contract changes from wording-only changes (description, summary, title,
-   example and examples).
+   example, examples and externalDocs, the keys the app's daily check
+   ignores). Unordered lists (required, enum, tags, type and every other list
+   but servers and prefixItems) are compared as sets, as the app does. The
+   script also reports what the app ignores: `x-` extensions, `info` other
+   than its version, the top-level tags list and parameter order; the output
+   says which contract changes those are.
 3. Checks that every difference between Studio's openapi.json and that
    snapshot is tagged with `x-slant-studio-source: docs|live` (on the changed
    node or an ancestor), or is text appended to Slant's description.
@@ -40,7 +45,10 @@ SNAPSHOT = RESOURCES / "slant-openapi-upstream.json"
 STUDIO_SPEC = RESOURCES / "openapi.json"
 TAG = "x-slant-studio-source"
 TAG_VALUES = ("docs", "live")
-WORDING_KEYS = {"description", "summary", "title", "example", "examples"}
+# The same keys as `slantAPIIgnoredKeys` in SlantAPIChanges.swift.
+WORDING_KEYS = {"description", "summary", "title", "example", "examples", "externalDocs"}
+# Lists whose order means something (`slantAPIOrderedArrayKeys`); every other list is compared as a set.
+ORDERED_LIST_KEYS = {"servers", "prefixItems"}
 # Keys whose children are names chosen by the spec's author (a property called
 # "description" is contract, not wording).
 NAME_MAPS = {"paths", "properties", "schemas", "responses", "content", "headers",
@@ -193,11 +201,15 @@ def diff(old, new, keys=(), names=False, out=None, wording=False):
     if isinstance(old, list) and isinstance(new, list):
         if same(old, new):
             return out
+        ordered = bool(keys) and keys[-1] in ORDERED_LIST_KEYS
+        if not ordered and sorted(canonical(v) for v in old) == sorted(canonical(v) for v in new):
+            return out  # the same entries in another order: a set, as the app compares it
         if all(not isinstance(v, (dict, list)) for v in old + new):
             added = [v for v in new if canonical(v) not in {canonical(o) for o in old}]
             removed = [v for v in old if canonical(v) not in {canonical(n) for n in new}]
             if not added and not removed:
-                out.append((keys, f"reordered {short(old)} → {short(new)}", wording))
+                what = "reordered" if ordered else "repeated entries changed"
+                out.append((keys, f"{what} {short(old)} → {short(new)}", wording))
             else:
                 text = []
                 if added:
@@ -237,6 +249,19 @@ def operations(document):
     return found
 
 
+def app_ignores(entry):
+    """Whether the app's daily check (SlantAPIChanges.swift) ignores this contract change: an `x-` extension, `info`
+    other than its version, the top-level tags list, or parameter order."""
+    keys, message, _ = entry
+    if any(isinstance(key, str) and key.startswith("x-") for key in keys):
+        return True
+    if keys[:1] == ("info",) and keys[:2] != ("info", "version"):
+        return True
+    if keys[:1] == ("tags",):
+        return True
+    return message == "parameters reordered"
+
+
 def print_grouped(title, entries):
     print(f"\n{title} ({len(entries)}):")
     groups = {}
@@ -265,6 +290,11 @@ def compare_with_snapshot(snapshot, live):
               and (len(e[0]) == 2 or (len(e[0]) == 3 and e[0][2] in METHODS))]
     if len(listed) < len(contract):
         print_grouped("Contract changes", [e for e in contract if e not in listed])
+        ignored = [e for e in contract if e not in listed and app_ignores(e)]
+        if ignored:
+            print(f"  Note: {len(ignored)} of these ({', '.join(sorted({group_and_place(e[0])[0] for e in ignored}))}) "
+                  "are `x-` extension, `info`, top-level tags or parameter-order changes. This script reports them, "
+                  "but the app's daily check ignores them, so the app shows no notice for them.")
     if wording:
         print_grouped("Wording-only changes", wording)
     if contract:

@@ -29,11 +29,14 @@ let slantAPIMaxStatusWords = 10
 let slantAPIMaxStatusWordLength = 40
 let slantAPIMaxSavedAreas = 12
 let slantAPIMaxAreaNameLength = 40
+/// The comparison's own version, part of the record's `bundledFingerprint`: a build that changes what counts as a
+/// change (the ignored keys, the units, the change token) bumps it, so a record saved by the old logic is discarded.
+let slantAPIComparisonVersion = 2
 
 // MARK: - Semantic comparison
 
-/// Wording and examples: changes to these never count.
-private let slantAPIIgnoredKeys: Set<String> = ["description", "summary", "example", "examples", "externalDocs"]
+/// Wording and examples: changes to these never count. `scripts/check-slant-api.py` treats the same keys as wording.
+private let slantAPIIgnoredKeys: Set<String> = ["description", "summary", "title", "example", "examples", "externalDocs"]
 /// Objects whose keys are names (properties, paths, schemas, status codes, media types…), never keywords, so a
 /// property called `description` is compared like any other.
 private let slantAPINameMapKeys: Set<String> = [
@@ -130,7 +133,8 @@ struct SlantAPISpecUnits: Equatable, Sendable {
     /// "#/components/schemas/Order" → canonical text.
     var components: [String: String] = [:]
     var general = ""
-    /// SHA-256 of the whole normalised spec: equal for specs that differ only in wording.
+    /// SHA-256 of exactly what the comparison looks at (operations, components and `general`): equal for specs that
+    /// differ only in wording, in `info` other than its version, or in the top-level tag list.
     var fingerprint = ""
 }
 
@@ -174,12 +178,22 @@ func slantAPISpecUnits(_ document: [String: Any]) -> SlantAPISpecUnits? {
     var general = normalised.filter { !["paths", "components", "info", "tags"].contains($0.key) }
     if let version = (document["info"] as? [String: Any])?["version"] { general["info.version"] = version }
     units.general = slantAPICanonicalText(general)
-    units.fingerprint = slantAPIFingerprint(Data(slantAPICanonicalText(normalised).utf8))
+    // From the compared pieces only, so an edit the comparison ignores (`info.title`, the top-level `tags` list) can't
+    // give a dismissed change a new token and bring the notice back.
+    units.fingerprint = slantAPIFingerprint(Data(slantAPICanonicalText([
+        "operations": units.operations, "components": units.components, "general": units.general
+    ] as [String: Any]).utf8))
     return units
 }
 
 func slantAPIFingerprint(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+/// The record's `bundledFingerprint`: the comparison version and the bundled file's SHA-256 ("v2:…"). A record saved
+/// against another bundled copy or by another comparison version is discarded.
+func slantAPIRecordFingerprint(bundledData: Data) -> String {
+    "v\(slantAPIComparisonVersion):" + slantAPIFingerprint(bundledData)
 }
 
 struct SlantAPIDifference: Equatable, Sendable {
@@ -273,10 +287,11 @@ func slantAPIBundledSpecData() -> Data? {
 // MARK: - The saved record
 
 /// Everything the check saves (UserDefaults): Slant's cache headers, when it checked, the changed area names, which
-/// change was dismissed, and fingerprints (hashes) of the bundled and the differing public spec. No key, account,
-/// order or customer data.
+/// change was dismissed, the dismissed unrecognised status words, and fingerprints (hashes) of the bundled and the
+/// differing public spec. No key, account, order or customer data.
 struct SlantAPICheckRecord: Equatable {
-    /// SHA-256 of the bundled file the rest was compared with. A new Studio build starts afresh.
+    /// The comparison version and SHA-256 of the bundled file the rest was compared with (`slantAPIRecordFingerprint`).
+    /// A new bundled copy or comparison version starts afresh.
     var bundledFingerprint = ""
     var etag: String?
     var lastModified: String?
@@ -292,6 +307,9 @@ struct SlantAPICheckRecord: Equatable {
     var changedOn: Date?
     /// The `changeToken` the seller dismissed.
     var dismissedToken: String?
+    /// Unrecognised status words the seller dismissed (as `slantAPIUnrecognisedStatusWord` gives them, at most
+    /// `slantAPIMaxStatusWords`, newest last), so a lasting new status doesn't come back at every launch.
+    var dismissedStatuses: [String] = []
 
     var hasChange: Bool { changeToken != nil && !areas.isEmpty }
 }
@@ -325,6 +343,8 @@ func encodeSlantAPICheckRecord(_ record: SlantAPICheckRecord) -> [String: Any] {
     if let token = record.changeToken { result["changeToken"] = token }
     if let date = record.changedOn { result["changedOn"] = date.timeIntervalSince1970 }
     if let token = record.dismissedToken { result["dismissedToken"] = token }
+    let statuses = slantAPISavedStatusWords(record.dismissedStatuses)
+    if !statuses.isEmpty { result["dismissedStatuses"] = statuses }
     return result
 }
 
@@ -353,10 +373,22 @@ func decodeSlantAPICheckRecord(_ value: Any?, bundledFingerprint: String) -> Sla
     record.changeToken = slantAPIToken(root["changeToken"])
     record.changedOn = date(root["changedOn"])
     record.dismissedToken = slantAPIToken(root["dismissedToken"])
+    record.dismissedStatuses = slantAPISavedStatusWords((root["dismissedStatuses"] as? [Any] ?? []).compactMap { $0 as? String })
     // Cache headers without a comparison to go with them would turn a 304 into "unchanged".
     if record.checkedAt == nil { record.etag = nil; record.lastModified = nil }
     if record.changeToken == nil || record.areas.isEmpty { record.changeToken = nil; record.changedOn = nil; record.areas = [] }
     return record
+}
+
+/// Status words as saved: only words `slantAPIUnrecognisedStatusWord` gives back unchanged (anything else, including a
+/// status Studio now recognises, is dropped), each once, the last `slantAPIMaxStatusWords`.
+func slantAPISavedStatusWords(_ words: [String]) -> [String] {
+    var result: [String] = []
+    for word in words where slantAPIUnrecognisedStatusWord(word) == word {
+        result.removeAll { $0 == word }
+        result.append(word)
+    }
+    return Array(result.suffix(slantAPIMaxStatusWords))
 }
 
 func slantAPISavedAreas(_ areas: [String]) -> [String] {
@@ -600,9 +632,9 @@ struct SlantAPIRuntimeSignals: Equatable {
 
 // MARK: - What the seller sees
 
-/// What the seller dismissed this session besides the spec change (which is saved as `dismissedToken`).
+/// What the seller dismissed this session besides the spec change and the status words (saved in the record as
+/// `dismissedToken` and `dismissedStatuses`).
 struct SlantAPINoticeDismissal: Equatable {
-    var statuses: Set<String> = []
     var unreadable = false
 }
 
@@ -624,7 +656,9 @@ func slantAPIChangeDate(_ record: SlantAPICheckRecord) -> Date? {
 
 func slantAPISpecChangeSentence(areas: [String], changedOn: Date?) -> String {
     let list = slantAPIAreaListText(areas)
-    let tail = "Some features may not work as expected until Studio is updated."
+    // The notice sits above the orders list; it names Orders only when the change touches it.
+    let check = areas.contains("Orders") ? "If anything in Orders looks odd, check it on Slant." : "If anything looks odd, check it on Slant."
+    let tail = "Studio carries on as before, but some details may be missing or wrong until it’s updated. \(check)"
     if let changedOn {
         let day = changedOn.formatted(date: .abbreviated, time: .omitted)
         return "Slant changed its API on \(day) (\(list)), after this version of Studio was made. \(tail)"
@@ -632,12 +666,12 @@ func slantAPISpecChangeSentence(areas: [String], changedOn: Date?) -> String {
     return "Slant’s API has changed (\(list)) since this version of Studio was made. \(tail)"
 }
 
-/// Studio's handling of a status it doesn't recognise, as `orderCanRequestCancellation`, `spendReportCountedStatuses`,
-/// `orderNeedsAttention` and `orderPlacedStatuses` implement it.
+/// Studio's handling of a status it doesn't recognise: `orderCanRequestCancellation` offers no Cancel for it, and the
+/// Spending Report counts only `spendReportCountedStatuses` (an allowlist).
 func slantAPIStatusSentence(_ words: [String], more: Bool) -> String {
     let list = words.joined(separator: ", ") + (more ? " and others" : "")
     let what = words.count == 1 && !more ? "an order status" : "order statuses"
-    return "Slant sent \(what) this version of Studio doesn’t recognise (\(list)). Studio treats such orders with caution: it offers no Cancel for them, leaves them out of spending, never marks them late and doesn’t treat them as placed."
+    return "Slant sent \(what) Studio doesn’t recognise (\(list)). Studio won’t offer Cancel for those orders or count them in the Spending Report; check them on Slant."
 }
 
 let slantAPIUnreadableSentence = "Slant sent an order list Studio couldn’t read, so some orders may not be shown."
@@ -649,20 +683,21 @@ func slantAPINoticeLines(record: SlantAPICheckRecord, signals: SlantAPIRuntimeSi
     if record.hasChange, record.changeToken != record.dismissedToken {
         lines.append(slantAPISpecChangeSentence(areas: record.areas, changedOn: slantAPIChangeDate(record)))
     }
-    let newStatuses = signals.statuses.filter { !dismissal.statuses.contains($0) }
+    let newStatuses = signals.statuses.filter { !record.dismissedStatuses.contains($0) }
     if !newStatuses.isEmpty { lines.append(slantAPIStatusSentence(newStatuses, more: signals.moreStatuses)) }
     if signals.unreadableOrderLists > 0, !dismissal.unreadable { lines.append(slantAPIUnreadableSentence) }
     return lines
 }
 
-/// Dismiss hides what is shown now: the spec change until it changes again, and this session's statuses and
-/// unreadable lists until a new status appears.
+/// Dismiss hides what is shown now: the spec change until it changes again, the status words shown (saved, so they
+/// stay hidden after relaunching; a different word still shows the notice), and this session's unreadable lists.
 func slantAPIDismissing(record: SlantAPICheckRecord, signals: SlantAPIRuntimeSignals, dismissal: SlantAPINoticeDismissal)
     -> (record: SlantAPICheckRecord, dismissal: SlantAPINoticeDismissal) {
     var nextRecord = record
     if record.hasChange { nextRecord.dismissedToken = record.changeToken }
+    let shown = signals.statuses.filter { !record.dismissedStatuses.contains($0) }
+    if !shown.isEmpty { nextRecord.dismissedStatuses = slantAPISavedStatusWords(record.dismissedStatuses + shown) }
     var nextDismissal = dismissal
-    nextDismissal.statuses.formUnion(signals.statuses)
     if signals.unreadableOrderLists > 0 { nextDismissal.unreadable = true }
     return (nextRecord, nextDismissal)
 }
@@ -722,7 +757,7 @@ func slantAPICheckActivityDetail(_ outcome: Result<SlantAPIDifference?, SlantAPI
         let data = slantAPIBundledSpecData()
         bundledData = data
         bundleAvailable = data != nil
-        let fingerprint = data.map(slantAPIFingerprint) ?? ""
+        let fingerprint = data.map { slantAPIRecordFingerprint(bundledData: $0) } ?? ""
         record = decodeSlantAPICheckRecord(UserDefaults.standard.object(forKey: slantAPICheckDefaultsKey), bundledFingerprint: fingerprint)
     }
 
@@ -731,6 +766,7 @@ func slantAPICheckActivityDetail(_ outcome: Result<SlantAPIDifference?, SlantAPI
         self.store = store
         observers = []
         // Disconnect or removing the key forgets this session's runtime signals (they came from the account's replies).
+        // Dismissed status words stay in the record: they are Slant's words, nothing about the account.
         store.$apiKey
             .map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .removeDuplicates()

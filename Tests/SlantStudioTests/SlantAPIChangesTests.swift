@@ -263,7 +263,8 @@ final class SlantAPISignalsTests: XCTestCase {
         XCTAssertTrue(slantAPIOrderListLooksUnreadable(records: [without], pagination: nil, firstPage: false))
     }
 
-    /// The notice says Studio treats unrecognised statuses with caution; this is what that sentence relies on.
+    /// The notice says Studio won't offer Cancel or count such orders in the Spending Report; this is what that relies
+    /// on (and the rest of Studio's caution with them).
     func testUnrecognisedStatusesAreTreatedWithCaution() {
         let status = "ON_HOLD"
         XCTAssertFalse(orderCanRequestCancellation(status))
@@ -285,12 +286,14 @@ final class SlantAPISignalsTests: XCTestCase {
         let later = Date(timeIntervalSince1970: 1_794_000_000)
         let dated = slantAPISpecChangeSentence(areas: ["Orders"], changedOn: later)
         XCTAssertTrue(dated.hasPrefix("Slant changed its API on "), dated)
-        XCTAssertTrue(dated.contains("(Orders), after this version of Studio was made. Some features may not work as expected until Studio is updated."), dated)
+        XCTAssertTrue(dated.contains("(Orders), after this version of Studio was made. Studio carries on as before, but some details may be missing or wrong until it’s updated. If anything in Orders looks odd, check it on Slant."), dated)
         XCTAssertEqual(slantAPISpecChangeSentence(areas: ["Files", "Orders"], changedOn: nil),
-                       "Slant’s API has changed (Files and Orders) since this version of Studio was made. Some features may not work as expected until Studio is updated.")
+                       "Slant’s API has changed (Files and Orders) since this version of Studio was made. Studio carries on as before, but some details may be missing or wrong until it’s updated. If anything in Orders looks odd, check it on Slant.")
+        // Orders is named only when the change touches it.
+        XCTAssertTrue(slantAPISpecChangeSentence(areas: ["Files"], changedOn: nil).hasSuffix("until it’s updated. If anything looks odd, check it on Slant."))
         XCTAssertEqual(slantAPIStatusSentence(["ON_HOLD"], more: false),
-                       "Slant sent an order status this version of Studio doesn’t recognise (ON_HOLD). Studio treats such orders with caution: it offers no Cancel for them, leaves them out of spending, never marks them late and doesn’t treat them as placed.")
-        XCTAssertTrue(slantAPIStatusSentence(["A", "B"], more: true).hasPrefix("Slant sent order statuses this version of Studio doesn’t recognise (A, B and others)."))
+                       "Slant sent an order status Studio doesn’t recognise (ON_HOLD). Studio won’t offer Cancel for those orders or count them in the Spending Report; check them on Slant.")
+        XCTAssertTrue(slantAPIStatusSentence(["A", "B"], more: true).hasPrefix("Slant sent order statuses Studio doesn’t recognise (A, B and others)."))
         // A Last-Modified no later than the bundled copy's isn't shown as the change's date.
         var record = SlantAPICheckRecord(checkedAt: later, areas: ["Orders"], changeToken: changedToken, changedOn: slantAPIBundledSpecDate)
         XCTAssertNil(slantAPIChangeDate(record))
@@ -527,5 +530,106 @@ final class SlantAPISpecFetcherTests: XCTestCase {
         request.setValue("Bearer sl-secret", forHTTPHeaderField: "Authorization")
         do { let error = failure(await fetch(request)); XCTAssertEqual(error, .unsafeRequest) }
         XCTAssertNil(SlantAPISpecStubProtocol.lastRequest)
+    }
+}
+
+// MARK: - Round 15 review fixes
+
+final class SlantAPIReviewFixesTests: XCTestCase {
+    /// `title` is wording, wherever it appears outside a name map; a property called `title` is still compared.
+    func testTitlesAreWording() {
+        var live = setting("Slant 3D API", at: ["info", "title"], in: fixtureSpec())
+        live = setting("An order", at: ["components", "schemas", "Order", "title"], in: live)
+        live = setting(["url": "https://example.com"], at: ["externalDocs"], in: live)
+        XCTAssertTrue(difference(live).isEmpty, "\(difference(live))")
+        let property = setting(["type": "string"], at: ["components", "schemas", "Order", "properties", "title"], in: fixtureSpec())
+        XCTAssertEqual(difference(property).definitions, ["Order"])
+    }
+
+    /// The change token comes from what the comparison looks at, so an ignored edit can't bring a dismissed notice back.
+    func testIgnoredEditsKeepTheChangeToken() {
+        let changed = setting(["type": "string"], at: ["components", "schemas", "Order", "properties", "taxNote"], in: fixtureSpec())
+        let token = units(changed).fingerprint
+        XCTAssertNotEqual(token, units(fixtureSpec()).fingerprint)
+        // info.title, info's other fields and the top-level tag list (names too) aren't compared.
+        var reworded = setting("Renamed API", at: ["info", "title"], in: changed)
+        reworded = setting(["name": "Slant"], at: ["info", "contact"], in: reworded)
+        reworded = setting([["name": "Orders"], ["name": "Files"], ["name": "Webhooks"]], at: ["tags"], in: reworded)
+        XCTAssertEqual(units(reworded).fingerprint, token)
+        XCTAssertFalse(difference(reworded).isEmpty)
+        // A dismissed change stays dismissed through such an edit.
+        var record = SlantAPICheckRecord(checkedAt: Date())
+        let first = SlantAPIComparison(difference: difference(changed), liveFingerprint: token)
+        record = slantAPIRecordAfterFetch(record, comparison: first, etag: nil, lastModified: nil, now: Date())
+        record = slantAPIDismissing(record: record, signals: SlantAPIRuntimeSignals(), dismissal: SlantAPINoticeDismissal()).record
+        let again = SlantAPIComparison(difference: difference(reworded), liveFingerprint: units(reworded).fingerprint)
+        record = slantAPIRecordAfterFetch(record, comparison: again, etag: nil, lastModified: nil, now: Date())
+        XCTAssertEqual(slantAPINoticeLines(record: record, signals: SlantAPIRuntimeSignals(), dismissal: SlantAPINoticeDismissal()), [])
+        // The info version is still compared.
+        let version = setting("2.1.0", at: ["info", "version"], in: changed)
+        XCTAssertNotEqual(units(version).fingerprint, token)
+    }
+
+    /// A record saved by another comparison version (or against another bundled copy) is discarded.
+    func testTheComparisonVersionIsPartOfTheBundledFingerprint() {
+        let data = Data("{\"paths\":{}}".utf8)
+        let fingerprint = slantAPIRecordFingerprint(bundledData: data)
+        XCTAssertEqual(fingerprint, "v\(slantAPIComparisonVersion):" + slantAPIFingerprint(data))
+        let saved = SlantAPICheckRecord(bundledFingerprint: slantAPIFingerprint(data), checkedAt: Date(), dismissedStatuses: ["ON_HOLD"])
+        // A record from before the version was added (the plain file hash) starts afresh.
+        XCTAssertEqual(decodeSlantAPICheckRecord(encodeSlantAPICheckRecord(saved), bundledFingerprint: fingerprint),
+                       SlantAPICheckRecord(bundledFingerprint: fingerprint))
+        let current = SlantAPICheckRecord(bundledFingerprint: fingerprint, checkedAt: Date(timeIntervalSince1970: 1_793_000_000),
+                                          dismissedStatuses: ["ON_HOLD"])
+        XCTAssertEqual(decodeSlantAPICheckRecord(encodeSlantAPICheckRecord(current), bundledFingerprint: fingerprint), current)
+        XCTAssertNotEqual(slantAPIRecordFingerprint(bundledData: Data("{\"paths\":{\"/a\":{}}}".utf8)), fingerprint)
+    }
+
+    /// Dismissed status words are saved with the record, so a lasting new status doesn't return at every launch; a
+    /// different word still shows the notice.
+    func testDismissedStatusesSurviveARelaunch() {
+        var signals = SlantAPIRuntimeSignals()
+        _ = signals.note(statusValues: ["on_hold"])
+        var record = SlantAPICheckRecord(bundledFingerprint: "v2:x")
+        XCTAssertEqual(slantAPINoticeLines(record: record, signals: signals, dismissal: SlantAPINoticeDismissal()).count, 1)
+        record = slantAPIDismissing(record: record, signals: signals, dismissal: SlantAPINoticeDismissal()).record
+        XCTAssertEqual(record.dismissedStatuses, ["ON_HOLD"])
+
+        // Relaunch: the record is read back and the session's signals start empty, then the same word arrives again.
+        let relaunched = decodeSlantAPICheckRecord(encodeSlantAPICheckRecord(record), bundledFingerprint: "v2:x")
+        XCTAssertEqual(relaunched.dismissedStatuses, ["ON_HOLD"])
+        var fresh = SlantAPIRuntimeSignals()
+        _ = fresh.note(statusValues: ["ON_HOLD"])
+        XCTAssertEqual(slantAPINoticeLines(record: relaunched, signals: fresh, dismissal: SlantAPINoticeDismissal()), [])
+        // A different word shows, naming only the new one.
+        _ = fresh.note(statusValues: ["AWAITING_PARTS"])
+        XCTAssertEqual(slantAPINoticeLines(record: relaunched, signals: fresh, dismissal: SlantAPINoticeDismissal()),
+                       [slantAPIStatusSentence(["AWAITING_PARTS"], more: false)])
+        // A fetch keeps the dismissed words; a new bundled copy discards them with the record.
+        let fetched = slantAPIRecordAfterFetch(relaunched, comparison: SlantAPIComparison(difference: SlantAPIDifference(), liveFingerprint: otherToken),
+                                               etag: nil, lastModified: nil, now: Date())
+        XCTAssertEqual(fetched.dismissedStatuses, ["ON_HOLD"])
+        XCTAssertEqual(decodeSlantAPICheckRecord(encodeSlantAPICheckRecord(record), bundledFingerprint: "v3:x").dismissedStatuses, [])
+    }
+
+    func testSavedStatusWordsAreSanitisedAndCapped() {
+        // Only words in the sanitised form are kept; recognised statuses, lower case and odd characters are dropped.
+        XCTAssertEqual(slantAPISavedStatusWords(["ON_HOLD", "on_hold", "DRAFT", "BAD WORD", "", "A\nB", "ON_HOLD", "X1"]), ["ON_HOLD", "X1"])
+        XCTAssertEqual(slantAPISavedStatusWords([String(repeating: "Z", count: 41)]), [])
+        // At most 10, the newest kept.
+        let many = (0..<14).map { "S\($0)" }
+        XCTAssertEqual(slantAPISavedStatusWords(many), Array(many.suffix(slantAPIMaxStatusWords)))
+        // Damaged saved values are dropped, not trusted.
+        var encoded = encodeSlantAPICheckRecord(SlantAPICheckRecord(bundledFingerprint: "v2:x"))
+        encoded["dismissedStatuses"] = ["ON_HOLD", 5, "x y", "SHIPPED"]
+        XCTAssertEqual(decodeSlantAPICheckRecord(encoded, bundledFingerprint: "v2:x").dismissedStatuses, ["ON_HOLD"])
+        encoded["dismissedStatuses"] = "ON_HOLD"
+        XCTAssertEqual(decodeSlantAPICheckRecord(encoded, bundledFingerprint: "v2:x").dismissedStatuses, [])
+        // Dismissing more words than the cap keeps the latest.
+        var signals = SlantAPIRuntimeSignals()
+        _ = signals.note(statusValues: (0..<10).map { "N\($0)" })
+        var record = SlantAPICheckRecord(dismissedStatuses: (0..<10).map { "OLD\($0)" })
+        record = slantAPIDismissing(record: record, signals: signals, dismissal: SlantAPINoticeDismissal()).record
+        XCTAssertEqual(record.dismissedStatuses, (0..<10).map { "N\($0)" })
     }
 }

@@ -826,8 +826,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     private(set) var deletedCloudFileIDs: Set<String> = []
     @Published private(set) var unknownOutcomeOrderIDs: Set<String> = []
     /// Earlier Create Draft attempts that didn’t confirm, so Slant may hold those drafts (recipient name and time, in
-    /// memory only). Every composer shows a notice and asks for "Create Anyway" while any is listed. An attempt is
-    /// removed only by a confirmed creation for the same recipient, or by Look for Draft on Slant finding its marker.
+    /// memory only). Every composer shows a notice while any is listed, and asks for "Create Anyway" when the draft
+    /// could repeat one (`draftCreateNeedsCreateAnyway`). An attempt is removed only by a confirmed creation for the
+    /// same recipient name, or by Look for Draft on Slant finding its marker.
     /// See `unconfirmedDraftAttempts(previous:attempt:recipient:date:)`.
     @Published var unconfirmedDraftCreates: [UnconfirmedDraftAttempt] = []
     /// Older unconfirmed attempts dropped off that list (it keeps the latest 5): their recipients are unknown, so the
@@ -1244,7 +1245,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     /// Records one Create Draft press (the composer's or the API Workbench's `POST /orders`) in the session's
     /// unconfirmed-draft guard: an unknown outcome adds the attempt, a confirmed creation removes the attempts for the
-    /// same `recipient` (never another customer's, nor the dropped-off flag), and a definite refusal or a request never
+    /// same `recipient` name (never another name's, nor the dropped-off flag; two customers with the same name share
+    /// one warning), and a definite refusal or a request never
     /// sent leaves it as it was. `recipient` is the name sent in the draft body, on success as on failure.
     func noteDraftCreateAttempt(_ attempt: DraftCreateAttempt, recipient: String, date: Date, marker: String?, platformID: String) {
         unconfirmedDraftCreatesOverflowed = unconfirmedDraftAttemptsOverflowed(

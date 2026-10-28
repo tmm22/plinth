@@ -65,7 +65,7 @@ final class OrdersSafetyRound15Tests: XCTestCase {
         XCTAssertEqual(costs.fields, ["taxCost"])
         XCTAssertNil(costs.slantTotal)
         XCTAssertEqual(orderUnlistedCostNotice(costs),
-                       "Slant’s order also lists taxCost, which may not be included in this total. Slant may charge more than shown; check the order on Slant before paying.")
+                       "Slant also lists taxCost, which this total may not include. Check the order on Slant before paying.")
         XCTAssertEqual(orderUnlistedCostBatchReason(costs),
                        "Slant also lists taxCost for it, which may not be included in its total. Check it on Slant, then pay it in its own review.")
         // A number or an object counts too.
@@ -91,11 +91,11 @@ final class OrdersSafetyRound15Tests: XCTestCase {
         XCTAssertEqual(costs.fields, ["bTax", "Duty", "taxCost"])
         XCTAssertEqual(costs.moreFields, 3)
         XCTAssertEqual(orderUnlistedCostNotice(costs),
-                       "Slant’s order also lists bTax, Duty, taxCost and 3 more, which may not be included in this total. Slant may charge more than shown; check the order on Slant before paying.")
+                       "Slant also lists bTax, Duty, taxCost and 3 more, which this total may not include. Check the order on Slant before paying.")
         XCTAssertEqual(orderCostFieldDisplayName(String(repeating: "a", count: 50)), String(repeating: "a", count: 40) + "…")
         XCTAssertEqual(orderCostFieldDisplayName("💰"), "an unnamed field")
         let two = orderUnlistedCosts(liveOrder(["taxCost": "1", "serviceFee": "2"]))
-        XCTAssertEqual(orderUnlistedCostNotice(two)?.hasPrefix("Slant’s order also lists serviceFee and taxCost, which may"), true)
+        XCTAssertEqual(orderUnlistedCostNotice(two)?.hasPrefix("Slant also lists serviceFee and taxCost, which this"), true)
     }
 
     func testASlantTotalThatDisagreesWithTheSumIsFlagged() {
@@ -108,7 +108,7 @@ final class OrdersSafetyRound15Tests: XCTestCase {
         XCTAssertEqual(higher.slantTotal, Decimal(string: "16.40"))
         XCTAssertEqual(higher.costsSum, Decimal(string: "15.18"))
         XCTAssertEqual(orderUnlistedCostNotice(higher),
-                       "Slant’s own total ($16.40 USD) doesn’t match print cost plus delivery ($15.18 USD). Slant may charge more than shown; check the order on Slant before paying.")
+                       "Slant’s total ($16.40 USD) isn’t print plus delivery ($15.18 USD). Check the order on Slant before paying.")
         XCTAssertEqual(orderUnlistedCostBatchReason(higher),
                        "Slant’s own total for it ($16.40 USD) doesn’t match print cost plus delivery ($15.18 USD). Check it on Slant, then pay it in its own review.")
         // At the top level too, as a number or a string.

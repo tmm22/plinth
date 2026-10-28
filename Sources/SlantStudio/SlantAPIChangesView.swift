@@ -85,7 +85,7 @@ struct SlantAPISettingsSection: View {
         } header: {
             Text("Slant API")
         } footer: {
-            Text("Once a day while a Slant account is connected, Studio downloads Slant’s public API description, without your key or any account details, and compares it with the one this version was made for. It also notes order statuses it doesn’t recognise in Slant’s replies this session. Studio never changes how it works because of these checks; it only tells you. Only the check’s time, Slant’s cache tags, the changed areas and whether you dismissed the notice are saved.")
+            Text("Once a day while a Slant account is connected, Studio downloads Slant’s public API description, without your key or any account details, and compares it with the one this version was made for. It also notes order statuses it doesn’t recognise in Slant’s replies this session. Studio never changes how it works because of these checks; it only tells you. Only these are saved: when it last checked, the labels Slant gives its description (so an unchanged one isn’t downloaded again), the names of the changed areas, fingerprints of the public API description and of the one Studio was made for, and what you dismissed, including any status words.")
                 .settingsFooterLayout()
         }
     }
