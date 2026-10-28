@@ -30,14 +30,14 @@ private let orderWatchMaxFileBytes = 4 * 1024 * 1024
 private let orderWatchMaxIDLength = 128
 private let orderWatchMaxStatusLength = 64
 /// Show and a notification click read at most this many changed orders that aren't on the reloaded first page, one
-/// `GET /orders/{id}` each (older orders whose change the updated-first read found).
+/// read each (`orderWatchFetch`; older orders whose change the updated-first read found).
 let orderWatchShowFetchLimit = 10
 /// The notification `userInfo` key for the Slant order ID, the only thing a notification carries besides its text.
 let orderWatchNotificationOrderIDKey = "orderID"
 
 /// Changes worth a sidebar badge and a notification: the order needs attention, or it reached the customer's door.
 /// Of Slant's live statuses (since 26 Oct 2026) only SHIPPED and CANCELLED are notable; the earlier ones stay for
-/// saved snapshots and any old reply.
+/// saved snapshots and any old reply. DELIVERED can also come from the shipping record (`orderWatchObservations`).
 let orderWatchNotableStatuses: Set<String> = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELLED", "CANCELED", "SHIPPED", "DELIVERED"]
 private let orderWatchAttentionOrder = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELLED", "DELIVERED", "SHIPPED"]
 
@@ -96,15 +96,20 @@ private func validOrderWatchID(_ id: String) -> Bool {
     !id.isEmpty && id.count <= orderWatchMaxIDLength && !id.contains(where: \.isNewline)
 }
 
-/// The order-level status of each listed order. Item statuses (a draft's items say PROCESSING) are ignored, as are
-/// rows without an ID or a text status; the first row wins when an ID repeats.
+/// The order-level status of each listed order, as Studio shows it (`orderDisplayStatus`): Slant's order status, or
+/// the shipping record's SHIPPED or DELIVERED while the order status still reads a production status (live on 29 Oct
+/// 2026: PRINTING orders whose `fulfillment.status` was SHIPPED, with tracking and a printed label). So a parcel that
+/// left Slant is reported once, when the shipping record says so, and the order status catching up later is no change.
+/// Still a status word only, so the snapshot keeps IDs, statuses and times. Item statuses (a draft's items say
+/// PROCESSING) are ignored, as are rows without an ID or a text status; the first row wins when an ID repeats.
 func orderWatchObservations(_ records: [Record]) -> [OrderWatchObservation] {
     var seen = Set<String>()
     var result: [OrderWatchObservation] = []
     for record in records {
         let order = orderObject(record.values)
         let id = record.id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard validOrderWatchID(id), let status = normalizedOrderWatchStatus(order["status"]), seen.insert(id).inserted else { continue }
+        guard validOrderWatchID(id), let status = normalizedOrderWatchStatus(orderDisplayStatus(order)),
+              seen.insert(id).inserted else { continue }
         result.append(OrderWatchObservation(id: id, status: status, number: String(orderNumber(order).prefix(40))))
     }
     return result
@@ -175,8 +180,36 @@ func orderWatchIDsToFetch(wanted: [String], loaded: Set<String>, limit: Int = or
     return result
 }
 
+/// How Show and a notification click read one changed order that isn't on the reloaded page. With a default platform:
+/// `GET /orders?publicId=<id>&platformId=<platform>` (answered live on 29 Oct 2026), so Slant itself says whether the
+/// order is on the listed platform. Live orders name no platform ID (only a `platform` object without one), so the
+/// order alone can't tell. Without a default platform every platform's orders are listed: `GET /orders/{id}`.
+struct OrderWatchFetch: Equatable {
+    var path: String
+    var query: [String: String]
+    /// A filtered list read (rows), not a read by ID (one order).
+    var listed: Bool { path == "/orders" }
+}
+
+func orderWatchFetch(id: String, platformID: String) -> OrderWatchFetch {
+    let platform = platformID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !platform.isEmpty else { return OrderWatchFetch(path: "/orders/\(encodedSegment(id))", query: [:]) }
+    return OrderWatchFetch(path: "/orders", query: ["publicId": id, "platformId": platform, "page": "1", "limit": String(listPageSize)])
+}
+
+/// The order a `fetch` reply holds for `id`, or nil to skip it like one not found: an empty list (the order isn't on
+/// the platform), a reply that ignored `publicId` (rows are matched to the exact ID, as before), or an order that names
+/// another platform.
+func orderWatchFetchedRecord(_ response: APIResponse, fetch: OrderWatchFetch, id: String, platformID: String) -> Record? {
+    let candidates = fetch.listed ? responseRecords(response) : [Record(values: mergeOrderDraftEnvelope(responseObject(response)))]
+    guard let match = candidates.first(where: { $0.id == id }),
+          orderWatchFetchedOrderFitsPlatform(orderObject(match.values), platformID: platformID) else { return nil }
+    return match
+}
+
 /// Whether an order read by ID may join the loaded list of `platformID`'s orders: one that names another platform (an
-/// old notification from before the default platform changed, say) doesn't. Orders that name no platform are kept.
+/// old notification from before the default platform changed, say) doesn't. Orders that name no platform are kept;
+/// live orders name none (29 Oct 2026), so with a default platform `orderWatchFetch` asks Slant to filter by it.
 func orderWatchFetchedOrderFitsPlatform(_ order: [String: Any], platformID: String) -> Bool {
     let current = platformID.trimmingCharacters(in: .whitespacesAndNewlines)
     let named = [order["platformId"], (order["customer"] as? [String: Any])?["platformId"]]
@@ -190,7 +223,9 @@ func orderWatchFetchedOrderFitsPlatform(_ order: [String: Any], platformID: Stri
 /// production stage (Paid, Queued, Processing, On the shelf, Finishing, Completed, In review, Awaiting shipment) now
 /// reads Submitted or Printing (orders paid the week before read PRINTING on 28 Oct 2026), CANCELED is spelt
 /// CANCELLED, and Delivered (no longer a status) reads Shipped. A payment problem that now reads Submitted or Printing
-/// was resolved, which is news, and every other move from an earlier status (Queued → Shipped, say) is real.
+/// was resolved, which is news, and every other move from an earlier status (Queued → Shipped, say) is real, as is a
+/// shipping record's Shipped on a Printing or Awaiting shipment order (`orderWatchObservations`). A shipping record's
+/// Delivered later read as Shipped (the order status caught up) is the same re-labelling, so it stays quiet.
 func orderWatchChangeIsSlantRelabel(from: String, to: String) -> Bool {
     guard orderLegacyStatuses.contains(from) else { return false }
     switch to {
@@ -205,7 +240,9 @@ func orderWatchChangeIsSlantRelabel(from: String, to: String) -> Bool {
 /// Draft → Paid isn't reported (later progress, or a payment problem, is). Live Slant also returns SUBMITTED for a
 /// just-placed order (26 Oct 2026), in an order not yet confirmed relative to PAID, so any move among Draft,
 /// Submitted and Paid that ends in Submitted or Paid counts as placing too. Slant's re-labelling of a saved status
-/// (`orderWatchChangeIsSlantRelabel`) isn't reported either.
+/// (`orderWatchChangeIsSlantRelabel`) isn't reported either. A shipping record withdrawn (Shipped back to Printing, say)
+/// is listed but never notified or badged (production statuses aren't notable): the seller may have passed on the
+/// tracking, so it is worth a look, not an alarm. If the seller hadn't yet seen the Shipped, the change simply goes.
 func orderWatchChangeIsReported(from: String, to: String) -> Bool {
     guard from != to else { return false }
     if orderWatchChangeIsSlantRelabel(from: from, to: to) { return false }
@@ -946,30 +983,40 @@ private struct PendingNotificationOpen {
 extension StudioStore {
     /// The banner's Show and a notification click: reloads the newest orders like Show All Orders (clearing any search
     /// and filter), then reads, one at a time, up to `orderWatchShowFetchLimit` of `ids` that aren't on that page
-    /// (`GET /orders/{id}`, read-only) and adds them to the loaded orders. The updated-first check finds changes to
-    /// orders older than the newest 100, so they aren't always on the reloaded page. An order Slant says doesn't exist
-    /// (404, or live Slant's 400 "Order not found.": `orderNotFoundError`) is skipped; any other failure stops the
-    /// reads and is shown as usual. True when the reload succeeded.
+    /// (`orderWatchFetch`, read-only, never retried) and adds them to the loaded orders. The updated-first check finds
+    /// changes to orders older than the newest 100, so they aren't always on the reloaded page. An order Slant says
+    /// doesn't exist (404, or live Slant's 400 "Order not found.": `orderNotFoundError`) or that isn't on the default
+    /// platform (an empty filtered list) is skipped; any other failure stops the reads and is shown as usual. True when
+    /// the reload succeeded.
     func reloadOrdersIncludingWatched(_ ids: [String]) async -> Bool {
         guard await applyOrderFilter(OrderFilter()) else { return false }
         let missing = orderWatchIDsToFetch(wanted: ids, loaded: Set(orders.map(\.id)))
         guard !missing.isEmpty else { return true }
+        // The platform the reloaded list belongs to; the reads stop if it changes.
+        let platform = platformID
         _ = await run(missing.count == 1 ? "Get changed order" : "Get changed orders") {
             for id in missing {
+                guard platformID == platform else { break }
+                // With a default platform, a list read filtered by it (`orderWatchFetch`): an order on another
+                // platform comes back as an empty list and is skipped, like one that doesn't exist.
+                let fetch = orderWatchFetch(id: id, platformID: platform)
                 let response: APIResponse
                 do {
-                    response = try await client.request("GET", path: "/orders/\(encodedSegment(id))")
+                    response = try await client.request("GET", path: fetch.path, query: fetch.query)
                 } catch where orderNotFoundError(error) {
                     continue
                 }
                 noteBackgroundRateLimit(from: response)
-                let order = mergeOrderDraftEnvelope(responseObject(response))
-                SlantAPIWatch.shared.noteOrder(order)
-                let record = Record(values: order)
+                if fetch.listed {
+                    SlantAPIWatch.shared.noteOrderList(response, firstPage: false)
+                } else {
+                    SlantAPIWatch.shared.noteOrder(mergeOrderDraftEnvelope(responseObject(response)))
+                }
                 // Only the order asked for, once, and only if it is on the platform listed (this holds `busy`, so no
                 // reload can add it meanwhile).
-                guard record.id == id, !orders.contains(where: { $0.id == id }),
-                      orderWatchFetchedOrderFitsPlatform(orderObject(order), platformID: platformID) else { continue }
+                guard platformID == platform,
+                      let record = orderWatchFetchedRecord(response, fetch: fetch, id: id, platformID: platform),
+                      !orders.contains(where: { $0.id == id }) else { continue }
                 orders.append(record)
             }
         }
