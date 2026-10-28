@@ -470,6 +470,11 @@ struct EndpointView: View {
                 if let message = workbenchOrderPreviewMismatchMessage(preview: preview, fresh: fresh) {
                     throw StudioError(message)
                 }
+                // As the Orders cancel review: a shipping record or tracking that changed since the review stops a
+                // cancel before the lock or the send (`workbenchCancelShippingDetailsMessage`; never for a pay).
+                if let message = workbenchCancelShippingDetailsMessage(method: request.endpoint.method, preview: preview, fresh: fresh) {
+                    throw StudioError(message)
+                }
                 // Cross-sheet + sheet lock before the write — outcome may be unknown on timeout/5xx.
                 store.markOutcomeUnknown(
                     orderID: orderID,
@@ -732,6 +737,14 @@ func workbenchOrderPreviewMatches(_ preview: [String: Any], _ fresh: [String: An
 
 func workbenchOrderPreviewMismatchMessage(preview: [String: Any], fresh: [String: Any]) -> String? {
     workbenchOrderPreviewMatches(preview, fresh) ? nil : "This order changed since you reviewed it. Go back and review again."
+}
+
+/// The guided `DELETE /orders/{id}`'s extra stop, as the Orders cancel re-check (`orderConfirmRecheck`): the shipping
+/// record's status or the tracking numbers changed between the review and the re-fetch. Nil for every other method,
+/// so it never affects a pay; it can only stop a cancel, never allow one.
+func workbenchCancelShippingDetailsMessage(method: String, preview: [String: Any], fresh: [String: Any]) -> String? {
+    guard method == "DELETE" else { return nil }
+    return orderShippingDetails(preview) == orderShippingDetails(fresh) ? nil : orderShippingDetailsChangedMessage
 }
 
 func workbenchCostEqual(_ left: Any?, _ right: Any?) -> Bool {

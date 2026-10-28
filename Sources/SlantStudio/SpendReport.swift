@@ -331,7 +331,12 @@ func spendReportScopeNotes(searchActive: Bool, statusFilter: String?, hasDateRan
     var notes: [String] = []
     if searchActive { notes.append("The Orders list shows search results, so only those orders are included. Clear the search to include the rest.") }
     if let statusFilter, !statusFilter.isEmpty {
-        notes.append("The Orders list is filtered to \(orderStatusTitle(statusFilter)) orders, so only those are included.")
+        var note = "The Orders list is filtered to \(orderStatusTitle(statusFilter)) orders, so only those are included."
+        // Slant filters by its order status, which can lag its shipping record (`orderStatusFilterLagHint`).
+        if statusFilter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "SHIPPED" {
+            note += " " + orderStatusFilterLagHint
+        }
+        notes.append(note)
     }
     if hasDateRange { notes.append("The Orders list is limited to the dates set in Dates & Sort.") }
     if moreOnServer { notes.append("Slant has older orders that aren’t loaded. Use Load More at the end of the Orders list to include them.") }

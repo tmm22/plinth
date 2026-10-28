@@ -112,6 +112,51 @@ func orderStatusLagsShippingRecord(_ order: [String: Any]) -> Bool {
     return orderDisplayStatus(order).uppercased() != raw
 }
 
+/// The title Studio shows for an order's status: `orderStatusTitle` of `orderDisplayStatus`. Display only.
+func orderDisplayStatusTitle(_ order: [String: Any]) -> String {
+    orderStatusTitle(orderDisplayStatus(order))
+}
+
+/// Why Studio shows the shipping record's word, for the status cell's hover hint and a caption in the detail:
+/// "Slant’s shipping record says Shipped; its order status still says Printing." Nil unless the status lags. A
+/// shipping record of SHIPPED may mean only that a label was made, so this never says the parcel was handed over.
+func orderStatusLagNote(_ order: [String: Any]) -> String? {
+    guard orderStatusLagsShippingRecord(order) else { return nil }
+    let raw = (order["status"] as? String) ?? ""
+    return "Slant’s shipping record says \(orderDisplayStatusTitle(order)); its order status still says \(orderStatusTitle(raw.trimmingCharacters(in: .whitespacesAndNewlines)))."
+}
+
+/// What the cancel re-check compares between the order shown in the review and the order re-fetched just before
+/// sending: the shipping record's status and the tracking numbers (as a sorted list, so a reordering isn't a change).
+struct OrderShippingDetails: Equatable {
+    var status: String?
+    var trackingNumbers: [String]
+}
+
+func orderShippingDetails(_ order: [String: Any]) -> OrderShippingDetails {
+    OrderShippingDetails(status: orderFulfillmentStatus(order), trackingNumbers: orderTrackingNumbers(order).sorted())
+}
+
+/// The cancel review's stop when the shipping record or tracking changed between the review and the send.
+let orderShippingDetailsChangedMessage = "This order’s shipping details changed. Review it again."
+
+/// Status-filter hint (the Orders list, its filtered-empty text and the Spending Report): Slant filters by its order
+/// status, which can lag its shipping record, so such orders are listed under Printing, not Shipped.
+let orderStatusFilterLagHint = "Slant filters by its order status: orders whose shipping record says Shipped while their status still says Printing are listed under Printing."
+
+/// The hint under the Orders list for the chosen status filter, or nil. Always under Shipped (orders not loaded may
+/// be listed under Printing instead); under Printing only while a loaded order's status lags its shipping record.
+func orderStatusFilterLagHintText(status: String?, loaded: [Record]) -> String? {
+    switch (status ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+    case "SHIPPED":
+        return orderStatusFilterLagHint
+    case "PRINTING":
+        return loaded.contains { orderStatusLagsShippingRecord(orderObject($0.values)) } ? orderStatusFilterLagHint : nil
+    default:
+        return nil
+    }
+}
+
 /// Why an order needs a look. Worked out locally from the loaded order and the clock; never a request.
 enum OrderAttention: Equatable {
     case paymentProblem
@@ -149,12 +194,16 @@ func orderAttentionDays(_ days: Int) -> String { days == 1 ? "1 day" : "\(days) 
 
 /// The most pressing reason the order needs a look, or nil. Payment problems first, then a missed arrive-by date,
 /// then an order not shipped in time, then a draft left unplaced. Cancelled and delivered orders never need one;
-/// unknown statuses aren't guessed at. A shipped order is never late here (it's on its way), and neither is a draft
+/// unknown statuses aren't guessed at. A shipped order is never late here (it's on its way, also when only Slant's
+/// shipping record says so: `orderStatusLagsShippingRecord`), and neither is a draft
 /// past the `orderAttentionDraftIgnoredAfterDays` window (or with no creation date), which Slant can't remove.
 func orderAttention(_ order: [String: Any], now: Date, timeZone: TimeZone = .current) -> OrderAttention? {
     let status = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     guard !status.isEmpty, !orderStatusIsCancelled(status), status != "DELIVERED" else { return nil }
     if status == "PAYMENT_ERROR" { return .paymentProblem }
+    // Slant's shipping record says the order shipped though its status still says it's being made
+    // (`orderDisplayStatus`): it's on its way, so neither late nor stuck. Removes an alarm only; nothing is enabled.
+    if orderStatusLagsShippingRecord(order) { return nil }
     let draftInWindow = orderCreatedDate(order).map {
         now.timeIntervalSince($0) <= Double(orderAttentionDraftIgnoredAfterDays) * 86_400
     } ?? false
@@ -206,10 +255,11 @@ func orderAttentionEmptyDetail(filterActive: Bool, search: String = "") -> Strin
 }
 
 /// The orders table's Status cell, with an orange marker when the order needs attention. Its tooltip and VoiceOver
-/// label say why.
+/// label say why. `note` (`orderStatusLagNote`) explains a status taken from Slant's shipping record.
 struct OrderStatusCell: View {
     let status: String
     let attention: OrderAttention?
+    var note: String? = nil
 
     var body: some View {
         if let attention {
@@ -221,6 +271,10 @@ struct OrderStatusCell: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(status), needs attention: \(attention.detail)")
             .help("\(status). \(attention.detail)")
+        } else if let note {
+            Text(status).lineLimit(1)
+                .accessibilityLabel("\(status). \(note)")
+                .help(note)
         } else {
             Text(status).lineLimit(1).help(status)
         }
@@ -250,6 +304,8 @@ struct ShopFollowUpEntry: Identifiable, Equatable {
     /// store. Memory only: never saved, exported or logged.
     var recipientName = ""
     var postcode = ""
+    /// The status shown in the list (`orderDisplayStatus`); `status` stays Slant's own. Display only.
+    var displayStatus = ""
 
     var isImported: Bool { marketplaceID != nil }
     var isShopify: Bool { (source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "shopify" }
@@ -280,7 +336,8 @@ func shopFollowUpEntry(_ record: Record) -> ShopFollowUpEntry? {
         recipientFirstName: orderRecipientFirstName(order), provider: (provider?.isEmpty ?? true) ? nil : provider,
         trackingNumbers: numbers, status: (order["status"] as? String) ?? "", created: orderCreatedDate(order),
         sourceShop: orderShopifySourceShop(order), sourceItems: orderShopifySourceItems(order),
-        recipientName: orderRecipientName(order), postcode: orderShippingPostcode(order))
+        recipientName: orderRecipientName(order), postcode: orderShippingPostcode(order),
+        displayStatus: orderDisplayStatus(order))
 }
 
 struct ShopFollowUpGroups: Equatable {
@@ -510,7 +567,7 @@ struct ShopFollowUpSheet: View {
                     if let name = entry.recipientFirstName {
                         Text("· \(name)").foregroundStyle(.secondary)
                     }
-                    Text("· \(orderStatusTitle(entry.status))").foregroundStyle(.secondary)
+                    Text("· \(orderStatusTitle(entry.displayStatus.isEmpty ? entry.status : entry.displayStatus))").foregroundStyle(.secondary)
                 }
                 .lineLimit(1)
                 Text(shopFollowUpTrackingText(entry))
