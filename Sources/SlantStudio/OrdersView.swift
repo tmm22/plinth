@@ -1199,6 +1199,8 @@ struct OrdersView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        // Slant changed its API, or sent a status Studio doesn't recognise (SlantAPIChanges.swift); also over the empty state.
+        .safeAreaInset(edge: .top, spacing: 0) { SlantAPIChangeNotice() }
         .searchable(text: $search, prompt: "Search orders")
         .onSubmit(of: .search) { Task { await store.searchOrders(search) } }
         .onChange(of: search) { _, new in

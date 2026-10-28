@@ -91,6 +91,8 @@ struct StudioView: View {
         }
         // Background order checks (OrderWatch.swift): read-only, never through `store.run`.
         .onAppear { OrderWatch.shared.attach(store) }
+        // The daily check of Slant's public API description (SlantAPIChanges.swift): keyless, never `store.run`.
+        .onAppear { SlantAPIWatch.shared.attach(store) }
         // Restored at launch by `StudioStore.destination`'s initial value.
         .onChange(of: store.destination) { _, new in
             if sidebarDestinations(showDeveloperTools: true).contains(new) {

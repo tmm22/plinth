@@ -187,7 +187,8 @@ let studioHelpSections: [StudioHelpSection] = [
         **New Order Draft…** (⌘N) creates a draft on Slant. A draft isn’t charged until you choose **Review & Place \
         Order…** and confirm **Pay & Send to Production**. Slant can’t delete drafts, so if Studio can’t tell whether \
         a draft was created, it asks before you create another. **File › Import Orders…** creates drafts from an Etsy \
-        or Shopify export after you confirm them.
+        or Shopify export after you confirm them. If Slant changes its API after this version of Studio was made, a \
+        notice at the top of Orders says so; Studio keeps working as before and only tells you.
         """),
     StudioHelpSection(title: "Catalog", body: """
         Browse Slant’s materials, components and stationery.
