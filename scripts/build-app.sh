@@ -10,12 +10,16 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/SlantStudio" "$APP_DIR/Contents/MacOS/SlantStudio"
 cp "$PROJECT_DIR/Sources/SlantStudio/Resources/Euclid-LICENSE.txt" "$APP_DIR/Contents/Resources/Euclid-LICENSE.txt"
-# Keep the OpenAPI document inside Contents/Resources. A SwiftPM resource
+# Keep the OpenAPI documents inside Contents/Resources. A SwiftPM resource
 # bundle at the .app root is unsigned content and codesign rejects it.
 # Newer SwiftPM build systems nest bundle resources under Contents/Resources.
-OPENAPI_SRC="$BIN_DIR/SlantStudio_SlantStudio.bundle/openapi.json"
-[ -f "$OPENAPI_SRC" ] || OPENAPI_SRC="$BIN_DIR/SlantStudio_SlantStudio.bundle/Contents/Resources/openapi.json"
-cp "$OPENAPI_SRC" "$APP_DIR/Contents/Resources/openapi.json"
+# openapi.json is Studio's patched spec; slant-openapi-upstream.json is Slant's
+# unpatched spec as last reviewed, which the Slant API change check compares with.
+for RESOURCE in openapi.json slant-openapi-upstream.json; do
+    RESOURCE_SRC="$BIN_DIR/SlantStudio_SlantStudio.bundle/$RESOURCE"
+    [ -f "$RESOURCE_SRC" ] || RESOURCE_SRC="$BIN_DIR/SlantStudio_SlantStudio.bundle/Contents/Resources/$RESOURCE"
+    cp "$RESOURCE_SRC" "$APP_DIR/Contents/Resources/$RESOURCE"
+done
 # Document types: Launch Services ignores CFBundleTypeExtensions in an entry that also has LSItemContentTypes, so the
 # extension claim (for files another app has typed with a different 3MF/OBJ/STL UTI) is a separate entry. All are
 # Viewer/Alternate, so Slant Studio is offered in Open With without becoming any type's default.
