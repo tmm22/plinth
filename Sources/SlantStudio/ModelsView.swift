@@ -1164,7 +1164,7 @@ struct ModelsView: View {
 }
 
 /// The next-action bar after an upload whose confirm wasn't answered clearly.
-let uploadUnconfirmedStatusText = "Slant didn’t confirm the upload, so the file may already be in your Slant files. Refresh to check before uploading again."
+let uploadUnconfirmedStatusText = uploadUnconfirmedMessage
 
 /// Upload Again… after an unconfirmed upload: a second upload may duplicate a file Studio can't remove from Slant.
 func unconfirmedReuploadConfirmationMessage(name: String) -> String {

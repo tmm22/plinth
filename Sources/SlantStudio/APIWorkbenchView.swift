@@ -400,10 +400,17 @@ struct EndpointView: View {
                     previewLoaded = true
                     // Compare with what was recorded when the uncertain request was sent, not this sheet's last preview.
                     // The lock may be under the typed ID or the order's own IDs (an Orders review keeps it under those).
+                    var lifted = false
                     for id in orderOutcomeLockIDs(requested: orderID, order: order) where store.isOutcomeUnknown(orderID: id) {
                         if unknownOutcomeResolvedByReload(context: store.unknownOutcomeContext(orderID: id), reloadedStatus: reloadedStatus) {
                             store.clearOutcomeUnknown(orderID: id)
+                            lifted = true
                         }
+                    }
+                    // The earlier "result is unknown" note no longer holds: say what the reload showed instead.
+                    // Sending stays blocked in this review (`mutationAttempted`); the status decides any next step.
+                    if lifted, mutationAttempted || mutationNote != nil {
+                        mutationNote = workbenchReloadResolvedNote(status: reloadedStatus)
                     }
                 }
                 guard generation == previewGeneration else { return }
@@ -654,6 +661,11 @@ func workbenchMutationSendAllowed(attempted: Bool, succeeded: Bool) -> (Bool, St
         return (false, "The result is unknown. Check Orders (or reload this order) before trying again.")
     }
     return (true, nil)
+}
+
+/// Replaces the review's unknown-outcome note once a reload shows the recorded action's outcome and lifts the lock.
+func workbenchReloadResolvedNote(status: String) -> String {
+    "The reload shows the outcome: Slant now lists this order as “\(orderStatusTitle(status))”."
 }
 
 /// Cross-sheet lock copy when `StudioStore.isOutcomeUnknown` is set for this order.

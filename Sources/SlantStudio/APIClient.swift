@@ -337,7 +337,7 @@ let uploadLinkMissingMessage = "Slant didn’t return a usable upload link, so n
 
 /// After a confirm whose outcome is unknown. Slant doesn't let a standard key delete files, so a blind second upload
 /// could leave a duplicate the seller can't remove.
-let uploadUnconfirmedMessage = "Slant didn’t confirm the upload, so the file may already be in your Slant files. Refresh to check before you upload it again: Studio can’t remove a duplicate from Slant."
+let uploadUnconfirmedMessage = "Slant didn’t confirm the upload, so it may already be in your Slant files. Refresh and look for it there: if it’s listed, select it to estimate and order. If not, use Upload Again…"
 
 /// A confirm reply (2xx) without a file ID: Slant may still have added the file.
 struct UploadConfirmMissingFileID: LocalizedError {
@@ -384,6 +384,115 @@ let slantDownloadTooLargeMessage = "This model is larger than 300 MB, so Studio 
 /// False when `Content-Length` already says the download is over the cap; an unknown length (-1) is checked while reading.
 func slantDownloadLengthAllowed(_ expected: Int64, maxBytes: Int64 = slantDownloadMaxBytes) -> Bool {
     expected <= maxBytes
+}
+
+/// One capped download into an open file on `APIClient`'s session, as a task delegate: data arrives in the chunks
+/// URLSession delivers, `Content-Length` and the running total are checked against `maxBytes`, and redirects are
+/// refused like the session's own. A non-2xx reply stops at the headers; the caller turns it into an `APIError`.
+private final class CappedFileDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let handle: FileHandle
+    private let maxBytes: Int64
+    private let lock = NSLock()
+    private var written: Int64 = 0
+    private var response: URLResponse?
+    private var failure: Error?
+    private var continuation: CheckedContinuation<(URLResponse, Int64), Error>?
+    private var task: URLSessionDataTask?
+
+    init(handle: FileHandle, maxBytes: Int64) {
+        self.handle = handle
+        self.maxBytes = maxBytes
+    }
+
+    func run(session: URLSession, url: URL) async throws -> (URLResponse, Int64) {
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URLResponse, Int64), Error>) in
+                lock.lock()
+                self.continuation = continuation
+                let task = session.dataTask(with: url)
+                task.delegate = self
+                self.task = task
+                lock.unlock()
+                // A cancellation that arrived before `task` was stored found nothing to cancel.
+                if Task.isCancelled { task.cancel() } else { task.resume() }
+            }
+        } onCancel: {
+            lock.lock()
+            let task = self.task
+            lock.unlock()
+            task?.cancel()
+        }
+    }
+
+    private func fail(_ error: Error, task: URLSessionTask) {
+        lock.lock()
+        if failure == nil { failure = error }
+        lock.unlock()
+        task.cancel()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        self.response = response
+        lock.unlock()
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            // Reported from the response once the task ends, as `checked` words it.
+            completionHandler(.cancel)
+            return
+        }
+        guard slantDownloadLengthAllowed(http.expectedContentLength, maxBytes: maxBytes) else {
+            fail(StudioError(slantDownloadTooLargeMessage), task: dataTask)
+            completionHandler(.cancel)
+            return
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        written += Int64(data.count)
+        let over = written > maxBytes
+        let stopped = failure != nil
+        lock.unlock()
+        guard !stopped else { return }
+        if over {
+            fail(StudioError(slantDownloadTooLargeMessage), task: dataTask)
+            return
+        }
+        do { try handle.write(contentsOf: data) } catch {
+            fail(StudioError("Studio couldn’t save the download to a temporary file."), task: dataTask)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        let recorded = failure
+        let response = self.response
+        let total = written
+        lock.unlock()
+        guard let continuation else { return }
+        if let recorded {
+            continuation.resume(throwing: recorded)
+        } else if let response, !((response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false) {
+            // Stopped at the headers on purpose: the caller reports the status.
+            continuation.resume(returning: (response, 0))
+        } else if let error {
+            continuation.resume(throwing: error)
+        } else if let response {
+            continuation.resume(returning: (response, total))
+        } else {
+            continuation.resume(throwing: APIError.invalidResponse("The server returned a non-HTTP response."))
+        }
+    }
 }
 
 private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
@@ -490,16 +599,9 @@ struct APIClient {
               url.user == nil, url.password == nil, url.fragment == nil else {
             throw APIError.invalidResponse("Slant didn’t return a secure HTTPS download link. Try again.")
         }
-        let (bytes, response) = try await session.bytes(from: url)
-        do { _ = try checked(data: Data(), response: response) } catch { bytes.task.cancel(); throw error }
-        guard slantDownloadLengthAllowed(response.expectedContentLength, maxBytes: maxBytes) else {
-            bytes.task.cancel()
-            throw StudioError(slantDownloadTooLargeMessage)
-        }
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudio-Download-\(UUID().uuidString)")
         guard FileManager.default.createFile(atPath: destination.path, contents: nil),
               let handle = try? FileHandle(forWritingTo: destination) else {
-            bytes.task.cancel()
             throw StudioError("Studio couldn’t save the download to a temporary file.")
         }
         var finished = false
@@ -507,22 +609,10 @@ struct APIClient {
             try? handle.close()
             if !finished { try? FileManager.default.removeItem(at: destination) }
         }
-        var buffer = Data()
-        buffer.reserveCapacity(1 << 20)
-        var written: Int64 = 0
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= 1 << 20 {
-                written += Int64(buffer.count)
-                guard written <= maxBytes else { bytes.task.cancel(); throw StudioError(slantDownloadTooLargeMessage) }
-                try handle.write(contentsOf: buffer)
-                buffer.removeAll(keepingCapacity: true)
-            }
-        }
-        written += Int64(buffer.count)
-        guard written <= maxBytes else { throw StudioError(slantDownloadTooLargeMessage) }
+        // Chunks as URLSession delivers them, written straight to the file; the cap stops the transfer mid-way.
+        let (response, written) = try await CappedFileDownload(handle: handle, maxBytes: maxBytes).run(session: session, url: url)
+        _ = try checked(data: Data(), response: response)
         guard written > 0 else { throw StudioError("Slant sent an empty model file.") }
-        try handle.write(contentsOf: buffer)
         finished = true
         return destination
     }

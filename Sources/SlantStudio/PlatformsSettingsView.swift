@@ -421,7 +421,7 @@ struct PlatformDetailSheet: View {
     private var deadWebhooksSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Failed deliveries").font(.headline)
+                Text("Recent deliveries").font(.headline)
                 Spacer()
                 Button(deadLoaded || store.deadWebhooks[record.id] != nil ? "Reload" : "Load") {
                     Task {
@@ -455,7 +455,7 @@ struct PlatformDetailSheet: View {
             }
             if deadLoaded || store.deadWebhooks[record.id] != nil {
                 if platformDeadWebhooks.isEmpty {
-                    Text("No failed deliveries.").font(.caption).foregroundStyle(.secondary)
+                    Text("No failed deliveries in the last 30 days.").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(indexedRecords(platformDeadWebhooks), id: \.id) { row in
                         let webhookID = deadWebhookID(row.record)
@@ -632,7 +632,7 @@ func deadWebhookCaption(_ record: Record, formatter: (Date) -> String = { $0.for
         parts.append(attempts == 1 ? "1 attempt" : "\(attempts) attempts")
     }
     if deadWebhookFlag(record, "retryable") == false, record.string("status").lowercased() != "delivered" {
-        parts.append("your endpoint refused it, so Slant stopped retrying")
+        parts.append("Slant has stopped retrying it")
     }
     return parts.joined(separator: " · ")
 }
@@ -663,7 +663,7 @@ func webhookSingleResendResultMessage(_ result: WebhookSingleResendResult) -> St
         return error.map { "Not delivered. Your endpoint returned HTTP \(status): \($0)" }
             ?? "Not delivered. Your endpoint returned HTTP \(status)."
     }
-    return error.map { "Not delivered: \($0)" } ?? "Not delivered. No reply came from your endpoint."
+    return error.map { "Not delivered: \($0)" } ?? "Not delivered. Slant didn’t say why."
 }
 
 private func deadWebhookFlag(_ record: Record, _ key: String) -> Bool? {

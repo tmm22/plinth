@@ -1591,10 +1591,14 @@ struct OrdersView: View {
         } else if !query.isEmpty, !store.orderFilter.isActive {
             ContentUnavailableView.search(text: query)
         } else {
+            // Load More (under the list) stays available when Slant has more pages: the date filter's margin can trim
+            // a whole page away, so "none" is only about the pages read so far.
+            let moreOnServer = store.ordersHasMore && !store.orderSearchActive
             ContentUnavailableView {
-                Label("No matching orders", systemImage: "line.3.horizontal.decrease.circle")
+                Label(moreOnServer ? "None on the pages loaded so far" : "No matching orders",
+                      systemImage: "line.3.horizontal.decrease.circle")
             } description: {
-                Text(orderFilterEmptyDetail(store.orderFilter, search: query))
+                Text(orderFilterEmptyDetail(store.orderFilter, search: query, moreOnServer: moreOnServer))
             } actions: {
                 if store.orderFilter.isActive {
                     Button("Show All Orders") {
@@ -1629,7 +1633,9 @@ struct OrdersView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack {
-                        SectionHeading(title: orderDetailCaption(displayed), caption: orderStatusTitle((displayed["status"] as? String) ?? selected.string("status")))
+                        let detailStatus = (displayed["status"] as? String) ?? selected.string("status")
+                        SectionHeading(title: orderDetailCaption(displayed), caption: orderStatusTitle(detailStatus))
+                            .help(orderStatusHelp(detailStatus) ?? "")
                         Spacer()
                         Button { load(selected.id) } label: { Image(systemName: "arrow.clockwise") }
                             .accessibilityLabel("Reload order").help("Reload order").disabled(store.busy)
@@ -1889,7 +1895,9 @@ struct OrderActionConfirmSheet: View {
             }
             Spacer(minLength: 0)
             HStack {
-                Button(writeSucceeded ? "Done" : "Go Back", role: .cancel) { dismiss() }
+                // Close after a Pay Slant accepted but didn't place (nothing more to do here), Done after a placed
+                // order or a requested cancellation, Go Back before anything was done.
+                Button(orderReviewDismissTitle(writeSucceeded: writeSucceeded, payNotPlaced: payNotPlaced), role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(writing)
                 // Review Next Draft… (after paying) or Skip to Next Draft… (before paying, during Review Drafts One by
@@ -2040,7 +2048,8 @@ struct OrderActionConfirmSheet: View {
             loadFailure = failure
             if !ran { awaitingBusy = true }
             if keepUnknownMessage, writeAttempted, !writeSucceeded {
-                actionMessage = orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
+                // Keeps the specific note (such as the cause of an unknown outcome) from before the reload.
+                actionMessage = actionMessage ?? orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
             }
         }
     }
@@ -2061,6 +2070,8 @@ struct OrderActionConfirmSheet: View {
             var rejected = false
             var refusal: String?
             var failure: String?
+            // The write's own error when its outcome is unknown, for the cause shown in the sheet.
+            var unknownWriteError: Error?
             // Every failure is explained here in the review: a window alert would wait behind this sheet, and after a
             // write was sent its "try again" advice would be wrong.
             let ran = await store.run(isPay ? "Process order" : "Cancel order", handlesError: { error in
@@ -2095,6 +2106,8 @@ struct OrderActionConfirmSheet: View {
                         writeAttempted = false
                         rejected = true
                         refusal = orderConfirmRefusalMessage(isPay: isPay, error: error)
+                    } else {
+                        unknownWriteError = error
                     }
                     throw error
                 }
@@ -2147,7 +2160,8 @@ struct OrderActionConfirmSheet: View {
                 if let shownOrder = completedOrder { fresh = shownOrder; loadState = .loaded }
                 actionMessage = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Reload the order before doing anything else."
             } else if attemptedWrite {
-                actionMessage = orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
+                actionMessage = unknownWriteError.map { orderConfirmUnknownOutcomeMessage(isPay: isPay, error: $0) }
+                    ?? orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
             } else if rejected {
                 actionMessage = refusal ?? (isPay ? "Slant didn’t accept the payment request. Review the order before trying again." : "Slant didn’t accept the cancel request. Review the order before trying again.")
             } else {
@@ -2164,7 +2178,8 @@ struct OrderActionConfirmSheet: View {
 // MARK: - Pure helpers
 
 /// Why a filtered orders list is empty, naming the status and/or dates that left nothing.
-func orderFilterEmptyDetail(_ filter: OrderFilter, search: String = "") -> String {
+/// `moreOnServer`: Slant has further pages (Load More is shown), so the emptiness is only about the pages read so far.
+func orderFilterEmptyDetail(_ filter: OrderFilter, search: String = "", moreOnServer: Bool = false) -> String {
     let dated = filter.startDate != nil || filter.endDate != nil
     let base: String
     switch (filter.status, dated) {
@@ -2174,6 +2189,10 @@ func orderFilterEmptyDetail(_ filter: OrderFilter, search: String = "") -> Strin
     case (nil, false): base = "No orders"
     }
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+    if moreOnServer {
+        let matching = query.isEmpty ? base : base + " match “\(query)”"
+        return matching + " on the pages loaded so far. Load More reads the next page from Slant."
+    }
     return query.isEmpty ? base + (filter.isActive ? "." : " match.") : base + " match “\(query)”."
 }
 /// Under a draft's actions: what placing does, and why there's no Cancel.
@@ -2202,8 +2221,8 @@ func orderComposerCreateFailureMessage(_ error: Error) -> String {
         return "Slant didn’t create the draft. Slant said: “" + sentence + "”"
     }
     if !orderMutationErrorProvesNoEffect(error) {
-        return "\(orderCreateUnknownReason(error)), so this draft may have been created. Use the notice in this form "
-            + "to look for it, or check your drafts (\(draftCreateCheckDraftsPath)), before creating it again."
+        return "\(orderCreateUnknownReason(error)), so this draft may have been created. "
+            + "Check the notice at the top of this form before creating it again."
     }
     let detail = friendlyAPIMessage(error).trimmingCharacters(in: .whitespacesAndNewlines)
     return detail.isEmpty ? "The draft wasn’t created." : detail
@@ -2214,6 +2233,24 @@ func orderCreateUnknownReason(_ error: Error) -> String {
     if let urlError = error as? URLError, urlError.code == .timedOut { return "Slant didn’t reply in time" }
     if error is URLError || error is CancellationError { return "The connection to Slant was interrupted" }
     return "Slant’s reply didn’t confirm the draft"
+}
+/// What happened to a pay or cancel request whose outcome is unknown, as the start of a sentence: never says it failed.
+func slantUnclearReplyCause(_ error: Error) -> String {
+    if case .http(let status, _, _, _)? = error as? APIError { return "Slant replied with HTTP \(status)" }
+    if let urlError = error as? URLError, urlError.code == .timedOut { return "Slant didn’t reply in time" }
+    if error is URLError || error is CancellationError { return "The connection to Slant was interrupted" }
+    return "Slant’s reply didn’t confirm it"
+}
+/// The single pay/cancel review's note after a request whose outcome is unknown: the cause, and that the outcome may
+/// already have happened. It never suggests sending again; a reload shows what Slant did.
+func orderConfirmUnknownOutcomeMessage(isPay: Bool, error: Error) -> String {
+    let outcome = isPay ? "the order may have been placed and charged" : "the cancellation may have gone through"
+    return "\(slantUnclearReplyCause(error)), so the result is unknown: \(outcome). Reload the order to see what Slant shows."
+}
+/// The pay/cancel review's dismiss button.
+func orderReviewDismissTitle(writeSucceeded: Bool, payNotPlaced: Bool) -> String {
+    guard writeSucceeded else { return "Go Back" }
+    return payNotPlaced ? "Close" : "Done"
 }
 /// The single review and the Workbench refuse to act on a reply for another order.
 let orderReviewDifferentOrderMessage = "Slant returned a different order. Reload Orders and review this order again."
@@ -2236,13 +2273,13 @@ func orderReviewMarketplaceDuplicateNotice(_ order: [String: Any], orderID: Stri
         !record.id.isEmpty && record.id != orderID && !orderBelongs(orderObject(record.values), to: orderID)
     }
     if batchPayPlacedMarketplaceKeys(others).contains(key) {
-        return "\(line) already has a placed order, so this draft may be a duplicate."
+        return "Possible duplicate: \(line) already has a placed order."
     }
     let otherDraft = others.contains { record in
         let other = orderObject(record.values)
         return batchPayIsDraft(other) && batchPayMarketplaceKey(other) == key
     }
-    return otherDraft ? "Another loaded draft is also for \(line). Check this isn’t a duplicate." : nil
+    return otherDraft ? "Possible duplicate: another draft is also for \(line)." : nil
 }
 /// True for a Cancel press (or Escape) that follows a popover closing so closely that it is the same keystroke.
 func composerCancelFollowsPopoverClose(closedAt: Date?, now: Date) -> Bool {
@@ -2439,6 +2476,14 @@ func orderCancelSheetBody(_ status: String) -> String {
         return "Slant will cancel when eligible and refund according to their rules."
     default:
         return "Cancellation may be possible. A refund isn’t promised for this status."
+    }
+}
+/// A hover hint for live statuses whose title alone is vague, in Slant's own words (docs, read 28 Oct 2026), or nil.
+func orderStatusHelp(_ status: String) -> String? {
+    switch status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+    case "SUBMITTED": "Paid, waiting to print"
+    case "PRINTING": "In production: printing, finishing and packing"
+    default: nil
     }
 }
 func orderStatusTitle(_ status: String) -> String {

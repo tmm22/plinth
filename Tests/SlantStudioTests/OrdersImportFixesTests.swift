@@ -74,12 +74,12 @@ final class OrdersImportFixesTests: XCTestCase {
         let time: (Date) -> String = { _ in "2:32 PM" }
         let ada = UnconfirmedDraftAttempt(recipient: "Ada Lovelace", date: Date())
         let none = draftCreateUnknownNotice([], earlierUnlisted: true, time: time)
-        XCTAssertEqual(none, "Earlier Create Draft attempts didn’t get a reply from Slant, so those drafts may exist. Check your drafts (Orders toolbar › Status › Draft) before creating them again.")
+        XCTAssertEqual(none, "Earlier Create Draft attempts didn’t get a clear answer from Slant, so those drafts may exist. Check your drafts (Orders toolbar › Status › Draft) before creating them again.")
         let one = draftCreateUnknownNotice([ada], earlierUnlisted: true, time: time)
-        XCTAssertTrue(one.hasPrefix("More than one Create Draft attempt didn’t get a reply from Slant (the latest: for Ada Lovelace at 2:32 PM)"))
+        XCTAssertTrue(one.hasPrefix("More than one Create Draft attempt didn’t get a clear answer from Slant (the latest: for Ada Lovelace at 2:32 PM)"))
         let five = (0..<unconfirmedDraftAttemptLimit).map { UnconfirmedDraftAttempt(recipient: "R\($0)", date: Date()) }
         XCTAssertTrue(draftCreateUnknownNotice(five, earlierUnlisted: true, time: time)
-            .hasPrefix("More than 5 Create Draft attempts didn’t get a reply from Slant (the latest: for R0 at 2:32 PM; "))
+            .hasPrefix("More than 5 Create Draft attempts didn’t get a clear answer from Slant (the latest: for R0 at 2:32 PM; "))
         XCTAssertTrue(draftCreateAnywayMessage([ada], earlierUnlisted: true, time: time)
             .hasSuffix("If this is one of those orders, creating it again makes a second draft."))
         XCTAssertEqual(draftCreateUnknownNotice([ada], time: time), draftCreateUnknownNotice([ada], earlierUnlisted: false, time: time))

@@ -1547,7 +1547,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @discardableResult
     func createPlatform(_ draft: PlatformDraft) async -> Bool {
         var created = false
-        let ran = await run("Create platform") {
+        let ran = await run("Create platform", handlesError: { error in
+            // Never retried; Slant may have made the platform, so the copy says to reload before creating another.
+            guard let message = platformCreateUnclearMessage(error) else { return false }
+            self.error = message
+            return true
+        }) {
             let response = try await client.request("POST", path: "/platforms", body: try draft.payload())
             noteRateLimit(from: response)
             let object = responseObject(response)
@@ -1688,8 +1693,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         let type = importModelType(url: trimmedURL, name: trimmedName)
         var ok = false
         let ran = await run("Upload model from URL", handlesError: { error in
-            // `POST /files` has left the live OpenAPI; a 404 or 405 means Slant no longer takes links.
-            guard let message = uploadFromURLUnavailableMessage(error) else { return false }
+            // `POST /files` has left the live OpenAPI; a 404 or 405 means Slant no longer takes links. An unclear reply
+            // may still have added the file, so that copy says to refresh before uploading again.
+            guard let message = uploadFromURLUnavailableMessage(error) ?? uploadFromURLUnclearMessage(error) else { return false }
             self.error = message
             return true
         }) {
@@ -1903,6 +1909,29 @@ func filesUpdating(_ files: [Record], with object: [String: Any], id: String) ->
 func uploadFromURLUnavailableMessage(_ error: Error) -> String? {
     guard case .http(let status, _, _, _)? = error as? APIError, status == 404 || status == 405 else { return nil }
     return "Slant didn’t accept an upload from a link. Download the file to this Mac, add it with Import Model…, then upload it from your library."
+}
+/// A create (Upload from URL's `POST /files`, Create Platform's `POST /platforms`) whose reply didn't make the outcome
+/// clear: a 5xx or 408, an unreadable reply, or a connection failure after the request may have left the Mac. Copy
+/// only: these requests are never retried, and the error's classification elsewhere is unchanged.
+func slantCreateOutcomeUnclear(_ error: Error) -> Bool {
+    switch error as? APIError {
+    case .http(let status, _, _, _)?: return status >= 500 || status == 408
+    case .invalidResponse?: return true
+    case .invalidRequest?, .keychain?: return false
+    case nil: break
+    }
+    if let urlError = error as? URLError { return !orderMutationURLErrorIsBeforeSending(urlError.code, method: "POST") }
+    return false
+}
+/// Upload from URL's copy when Slant may have added the file anyway, else nil.
+func uploadFromURLUnclearMessage(_ error: Error) -> String? {
+    guard slantCreateOutcomeUnclear(error) else { return nil }
+    return "\(slantUnclearReplyCause(error)), so the model may already be in your Slant files. Refresh and look for it there before uploading it again."
+}
+/// Create Platform's copy when Slant may have made the platform anyway, else nil.
+func platformCreateUnclearMessage(_ error: Error) -> String? {
+    guard slantCreateOutcomeUnclear(error) else { return nil }
+    return "\(slantUnclearReplyCause(error)), so the platform may already exist. Use Reload Platforms in Settings › Account to check before creating it again."
 }
 /// The upload step currently running, set from `APIClient.upload`'s callback (any thread) and read on the main actor.
 final class UploadStageBox: @unchecked Sendable {

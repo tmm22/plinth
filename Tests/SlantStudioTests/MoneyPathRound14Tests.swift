@@ -235,9 +235,9 @@ final class MoneyPathRound14Tests: XCTestCase {
     func testDuplicateAdvisoryNamesAPlacedOrderOrAnotherDraft() {
         let reviewed = order("D1", status: "DRAFT").values
         let placed = orderReviewMarketplaceDuplicateNotice(reviewed, orderID: "D1", loaded: [order("D1", status: "DRAFT"), order("P1", status: "PRINTING")])
-        XCTAssertEqual(placed, "Etsy order 314 already has a placed order, so this draft may be a duplicate.")
+        XCTAssertEqual(placed, "Possible duplicate: Etsy order 314 already has a placed order.")
         let otherDraft = orderReviewMarketplaceDuplicateNotice(reviewed, orderID: "D1", loaded: [order("D1", status: "DRAFT"), order("D2", status: "DRAFT")])
-        XCTAssertEqual(otherDraft, "Another loaded draft is also for Etsy order 314. Check this isn’t a duplicate.")
+        XCTAssertEqual(otherDraft, "Possible duplicate: another draft is also for Etsy order 314.")
     }
 
     func testDuplicateAdvisoryIgnoresItselfCancellationsAndOtherSales() {

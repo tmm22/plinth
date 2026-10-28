@@ -253,14 +253,14 @@ final class MarginTests: XCTestCase {
         let ada = UnconfirmedDraftAttempt(recipient: "Ada Lovelace", date: Date())
         XCTAssertEqual(draftCreateUnknownNotice([], time: time), "")
         let one = draftCreateUnknownNotice([ada], time: time)
-        XCTAssertEqual(one, "Your Create Draft for Ada Lovelace at 2:32 PM didn’t get a reply from Slant, so that draft may exist. "
+        XCTAssertEqual(one, "Your Create Draft for Ada Lovelace at 2:32 PM didn’t get a clear answer from Slant, so that draft may exist. "
                        + "Check your drafts (Orders toolbar › Status › Draft) before creating it again.")
         XCTAssertFalse(one.contains("Orders › Drafts"))
         XCTAssertFalse(one.contains("Filters"), "Status is chosen from the toolbar's Status menu, not the Filters popover")
         let unnamed = draftCreateUnknownNotice([UnconfirmedDraftAttempt(recipient: "", date: Date())], time: time)
         XCTAssertTrue(unnamed.hasPrefix("Your Create Draft at 2:32 PM didn’t"))
         let two = draftCreateUnknownNotice([ada, UnconfirmedDraftAttempt(recipient: "Grace Hopper", date: Date())], time: time)
-        XCTAssertTrue(two.hasPrefix("2 Create Draft attempts didn’t get a reply from Slant (for Ada Lovelace at 2:32 PM; for Grace Hopper at 2:32 PM)"))
+        XCTAssertTrue(two.hasPrefix("2 Create Draft attempts didn’t get a clear answer from Slant (for Ada Lovelace at 2:32 PM; for Grace Hopper at 2:32 PM)"))
         XCTAssertTrue(draftCreateAnywayMessage([ada], time: time).hasSuffix("If this is the same order, creating it again makes a second draft."))
         XCTAssertTrue(draftCreateAnywayMessage([ada, ada], time: time).hasSuffix("If this is one of those orders, creating it again makes a second draft."))
         // The path names the real orders-list control: the toolbar's Status menu and its Draft option.

@@ -162,7 +162,7 @@ func comparisonPrice(from estimate: [String: Any], requestedQuantity: Int) -> Co
     if let returned = estimate["quantity"], !(returned is NSNull) {
         let value = (returned as? NSNumber)?.intValue ?? (returned as? String).flatMap { Int($0) }
         if let value, value != requestedQuantity {
-            return .unusable("Slant priced \(value) instead of \(requestedQuantity).")
+            return .unusable("Slant priced a quantity of \(value), not the \(requestedQuantity) you asked for.")
         }
     }
     guard let total = estimateAmount(estimate["total"]), total >= 0,

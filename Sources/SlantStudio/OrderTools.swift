@@ -261,19 +261,19 @@ func draftCreateUnknownNotice(_ attempts: [UnconfirmedDraftAttempt], earlierUnli
         let list = attempts.map(describe).joined(separator: "; ")
         let lead: String
         switch attempts.count {
-        case 0: lead = "Earlier Create Draft attempts didn’t get a reply from Slant"
-        case 1: lead = "More than one Create Draft attempt didn’t get a reply from Slant (the latest: \(list))"
-        default: lead = "More than \(attempts.count) Create Draft attempts didn’t get a reply from Slant (the latest: \(list))"
+        case 0: lead = "Earlier Create Draft attempts didn’t get a clear answer from Slant"
+        case 1: lead = "More than one Create Draft attempt didn’t get a clear answer from Slant (the latest: \(list))"
+        default: lead = "More than \(attempts.count) Create Draft attempts didn’t get a clear answer from Slant (the latest: \(list))"
         }
         return "\(lead), so those drafts may exist. Check your drafts (\(draftCreateCheckDraftsPath)) before creating them again."
     }
     guard let last = attempts.last else { return "" }
     if attempts.count == 1 {
-        return "Your Create Draft \(describe(last)) didn’t get a reply from Slant, so that draft may exist. "
+        return "Your Create Draft \(describe(last)) didn’t get a clear answer from Slant, so that draft may exist. "
             + "Check your drafts (\(draftCreateCheckDraftsPath)) before creating it again."
     }
     let list = attempts.map(describe).joined(separator: "; ")
-    return "\(attempts.count) Create Draft attempts didn’t get a reply from Slant (\(list)), so those drafts may exist. "
+    return "\(attempts.count) Create Draft attempts didn’t get a clear answer from Slant (\(list)), so those drafts may exist. "
         + "Check your drafts (\(draftCreateCheckDraftsPath)) before creating them again."
 }
 

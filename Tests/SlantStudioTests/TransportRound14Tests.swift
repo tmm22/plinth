@@ -332,7 +332,7 @@ final class TransportRound14Tests: XCTestCase {
         // retryable: false stops only Slant's automatic retries; a manual resend after fixing the endpoint stays open.
         let refused = Record(values: ["status": "failed", "retryable": false, "lastStatus": 400])
         XCTAssertNil(deadWebhookResendBlockedReason(refused))
-        XCTAssertTrue(deadWebhookCaption(refused).contains("stopped retrying"))
+        XCTAssertTrue(deadWebhookCaption(refused).contains("Slant has stopped retrying it"))
     }
 
     func testSingleResendResultInWords() {
@@ -345,7 +345,7 @@ final class TransportRound14Tests: XCTestCase {
                        "Not delivered. Your endpoint returned HTTP 500: Internal Server Error")
         XCTAssertEqual(webhookSingleResendResultMessage(result(status: 404)), "Not delivered. Your endpoint returned HTTP 404.")
         XCTAssertEqual(webhookSingleResendResultMessage(result(error: "getaddrinfo ENOTFOUND")), "Not delivered: getaddrinfo ENOTFOUND")
-        XCTAssertEqual(webhookSingleResendResultMessage(result()), "Not delivered. No reply came from your endpoint.")
+        XCTAssertEqual(webhookSingleResendResultMessage(result()), "Not delivered. Slant didn’t say why.")
         XCTAssertEqual(webhookSingleResendResultMessage(result(already: true)), "Already delivered, so Slant didn’t send it again.")
         XCTAssertEqual(webhookSingleResendResultMessage(result(expired: true)), "Past Slant’s 30-day window, so Slant didn’t send it.")
         let parsed = parseWebhookSingleResendResult(from: ["success": false, "status": NSNull(), "error": NSNull(), "expired": true])
