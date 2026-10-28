@@ -737,6 +737,7 @@ private struct PendingNotificationOpen {
                                                     query: orderFilterQueryItems(OrderFilter(), page: 1, limit: listPageSize, platformID: platformID))
             guard stillCurrent() else { return orderWatchRecheckDelay }
             applyRateLimit(from: response, to: store)
+            SlantAPIWatch.shared.noteOrderList(response, firstPage: true)
             newest = orderWatchObservations(responseRecords(response))
             hold = nil
         } catch {
@@ -754,6 +755,7 @@ private struct PendingNotificationOpen {
                 let response = try await client.request("GET", path: "/orders", query: orderWatchRecentlyUpdatedQuery(platformID: platformID))
                 guard stillCurrent() else { return orderWatchRecheckDelay }
                 applyRateLimit(from: response, to: store)
+                SlantAPIWatch.shared.noteOrderList(response, firstPage: true)
                 let records = responseRecords(response)
                 // A reply that ignored the sort is still a true list of statuses, so it is used once; the read stops.
                 if orderWatchUpdatedSortCheck(records) == .notSorted { updatedReadAvailable = false }
@@ -962,6 +964,7 @@ extension StudioStore {
                 }
                 noteBackgroundRateLimit(from: response)
                 let order = mergeOrderDraftEnvelope(responseObject(response))
+                SlantAPIWatch.shared.noteOrder(order)
                 let record = Record(values: order)
                 // Only the order asked for, once, and only if it is on the platform listed (this holds `busy`, so no
                 // reload can add it meanwhile).

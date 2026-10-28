@@ -272,6 +272,8 @@ struct AdvancedSettingsTab: View {
                 Text("Service status")
             }
 
+            SlantAPISettingsSection() // SlantAPIChanges.swift: the daily API description check and unrecognised statuses
+
             Section {
                 LabeledContent("Platform ID") {
                     HStack(spacing: 8) {

@@ -1123,6 +1123,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let response = try await client.request("GET", path: "/orders/\(encodedSegment(orderID))")
             noteRateLimit(from: response)
             let order = mergeOrderDraftEnvelope(responseObject(response))
+            SlantAPIWatch.shared.noteOrder(order)
             guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return that order. Reload Orders and try again.") }
             prefill = orderComposerPrefill(reordering: Record(values: order))
         }
@@ -1348,6 +1349,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let orderQuery = orderFilterQueryItems(orderFilter, page: 1, limit: listPageSize, platformID: platformID)
             let ordersResponse = try await client.request("GET", path: "/orders", query: orderQuery)
             noteRateLimit(from: ordersResponse)
+            SlantAPIWatch.shared.noteOrderList(ordersResponse, firstPage: true)
             let orderRecords = responseRecords(ordersResponse)
             orders = orderFilterTrimmed(orderRecords, filter: orderFilter)
             orderPage = 1
@@ -1388,6 +1390,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         _ = await run("Search orders", retryable: true, retry: .searchOrders(trimmed)) {
             let response = try await client.request("GET", path: "/orders", query: orderSearchQueryItems(trimmed, platformID: platformID))
             noteRateLimit(from: response)
+            SlantAPIWatch.shared.noteOrderList(response, firstPage: false)
             orders = orderSearchMatchingRecords(responseRecords(response), typed: trimmed)
             orderSearchActive = true
             orderPage = 1
@@ -1411,6 +1414,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let query = orderFilterQueryItems(filter, page: 1, limit: listPageSize, platformID: platformID)
             let response = try await client.request("GET", path: "/orders", query: query)
             noteRateLimit(from: response)
+            SlantAPIWatch.shared.noteOrderList(response, firstPage: true)
             let records = responseRecords(response)
             orders = orderFilterTrimmed(records, filter: filter)
             orderPage = 1
@@ -1427,6 +1431,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let query = orderFilterQueryItems(orderFilter, page: next, limit: listPageSize, platformID: platformID)
             let response = try await client.request("GET", path: "/orders", query: query)
             noteRateLimit(from: response)
+            SlantAPIWatch.shared.noteOrderList(response, firstPage: false)
             let more = responseRecords(response)
             let known = Set(orders.map(\.id))
             orders.append(contentsOf: orderFilterTrimmed(more, filter: orderFilter).filter { !known.contains($0.id) })
