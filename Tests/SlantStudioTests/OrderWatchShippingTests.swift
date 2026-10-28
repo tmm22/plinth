@@ -10,9 +10,9 @@ final class OrderWatchShippingTests: XCTestCase {
     /// Shaped like the live list rows of 29 Oct 2026 (customer and address redacted; `platform` has no ID).
     private func liveOrder(_ id: String, status: Any?, fulfillment: Any? = nil, wrapped: Bool = false) -> Record {
         var order: [String: Any] = [
-            "publicId": id, "createdAt": "2026-10-01T10:00:00.000Z", "updatedAt": "2026-10-02T12:00:00.000Z",
-            "deliveryCost": "41.20", "printingCost": "14.20", "customer": ["details": ["name": "Ada Lovelace"]],
-            "items": [["type": "PRINT", "status": "PRINTING", "price": "14.20", "currency": "USD", "quantity": 1]],
+            "publicId": id, "createdAt": "2026-01-05T10:00:00Z", "updatedAt": "2026-01-08T10:00:00Z",
+            "deliveryCost": "20.00", "printingCost": "10.00", "customer": ["details": ["name": "Ada Lovelace"]],
+            "items": [["type": "PRINT", "status": "PRINTING", "price": "10.00", "currency": "USD", "quantity": 1]],
             "platform": ["name": "Shop", "url": "https://example.com/", "enabled": true]
         ]
         if let status { order["status"] = status }
@@ -49,7 +49,7 @@ final class OrderWatchShippingTests: XCTestCase {
             liveOrder("SLANT_14", status: "SHIPPED", fulfillment: shipping("DELIVERED"))
         ]
         XCTAssertEqual(orderWatchObservations(rows), [
-            obs("SLANT_1", "SHIPPED"), obs("SLANT_2", "DELIVERED"), obs("SLANT_3", "SHIPPED"), obs("SLANT_4", "PRINTING"),
+            obs("SLANT_1", "SHIPPED"), obs("SLANT_2", "SHIPPED"), obs("SLANT_3", "SHIPPED"), obs("SLANT_4", "PRINTING"),
             obs("SLANT_5", "PRINTING"), obs("SLANT_6", "PRINTING"), obs("SLANT_7", "DRAFT"), obs("SLANT_8", "CANCELLED"),
             obs("SLANT_9", "MYSTERY"), obs("SLANT_10", "PRINTING"), obs("SLANT_11", "PRINTING"), obs("SLANT_14", "SHIPPED")
         ])
@@ -126,18 +126,22 @@ final class OrderWatchShippingTests: XCTestCase {
         }
     }
 
-    func testDeliveredRecordThenOrderStatusShippedStaysQuiet() {
+    /// A DELIVERED shipping record (never seen live) is observed as Shipped, so the status never goes backwards when
+    /// Slant's order status catches up to SHIPPED: one "has shipped", then nothing.
+    func testDeliveredRecordReadsAsShippedAndTheCatchUpIsNoChange() {
         var snapshot = orderWatchApplying([obs("A", "PRINTING")], to: OrderWatchSnapshot(), now: t0).snapshot
         let t1 = t0.addingTimeInterval(240), t2 = t1.addingTimeInterval(240)
         let delivered = orderWatchApplying(orderWatchObservations([liveOrder("A", status: "PRINTING", fulfillment: shipping("DELIVERED"))]),
                                            to: snapshot, now: t1)
-        XCTAssertEqual(orderWatchNotificationTexts(delivered.transitions).map(\.title), ["Order A was delivered"])
+        XCTAssertEqual(delivered.transitions.map(\.to), ["SHIPPED"])
+        XCTAssertEqual(orderWatchNotificationTexts(delivered.transitions).map(\.title), ["Order A has shipped"])
         snapshot = orderWatchAcknowledging(delivered.snapshot)
         let caughtUp = orderWatchApplying(orderWatchObservations([liveOrder("A", status: "SHIPPED", fulfillment: shipping("DELIVERED"))]),
                                           to: snapshot, now: t2)
-        XCTAssertEqual(caughtUp.transitions.map(\.to), ["SHIPPED"])
+        XCTAssertTrue(caughtUp.transitions.isEmpty)
         XCTAssertTrue(orderWatchNotificationTexts(caughtUp.transitions).isEmpty)
         XCTAssertTrue(orderWatchUnseenChanges(caughtUp.snapshot).isEmpty)
+        XCTAssertEqual(caughtUp.snapshot.orders["A"]?.status, "SHIPPED")
         XCTAssertEqual(caughtUp.snapshot.orders["A"]?.changedAt, t1)
     }
 

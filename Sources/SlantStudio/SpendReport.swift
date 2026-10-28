@@ -326,15 +326,19 @@ func spendReportProductSKUs(_ products: [SavedProduct], localModels: [LocalModel
 
 // MARK: - Wording and output
 
+/// Added to the scope note when the Orders list is filtered to Shipped.
+let spendReportShippedFilterLagNote = "Orders Slant still lists as Printing or Submitted aren’t included, even if Studio shows them as Shipped."
+
 /// What the loaded list covers, so a partial or filtered list isn't read as the whole account.
 func spendReportScopeNotes(searchActive: Bool, statusFilter: String?, hasDateRange: Bool, moreOnServer: Bool) -> [String] {
     var notes: [String] = []
     if searchActive { notes.append("The Orders list shows search results, so only those orders are included. Clear the search to include the rest.") }
     if let statusFilter, !statusFilter.isEmpty {
         var note = "The Orders list is filtered to \(orderStatusTitle(statusFilter)) orders, so only those are included."
-        // Slant filters by its order status, which can lag its shipping record (`orderStatusFilterLagHint`).
+        // Slant filters by its own order status, which can lag its shipping record (OrderFollowUp.swift): orders it
+        // still lists as Printing or Submitted aren't in a Shipped list. (They count as spend whenever they're loaded.)
         if statusFilter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "SHIPPED" {
-            note += " " + orderStatusFilterLagHint
+            note += " " + spendReportShippedFilterLagNote
         }
         notes.append(note)
     }

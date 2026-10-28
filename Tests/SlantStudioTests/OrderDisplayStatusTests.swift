@@ -14,7 +14,7 @@ final class OrderDisplayStatusTests: XCTestCase {
         let live = order("PRINTING", fulfillment: ["status": "SHIPPED", "provider": "SHIPPO", "trackingNumbers": ["X"], "labelPrinted": true])
         XCTAssertEqual(orderDisplayStatus(live), "SHIPPED")
         XCTAssertTrue(orderStatusLagsShippingRecord(live))
-        XCTAssertEqual(orderDisplayStatus(order("submitted", fulfillment: ["status": " delivered "])), "DELIVERED")
+        XCTAssertEqual(orderDisplayStatus(order("submitted", fulfillment: ["status": " delivered "])), "SHIPPED", "a DELIVERED record reads as Shipped")
     }
 
     func testEverythingElseKeepsSlantsOrderStatus() {

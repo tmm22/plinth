@@ -986,10 +986,9 @@ struct OrderComposerView: View {
 struct OrderTableRow: Identifiable {
     let record: Record
     let recipient: String
-    /// The status shown (`orderDisplayStatusTitle`): the shipping record's word when Slant's order status lags it.
+    /// The status shown (`orderDisplayStatusTitle`): Shipped when Slant's order status lags its shipping record. The
+    /// Status column sorts by it too, since sorting is local and display-only.
     let status: String
-    /// Sorting stays on Slant's own order status, as its Status filter does.
-    let statusSortKey: String
     /// Why `status` differs from Slant's order status (`orderStatusLagNote`), for the cell's hover hint.
     let statusNote: String?
     let created: String
@@ -1011,7 +1010,6 @@ struct OrderTableRow: Identifiable {
         let order = orderObject(record.values)
         recipient = orderListTitle(order)
         status = orderDisplayStatusTitle(order)
-        statusSortKey = orderStatusTitle((order["status"] as? String) ?? "")
         statusNote = orderStatusLagNote(order)
         created = orderCreatedDisplay(order) ?? ""
         total = orderTotalMoney(order)
@@ -1129,7 +1127,7 @@ struct OrdersView: View {
                     // sideways only at the narrowest window; the recipient gets the most room, the order number
                     // (also in the detail) the least, and Created always fits a full "23 Oct 2026".
                     .width(min: 96, ideal: 160)
-                    TableColumn("Status", value: \.statusSortKey) { (row: OrderTableRow) in
+                    TableColumn("Status", value: \.status) { (row: OrderTableRow) in
                         // With the Needs Attention marker when the order is late or stuck (OrderFollowUp.swift), and
                         // a hover hint when the status shown comes from Slant's shipping record.
                         OrderStatusCell(status: row.status, attention: row.attention, note: row.statusNote)
@@ -1826,24 +1824,20 @@ struct OrderActionConfirmSheet: View {
     /// Why the review couldn't load, shown in this sheet (a window alert would wait behind it).
     @State private var loadFailure: String?
     var isPay: Bool { method == "POST" }
-    /// Slant's own order status: every gate, re-check and the lock use this.
-    var status: String? { fresh.flatMap { $0["status"] as? String } }
-    /// For wording only (`orderDisplayStatus`): the shipping record's word when Slant's order status lags it, so a
-    /// cancel review of an order the record says shipped reads as a refund request.
+    /// For wording only (`orderDisplayStatus`): Shipped when Slant's order status lags its shipping record, so a
+    /// cancel review of an order the record says shipped reads as a refund request. Never a gate input: the gate
+    /// (`orderConfirmReviewGate`) takes the order and reads Slant's own status itself.
     var copyStatus: String { fresh.map(orderDisplayStatus) ?? "" }
-    var refundOnly: Bool { orderCancellationIsRefundOnly(copyStatus) }
     var mutationLock: (Bool, String?) { orderConfirmMutationSendAllowed(attempted: writeAttempted, succeeded: writeSucceeded) }
     /// Set by an earlier Orders or Workbench attempt whose result is unknown; survives closing and reopening this sheet.
     var sharedOutcomeLock: Bool { store.isOutcomeUnknown(orderID: orderID) }
+    /// Whether Pay or Cancel may be pressed for the loaded order, and why not.
+    var reviewGate: OrderConfirmReviewGate {
+        orderConfirmReviewGate(order: fresh, loaded: loadState == .loaded, isPay: isPay,
+                               writeSucceeded: writeSucceeded, writeAttempted: writeAttempted)
+    }
     var finalActionEnabled: Bool {
-        orderConfirmFinalActionEnabled(
-            writeSucceeded: writeSucceeded,
-            writeAttempted: writeAttempted,
-            loaded: loadState == .loaded,
-            status: status,
-            isPay: isPay,
-            order: fresh
-        ) && !writing && !store.busy && !sharedOutcomeLock
+        reviewGate.enabled && !writing && !store.busy && !sharedOutcomeLock
     }
     var sheetTitle: String {
         if isPay { return "Place this order?" }
@@ -1986,7 +1980,7 @@ struct OrderActionConfirmSheet: View {
                     }
                 } else if isPay {
                     VStack(alignment: .trailing, spacing: 6) {
-                        if loadState == .loaded, !finalActionEnabled, let reason = workbenchChargeAllowed(status: status, loaded: true, order: fresh).1 {
+                        if loadState == .loaded, !finalActionEnabled, let reason = reviewGate.reason {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
                         Button("Pay & Send to Production") { confirmAction() }
@@ -1996,7 +1990,7 @@ struct OrderActionConfirmSheet: View {
                     }
                 } else {
                     VStack(alignment: .trailing, spacing: 6) {
-                        if loadState == .loaded, !finalActionEnabled, let reason = orderCancelConfirmAllowed(status: status, loaded: true).1 {
+                        if loadState == .loaded, !finalActionEnabled, let reason = reviewGate.reason {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
                         Button(orderCancelSheetButtonTitle(copyStatus), role: .destructive) { confirmAction() }
@@ -2247,7 +2241,7 @@ func orderFilterEmptyDetail(_ filter: OrderFilter, search: String = "", moreOnSe
     case (nil, false): base = "No orders"
     }
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-    // An order Slant's shipping record says shipped may still be listed under Printing (`orderStatusFilterLagHint`).
+    // An order Studio shows as Shipped may be listed under Printing or Submitted (`orderStatusFilterLagHint`).
     let lagHint = (filter.status ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "SHIPPED"
         ? " " + orderStatusFilterLagHint : ""
     if moreOnServer {
@@ -2371,6 +2365,24 @@ func orderConfirmFinalActionEnabled(
     guard !writeSucceeded, !writeAttempted else { return false }
     if isPay { return workbenchChargeAllowed(status: status, loaded: loaded, order: order).0 }
     return orderCancelConfirmAllowed(status: status, loaded: loaded).0
+}
+/// The Orders review sheet's Pay / Cancel gate: whether the button may be pressed (before the sheet's own busy,
+/// writing and shared-lock checks) and, when the order's status rules it out, why.
+struct OrderConfirmReviewGate: Equatable {
+    var enabled: Bool
+    var reason: String?
+}
+/// The review sheet's gate for the order it loaded. It takes the order, not a status, and reads Slant's own `status`
+/// itself, so the status shown (`orderDisplayStatus`, which can say Shipped while Slant says Printing) can never be
+/// passed in its place.
+func orderConfirmReviewGate(order: [String: Any]?, loaded: Bool, isPay: Bool,
+                            writeSucceeded: Bool, writeAttempted: Bool) -> OrderConfirmReviewGate {
+    let status = order.flatMap { $0["status"] as? String }
+    let check = isPay ? workbenchChargeAllowed(status: status, loaded: loaded, order: order)
+        : orderCancelConfirmAllowed(status: status, loaded: loaded)
+    let enabled = orderConfirmFinalActionEnabled(writeSucceeded: writeSucceeded, writeAttempted: writeAttempted,
+                                                 loaded: loaded, status: status, isPay: isPay, order: order)
+    return OrderConfirmReviewGate(enabled: enabled, reason: check.1)
 }
 func orderConfirmRecheck(method: String, shown: [String: Any], latest: [String: Any]) -> OrderConfirmRecheckResult {
     let status = (latest["status"] as? String) ?? ""
@@ -2552,7 +2564,7 @@ func orderCancelSheetBody(_ status: String) -> String {
     switch status.uppercased() {
     case "DRAFT": return "Nothing has been charged."
     case "SHIPPED", "DELIVERED":
-        return "This order already shipped, so Slant refunds it but can't stop delivery."
+        return "This order already shipped, so Slant refunds it but can’t stop delivery."
     case "PAYMENT_ERROR":
         return "Cancellation may be possible. A refund isn’t promised for payment-problem orders."
     case "QUEUED", "PRINTING", "AWAITING_SHIPMENT", "PROCESSING", "PAID", "SUBMITTED", "IN_REVIEW",
@@ -2563,12 +2575,13 @@ func orderCancelSheetBody(_ status: String) -> String {
     }
 }
 /// The cancel review's explanation for the order shown. When Slant's shipping record says the order shipped while its
-/// status still says it's being made (`orderStatusLagsShippingRecord`), Slant may only refund it; otherwise the
-/// status's own wording. Wording only: whether Cancel is offered is still decided by Slant's own status.
+/// status still says it's being made (`orderStatusLagsShippingRecord`), Slant probably can't stop the delivery and
+/// decides what happens; otherwise the status's own wording. Wording only: whether Cancel is offered is still decided
+/// by Slant's own status.
 func orderCancelSheetBody(order: [String: Any]?) -> String {
     guard let order else { return orderCancelSheetBody("") }
     if orderStatusLagsShippingRecord(order) {
-        return "Slant’s shipping record says this order has shipped, so Slant may only refund it; it can’t stop the delivery."
+        return "Slant’s shipping record says this order has shipped, so Slant probably can’t stop the delivery. Slant decides whether to cancel it and what to refund."
     }
     return orderCancelSheetBody((order["status"] as? String) ?? "")
 }

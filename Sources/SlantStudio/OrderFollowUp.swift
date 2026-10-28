@@ -94,7 +94,9 @@ let orderFulfillmentShippedStatuses: Set<String> = ["SHIPPED", "DELIVERED"]
 /// The status Studio shows for an order. Slant's order status can lag its own shipping record: on 29 Oct 2026 two
 /// orders read PRINTING while `fulfillment.status` was SHIPPED with tracking and a printed label. So while the order
 /// status is a production status (`orderAttentionProductionStatuses`) and the shipping record says SHIPPED or
-/// DELIVERED, Studio shows the shipping record's word; otherwise Slant's order status, unchanged.
+/// DELIVERED (`orderFulfillmentShippedStatuses`), Studio shows SHIPPED; otherwise Slant's order status, unchanged.
+/// A DELIVERED record shows as SHIPPED too: it has never been seen live and Slant's live statuses have no Delivered,
+/// so showing it would make the word go backwards once the order status catches up to SHIPPED.
 ///
 /// Display and read-only advice only. Cancel gating, the pay/cancel re-checks, the unknown-outcome lock, pay outcomes,
 /// Pay Several Drafts and the Spending Report use Slant's raw `status`, never this.
@@ -103,7 +105,7 @@ func orderDisplayStatus(_ order: [String: Any]) -> String {
     let status = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     guard orderAttentionProductionStatuses.contains(status), let shipping = orderFulfillmentStatus(order),
           orderFulfillmentShippedStatuses.contains(shipping) else { return raw }
-    return shipping
+    return "SHIPPED"
 }
 
 /// Whether Studio shows the shipping record's word instead of Slant's order status (`orderDisplayStatus`).
@@ -117,13 +119,13 @@ func orderDisplayStatusTitle(_ order: [String: Any]) -> String {
     orderStatusTitle(orderDisplayStatus(order))
 }
 
-/// Why Studio shows the shipping record's word, for the status cell's hover hint and a caption in the detail:
-/// "Slant’s shipping record says Shipped; its order status still says Printing." Nil unless the status lags. A
+/// Why Studio shows Shipped, for the status cell's hover hint and a caption in the detail: "Slant’s shipping record
+/// says Shipped, but Slant hasn’t yet updated this order’s status from Printing." Nil unless the status lags. A
 /// shipping record of SHIPPED may mean only that a label was made, so this never says the parcel was handed over.
 func orderStatusLagNote(_ order: [String: Any]) -> String? {
     guard orderStatusLagsShippingRecord(order) else { return nil }
     let raw = (order["status"] as? String) ?? ""
-    return "Slant’s shipping record says \(orderDisplayStatusTitle(order)); its order status still says \(orderStatusTitle(raw.trimmingCharacters(in: .whitespacesAndNewlines)))."
+    return "Slant’s shipping record says \(orderDisplayStatusTitle(order)), but Slant hasn’t yet updated this order’s status from \(orderStatusTitle(raw.trimmingCharacters(in: .whitespacesAndNewlines)))."
 }
 
 /// What the cancel re-check compares between the order shown in the review and the order re-fetched just before
@@ -138,23 +140,25 @@ func orderShippingDetails(_ order: [String: Any]) -> OrderShippingDetails {
 }
 
 /// The cancel review's stop when the shipping record or tracking changed between the review and the send.
-let orderShippingDetailsChangedMessage = "This order’s shipping details changed. Review it again."
+let orderShippingDetailsChangedMessage = "This order’s shipping record or tracking changed. Review it again."
 
-/// Status-filter hint (the Orders list, its filtered-empty text and the Spending Report): Slant filters by its order
-/// status, which can lag its shipping record, so such orders are listed under Printing, not Shipped.
-let orderStatusFilterLagHint = "Slant filters by its order status: orders whose shipping record says Shipped while their status still says Printing are listed under Printing."
+/// Status-filter hint (the Orders list and its filtered-empty text): Slant filters by its order status, which can lag
+/// its shipping record, so such orders are listed under Printing or Submitted, not Shipped.
+let orderStatusFilterLagHint = "Slant’s filter uses its own order status, so orders Studio shows as Shipped while Slant still says Printing or Submitted are listed under that status."
 
 /// The hint under the Orders list for the chosen status filter, or nil. Always under Shipped (orders not loaded may
-/// be listed under Printing instead); under Printing only while a loaded order's status lags its shipping record.
+/// be listed under Printing or Submitted instead); under another status only while a loaded order with that raw
+/// status lags its shipping record (in practice Printing or Submitted).
 func orderStatusFilterLagHintText(status: String?, loaded: [Record]) -> String? {
-    switch (status ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
-    case "SHIPPED":
-        return orderStatusFilterLagHint
-    case "PRINTING":
-        return loaded.contains { orderStatusLagsShippingRecord(orderObject($0.values)) } ? orderStatusFilterLagHint : nil
-    default:
-        return nil
+    let filter = (status ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    if filter.isEmpty { return nil }
+    if filter == "SHIPPED" { return orderStatusFilterLagHint }
+    let lagging = loaded.contains { record in
+        let order = orderObject(record.values)
+        let raw = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return raw == filter && orderStatusLagsShippingRecord(order)
     }
+    return lagging ? orderStatusFilterLagHint : nil
 }
 
 /// Why an order needs a look. Worked out locally from the loaded order and the clock; never a request.

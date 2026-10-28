@@ -37,7 +37,8 @@ let orderWatchNotificationOrderIDKey = "orderID"
 
 /// Changes worth a sidebar badge and a notification: the order needs attention, or it reached the customer's door.
 /// Of Slant's live statuses (since 26 Oct 2026) only SHIPPED and CANCELLED are notable; the earlier ones stay for
-/// saved snapshots and any old reply. DELIVERED can also come from the shipping record (`orderWatchObservations`).
+/// saved snapshots and any old reply. A shipping record's SHIPPED or DELIVERED is observed as SHIPPED
+/// (`orderWatchObservations`).
 let orderWatchNotableStatuses: Set<String> = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELLED", "CANCELED", "SHIPPED", "DELIVERED"]
 private let orderWatchAttentionOrder = ["PAYMENT_ERROR", "IN_REVIEW", "CANCELLED", "DELIVERED", "SHIPPED"]
 
@@ -97,9 +98,10 @@ private func validOrderWatchID(_ id: String) -> Bool {
 }
 
 /// The order-level status of each listed order, as Studio shows it (`orderDisplayStatus`): Slant's order status, or
-/// the shipping record's SHIPPED or DELIVERED while the order status still reads a production status (live on 29 Oct
-/// 2026: PRINTING orders whose `fulfillment.status` was SHIPPED, with tracking and a printed label). So a parcel that
-/// left Slant is reported once, when the shipping record says so, and the order status catching up later is no change.
+/// SHIPPED when the shipping record says SHIPPED or DELIVERED while the order status still reads a production status
+/// (live on 29 Oct 2026: PRINTING orders whose `fulfillment.status` was SHIPPED, with tracking and a printed label).
+/// So a parcel that left Slant is reported once, when the shipping record says so, and the order status catching up
+/// later is no change.
 /// Still a status word only, so the snapshot keeps IDs, statuses and times. Item statuses (a draft's items say
 /// PROCESSING) are ignored, as are rows without an ID or a text status; the first row wins when an ID repeats.
 func orderWatchObservations(_ records: [Record]) -> [OrderWatchObservation] {
@@ -224,8 +226,7 @@ func orderWatchFetchedOrderFitsPlatform(_ order: [String: Any], platformID: Stri
 /// reads Submitted or Printing (orders paid the week before read PRINTING on 28 Oct 2026), CANCELED is spelt
 /// CANCELLED, and Delivered (no longer a status) reads Shipped. A payment problem that now reads Submitted or Printing
 /// was resolved, which is news, and every other move from an earlier status (Queued → Shipped, say) is real, as is a
-/// shipping record's Shipped on a Printing or Awaiting shipment order (`orderWatchObservations`). A shipping record's
-/// Delivered later read as Shipped (the order status caught up) is the same re-labelling, so it stays quiet.
+/// shipping record's Shipped on a Printing or Awaiting shipment order (`orderWatchObservations`).
 func orderWatchChangeIsSlantRelabel(from: String, to: String) -> Bool {
     guard orderLegacyStatuses.contains(from) else { return false }
     switch to {

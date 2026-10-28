@@ -407,8 +407,9 @@ final class OrdersSafetyRound15Tests: XCTestCase {
                 problemLate: true, cancelButton: "Request Refund"),
             row("SUBMITTED", shipped, "Shipped", lags: true, late: false, notShipped: false, progress: false, damaged: true,
                 problemLate: true, cancelButton: "Request Refund"),
-            row("PRINTING", ["status": "DELIVERED"], "Delivered", lags: true, late: false, notShipped: false, progress: false,
-                damaged: true, problemLate: false, cancelButton: "Request Refund"),
+            // Never seen live; shown as Shipped so the word doesn't go backwards when the order status catches up.
+            row("PRINTING", ["status": "DELIVERED"], "Shipped", lags: true, late: false, notShipped: false, progress: false,
+                damaged: true, problemLate: true, cancelButton: "Request Refund"),
             // Slant's own docs example: a label may be made before the parcel ships.
             row("PRINTING", ["status": "AWAITING_SHIPMENT", "labelPrinted": true], "Printing", lags: false, late: true,
                 notShipped: true, progress: true, damaged: false, problemLate: true, cancelButton: "Cancel & Refund"),
@@ -440,8 +441,8 @@ final class OrdersSafetyRound15Tests: XCTestCase {
             let message = "\(meaning.status) + \(meaning.fulfillment)"
             let base: [String: Any] = [
                 "publicId": "SLANT_1", "status": meaning.status, "createdAt": "2026-10-23T09:00:00.000Z",
-                "processedAt": "2026-10-23T09:01:00.000Z", "printingCost": "14.20", "deliveryCost": "41.20",
-                "items": [["type": "PRINT", "price": "14.20", "currency": "USD", "quantity": 1]],
+                "processedAt": "2026-10-23T09:01:00.000Z", "printingCost": "10.00", "deliveryCost": "20.00",
+                "items": [["type": "PRINT", "price": "10.00", "currency": "USD", "quantity": 1]],
                 "metadata": ["source": "etsy", "sourceOrderId": "3141"],
                 "customer": ["details": ["address": ["name": "Ada", "country": "GB"]]]
             ]
@@ -452,7 +453,6 @@ final class OrdersSafetyRound15Tests: XCTestCase {
             // Shown: the list, the detail, search, Tracking for Your Shop.
             XCTAssertEqual(orderDisplayStatusTitle(order), meaning.title, message)
             XCTAssertEqual(OrderTableRow(record: Record(values: order), now: now).status, meaning.title, message)
-            XCTAssertEqual(OrderTableRow(record: Record(values: order), now: now).statusSortKey, orderStatusTitle(raw), message)
             XCTAssertEqual(orderStatusLagsShippingRecord(order), meaning.lags, message)
             XCTAssertEqual(orderStatusLagNote(order) != nil, meaning.lags, message)
             XCTAssertTrue(orderMatchesSearch(Record(values: order), query: meaning.title), message)
@@ -486,6 +486,14 @@ final class OrdersSafetyRound15Tests: XCTestCase {
                            orderCancelConfirmAllowed(status: meaning.status, loaded: true).0, message)
             XCTAssertEqual(workbenchCancelAllowed(status: raw, loaded: true).0,
                            workbenchCancelAllowed(status: meaning.status, loaded: true).0, message)
+            // The review sheet's Pay / Cancel gate, given the whole order, sees exactly what it sees without the record.
+            for isPay in [true, false] {
+                for loaded in [true, false] {
+                    XCTAssertEqual(orderConfirmReviewGate(order: order, loaded: loaded, isPay: isPay, writeSucceeded: false, writeAttempted: false),
+                                   orderConfirmReviewGate(order: base, loaded: loaded, isPay: isPay, writeSucceeded: false, writeAttempted: false),
+                                   "\(isPay) \(loaded) \(message)")
+                }
+            }
             for method in ["POST", "DELETE"] {
                 XCTAssertEqual(orderConfirmRecheck(method: method, shown: order, latest: order),
                                orderConfirmRecheck(method: method, shown: base, latest: base), "\(method) \(message)")
