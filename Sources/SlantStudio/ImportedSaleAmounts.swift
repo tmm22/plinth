@@ -405,9 +405,13 @@ func importedSaleReviewEstimate(_ amounts: ImportedSaleAmounts?, order: [String:
 /// plainly and the scrolling box is shorter, keeping the buttons in view. Chosen by counts, never by measuring.
 let orderReviewItemBoxHeight: CGFloat = 128
 let orderReviewExtraLineHeight: CGFloat = 21
+/// The unlisted-cost notice wraps to about two lines in the 560-point sheet.
+let orderReviewCostNoticeLines = 2
 
-func orderReviewItemListLayout(itemCount: Int, extraReceiptLines: Int) -> (scrolls: Bool, height: CGFloat) {
-    let extras = max(0, min(2, extraReceiptLines))
+/// `maximumExtraLines`: 2 normally (the marketplace and estimate lines); the pay review raises it while it shows the
+/// unlisted-cost notice (`orderUnlistedCostNotice`, counted as `orderReviewCostNoticeLines`), which must stay in view.
+func orderReviewItemListLayout(itemCount: Int, extraReceiptLines: Int, maximumExtraLines: Int = 2) -> (scrolls: Bool, height: CGFloat) {
+    let extras = max(0, min(max(0, maximumExtraLines), extraReceiptLines))
     return (itemCount > orderReviewPlainItemLimit - extras,
             orderReviewItemBoxHeight - CGFloat(extras) * orderReviewExtraLineHeight)
 }

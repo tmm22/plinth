@@ -84,11 +84,13 @@ func orderObject(_ object: [String: Any]) -> [String: Any] {
     object["order"] as? [String: Any] ?? object
 }
 
-/// Merge draft envelope `items` / `totals` / `customer` into the order record (order fields win).
+/// Merge draft envelope `items` / `totals` / `customer` into the order record (order fields win). The `totals` object
+/// itself is kept too, so the pay review can see any cost in it that Studio doesn't add (`orderUnlistedCosts`).
 func mergeOrderDraftEnvelope(_ data: [String: Any]) -> [String: Any] {
     var order = orderObject(data)
     if order["items"] == nil, let items = data["items"] { order["items"] = items }
     if order["customer"] == nil, let customer = data["customer"] { order["customer"] = customer }
+    if order["totals"] == nil, let totals = data["totals"] { order["totals"] = totals }
     if let totals = data["totals"] as? [String: Any] {
         if order["printingCost"] == nil, let value = totals["printingCost"] { order["printingCost"] = value }
         if order["deliveryCost"] == nil, let value = totals["deliveryCost"] { order["deliveryCost"] = value }
@@ -931,7 +933,8 @@ struct OrderComposerView: View {
                 confirmCreateAnyway = true
                 return
             }
-            // Shown in the notice if this attempt's outcome isn't confirmed; kept in memory only.
+            // Shown in the notice if this attempt's outcome isn't confirmed (kept in memory only); a confirmed creation
+            // clears only this recipient's earlier unconfirmed attempts. The same name the draft body sends.
             let recipient = delivery.name
             let attemptDate = Date()
             Task {
@@ -1683,6 +1686,8 @@ struct OrdersView: View {
                     } else if !canCancelSelected, let reason = orderDetailCancelBlockedNote((displayed["status"] as? String) ?? "") {
                         // Under the row with its own width, rather than squeezed beside the buttons.
                         Text(reason).font(.caption).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                     // Review Drafts One by One…: after Go Back the run can still move on (never pays by itself).
@@ -1835,14 +1840,21 @@ struct OrderActionConfirmSheet: View {
                 if let order = fresh {
                     let reference = orderMarketplaceReferenceLine(order)
                     let estimate = reviewProfitEstimate(order)
+                    // A cost field Studio doesn't add (a tax or fee Slant might add one day), or a Slant total that
+                    // disagrees with the sum. Advisory: Pay stays enabled or disabled exactly as without it.
+                    let costNotice = isPay ? orderUnlistedCostNotice(orderUnlistedCosts(order)) : nil
                     VStack(alignment: .leading, spacing: 8) {
                         if let items = order["items"] as? [[String: Any]], !items.isEmpty {
                             // A long list scrolls in a fixed-height box so the totals and buttons below always stay
                             // visible. Chosen by item count, never by measuring (ViewThatFits looped forever when
                             // VoiceOver or automation hit-tested this sheet); a short list hugs its content. Extra
-                            // receipt lines (marketplace, estimated profit) shorten it to keep the buttons in view.
+                            // receipt lines (marketplace, estimated profit, the cost notice) shorten it to keep the
+                            // buttons in view.
+                            let noticeLines = costNotice == nil ? 0 : orderReviewCostNoticeLines
                             let itemLayout = orderReviewItemListLayout(
-                                itemCount: items.count, extraReceiptLines: (reference == nil ? 0 : 1) + (estimate == nil ? 0 : 1))
+                                itemCount: items.count,
+                                extraReceiptLines: (reference == nil ? 0 : 1) + (estimate == nil ? 0 : 1) + noticeLines,
+                                maximumExtraLines: 2 + noticeLines)
                             if itemLayout.scrolls {
                                 ScrollView { reviewItemList(items).padding(.trailing, 12) }
                                     .scrollIndicators(.visible)
@@ -1862,6 +1874,11 @@ struct OrderActionConfirmSheet: View {
                             LabeledContent("Print cost") { Text("\(money(order["printingCost"])) USD").monospacedDigit() }
                             LabeledContent("Delivery cost") { Text("\(money(order["deliveryCost"])) USD").monospacedDigit() }
                             LabeledContent("Total") { Text("\(orderTotalMoney(order)) USD").monospacedDigit().fontWeight(.semibold) }
+                            if let costNotice {
+                                Label(costNotice, systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             LabeledContent("Recipient") { Text(orderRecipientDisplay(order)).lineLimit(2) }
                             // A likely duplicate (another loaded order for the same marketplace order) replaces the
                             // Marketplace row with a warning naming it, so the list's height is unchanged. Advisory
@@ -2319,6 +2336,9 @@ func orderConfirmRecheck(method: String, shown: [String: Any], latest: [String: 
         if !workbenchOrderHasNumericTotal(shown) || !workbenchOrderHasNumericTotal(latest) {
             return .statusBlocked("Couldn’t confirm a total for this order.")
         }
+        // A tax or fee field that appeared or changed since the review could change the charge without changing the
+        // total Studio adds up, so it stops the payment like a changed price (the review then shows it).
+        if orderUnlistedCostSignature(shown) != orderUnlistedCostSignature(latest) { return .priceChanged }
     } else {
         if shownStatus.uppercased() != status.uppercased() {
             return .statusBlocked("This order’s status changed. Review it again.")
@@ -2416,18 +2436,29 @@ func orderCancellationIsRefundOnly(_ status: String) -> Bool {
 }
 func orderCancellationBlockedReason(_ status: String) -> String? {
     if orderCanRequestCancellation(status) { return nil }
-    switch status.uppercased() {
-    case "CANCELED", "CANCELLED": return "This order was already cancelled."
-    case "DRAFT": return "Slant doesn’t cancel drafts. A draft costs nothing unless you place it."
-    case "": return "This order can’t be cancelled."
-    default: return "This order can’t be cancelled."
+    if orderStatusIsCancelled(status) { return "This order was already cancelled." }
+    let shown = status.trimmingCharacters(in: .whitespacesAndNewlines)
+    if shown.uppercased() == "DRAFT" { return "Slant doesn’t cancel drafts. A draft costs nothing unless you place it." }
+    // Every other known status can be cancelled, so what's left is a status Studio doesn't know (Slant changed its
+    // statuses without notice on 26 Oct 2026): say so rather than claim Slant can't cancel it.
+    if shown.isEmpty {
+        return "Slant didn’t return this order’s status, so Studio doesn’t offer Cancel. Check the order on Slant."
     }
+    return "Studio doesn’t recognise this order’s status (“\(orderStatusQuoted(shown))”), so it doesn’t offer Cancel. Check the order on Slant."
+}
+/// A status from Slant as quoted in copy: at most 40 characters, control characters dropped.
+func orderStatusQuoted(_ status: String) -> String {
+    let cleaned = String(String.UnicodeScalarView(status.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return cleaned.count > 40 ? String(cleaned.prefix(40)) + "…" : cleaned
 }
 /// The note shown in an order's details instead of Cancel…, or nil. Omitted for finished orders (cancelled, shipped,
-/// delivered, complete), whose status heading already says why; kept where it tells the user something.
+/// delivered, complete), whose status heading already says why; kept where it tells the user something, such as a
+/// status Studio doesn't recognise.
 func orderDetailCancelBlockedNote(_ status: String) -> String? {
     // Drafts say why they have no Cancel in their caption under the buttons (`orderDetailDraftCaption`).
-    let finished: Set<String> = ["CANCELED", "CANCELLED", "SHIPPED", "DELIVERED", "DRAFT"]
+    if orderStatusIsCancelled(status) { return nil }
+    let finished: Set<String> = ["SHIPPED", "DELIVERED", "DRAFT"]
     if finished.contains(status.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()) { return nil }
     return orderCancellationBlockedReason(status)
 }

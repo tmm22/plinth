@@ -84,8 +84,11 @@ final class OrdersUXTests: XCTestCase {
             XCTAssertNil(orderDetailCancelBlockedNote(status), status)
         }
         // Still explained where it's informative; the review sheet and Workbench keep the full reason.
-        XCTAssertEqual(orderDetailCancelBlockedNote("ON_HOLD"), "This order can’t be cancelled.")
-        XCTAssertEqual(orderDetailCancelBlockedNote(""), "This order can’t be cancelled.")
+        // A status Studio doesn't recognise is named as such (quoted), not described as uncancellable.
+        XCTAssertEqual(orderDetailCancelBlockedNote("ON_HOLD"),
+                       "Studio doesn’t recognise this order’s status (“ON_HOLD”), so it doesn’t offer Cancel. Check the order on Slant.")
+        XCTAssertEqual(orderDetailCancelBlockedNote(""),
+                       "Slant didn’t return this order’s status, so Studio doesn’t offer Cancel. Check the order on Slant.")
         XCTAssertNil(orderDetailCancelBlockedNote("PRINTING"))
         XCTAssertEqual(orderCancellationBlockedReason("CANCELED"), "This order was already cancelled.")
     }

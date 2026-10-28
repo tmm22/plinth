@@ -94,10 +94,12 @@ final class DraftConfirmationTests: XCTestCase {
         let attempts = unconfirmedDraftAttempts(previous: [], attempt: .failed(URLError(.timedOut)), recipient: " Ada ",
                                                 date: date, marker: "m1", platformID: " plat ")
         XCTAssertEqual(attempts, [UnconfirmedDraftAttempt(recipient: "Ada", date: date, marker: "m1", platformID: "plat")])
-        // A definite refusal or a success behave as before.
+        // A definite refusal leaves the list as it was.
         XCTAssertEqual(unconfirmedDraftAttempts(previous: attempts, attempt: .failed(APIError.http(status: 422, body: "{}", retryAfter: nil, rateLimitReset: nil)),
                                                 recipient: "Grace", date: date, marker: "m2"), attempts)
-        XCTAssertEqual(unconfirmedDraftAttempts(previous: attempts, attempt: .succeeded, recipient: "Grace", date: date, marker: "m2"), [])
+        // A success for another recipient leaves Ada's attempt; one for Ada clears it.
+        XCTAssertEqual(unconfirmedDraftAttempts(previous: attempts, attempt: .succeeded, recipient: "Grace", date: date, marker: "m2"), attempts)
+        XCTAssertEqual(unconfirmedDraftAttempts(previous: attempts, attempt: .succeeded, recipient: "ada", date: date, marker: "m2"), [])
     }
 
     func testFoundMarkersRemoveOnlyTheirAttempts() {
