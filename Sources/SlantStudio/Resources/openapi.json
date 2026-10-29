@@ -20,7 +20,7 @@
       "webhooks": "Configure webhook URLs on platforms for order status updates",
       "platform-workflow": "A Platform ID is required on most requests, as it is the organizational foundation of the API. Create or utilize one of the already created platforms and attach the ID to requests where it is required according to individual endpoint specifications.",
       "openscad-rate-limit": "5 OpenSCAD generations per hour, one in flight",
-      "webhook-signature": "HMAC-SHA256 over `${timestamp}.${rawBody}` with the platform's webhookSecret, where timestamp is the X-Webhook-Timestamp header exactly as sent (Unix milliseconds) and rawBody is the exact bytes received; header X-Webhook-Signature-256 is sha256=<hex>; reject if the timestamp is more than 5 minutes older than Date.now()",
+      "webhook-signature": "HMAC-SHA256 over `${timestamp}.${rawBody}` with the platform's webhookSecret, where timestamp is the X-Webhook-Timestamp header exactly as sent (Unix milliseconds) and rawBody is the exact bytes received; header X-Webhook-Signature-256 is sha256=<hex>; reject when Date.now() − timestamp is 300000 ms or more",
       "x-slant-studio-source": "docs"
     }
   },
@@ -162,7 +162,7 @@
           "platformId": {
             "type": "string",
             "format": "uuid",
-            "description": "Live (29 Oct 2026): every order seen names its platform here, including drafts created with a top-level platformId.",
+            "description": "Live (29 Oct 2026): every order seen names its platform here, including a draft created with a top-level platformId.",
             "x-slant-studio-source": "live"
           },
           "details": {
@@ -463,18 +463,18 @@
             "type": "string",
             "format": "uuid",
             "x-slant-studio-source": "live",
-            "description": "Not on live orders (29 Oct 2026, every order seen); they name their platform in customer.platformId."
+            "description": "Absent on every order seen (6, one platform; 29 Oct 2026); they name their platform in customer.platformId."
           },
           "ownerId": {
             "type": "string",
-            "description": "Your application's user ID. Not on live orders (29 Oct 2026, every order seen).",
+            "description": "Your application's user ID. Absent on every order seen (6, one platform; 29 Oct 2026).",
             "x-slant-studio-source": "live"
           },
           "creatorId": {
             "type": "string",
             "format": "uuid",
             "x-slant-studio-source": "live",
-            "description": "Not on live orders (29 Oct 2026, every order seen)."
+            "description": "Absent on every order seen (6, one platform; 29 Oct 2026)."
           },
           "paymentId": {
             "type": "string",
