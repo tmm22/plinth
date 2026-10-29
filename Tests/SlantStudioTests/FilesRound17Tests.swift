@@ -93,11 +93,11 @@ final class FilesRound17Tests: XCTestCase {
         var seen = Set<String>()
         for _ in 0..<2000 { XCTAssertTrue(seen.insert(batchPersonaliseUniqueUploadName(base)).inserted) }
         XCTAssertFalse(seen.contains(first) || seen.contains(second))
-        // The format: Studio's neutral name, then six lower-case hex characters.
-        let pattern = #"^Personalised model · [0-9a-f]{6}$"#
+        // The format: Studio's neutral name, then eight lower-case hex characters.
+        let pattern = #"^Personalised model · [0-9a-f]{8}$"#
         XCTAssertNotNil(first.range(of: pattern, options: .regularExpression), first)
-        XCTAssertEqual(batchPersonaliseUniqueUploadName("Etsy order 123 personalised 1 of 2", token: "7f3a9c"),
-                       "Etsy order 123 personalised 1 of 2 · 7f3a9c")
+        XCTAssertEqual(batchPersonaliseUniqueUploadName("Etsy order 123 personalised 1 of 2", token: "7f3a9c21"),
+                       "Etsy order 123 personalised 1 of 2 · 7f3a9c21")
         XCTAssertEqual(batchPersonaliseUniqueUploadName("  ", token: "abc123"), "Personalised model · abc123")
     }
 

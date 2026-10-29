@@ -395,11 +395,11 @@ final class BatchPersonaliseUploadTokens: @unchecked Sendable {
     private let lock = NSLock()
     private var used: Set<String> = []
 
-    /// Six lower-case hex characters from a fresh UUID, unused this session.
+    /// Eight lower-case hex characters from a fresh UUID, unused this session.
     func next() -> String {
         lock.lock(); defer { lock.unlock() }
         while true {
-            let token = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(6)).lowercased()
+            let token = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).lowercased()
             if used.insert(token).inserted { return token }
         }
     }
@@ -407,7 +407,7 @@ final class BatchPersonaliseUploadTokens: @unchecked Sendable {
 
 /// The name actually sent for a personalised upload: Studio's neutral name and a fresh token, made at send time so no
 /// two uploads (in a batch, the session, or an order imported again) share a name ("Etsy order 123 personalised 1 of 2
-/// · 7f3a9c"). The token is random, never derived from the buyer's text or the order.
+/// · 7f3a9c21"). The token is random, never derived from the buyer's text or the order.
 func batchPersonaliseUniqueUploadName(_ name: String, token: String = BatchPersonaliseUploadTokens.shared.next()) -> String {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     return "\(trimmed.isEmpty ? "Personalised model" : trimmed) · \(token)"

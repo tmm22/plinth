@@ -548,6 +548,28 @@ final class ShellUXTests: XCTestCase {
         XCTAssertFalse(outcomeResolved(action: .cancel, reviewedStatus: "QUEUED", reloadedStatus: "QUEUED"))
     }
 
+    /// Owner decision (30 Oct 2026): an order being made ships whether or not a refund was asked for, so a reload
+    /// showing production → SHIPPED keeps a cancel lock. Cancelled and any other change still lift it.
+    func testCancelLockStaysWhenAnOrderBeingMadeShips() {
+        for reviewed in ["SUBMITTED", "PRINTING", "printing", "QUEUED", "AWAITING_SHIPMENT"] {
+            for reloaded in ["SHIPPED", "shipped", " SHIPPED ", "DELIVERED"] {
+                XCTAssertFalse(outcomeResolved(action: .cancel, reviewedStatus: reviewed, reloadedStatus: reloaded), "\(reviewed) → \(reloaded)")
+            }
+            XCTAssertTrue(outcomeResolved(action: .cancel, reviewedStatus: reviewed, reloadedStatus: "CANCELLED"))
+            XCTAssertTrue(outcomeResolved(action: .cancel, reviewedStatus: reviewed, reloadedStatus: "CANCELED"))
+        }
+        XCTAssertFalse(outcomeResolved(action: .cancel, reviewedStatus: "PRINTING", reloadedStatus: "printing"))
+        XCTAssertTrue(outcomeResolved(action: .cancel, reviewedStatus: "SUBMITTED", reloadedStatus: "PRINTING"))
+        XCTAssertTrue(outcomeResolved(action: .cancel, reviewedStatus: "SHIPPED", reloadedStatus: "CANCELLED"))
+        XCTAssertFalse(outcomeResolved(action: .cancel, reviewedStatus: "SHIPPED", reloadedStatus: "SHIPPED"))
+        // The shared Orders path reads it the same way.
+        let cancelFromPrinting = UnknownOutcomeContext(action: .cancel, reviewedStatus: "PRINTING")
+        XCTAssertFalse(unknownOutcomeResolvedByReload(context: cancelFromPrinting, reloadedStatus: "SHIPPED"))
+        XCTAssertTrue(unknownOutcomeResolvedByReload(context: cancelFromPrinting, reloadedStatus: "CANCELLED"))
+        // Pay is unchanged: anything but DRAFT shows the outcome.
+        XCTAssertTrue(outcomeResolved(action: .pay, reviewedStatus: "DRAFT", reloadedStatus: "SHIPPED"))
+    }
+
     func testConnectionProminentActionIsExclusive() {
         XCTAssertEqual(
             connectionProminentAction(connected: false, savedKey: "", keyField: "sl_new", platformID: ""),

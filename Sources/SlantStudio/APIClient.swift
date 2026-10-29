@@ -368,9 +368,23 @@ func uploadOutcomeUnknown(stage: UploadStage?, error: Error) -> Bool {
     return !orderMutationErrorProvesNoEffect(error)
 }
 
+/// Replace File reuses the existing Slant file (Slant keeps one file per owner and name, 30 Oct 2026), so a failure
+/// once the bytes may have started arriving can leave that file holding part of the new model: the storage PUT that
+/// failed for any reason, or a confirm whose outcome is unknown. A failure while asking for the link changed nothing.
+func uploadReplacementMayBePartial(stage: UploadStage?, error: Error, replacing: Bool) -> Bool {
+    guard replacing else { return false }
+    switch stage {
+    case .uploading?: return true
+    case .confirming?: return uploadOutcomeUnknown(stage: stage, error: error)
+    case .preparing?, nil: return false
+    }
+}
+let uploadReplacementPartialMessage = "The upload stopped partway, so the existing file in your Slant files may now hold part of this model. Upload again with Replace File before you use it in an order."
+
 /// Upload failure copy by the step that failed. A storage refusal isn't about the API key, and a local file is never
 /// told to use a secure link.
-func uploadFailureMessage(stage: UploadStage?, error: Error) -> String {
+func uploadFailureMessage(stage: UploadStage?, error: Error, replacing: Bool = false) -> String {
+    if uploadReplacementMayBePartial(stage: stage, error: error, replacing: replacing) { return uploadReplacementPartialMessage }
     if uploadOutcomeUnknown(stage: stage, error: error) { return uploadUnconfirmedMessage }
     switch stage {
     case .preparing?:

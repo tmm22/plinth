@@ -475,7 +475,14 @@ func orderOutcomeLockIDs(requested: String, order: [String: Any]?) -> [String] {
 func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStatus: String) -> Bool {
     switch action {
     case .pay: return reloadedStatus != "DRAFT"
-    case .cancel: return reloadedStatus != reviewedStatus
+    case .cancel:
+        let reviewed = reviewedStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let reloaded = reloadedStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        // An order being made goes on to ship whether or not a refund was asked for, and Slant's status lags its
+        // shipping record (29 Oct 2026), so production → SHIPPED says nothing about the cancel (owner decision,
+        // 30 Oct 2026). The lock stays until a cancelled status, a definite refusal or another change.
+        if orderAttentionProductionStatuses.contains(reviewed), orderFulfillmentShippedStatuses.contains(reloaded) { return false }
+        return reloaded != reviewed
     }
 }
 /// Shared copy when pay/cancel was sent but the order status hasn’t been reloaded yet.
@@ -1563,7 +1570,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// listed name, the seller chose to replace). Never retried. If Slant returns a file another library model is linked
     /// to, that file now holds this model: only this model keeps the link, and `uploadLinkMovedMessage` says so.
     @discardableResult
-    func uploadModel(id: UUID, as uploadName: String) async -> Bool {
+    func uploadModel(id: UUID, as uploadName: String, replacing: Bool = false) async -> Bool {
         guard let model = localModels.first(where: { $0.id == id }), !platformID.isEmpty else {
             showError("Choose a local model and a platform before uploading.")
             return false
@@ -1580,8 +1587,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         return await run("Upload \(capturedName)", handlesError: { error in
             // Worded by the step that failed; a confirm with an unknown outcome is remembered for this model.
             let failedStage = stage.value
-            if uploadOutcomeUnknown(stage: failedStage, error: error) { unconfirmedUploadModelIDs.insert(capturedID) }
-            self.error = uploadFailureMessage(stage: failedStage, error: error)
+            if uploadOutcomeUnknown(stage: failedStage, error: error)
+                || uploadReplacementMayBePartial(stage: failedStage, error: error, replacing: replacing) {
+                unconfirmedUploadModelIDs.insert(capturedID)
+            }
+            self.error = uploadFailureMessage(stage: failedStage, error: error, replacing: replacing)
             return true
         }) {
             // Quit asks first until the upload has its answer (SlantStudioApp.swift).

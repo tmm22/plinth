@@ -602,7 +602,7 @@ struct ModelsView: View {
         ) { conflict in
             Button("Upload as “\(conflict.suggested)”") { uploadAfterNameChoice(conflict, as: conflict.suggested) }
                 .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
-            Button("Replace File", role: .destructive) { uploadAfterNameChoice(conflict, as: conflict.name) }
+            Button("Replace File", role: .destructive) { uploadAfterNameChoice(conflict, as: conflict.name, replacing: true) }
                 .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
             // Return and Escape cancel: no keyboard shortcut may upload (AGENTS.md), so either upload takes a click.
             Button("Cancel", role: .cancel) {}
@@ -1125,15 +1125,15 @@ struct ModelsView: View {
     }
 
     /// After the same-name choice: uploads under the suggested name or, for Replace File, the model's own name.
-    private func uploadAfterNameChoice(_ conflict: UploadNameConflict, as name: String) {
+    private func uploadAfterNameChoice(_ conflict: UploadNameConflict, as name: String, replacing: Bool = false) {
         guard let modelID = conflict.modelID, store.localModels.contains(where: { $0.id == modelID }) else { return }
         uploadFocusID = modelID
-        Task { await upload(modelID, as: name) }
+        Task { await upload(modelID, as: name, replacing: replacing) }
     }
 
-    private func upload(_ modelID: UUID, as name: String) async {
+    private func upload(_ modelID: UUID, as name: String, replacing: Bool = false) async {
         uploadFocusID = modelID
-        let ran = await store.uploadModel(id: modelID, as: name)
+        let ran = await store.uploadModel(id: modelID, as: name, replacing: replacing)
         guard ran else {
             if uploadFocusID == modelID { uploadFocusID = nil }
             return
