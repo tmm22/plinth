@@ -117,7 +117,8 @@ func orderWatchObservations(_ records: [Record]) -> [OrderWatchObservation] {
     return result
 }
 
-/// The second read of each check: page 1 of the default platform's orders, most recently updated first, so a change to
+/// The second read of each check: page 1 of the orders (asked with the default platform's `platformId`, which Slant
+/// didn't honour in Studio's tests; the rows are scoped locally), most recently updated first, so a change to
 /// an order older than the newest 100 is still seen. Slant's Orders docs list `sortBy=updatedAt`; the live API
 /// answered it with 200 on 24 Oct 2026.
 func orderWatchRecentlyUpdatedQuery(platformID: String) -> [String: String] {
@@ -183,9 +184,10 @@ func orderWatchIDsToFetch(wanted: [String], loaded: Set<String>, limit: Int = or
 }
 
 /// How Show and a notification click read one changed order that isn't on the reloaded page. With a default platform:
-/// `GET /orders?publicId=<id>&platformId=<platform>` (answered live on 29 Oct 2026), so Slant itself says whether the
-/// order is on the listed platform. Live orders name no platform ID (only a `platform` object without one), so the
-/// order alone can't tell. Without a default platform every platform's orders are listed: `GET /orders/{id}`.
+/// `GET /orders?publicId=<id>&platformId=<platform>` (answered live on 29 Oct 2026). Slant didn't filter by
+/// `platformId` in Studio's tests (an unknown or malformed ID returned the order anyway), so the read is scoped by
+/// `orderWatchFetchedRecord`'s check of the platform the order names (`customer.platformId` on every order seen), not by
+/// Slant; the parameter is still sent in case Slant honours it. Without a default platform: `GET /orders/{id}`.
 struct OrderWatchFetch: Equatable {
     var path: String
     var query: [String: String]
@@ -199,9 +201,9 @@ func orderWatchFetch(id: String, platformID: String) -> OrderWatchFetch {
     return OrderWatchFetch(path: "/orders", query: ["publicId": id, "platformId": platform, "page": "1", "limit": String(listPageSize)])
 }
 
-/// The order a `fetch` reply holds for `id`, or nil to skip it like one not found: an empty list (the order isn't on
-/// the platform), a reply that ignored `publicId` (rows are matched to the exact ID, as before), or an order that names
-/// another platform.
+/// The order a `fetch` reply holds for `id`, or nil to skip it like one not found: an empty list, a reply that ignored
+/// `publicId` (rows are matched to the exact ID, as before), or an order that names another platform (which is what
+/// keeps these reads on the default platform: Slant returns the order whatever `platformId` says).
 func orderWatchFetchedRecord(_ response: APIResponse, fetch: OrderWatchFetch, id: String, platformID: String) -> Record? {
     let candidates = fetch.listed ? responseRecords(response) : [Record(values: mergeOrderDraftEnvelope(responseObject(response)))]
     guard let match = candidates.first(where: { $0.id == id }),
@@ -210,15 +212,11 @@ func orderWatchFetchedRecord(_ response: APIResponse, fetch: OrderWatchFetch, id
 }
 
 /// Whether an order read by ID may join the loaded list of `platformID`'s orders: one that names another platform (an
-/// old notification from before the default platform changed, say) doesn't. Orders that name no platform are kept;
-/// live orders name none (29 Oct 2026), so with a default platform `orderWatchFetch` asks Slant to filter by it.
+/// old notification from before the default platform changed, say) doesn't. Orders that name no platform are kept.
+/// Every order seen names its platform in `customer.platformId` (`orderPlatformMatch`), and Slant doesn't filter these
+/// reads itself, so this check is what scopes Show and notification clicks: never remove it as redundant.
 func orderWatchFetchedOrderFitsPlatform(_ order: [String: Any], platformID: String) -> Bool {
-    let current = platformID.trimmingCharacters(in: .whitespacesAndNewlines)
-    let named = [order["platformId"], (order["customer"] as? [String: Any])?["platformId"]]
-        .compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-    guard !current.isEmpty, !named.isEmpty else { return true }
-    return named.contains(current)
+    orderPlatformMatch(order, platformID: platformID) != false
 }
 
 /// Whether a saved status moving to a live one is only Slant's re-labelling of 26 Oct 2026, not news: an earlier
@@ -616,9 +614,9 @@ private struct PendingNotificationOpen {
     let orderID: String?
 }
 
-/// Checks the newest and the most recently updated orders on the default platform every few minutes while the app is
-/// open, and remembers each order's status so changes can be listed in Orders, badged in the sidebar and on the Dock
-/// and, if asked for, notified.
+/// Checks the newest and the most recently updated orders every few minutes while the app is open, and remembers the
+/// status of each one on the default platform (`ordersShownOnPlatform`; Slant's list may hold other platforms' orders), so
+/// changes can be listed in Orders, badged in the sidebar and on the Dock and, if asked for, notified.
 /// Read-only: at most two GET /orders per check through the shared client, never `store.run` (it never sets `busy`),
 /// never the unknown-outcome lock, never retried before the next scheduled check, and it never replaces `store.orders`.
 @MainActor final class OrderWatch: ObservableObject {
@@ -776,7 +774,9 @@ private struct PendingNotificationOpen {
             guard stillCurrent() else { return orderWatchRecheckDelay }
             applyRateLimit(from: response, to: store)
             SlantAPIWatch.shared.noteOrderList(response, firstPage: true)
-            newest = orderWatchObservations(responseRecords(response))
+            // Only the default platform's orders reach the snapshot (Slant's list may hold others; see
+            // `ordersShownOnPlatform`), so another platform's change is never listed, badged or notified.
+            newest = orderWatchObservations(ordersShownOnPlatform(responseRecords(response), platformID: platformID))
             hold = nil
         } catch {
             guard stillCurrent() else { return orderWatchRecheckDelay }
@@ -796,8 +796,9 @@ private struct PendingNotificationOpen {
                 SlantAPIWatch.shared.noteOrderList(response, firstPage: true)
                 let records = responseRecords(response)
                 // A reply that ignored the sort is still a true list of statuses, so it is used once; the read stops.
+                // The sort is judged on Slant's raw rows, before other platforms' orders are left out.
                 if orderWatchUpdatedSortCheck(records) == .notSorted { updatedReadAvailable = false }
-                observations = orderWatchMergedObservations(newest, orderWatchObservations(records))
+                observations = orderWatchMergedObservations(newest, orderWatchObservations(ordersShownOnPlatform(records, platformID: platformID)))
             } catch {
                 guard stillCurrent() else { return orderWatchRecheckDelay }
                 if orderWatchUpdatedReadRefused(error) {
@@ -987,8 +988,8 @@ extension StudioStore {
     /// (`orderWatchFetch`, read-only, never retried) and adds them to the loaded orders. The updated-first check finds
     /// changes to orders older than the newest 100, so they aren't always on the reloaded page. An order Slant says
     /// doesn't exist (404, or live Slant's 400 "Order not found.": `orderNotFoundError`) or that isn't on the default
-    /// platform (an empty filtered list) is skipped; any other failure stops the reads and is shown as usual. True when
-    /// the reload succeeded.
+    /// platform (an empty list, or an order naming another platform in `customer.platformId`) is skipped; any other
+    /// failure stops the reads and is shown as usual. True when the reload succeeded.
     func reloadOrdersIncludingWatched(_ ids: [String]) async -> Bool {
         guard await applyOrderFilter(OrderFilter()) else { return false }
         let missing = orderWatchIDsToFetch(wanted: ids, loaded: Set(orders.map(\.id)))
@@ -998,8 +999,9 @@ extension StudioStore {
         _ = await run(missing.count == 1 ? "Get changed order" : "Get changed orders") {
             for id in missing {
                 guard platformID == platform else { break }
-                // With a default platform, a list read filtered by it (`orderWatchFetch`): an order on another
-                // platform comes back as an empty list and is skipped, like one that doesn't exist.
+                // With a default platform, a list read by `publicId` (`orderWatchFetch`). Slant returns the order
+                // whatever `platformId` says, so `orderWatchFetchedRecord` skips one that names another platform, like
+                // one that doesn't exist.
                 let fetch = orderWatchFetch(id: id, platformID: platform)
                 let response: APIResponse
                 do {

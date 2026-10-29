@@ -1243,6 +1243,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     func isOutcomeUnknown(orderID: String) -> Bool {
         unknownOutcomeOrderIDs.contains(orderID)
     }
+    /// Display only: the loaded orders the Orders list shows for the default platform (`ordersShownOnPlatform`;
+    /// Slant's `GET /orders` may list other platforms' orders), keeping any order under the pay/cancel lock so its
+    /// Reload Order stays reachable. Duplicate, draft-marker, lock and charge checks read the raw `orders`, never this.
+    var ordersOnDefaultPlatform: [Record] {
+        ordersShownOnPlatform(orders, platformID: platformID, keeping: unknownOutcomeOrderIDs)
+    }
     /// Records one Create Draft press (the composer's or the API Workbench's `POST /orders`) in the session's
     /// unconfirmed-draft guard: an unknown outcome adds the attempt, a confirmed creation removes the attempts for the
     /// same `recipient` name (never another name's, nor the dropped-off flag; two customers with the same name share

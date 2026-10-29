@@ -155,8 +155,8 @@ struct OrderComparableAddress: Equatable {
     var country = ""
 }
 
-/// Reads an address object, accepting Slant's `line1`/`zip` and the label providers' usual `street1`/`postalCode`
-/// spellings, since the fulfillment address's shape isn't documented beyond "address the label was generated against".
+/// Reads a flat address object, accepting Slant's `line1`/`zip` and the label providers' usual `street1`/`postalCode`
+/// spellings, in case a label address arrives in a provider's shape.
 func orderComparableAddress(_ value: Any?) -> OrderComparableAddress? {
     guard let object = value as? [String: Any] else { return nil }
     func first(_ keys: [String]) -> String {
@@ -230,10 +230,13 @@ func orderLabelAddressDifferences(label: OrderComparableAddress, shipping: Order
 
 /// The one-line advisory when Slant's `fulfillment.address` (the address its label was made for) differs from the
 /// order's shipping address, with the parts that differ for a tooltip; nil when either is absent or they match.
-/// Display only: neither address is stored.
+/// Live Slant nests it like the order's own details, `{email, address: {name, line1, …}}` (docs and live, 29 Oct
+/// 2026); a flat address is read too. Only street, city, state, postcode and country are shown: never the label's
+/// email or name. Display only: neither address is stored.
 func orderLabelAddressAdvisory(_ order: [String: Any]) -> (line: String, differences: [String])? {
-    guard let rawLabel = (order["fulfillment"] as? [String: Any])?["address"] as? [String: Any],
-          let label = orderComparableAddress(rawLabel),
+    guard let outer = (order["fulfillment"] as? [String: Any])?["address"] as? [String: Any] else { return nil }
+    let rawLabel = (outer["address"] as? [String: Any]) ?? outer
+    guard let label = orderComparableAddress(rawLabel),
           let shipping = orderComparableAddress(((order["customer"] as? [String: Any])?["details"] as? [String: Any])?["address"]) else { return nil }
     let differences = orderLabelAddressDifferences(label: label, shipping: shipping)
     guard !differences.isEmpty else { return nil }
@@ -264,9 +267,10 @@ enum OrderProblemKind: String, CaseIterable, Identifiable {
     }
 }
 
-/// Neither the repository's docs nor the bundled OpenAPI name a Slant support address or page (the OpenAPI
-/// `info.contact` is the API's developer contact), so the sheet offers Copy only and never opens a mail link.
-let orderProblemReportCaption = "Studio puts together a message with this order’s details for you to send to Slant support. It doesn’t send anything itself: copy the message and paste it into your email or support request. Names and addresses aren’t included."
+/// Slant's docs name support@slant3d.com (its Technical Support section). The caption names it as text only: the
+/// sheet offers Copy and never opens a mail link or sends anything.
+let orderProblemSupportAddress = "support@slant3d.com"
+let orderProblemReportCaption = "Studio puts together a message with this order’s details for you to send to Slant support (\(orderProblemSupportAddress)). It doesn’t send anything itself: copy the message and paste it into your email or support request. Names and addresses aren’t included."
 
 /// The support message: order number, status, created date, tracking numbers, items with quantities and materials,
 /// the problem and the seller's description. No recipient name, email or address.
@@ -357,6 +361,7 @@ struct OrderProblemReportSheet: View {
             Text(orderProblemReportCaption)
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
             Picker("Problem", selection: $problem) {
                 Text("Choose…").tag(OrderProblemKind?.none)
                 // From the status shown (`orderDisplayStatus`): an order Slant's shipping record says shipped can

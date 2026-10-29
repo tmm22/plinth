@@ -678,6 +678,32 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertNil(orderComposerPrefill(reordering: Record(values: [:])).sourceOrderNumber)
     }
 
+    /// Live orders name their platform only in `customer.platformId` (invented values here); Duplicate as New Draft
+    /// copies it from there, and a top-level `platformId` only when the customer names none.
+    func testComposerPrefillCopiesTheLiveShapedCustomerPlatform() {
+        let live = Record(values: [
+            "publicId": "SLANT_8", "platform": ["name": "Shop"],
+            "items": [["type": "PRINT", "publicFileServiceId": "f", "quantity": 1]],
+            "customer": ["platformId": "plat-live", "details": ["email": "a@example.com",
+                                                                 "address": ["name": "A", "line1": "1", "city": "C", "zip": "Z", "country": "US"]]]
+        ])
+        XCTAssertEqual(orderComposerPrefill(reordering: live).platformID, "plat-live")
+        let both = Record(values: ["publicId": "SLANT_7", "platformId": "plat-top", "customer": ["platformId": " plat-customer "]])
+        XCTAssertEqual(orderComposerPrefill(reordering: both).platformID, "plat-customer")
+        XCTAssertNil(orderComposerPrefill(reordering: Record(values: ["publicId": "SLANT_6", "customer": ["platformId": ""]])).platformID)
+    }
+
+    /// The copied platform is used only when the loaded platform list has it; otherwise the composer keeps its own and
+    /// says so (the "isn’t in your platform list" note) when they differ.
+    func testComposerPlatformSeedUsesOnlyLoadedPlatforms() {
+        XCTAssertTrue(orderComposerPlatformSeed(copied: "plat-b", current: "plat-a", loadedPlatformIDs: ["plat-a", "plat-b"])
+                      == ("plat-b", false))
+        XCTAssertTrue(orderComposerPlatformSeed(copied: "plat-gone", current: "plat-a", loadedPlatformIDs: ["plat-a"]) == ("plat-a", true))
+        XCTAssertTrue(orderComposerPlatformSeed(copied: "plat-a", current: "plat-a", loadedPlatformIDs: []) == ("plat-a", false))
+        XCTAssertTrue(orderComposerPlatformSeed(copied: "plat-b", current: "plat-a", loadedPlatformIDs: []) == ("plat-a", true))
+        XCTAssertTrue(orderComposerPlatformSeed(copied: "plat-b", current: "", loadedPlatformIDs: ["plat-a"]) == ("", true))
+    }
+
     func testDuplicateBlockedReasons() {
         XCTAssertNil(orderDuplicateBlockedReason(draftBlockedReason: nil, composerOpen: false, outcomeUnknown: false, busy: false))
         XCTAssertEqual(orderDuplicateBlockedReason(draftBlockedReason: "Connect your account first.", composerOpen: false, outcomeUnknown: false, busy: false), "Connect your account first.")

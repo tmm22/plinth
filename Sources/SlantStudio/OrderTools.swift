@@ -525,6 +525,51 @@ func orderComposerDiscardMessage(outcomeUnknown: Bool) -> String {
         : "Your items and delivery details haven’t been saved. Nothing has been sent to Slant."
 }
 
+// MARK: - Platform scoping (display only)
+//
+// Slant's `GET /orders` didn't filter by `platformId` in Studio's tests (29 Oct 2026: an unknown or malformed
+// `platformId`, and any `ownerId`, returned every order of the account; whether a second owned platform's ID filters
+// is untested). Every order seen names its platform in `customer.platformId` (none had a top-level `platformId`), so
+// Studio scopes what it shows locally. These helpers are for showing and summing only: `store.orders` stays raw, and
+// duplicate, draft-marker, lock and charge checks never use them.
+
+/// The platform an order names: `customer.platformId` (what Slant sends), else a top-level `platformId`; nil when it
+/// names none.
+func orderNamedPlatformID(_ order: [String: Any]) -> String? {
+    for value in [(order["customer"] as? [String: Any])?["platformId"], order["platformId"]] {
+        if let text = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { return text }
+    }
+    return nil
+}
+
+/// Whether an order is on `platformID`: nil when the order names no platform or no platform is given (it can't be
+/// judged, so callers keep it).
+func orderPlatformMatch(_ order: [String: Any], platformID: String) -> Bool? {
+    let current = platformID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !current.isEmpty, let named = orderNamedPlatformID(order) else { return nil }
+    return named == current
+}
+
+/// The loaded orders shown (or summed) for the default platform: those that name another platform are left out,
+/// except any order under an unknown-outcome lock (`keeping`, matched by any of its IDs), which must stay reachable so
+/// its Reload Order can lift the lock. Without a platform nothing is left out. Display only (see above).
+func ordersShownOnPlatform(_ records: [Record], platformID: String, keeping: Set<String> = []) -> [Record] {
+    guard !platformID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return records }
+    return records.filter { record in
+        let order = orderObject(record.values)
+        guard orderPlatformMatch(order, platformID: platformID) == false else { return true }
+        let ids = [record.id, orderNumber(order), (order["id"] as? String) ?? ""].filter { !$0.isEmpty }
+        return ids.contains { keeping.contains($0) }
+    }
+}
+
+/// The one line under the Orders list (and in its empty states) when orders on other platforms are hidden.
+func orderOtherPlatformsHiddenLine(_ hidden: Int) -> String? {
+    guard hidden > 0 else { return nil }
+    let count = hidden == 1 ? "1 loaded order on another platform isn’t" : "\(hidden.formatted()) loaded orders on other platforms aren’t"
+    return "\(count) shown: Orders lists your default platform’s orders (Settings › Account)."
+}
+
 // MARK: - Orders list and detail layout
 
 /// The note under the orders list while searching. Typing filters the loaded orders; Return asks Slant, and clearing
