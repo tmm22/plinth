@@ -491,6 +491,35 @@ func extractedWebhookSecret(from object: [String: Any]) -> String? {
     }
     return nil
 }
+/// Create Platform makes the new platform the default only when no default is set (owner decision, 30 Oct 2026).
+func platformCreateBecomesDefault(currentDefault: String) -> Bool {
+    currentDefault.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+/// A platform row without its cached secret (both names Slant has used), for when it may no longer be current.
+func platformRecordClearingWebhookSecret(_ record: Record) -> Record {
+    var values = record.values
+    values.removeValue(forKey: "webhookSecret")
+    values.removeValue(forKey: "secret")
+    return Record(values: values)
+}
+/// A rotate whose 2xx reply carried no readable secret: Slant has rotated, but Studio doesn't know the new secret.
+struct WebhookSecretNotReturned: LocalizedError {
+    var errorDescription: String? { "Slant didn’t return a new webhook secret." }
+}
+/// Whether a webhook secret may have changed after a failed rotate or secret edit: anything except a definite refusal
+/// (a 4xx other than 408/409) or a request never sent, and always after a 2xx without the new secret.
+func webhookSecretMayHaveChanged(after error: Error) -> Bool {
+    if error is WebhookSecretNotReturned { return true }
+    return !orderMutationErrorProvesNoEffect(error, method: "PATCH")
+}
+/// The copy after a rotate (`saving: false`) or an edit that set a secret (`saving: true`) when the secret may have
+/// changed, else nil. It never suggests sending again: a read shows the current secret.
+func webhookSecretUnclearMessage(_ error: Error, saving: Bool) -> String? {
+    guard webhookSecretMayHaveChanged(after: error) else { return nil }
+    let cause = error is WebhookSecretNotReturned ? "Slant didn’t return the new secret" : slantUnclearReplyCause(error)
+    let effect = saving ? "Slant may already have saved the new webhook secret" : "this platform’s webhook secret may already have changed"
+    return "\(cause), so \(effect). Use Reload Platform in the platform’s details to see the current secret before you update your receiver."
+}
 func parseWebhookTestResult(from data: [String: Any]) -> WebhookTestResult {
     let attempted: Bool
     if let flag = data["success"] as? Bool { attempted = flag }
@@ -813,6 +842,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var healthStatus: [String: Any]?
     @Published var lastDelivery: DeliveryDetails?
     @Published var disabledPlatformsThisSession: [Record] = []
+    /// Platforms whose webhook secret may have changed without Studio seeing the new one (an unclear rotate, or an
+    /// unclear edit that set a secret). Their cached secret is dropped until a read from Slant shows the current one.
+    /// Memory only.
+    @Published var webhookSecretUncertainPlatformIDs: Set<String> = []
     @Published var deadWebhooks: [String: [Record]] = [:]
     /// Local models whose last upload failed after `confirm-upload` was sent without a clear answer, so Slant may hold
     /// the file. Memory only; Models suggests Refresh before uploading again (`uploadUnconfirmedMessage`).
@@ -1211,7 +1244,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         filePage = 0; orderPage = 0; filesHasMore = false; ordersHasMore = false
         ordersChangedWhileLoading = false; ordersFirstPageCount = nil
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
-        disabledPlatformsThisSession = []; deadWebhooks = [:]; componentCategories = []
+        disabledPlatformsThisSession = []; webhookSecretUncertainPlatformIDs = []; deadWebhooks = [:]; componentCategories = []
         importedSaleAmounts = [:]
     }
     // The pay/cancel lock, the unconfirmed draft-create notice and the import ledger are deliberately NOT cleared
@@ -1331,7 +1364,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         _ = await run("Refresh", retryable: true, retry: .refresh) {
             let p = try await client.request("GET", path: "/platforms")
             noteRateLimit(from: p)
-            platforms = responseRecords(p)
+            setPlatformsFromSlant(responseRecords(p))
             loadedCatalogs.insert(.platforms)
             if platformID.isEmpty, let first = platforms.first { platformID = first.id }
             let f = try await client.request("GET", path: "/filaments")
@@ -1466,7 +1499,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 applyDefaultFilamentIfNeeded()
             case .components: components = records
             case .stationery: stationery = records
-            case .platforms: platforms = records
+            case .platforms: setPlatformsFromSlant(records)
             default: break
             }
             loadedCatalogs.insert(kind)
@@ -1572,7 +1605,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let record = Record(values: object)
             platforms.removeAll { $0.id == newID }
             platforms.insert(record, at: 0)
-            platformID = newID
+            // Owner decision (30 Oct 2026): a new platform becomes the default only when none is set. Changing the
+            // default moves uploads and drafts, resets the order watch and stops an Import Orders batch.
+            if platformCreateBecomesDefault(currentDefault: platformID) { platformID = newID }
             created = true
         }
         return ran && created
@@ -1583,8 +1618,15 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         do { body = try draft.payload() } catch { showError(error.localizedDescription); return false }
         // Nothing changed: nothing to send.
         guard !body.isEmpty else { return true }
+        let setsSecret = body["webhookSecret"] != nil
         var updated = false
-        let ran = await run("Update platform") {
+        let ran = await run("Update platform", handlesError: { error in
+            // Never re-sent. A secret that may have been saved makes the cached one unreliable.
+            guard setsSecret, let message = webhookSecretUnclearMessage(error, saving: true) else { return false }
+            self.markWebhookSecretUncertain(platformID: id)
+            self.error = message
+            return true
+        }) {
             let response = try await client.request("PATCH", path: "/platforms/\(encodedSegment(id))", body: body)
             noteRateLimit(from: response)
             let object = responseObject(response)
@@ -1602,22 +1644,52 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         var ok = false
         let snapshot = platforms.first { $0.id == id }
         let ran = await run(enabled ? "Enable platform" : "Disable platform") {
+            let response: APIResponse
             if enabled {
-                _ = try await client.request("PATCH", path: "/platforms/\(encodedSegment(id))/enable")
-                disabledPlatformsThisSession.removeAll { $0.id == id }
+                response = try await client.request("PATCH", path: "/platforms/\(encodedSegment(id))/enable")
             } else {
-                _ = try await client.request("DELETE", path: "/platforms/\(encodedSegment(id))")
-                if let snapshot {
-                    disabledPlatformsThisSession.removeAll { $0.id == snapshot.id }
-                    disabledPlatformsThisSession.insert(snapshot, at: 0)
-                }
-                platforms.removeAll { $0.id == id }
-                if platformID == id { platformID = "" }
+                response = try await client.request("DELETE", path: "/platforms/\(encodedSegment(id))")
             }
+            noteRateLimit(from: response)
+            notePlatformEnabledChange(id: id, enabled: enabled, snapshot: snapshot)
             ok = true
         }
         if ok { await loadCatalog(.platforms) }
         return ran && ok
+    }
+    /// The bookkeeping after Slant confirmed an enable or disable, from Settings or the API Workbench: the session's
+    /// disabled list (Settings' re-enable rows) and, for a disable, the platform list and the default.
+    func notePlatformEnabledChange(id: String, enabled: Bool, snapshot: Record?) {
+        if enabled {
+            disabledPlatformsThisSession.removeAll { $0.id == id }
+        } else {
+            if let snapshot {
+                disabledPlatformsThisSession.removeAll { $0.id == snapshot.id }
+                disabledPlatformsThisSession.insert(snapshot, at: 0)
+            }
+            platforms.removeAll { $0.id == id }
+            if platformID == id { platformID = "" }
+        }
+    }
+    /// Every replacement of the platform list by a read from Slant: those platforms' secrets are current again.
+    private func setPlatformsFromSlant(_ records: [Record]) {
+        platforms = records
+        webhookSecretUncertainPlatformIDs.subtract(records.map(\.id))
+    }
+    /// After a secret change whose outcome is unclear: drops the cached secret (Show and Copy go with it) until a read
+    /// from Slant shows the current one (`reloadPlatform`, Reload Platforms).
+    func markWebhookSecretUncertain(platformID id: String) {
+        guard !id.isEmpty else { return }
+        platforms = platforms.map { $0.id == id ? platformRecordClearingWebhookSecret($0) : $0 }
+        webhookSecretUncertainPlatformIDs.insert(id)
+    }
+    /// One read-only `GET /platforms/{id}` (never a write): replaces that platform's listed row, secret included.
+    @discardableResult
+    func reloadPlatform(id: String) async -> Bool {
+        guard let record = await loadPlatform(id: id), record.id == id else { return false }
+        if let index = platforms.firstIndex(where: { $0.id == id }) { platforms[index] = record }
+        webhookSecretUncertainPlatformIDs.remove(id)
+        return true
     }
     func loadPlatform(id: String) async -> Record? {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1635,12 +1707,18 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     func rotateWebhookSecret(platformID id: String) async -> String? {
         var secret: String?
-        _ = await run("Rotate webhook secret") {
+        _ = await run("Rotate webhook secret", handlesError: { error in
+            // Never re-sent. Unless Slant definitely refused it, the old secret may already have stopped working.
+            guard let message = webhookSecretUnclearMessage(error, saving: false) else { return false }
+            self.markWebhookSecretUncertain(platformID: id)
+            self.error = message
+            return true
+        }) {
             let response = try await client.request("PATCH", path: "/platforms/\(encodedSegment(id))/webhook-secret")
             noteRateLimit(from: response)
             let object = responseObject(response)
             guard let extracted = extractedWebhookSecret(from: object) else {
-                throw StudioError("Slant didn’t return a new webhook secret.")
+                throw WebhookSecretNotReturned()
             }
             secret = extracted
             var values = object
@@ -1648,6 +1726,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let record = Record(values: values)
             platforms.removeAll { $0.id == record.id || $0.id == id }
             platforms.insert(record, at: 0)
+            webhookSecretUncertainPlatformIDs.remove(id)
         }
         return secret
     }

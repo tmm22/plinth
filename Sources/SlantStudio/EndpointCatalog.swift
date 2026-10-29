@@ -53,7 +53,11 @@ enum EndpointCatalog {
         }
         func example(_ schema: [String: Any], depth: Int = 0) -> Any {
             guard depth < 12 else { return NSNull() }
-            if let value = schema["default"] ?? schema["example"] { return value }
+            if let value = schema["default"] { return value }
+            // A spec example is an illustration, not a value to send: an example string (such as `ownerId` "1" in
+            // `PATCH /files`), or an example object or list holding them, is left empty for the user to fill in,
+            // which `validateJSON` insists on where required. Number and boolean examples are kept.
+            if let value = schema["example"] as? NSNumber { return value }
             if let values = schema["enum"] as? [Any], let value = values.first { return value }
             switch schema["type"] as? String {
             case "object":

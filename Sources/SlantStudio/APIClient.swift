@@ -15,12 +15,15 @@ struct APIResponse {
     let statusCode: Int
     let contentType: String?
     let headers: [String: String]
+    /// The Slant API path the reply answers (`APIClient.request`), or nil (storage PUTs, downloads, hand-made replies).
+    let requestPath: String?
 
-    init(data: Data, statusCode: Int, contentType: String? = nil, headers: [String: String] = [:]) {
+    init(data: Data, statusCode: Int, contentType: String? = nil, headers: [String: String] = [:], requestPath: String? = nil) {
         self.data = data
         self.statusCode = statusCode
         self.contentType = contentType
         self.headers = headers
+        self.requestPath = requestPath
     }
 
     var json: Any? { try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) }
@@ -30,15 +33,29 @@ struct APIResponse {
         return String(data: data, encoding: .utf8) ?? "\(data.count) bytes returned"
     }
 
+    /// The per-minute allowance this reply reports, for the shared figure (`StudioStore.rateLimit`) and the paced
+    /// batches. Always empty for `POST /files/openScad` (`slantReplyRateLimitIsShared`).
     var rateLimit: RateLimitInfo {
-        rateLimitInfo(from: headers)
+        slantReplyRateLimitIsShared(path: requestPath) ? rateLimitInfo(from: headers) : RateLimitInfo()
     }
 }
 
-/// When Slant's `X-RateLimit-Reset` says the allowance refills. Live responses (observed 23 Oct 2026) send epoch
-/// **milliseconds** (`1800000685873` = 08:11:25 UTC, 60 s after the request). Epoch seconds are tolerated too, and a
-/// small number (up to an hour) is read as seconds from now. Negative, non-finite or unparseable values, and times more than a day
-/// away (an unknown unit), give nil.
+/// False for `/files/openScad`: Slant's docs show its replies carrying OpenSCAD's own limiter (`X-RateLimit-Limit: 5`,
+/// an hour), and "4 of 5 left" in the shared figure would stop every paced read for up to an hour. OpenSCAD keeps its
+/// own allowance (`OpenSCADQuota`). Compared ignoring case and trailing slashes, as a hand-typed Workbench path may be.
+func slantReplyRateLimitIsShared(path: String?) -> Bool {
+    guard var normalized = path?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return true }
+    while normalized.count > 1, normalized.hasSuffix("/") { normalized.removeLast() }
+    return normalized != "/files/openscad"
+}
+
+/// When Slant's `X-RateLimit-Reset` says requests may resume. Live responses (observed 23 Oct 2026) send epoch
+/// **milliseconds** (`1800000685873` = 08:11:25 UTC, 60 s after a request that opened a quiet minute). At other times
+/// it was only seconds ahead while Remaining stayed low, so it may mark when the oldest counted request leaves a sliding
+/// window rather than when the whole allowance returns; which reading is right is unresolved (docs/API_REFERENCE.md).
+/// Callers re-check the allowance after waiting, and a 429 waits at least a minute (`comparisonRateLimitedUntil`).
+/// Epoch seconds are tolerated too, and a small number (up to an hour) is read as seconds from now. Negative,
+/// non-finite or unparseable values, and times more than a day away (an unknown unit), give nil.
 func rateLimitResetDate(_ raw: String?, now: Date) -> Date? {
     guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
           let value = Double(text), value.isFinite, value >= 0 else { return nil }
@@ -253,11 +270,11 @@ func clippedAPIAlertMessage(_ text: String) -> String? {
 }
 
 /// Slant's quoted messages reach alerts and Activity, so anything shaped like a credential is masked first: a bearer
-/// value, or a Slant key (`sl-…`, the format Slant's 401 names). Messages that are about the key itself aren't quoted
-/// at all (`APIError.userMessage`).
+/// value, or a Slant key: `sl-…`, the form live keys and Slant's 401 use, or `sl_…`, the form Slant's OpenAPI security
+/// scheme names. Messages that are about the key itself aren't quoted at all (`APIError.userMessage`).
 func apiMessageRedactingCredentials(_ text: String) -> String {
     var result = text
-    for (pattern, replacement) in [(#"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]{12,}"#, "Bearer …"), (#"\bsl-[A-Za-z0-9_\-]{6,}"#, "sl-…")] {
+    for (pattern, replacement) in [(#"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]{12,}"#, "Bearer …"), (#"\b(sl[-_])[A-Za-z0-9_\-]{6,}"#, "$1…")] {
         result = result.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
     }
     return result
@@ -546,7 +563,7 @@ struct APIClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         let (data, response) = try await session.data(for: request)
-        let result = try checked(data: data, response: response)
+        let result = try checked(data: data, response: response, requestPath: path)
         if path == "/files/openScad" {
             guard !data.isEmpty else { throw APIError.invalidResponse("OpenSCAD returned an empty model.") }
             guard result.json == nil, !(result.contentType?.lowercased().contains("json") ?? false) else {
@@ -617,13 +634,14 @@ struct APIClient {
         return destination
     }
 
-    private func checked(data: Data, response: URLResponse) throws -> APIResponse {
+    private func checked(data: Data, response: URLResponse, requestPath: String? = nil) throws -> APIResponse {
         guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse("The server returned a non-HTTP response.") }
         var headers: [String: String] = [:]
         for (key, value) in response.allHeaderFields {
             if let key = key as? String, let value = value as? String { headers[key] = value }
         }
-        let result = APIResponse(data: data, statusCode: response.statusCode, contentType: response.value(forHTTPHeaderField: "Content-Type"), headers: headers)
+        let result = APIResponse(data: data, statusCode: response.statusCode, contentType: response.value(forHTTPHeaderField: "Content-Type"),
+                                 headers: headers, requestPath: requestPath)
         guard (200..<300).contains(response.statusCode) else {
             throw APIError.http(
                 status: response.statusCode,

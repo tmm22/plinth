@@ -104,6 +104,8 @@ struct EndpointView: View {
                                             parameter.defaultValue.isEmpty ? (parameter.required ? "Required" : "Optional") : parameter.defaultValue,
                                             text: Binding(get: { values[parameter.name] ?? "" }, set: { values[parameter.name] = $0 })
                                         ).textFieldStyle(.roundedBorder)
+                                        // The placeholder is "Required" or "Optional"; VoiceOver should read the name.
+                                        .accessibilityLabel(parameter.name)
                                     }
                                 }
                             }
@@ -182,7 +184,7 @@ struct EndpointView: View {
         let (sendUnlocked, unknownReason) = workbenchMutationSendAllowed(attempted: mutationAttempted, succeeded: mutationSucceeded)
         let sendEnabled = typedOK && sendUnlocked && !crossSheetUnknown
         VStack(alignment: .leading, spacing: 18) {
-            Text("Review \(pending.endpoint.title.lowercased())").font(.title2.weight(.bold))
+            Text(workbenchReviewTitle(pending.endpoint.title)).font(.title2.weight(.bold))
             Text(warning).foregroundStyle(.secondary)
             if pending.isDraftCreate, store.draftCreateOutcomeUnknown {
                 // The composer's unconfirmed-draft notice: sending this may make a second draft.
@@ -235,6 +237,7 @@ struct EndpointView: View {
                         Text(phrase == "rotate" ? "Type rotate to confirm secret rotation." : "Type \(phrase) to confirm.")
                             .font(.caption).foregroundStyle(.secondary)
                         TextField(phrase, text: $typedConfirm).textFieldStyle(.roundedBorder).disabled(store.busy || mutationAttempted || mutationSucceeded)
+                            .accessibilityLabel(phrase == "rotate" ? "Type rotate to confirm" : "Type the ID to confirm")
                     }
                     if let typedReason { Text(typedReason).font(.caption).foregroundStyle(.orange) }
                 }
@@ -542,8 +545,16 @@ struct EndpointView: View {
             let isOpenSCAD = request.endpoint.path == "/files/openScad"
             let openSCAD = PersonalisationSession.shared
             var openSCADFailure: Error?
+            // What a send from the review sheet failed with, shown in the sheet (the window's alert would wait behind
+            // it). A GET has no sheet, so its failure keeps the usual alert.
+            var sheetFailure: Error?
+            let fromSheet = request.endpoint.method != "GET"
             let attemptDate = Date()
-            let ran = await store.run(request.endpoint.title) {
+            let ran = await store.run(request.endpoint.title, handlesError: { error in
+                guard fromSheet else { return false }
+                sheetFailure = error
+                return true
+            }) {
                 // Slant's OpenSCAD allowance: counted as it is sent, whatever the outcome, as in Personalise.
                 if isOpenSCAD {
                     guard openSCAD.quota.begin(now: Date()) else {
@@ -600,23 +611,41 @@ struct EndpointView: View {
             if isOpenSCAD, case APIError.http(429, _, let retryAfter, let reset)? = openSCADFailure as? APIError {
                 openSCAD.quota.noteRateLimited(until: openSCADRateLimitedUntil(retryAfter: retryAfter, rateLimitReset: reset, now: Date()))
             }
+            // As Settings: a secret change Slant may have made unseen drops the cached secret (never re-sent).
+            if let sheetFailure, mutationAttempted,
+               workbenchSecretChangeMayHaveHappened(endpointID: request.endpoint.id, body: request.body, error: sheetFailure) {
+                store.markWebhookSecretUncertain(platformID: workbenchPathParameter(request.path, after: "/platforms/"))
+            }
             guard !Task.isCancelled else { return }
             if ran, wrote {
-                await clearSelectionAfterSuccessfulDelete(request)
+                await applyGuidedBookkeeping(after: request)
                 mutationSucceeded = true
                 dismissConfirm()
+            } else if let sheetFailure {
+                // Send stays locked once the request was sent (`mutationAttempted`), whichever way it failed.
+                mutationNote = workbenchSendFailureNote(sheetFailure, method: request.endpoint.method, sent: mutationAttempted)
             }
         }
     }
-    func clearSelectionAfterSuccessfulDelete(_ request: PreparedRequest) async {
-        guard request.endpoint.method == "DELETE" else { return }
-        if request.endpoint.path == "/platforms/{platformId}" {
-            let id = workbenchPathParameter(request.path, after: "/platforms/")
-            if !id.isEmpty, store.platformID == id { store.platformID = "" }
+    /// What the guided screens do after the same write succeeds, so Settings and Models stay in step.
+    func applyGuidedBookkeeping(after request: PreparedRequest) async {
+        let platformID = workbenchPathParameter(request.path, after: "/platforms/")
+        switch request.endpoint.id {
+        case "DELETE /platforms/{platformId}":
+            // As Settings' Disable: listed under Disabled platforms, and no longer the default.
+            store.notePlatformEnabledChange(id: platformID, enabled: false, snapshot: store.platforms.first { $0.id == platformID })
             await store.loadCatalog(.platforms)
-        } else if request.endpoint.path == "/files/{publicFileId}" {
+        case "PATCH /platforms/{platformId}/enable":
+            store.notePlatformEnabledChange(id: platformID, enabled: true, snapshot: nil)
+            await store.loadCatalog(.platforms)
+        case "POST /platforms", "PATCH /platforms/{platformId}", "PATCH /platforms/{platformId}/webhook-secret":
+            // One read so Settings shows the platform (and its secret) as Slant now has it.
+            await store.loadCatalog(.platforms)
+        case "DELETE /files/{publicFileId}":
             let id = workbenchPathParameter(request.path, after: "/files/")
             if !id.isEmpty, store.fileID == id { store.fileID = "" }
+        default:
+            break
         }
     }
     func saveResponse() {
@@ -678,6 +707,44 @@ func workbenchMutationSendAllowed(attempted: Bool, succeeded: Bool) -> (Bool, St
         return (false, "The result is unknown. Check Orders (or reload this order) before trying again.")
     }
     return (true, nil)
+}
+
+/// The review sheet's note after a send other than the guided pay and cancel failed. A request never sent says why;
+/// a definite refusal (a 4xx other than 408/409, `orderMutationErrorProvesNoEffect`) says nothing changed; anything
+/// else (timeout, transport error, 5xx, 408/409, an unreadable or unconfirmed reply) says the change may have
+/// happened. It never suggests sending again, and Send stays locked in the sheet once a request was sent.
+func workbenchSendFailureNote(_ error: Error, method: String, sent: Bool) -> String {
+    let detail = friendlyAPIMessage(error)
+    guard sent else { return detail }
+    if orderMutationErrorProvesNoEffect(error, method: method) {
+        if case .http(let status, _, _, _)? = error as? APIError {
+            return "Slant refused this request (HTTP \(status)), so nothing changed. \(detail)"
+        }
+        return "The request didn’t reach Slant, so nothing changed. \(detail)"
+    }
+    return "\(slantUnclearReplyCause(error)), so the result is unknown: Slant may already have made this change. Check what Slant shows before sending it again."
+}
+
+/// Whether a failed Workbench send may have changed a platform's webhook secret without Studio seeing the new one: a
+/// rotate, or a platform edit whose body sets `webhookSecret`, that Slant didn't definitely refuse.
+func workbenchSecretChangeMayHaveHappened(endpointID: String, body: Any?, error: Error) -> Bool {
+    switch endpointID {
+    case "PATCH /platforms/{platformId}/webhook-secret": break
+    case "PATCH /platforms/{platformId}":
+        guard (body as? [String: Any])?["webhookSecret"] != nil else { return false }
+    default: return false
+    }
+    return webhookSecretMayHaveChanged(after: error)
+}
+
+/// The review sheet's title in sentence case: Slant's summary with only its first letter lowered, so names inside
+/// it keep their capitals ("Review convert OpenSCAD code to STL"). A first word in capitals (an acronym) is kept.
+func workbenchReviewTitle(_ summary: String) -> String {
+    let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let first = trimmed.first else { return "Review request" }
+    let firstWord = trimmed.prefix { !$0.isWhitespace }
+    let isAcronym = firstWord.count > 1 && firstWord.allSatisfy { !$0.isLetter || $0.isUppercase }
+    return "Review " + (isAcronym ? trimmed : first.lowercased() + trimmed.dropFirst())
 }
 
 /// Replaces the review's unknown-outcome note once a reload shows the recorded action's outcome and lifts the lock.
@@ -874,6 +941,10 @@ func validateJSON(_ value: Any, schema: [String: Any], path: String = "body") th
         }
         if let options = schema["enum"] as? [String], !options.contains(string) {
             throw StudioError("\(path) must be one of: \(options.joined(separator: ", ")).")
+        }
+        // An ID field left empty (the `POST /orders` template's `filamentId`) is never sent: fill it in or remove it.
+        if schema["format"] as? String == "uuid", string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw StudioError("\(path) is empty. Enter an ID, or remove the field.")
         }
     }
     if let minimum = schemaDouble(schema["minimum"]), let number = value as? NSNumber, number.doubleValue < minimum { throw StudioError("\(path) must be at least \(minimum).") }

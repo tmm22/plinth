@@ -971,7 +971,9 @@ extension StudioStore {
     /// One `POST /files/openScad`, never retried. It counts against the session quota as it is sent, whatever the
     /// outcome; a 429 blocks further generations until Slant's reset. Uses `run`, so it waits for (and blocks) other
     /// requests. Activity records only the title and `openSCADActivityDetail` (a status code at most), never the
-    /// template, the values or Slant's error text, which may quote them; the sheet shows the full error.
+    /// template, the values or Slant's error text, which may quote them; the sheet shows the full error. Its reply's
+    /// rate-limit headers are OpenSCAD's own hourly limiter, so they never reach `rateLimit`: don't add `noteRateLimit`
+    /// here (`APIResponse.rateLimit` is empty for this path anyway, `slantReplyRateLimitIsShared`).
     func generateOpenSCADOnSlant(source: String) async throws -> Data {
         let session = PersonalisationSession.shared
         if let reason = session.quota.blockedReason(now: Date()) { throw StudioError(reason) }
