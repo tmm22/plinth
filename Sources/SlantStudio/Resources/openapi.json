@@ -20,7 +20,7 @@
       "webhooks": "Configure webhook URLs on platforms for order status updates",
       "platform-workflow": "A Platform ID is required on most requests, as it is the organizational foundation of the API. Create or utilize one of the already created platforms and attach the ID to requests where it is required according to individual endpoint specifications.",
       "openscad-rate-limit": "5 OpenSCAD generations per hour, one in flight",
-      "webhook-signature": "HMAC-SHA256 over `${timestamp}.${rawBody}` with platform webhookSecret; header X-Webhook-Signature-256 is sha256=<hex>; reject if timestamp older than 5 minutes",
+      "webhook-signature": "HMAC-SHA256 over `${timestamp}.${rawBody}` with the platform's webhookSecret, where timestamp is the X-Webhook-Timestamp header exactly as sent (Unix milliseconds) and rawBody is the exact bytes received; header X-Webhook-Signature-256 is sha256=<hex>; reject if the timestamp is more than 5 minutes older than Date.now()",
       "x-slant-studio-source": "docs"
     }
   },
@@ -97,6 +97,7 @@
       },
       "ErrorResponse": {
         "type": "object",
+        "description": "Live replies differ from this shape (28-29 Oct 2026): API errors are {success: false, error: {message, statusCode}}; 401 and 403 replies from the authentication layer are {error, message, ...} (with format for a missing or invalid key, and requiredRole and currentRole for a role refusal).",
         "properties": {
           "success": {
             "type": "boolean",
@@ -110,7 +111,8 @@
             "type": "string",
             "description": "Technical error details"
           }
-        }
+        },
+        "x-slant-studio-source": "live"
       },
       "Address": {
         "type": "object",
@@ -159,7 +161,9 @@
           },
           "platformId": {
             "type": "string",
-            "format": "uuid"
+            "format": "uuid",
+            "description": "Live (29 Oct 2026): every order seen names its platform here, including drafts created with a top-level platformId.",
+            "x-slant-studio-source": "live"
           },
           "details": {
             "type": "object",
@@ -211,8 +215,8 @@
               "obj",
               "3mf"
             ],
-            "description": "File type. Docs: stl, obj, and 3mf are currently supported; defaults to stl.",
-            "x-slant-studio-source": "docs"
+            "description": "File type. Slant's docs: stl, obj and 3mf are supported for uploads; defaults to stl. Live (29 Oct 2026): every file record reads stl, including two 3MF uploads, whose stored bytes are Slant's binary STL conversion (\"Binary STL converted from 3MF by file-service\"). OBJ uploads are unverified.",
+            "x-slant-studio-source": "live"
           },
           "notes": {
             "type": "string",
@@ -394,6 +398,39 @@
             "format": "uri",
             "description": "For STATIONERY items with custom image"
           },
+          "options": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "Live and Slant's docs: the item's options.",
+            "x-slant-studio-source": "live"
+          },
+          "printItem": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "Live and Slant's docs: for PRINT items, the file, filament and estimated print completion.",
+            "x-slant-studio-source": "live"
+          },
+          "componentItem": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "Slant's docs: for COMPONENT items, the component.",
+            "x-slant-studio-source": "docs"
+          },
+          "stationeryItem": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "Slant's docs: for STATIONERY items, the stationery.",
+            "x-slant-studio-source": "docs"
+          },
+          "estimatedPrintCompletion": {
+            "nullable": true,
+            "description": "Live: on the item and on printItem; null on every order seen (29 Oct 2026).",
+            "x-slant-studio-source": "live"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -424,15 +461,20 @@
           },
           "platformId": {
             "type": "string",
-            "format": "uuid"
+            "format": "uuid",
+            "x-slant-studio-source": "live",
+            "description": "Not on live orders (29 Oct 2026, every order seen); they name their platform in customer.platformId."
           },
           "ownerId": {
             "type": "string",
-            "description": "Your application's user ID"
+            "description": "Your application's user ID. Not on live orders (29 Oct 2026, every order seen).",
+            "x-slant-studio-source": "live"
           },
           "creatorId": {
             "type": "string",
-            "format": "uuid"
+            "format": "uuid",
+            "x-slant-studio-source": "live",
+            "description": "Not on live orders (29 Oct 2026, every order seen)."
           },
           "paymentId": {
             "type": "string",
@@ -493,6 +535,45 @@
             },
             "additionalProperties": true
           },
+          "metadata": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "Live (29 Oct 2026): every order carries metadata, null or an object, on list rows and GET /orders/{publicOrderId} alike.",
+            "x-slant-studio-source": "live"
+          },
+          "platform": {
+            "type": "object",
+            "description": "Live (29 Oct 2026): the order's platform, without its ID (the ID is customer.platformId).",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "webhookURL": {
+                "type": "string",
+                "nullable": true
+              },
+              "description": {
+                "type": "string",
+                "nullable": true
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "x-slant-studio-source": "live"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -517,7 +598,9 @@
           },
           "description": {
             "type": "string",
-            "description": "Platform description"
+            "description": "Platform description. Can be null (live, 29 Oct 2026).",
+            "nullable": true,
+            "x-slant-studio-source": "live"
           },
           "url": {
             "type": "string",
@@ -527,7 +610,9 @@
           "webhookURL": {
             "type": "string",
             "format": "uri",
-            "description": "Webhook endpoint for order status updates"
+            "description": "Webhook endpoint for order status updates. Can be null (live, 29 Oct 2026).",
+            "nullable": true,
+            "x-slant-studio-source": "live"
           },
           "webhookSecret": {
             "type": "string",
@@ -894,8 +979,9 @@
           },
           "dimensions": {
             "type": "string",
-            "description": "Formatted X x Y x Z string",
-            "example": "58.2 x 58.2 x 8"
+            "description": "Formatted X x Y x Z string. Live (29 Oct 2026): free text that often carries its own units (mm, in, ft, a diameter sign), whatever dimensionUnit says; some rows send \"\" or omit it, and one sends \"0 x 0 x 0\".",
+            "example": "58.2 x 58.2 x 8",
+            "x-slant-studio-source": "live"
           },
           "dimensionUnit": {
             "type": "string",
@@ -1090,8 +1176,16 @@
           },
           "address": {
             "type": "object",
-            "additionalProperties": true,
-            "description": "Address the label was generated against"
+            "description": "Ship-to email and address the label was generated against: {email, address} (docs example; live 29 Oct 2026), the same shape as customer.details.",
+            "properties": {
+              "email": {
+                "type": "string"
+              },
+              "address": {
+                "$ref": "#/components/schemas/Address"
+              }
+            },
+            "x-slant-studio-source": "live"
           },
           "trackingNumbers": {
             "type": "array",
@@ -1101,27 +1195,45 @@
             "description": "Tracking numbers for the shipment"
           },
           "deliveryInstructions": {
-            "type": "string"
+            "type": "string",
+            "nullable": true,
+            "description": "Null on every order seen (live, 29 Oct 2026).",
+            "x-slant-studio-source": "live"
           },
           "providerStatus": {
-            "type": "string"
+            "type": "string",
+            "nullable": true,
+            "description": "Null on every order seen (live, 29 Oct 2026).",
+            "x-slant-studio-source": "live"
+          },
+          "labelPrinted": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
       "OrderTotals": {
         "type": "object",
+        "description": "Slant's docs: printingCost, deliveryCost and totalCost for the order, as numbers (example 35.53, 4.79, 40.32). The order's own printingCost and deliveryCost are strings, in the docs and live; whether the live draft reply's totals are numbers is unverified.",
         "x-slant-studio-source": "docs",
         "properties": {
           "printingCost": {
-            "type": "string",
+            "type": "number",
             "description": "Print cost in USD"
           },
           "deliveryCost": {
-            "type": "string",
+            "type": "number",
             "description": "Shipping cost in USD"
           },
           "totalCost": {
-            "type": "string",
+            "type": "number",
             "description": "Total cost in USD"
           }
         }
@@ -1165,11 +1277,11 @@
         "x-slant-studio-source": "docs"
       },
       "X-RateLimit-Reset": {
-        "description": "Unix timestamp when the limit resets",
+        "description": "Epoch milliseconds (live, 23 and 29 Oct 2026). Slant's docs say \"Unix timestamp\" and their sample multiplies it by 1000. What it marks is unresolved: some live replies gave a fixed time, up to about 60 s ahead, that stayed put while X-RateLimit-Remaining fell; others gave a time a few seconds ahead that moved later with each request while X-RateLimit-Remaining stayed level or went back up by one (29 Oct 2026).",
         "schema": {
           "type": "integer"
         },
-        "x-slant-studio-source": "docs"
+        "x-slant-studio-source": "live"
       },
       "X-RateLimit-Role": {
         "description": "Account tier (free only for now)",
@@ -1338,7 +1450,7 @@
           "Files"
         ],
         "summary": "Import file from URL",
-        "description": "Import an STL from an accessible download URL. Documented on the Files page; this operation supplements the published OpenAPI document.",
+        "description": "Import an STL from an accessible download URL. Documented on the Files page; this operation supplements the published OpenAPI document, which no longer lists it (checked 23 Oct 2026).",
         "security": [
           {
             "ApiKeyAuth": []
@@ -1820,14 +1932,15 @@
             }
           },
           "403": {
-            "description": "Admin access required",
+            "description": "Admin access required. Live (recorded 19 Oct 2026): a standard API key gets this even for the file's own uploader.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
-            }
+            },
+            "x-slant-studio-source": "live"
           }
         }
       }
@@ -1857,7 +1970,8 @@
                 "properties": {
                   "name": {
                     "type": "string",
-                    "description": "File name (will be sanitized)"
+                    "description": "File name (will be sanitized). Slant's docs: \"Sanitized before storing. Unique to ownerId\". Live (30 Oct 2026): a second direct-upload with the same name as an existing file returned that file's filePlaceholder and storage key, and its confirm-upload returned the same publicFileServiceId, so the second upload's bytes go to the existing file's storage object (inferred from the shared key: the two test files were identical). Whether the match ignores case or the extension is unverified.",
+                    "x-slant-studio-source": "live"
                   },
                   "platformId": {
                     "type": "string",
@@ -2057,7 +2171,7 @@
           "Platforms"
         ],
         "summary": "Get user platforms",
-        "description": "Retrieve all enabled platforms associated with your account. Platforms disabled by DELETE /platforms/{platformId} are not included; fetch one by ID to read it. Returns only enabled platforms. Disabled platforms remain readable by ID via GET /platforms/{platformId}.",
+        "description": "Retrieve all enabled platforms associated with your account. Platforms disabled by DELETE /platforms/{platformId} are not included; fetch one by ID to read it.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -2095,15 +2209,14 @@
               }
             }
           }
-        },
-        "x-slant-studio-source": "docs"
+        }
       },
       "post": {
         "tags": [
           "Platforms"
         ],
         "summary": "Create platform",
-        "description": "Create a new platform for organizing your 3D printing projects webhookSecret is auto-generated on create and is not settable in the create body (docs).",
+        "description": "Create a new platform for organizing your 3D printing projects. webhookSecret is auto-generated on create and is not settable in the create body (docs).",
         "security": [
           {
             "ApiKeyAuth": []
@@ -2141,8 +2254,7 @@
                     "format": "uri",
                     "description": "Webhook endpoint for order status updates"
                   }
-                },
-                "description": ""
+                }
               }
             }
           }
@@ -2534,7 +2646,7 @@
           "Webhooks"
         ],
         "summary": "Send test webhook",
-        "description": "Delivers a fixed dummy order.shipped payload to the platform's registered webhookURL, signed with that platform's secret. The payload carries dummy: true so your handler can ignore it. Nothing is stored and no order is affected. success on the envelope means the request was attempted - read data.success and data.response.status to see what your endpoint returned. Inspect data.success and data.response.status; data.response.error when the request failed outright (timeout/DNS).",
+        "description": "Delivers a fixed dummy order.shipped payload to the platform's registered webhookURL, signed with that platform's secret. The payload carries dummy: true so your handler can ignore it. Nothing is stored and no order is affected. success on the envelope means the request was attempted - read data.success and data.response.status to see what your endpoint returned. data.response.error comes instead of data.response.status when the request failed outright (such as a timeout or DNS failure).",
         "security": [
           {
             "ApiKeyAuth": []
@@ -2666,7 +2778,7 @@
           "Webhooks"
         ],
         "summary": "Resend dead webhooks",
-        "description": "Replays the platform's undelivered webhooks, oldest first, so your handler receives them in the order the events happened. Batched at 25 per call - keep calling while remaining is above zero. Webhooks past the 30 day window are marked expired instead of being sent. A manual resend is a single attempt and does not put a webhook back into the automatic retry loop. Batched at 25 per call; keep calling while remaining is above zero. Response data: attempted, delivered, failed, expired, remaining, results[]. Batched at 25.",
+        "description": "Replays the platform's undelivered webhooks, oldest first, so your handler receives them in the order the events happened. Batched at 25 per call - keep calling while remaining is above zero. Webhooks past the 30 day window are marked expired instead of being sent. A manual resend is a single attempt and does not put a webhook back into the automatic retry loop. Response data: attempted, delivered, failed, expired, remaining, results[].",
         "security": [
           {
             "ApiKeyAuth": []
@@ -2729,7 +2841,7 @@
           "Webhooks"
         ],
         "summary": "Resend a single dead webhook",
-        "description": "Replays one stored webhook by id. A single attempt: failing here does not return the webhook to the automatic retry loop. A webhook that already succeeded returns alreadyDelivered without being sent again. Result: id, eventType, success, status, expired, alreadyDelivered, error.",
+        "description": "Replays one stored webhook by id. A single attempt: failing here does not return the webhook to the automatic retry loop. A webhook that already succeeded returns alreadyDelivered without being sent again.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -2792,8 +2904,7 @@
               }
             }
           }
-        },
-        "x-slant-studio-source": "docs"
+        }
       }
     },
     "/slant/webhook": {
@@ -2898,6 +3009,17 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Live (29 Oct 2026): a standard API key gets 403 \"Minimum role required: admin\".",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "x-slant-studio-source": "live"
           }
         }
       }
@@ -2921,14 +3043,18 @@
             "schema": {
               "type": "string",
               "format": "uuid"
-            }
+            },
+            "description": "Slant's docs don't list this filter. Live (29 Oct 2026): an unknown or malformed platformId (not-a-uuid) was accepted and ignored, and every order on the account was returned. Whether the ID of a second platform the account owns filters the list is unverified. Every order seen names its platform in customer.platformId.",
+            "x-slant-studio-source": "live"
           },
           {
             "name": "ownerId",
             "in": "query",
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "Slant's docs don't list this filter. Live (29 Oct 2026): an unknown ownerId was ignored and every order on the account was returned. Live orders carry no ownerId.",
+            "x-slant-studio-source": "live"
           },
           {
             "name": "status",
@@ -2943,17 +3069,18 @@
                 "CANCELLED"
               ]
             },
-            "description": "Case insensitive. Any other value is refused with 400 \"Invalid status filter\" (live, 28 Oct 2026)."
+            "description": "Case insensitive. Any other value is refused with 400 \"Invalid status filter\" (live, 28 Oct 2026).",
+            "x-slant-studio-source": "live"
           },
           {
             "name": "startDate",
             "in": "query",
             "schema": {
               "type": "string",
-              "format": "date",
-              "x-slant-studio-source": "docs"
+              "format": "date"
             },
-            "description": " Format: date (YYYY-MM-DD)."
+            "description": "Only return orders created at or after this point. Slant's docs: ISO 8601 (example 2026-01-01T00:00:00Z); this spec: format date. Live (29 Oct 2026) accepts both: a date-time's time and offset are applied (send + as %2B), and a date-only value means midnight at the start of that day, consistent with UTC, so the day is included.",
+            "x-slant-studio-source": "live"
           },
           {
             "name": "endDate",
@@ -2962,8 +3089,8 @@
               "type": "string",
               "format": "date"
             },
-            "description": "Only return orders up to this date (YYYY-MM-DD). Docs/file filters: exclusive “before this date”; the guided filters ask for two days after To and trim to the Mac’s calendar.",
-            "x-slant-studio-source": "docs"
+            "description": "Only return orders created before this point. Slant's docs: \"Only return orders up to this point\", ISO 8601 (example 2026-02-01T00:00:00Z); this spec: format date. Live (29 Oct 2026) accepts both: a date-time's time and offset are applied, and a date-only value means midnight at the start of that day, consistent with UTC, so the day itself is excluded.",
+            "x-slant-studio-source": "live"
           },
           {
             "name": "page",
@@ -2981,16 +3108,16 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 200,
-              "default": 50,
-              "x-slant-studio-source": "docs"
+              "default": 50
             },
-            "description": " Docs allow up to 200; OpenAPI previously listed 100."
+            "description": "Slant's docs allow up to 200; this spec says 100. Live: limit=200 accepted (28 Oct 2026); limit=201 refused with 400 \"Invalid limit passed on query: 201. Limit maximum is 200\" (29 Oct 2026).",
+            "x-slant-studio-source": "live"
           },
           {
             "name": "publicId",
             "in": "query",
             "required": false,
-            "description": "Filter by public order ID. Live (23 Oct 2026): matches exact order numbers only.",
+            "description": "Filter by public order ID. Live: matches whole order numbers only (23 Oct 2026), ignoring case (29 Oct 2026).",
             "schema": {
               "type": "string"
             },
@@ -3000,17 +3127,17 @@
             "name": "orderId",
             "in": "query",
             "required": false,
-            "description": "Alias for publicId; takes precedence if both supplied",
+            "description": "Alias for publicId; takes precedence if both supplied (Slant's docs). Live (29 Oct 2026): accepted.",
             "schema": {
               "type": "string"
             },
-            "x-slant-studio-source": "docs"
+            "x-slant-studio-source": "live"
           },
           {
             "name": "sortBy",
             "in": "query",
             "required": false,
-            "description": "createdAt, updatedAt or status; documented on Orders page. Live (24 Oct 2026): updatedAt accepted.",
+            "description": "createdAt, updatedAt or status; documented on Orders page. Live: updatedAt accepted (24 Oct 2026); status and the snake_case created_at and updated_at accepted, and any other value refused with 400 naming the allowed values (29 Oct 2026).",
             "schema": {
               "type": "string"
             },
@@ -3020,7 +3147,7 @@
             "name": "sortOrder",
             "in": "query",
             "required": false,
-            "description": "ASC or DESC; documented on Orders page. Live: both accepted; an invalid value is refused with 400 naming the parameter.",
+            "description": "ASC or DESC; documented on Orders page. Live: both accepted, lower case too (29 Oct 2026); an invalid value is refused with 400 naming the parameter.",
             "schema": {
               "type": "string"
             },
@@ -3039,6 +3166,7 @@
                     },
                     {
                       "type": "object",
+                      "description": "Live (28 Oct 2026) and Slant's docs: a pagination object beside data, whose count is the total across pages; there is no top-level count.",
                       "properties": {
                         "data": {
                           "type": "array",
@@ -3046,10 +3174,11 @@
                             "$ref": "#/components/schemas/Order"
                           }
                         },
-                        "count": {
-                          "type": "integer"
+                        "pagination": {
+                          "$ref": "#/components/schemas/Pagination"
                         }
-                      }
+                      },
+                      "x-slant-studio-source": "live"
                     }
                   ]
                 }
@@ -3161,7 +3290,8 @@
                         "imageUrl": {
                           "type": "string",
                           "format": "uri",
-                          "description": "For STATIONERY items with custom image"
+                          "description": "For STATIONERY items with custom image. Slant's docs name this field imageURL in their request table and examples, and mark it required for stationery; their draft-reply example echoes imageUrl. Which one live Slant reads is unverified.",
+                          "x-slant-studio-source": "docs"
                         },
                         "name": {
                           "type": "string",
@@ -3292,6 +3422,17 @@
               }
             }
           },
+          "400": {
+            "description": "Live (28 Oct 2026): an unknown order ID gets 400 \"Order not found.\" rather than 404.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "x-slant-studio-source": "live"
+          },
           "401": {
             "description": "Order belongs to another creator",
             "content": {
@@ -3391,7 +3532,7 @@
           "Orders"
         ],
         "summary": "Cancel order",
-        "description": "Cancel an order if it hasn't started production Docs: cancelling an order will also refund it as well as cancel associated fulfillment. If already shipped then the order will only refund. A separate refund endpoint exists in docs but is not integrated in this OpenAPI.",
+        "description": "Cancel an order if it hasn't started production. Docs: cancelling an order will also refund it as well as cancel associated fulfillment. If already shipped then the order will only refund. A separate refund endpoint exists in docs but is not integrated in this OpenAPI.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -3418,6 +3559,17 @@
                 }
               }
             }
+          },
+          "4XX": {
+            "description": "Live (23 Oct 2026): a DRAFT order is refused with \"Can not cancel a draft order\".",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "x-slant-studio-source": "live"
           },
           "401": {
             "description": "Order belongs to another creator",
@@ -3470,7 +3622,7 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "Array of public order IDs. Live Slant accepts only publicIds and refuses public_ids (the original spec's name) with 400 \"No public IDs provided\"; the reply is data: [order].",
+                    "description": "Array of public order IDs. Live (23 Oct 2026): Slant accepts only publicIds and refuses public_ids (the original spec's name) with 400 \"No public IDs provided\".",
                     "x-slant-studio-source": "live"
                   }
                 },
@@ -3495,13 +3647,10 @@
                         "data": {
                           "type": "array",
                           "items": {
-                            "type": "object",
-                            "properties": {
-                              "order": {
-                                "$ref": "#/components/schemas/Order"
-                              }
-                            }
-                          }
+                            "$ref": "#/components/schemas/Order"
+                          },
+                          "description": "Live (23 Oct 2026) and Slant's docs: the orders themselves; this spec said [{order}].",
+                          "x-slant-studio-source": "live"
                         }
                       }
                     }
@@ -3519,7 +3668,7 @@
           "Orders"
         ],
         "summary": "Search orders",
-        "description": "Search orders with advanced filtering",
+        "description": "Search orders with advanced filtering. Live: answered as GET /orders/{publicOrderId} with the ID \"search\": every query, including an exact order number (23 Oct 2026) and this operation's own query parameter (29 Oct 2026), returns 400 \"Order not found.\".",
         "security": [
           {
             "ApiKeyAuth": []
@@ -3561,7 +3710,8 @@
               }
             }
           }
-        }
+        },
+        "x-slant-studio-source": "live"
       }
     },
     "/components": {
@@ -3953,14 +4103,15 @@
         ],
         "responses": {
           "200": {
-            "description": "Usage statistics retrieved successfully",
+            "description": "Usage statistics retrieved successfully. Live (29 Oct 2026): this request counts against the rate limit like any other, and the envelope has no message. data holds user (role, rateLimitConfig {maxRequestsPerKey, windowDurationMs, blockDurationMs}), summary and apiKeys[] ({name, prefix, isActive, createdAt, lastUsedAt, usage {current, limit, remaining, percentage, resetTime, resetDate, isBlocked, blockedUntil, windowDurationMs}}).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponse"
                 }
               }
-            }
+            },
+            "x-slant-studio-source": "live"
           }
         }
       }
@@ -4040,7 +4191,7 @@
           "Files"
         ],
         "summary": "Convert OpenSCAD code to STL",
-        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 5 generations per hour with one generation in flight at a time. Rate limit: 5 generations per hour, one in flight.",
+        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 5 generations per hour with one generation in flight at a time. Docs example: a 200 reply carries X-RateLimit-Limit: 5 and X-RateLimit-Remaining: 4.",
         "security": [
           {
             "ApiKeyAuth": []
