@@ -1766,19 +1766,6 @@ func httpsPreviewImageURL(_ record: Record) -> URL? {
     return url
 }
 
-func webhookTestResultMessage(_ result: WebhookTestResult) -> String {
-    if let status = result.endpointStatus {
-        if status == 200 {
-            return "Slant attempted delivery; your endpoint returned HTTP 200"
-        }
-        return "Slant attempted delivery; your endpoint returned HTTP \(status)"
-    }
-    if let message = result.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
-        return message
-    }
-    return result.attempted ? "Slant attempted delivery." : "Test webhook failed."
-}
-
 func webhookResendResultMessage(_ result: WebhookResendResult) -> String {
     "Attempted \(result.attempted) · delivered \(result.delivered) · failed \(result.failed) · expired \(result.expired) · remaining \(result.remaining)"
 }

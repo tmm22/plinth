@@ -208,10 +208,14 @@ struct PlatformsSettingsSheets: ViewModifier {
             if let candidate = state.enableCandidate {
                 Text(displayName(for: candidate, fallback: "Untitled platform")).font(.headline)
                 Text(candidate.id).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                if let reason = enableBlockedReason {
+                    Text(reason).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
             HStack {
                 Spacer()
-                Button("Cancel") { state.confirmEnable = false }
+                // Nothing to enable: the sheet only informs, so it closes.
+                Button(enableBlockedReason == nil ? "Cancel" : "Close") { state.confirmEnable = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
                 Button("Enable") {
@@ -226,12 +230,28 @@ struct PlatformsSettingsSheets: ViewModifier {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.busy || state.enableCandidate == nil)
+                .disabled(store.busy || state.enableCandidate == nil || enableBlockedReason != nil)
             }
         }
         .padding(24)
         .frame(width: 420)
     }
+
+    private var enableBlockedReason: String? {
+        state.enableCandidate.flatMap { platformEnableCandidateBlockedReason($0, listed: store.platforms) }
+    }
+}
+
+/// Why Enable isn't offered for a platform looked up by ID, or nil. Slant refuses to enable a platform that is already
+/// enabled (400), so a candidate whose `enabled` is true, or one already listed, gets a note instead of the button.
+func platformEnableCandidateBlockedReason(_ candidate: Record, listed: [Record]) -> String? {
+    if listed.contains(where: { $0.id == candidate.id }) {
+        return "This platform is already enabled. It’s listed under Platforms."
+    }
+    if let flag = candidate.values["enabled"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID(), flag.boolValue {
+        return "This platform is already enabled. Use Reload Platforms to list it."
+    }
+    return nil
 }
 
 // MARK: - Platform details and management
@@ -268,8 +288,12 @@ struct PlatformDetailSheet: View {
     private var currentSecret: String {
         livePlatform.string("webhookSecret", "secret")
     }
+    /// The secret may have changed without Studio seeing the new one (`StudioStore.markWebhookSecretUncertain`).
+    private var secretUncertain: Bool {
+        store.webhookSecretUncertainPlatformIDs.contains(record.id)
+    }
     private var displayedSecret: String {
-        displayedWebhookSecret(rotatedSecret: rotatedSecret, currentSecret: currentSecret)
+        displayedWebhookSecret(rotatedSecret: rotatedSecret, currentSecret: currentSecret, uncertain: secretUncertain)
     }
     private var platformDeadWebhooks: [Record] {
         store.deadWebhooks[record.id] ?? []
@@ -390,7 +414,10 @@ struct PlatformDetailSheet: View {
     private var webhookSecretSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Webhook secret").font(.headline)
-            if displayedSecret.isEmpty {
+            if secretUncertain {
+                Text(webhookSecretUncertainNote).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if displayedSecret.isEmpty {
                 Text("Hidden · rotate to mint a new secret.").font(.caption).foregroundStyle(.secondary)
             } else if showSecret {
                 Text(displayedSecret).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -404,6 +431,13 @@ struct PlatformDetailSheet: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(displayedSecret, forType: .string)
                     }
+                }
+                if secretUncertain {
+                    // One read-only GET; the rotate is never sent again by itself.
+                    Button("Reload Platform") {
+                        Task { _ = await perform { await store.reloadPlatform(id: record.id) ? true : nil } }
+                    }
+                    .disabled(store.busy)
                 }
                 Button("Rotate…") {
                     rotateTyped = ""
@@ -497,8 +531,9 @@ struct PlatformDetailSheet: View {
     private var disableConfirmSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Disable this platform?").font(.title3.weight(.semibold))
-            Text("Disabled platforms disappear from this list. You can re-enable it here or by its ID.")
+            Text("Disabled platforms disappear from this list. You can re-enable it here or by its ID. Its name, shop address and webhook URL stay reserved, so a new platform can’t reuse them.")
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             actionErrorLabel
             HStack {
                 Spacer()
@@ -525,8 +560,9 @@ struct PlatformDetailSheet: View {
     private var resendAllConfirmSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Resend all failed deliveries?").font(.title3.weight(.semibold))
-            Text("Slant will attempt delivery for every failed webhook on this platform.")
+            Text("Slant tries once more to deliver this platform’s failed webhooks, oldest first, up to 25 at a time. If more remain, Resend Remaining sends the next batch.")
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
                 Button("Cancel") { confirmResendAll = false }
@@ -569,6 +605,12 @@ struct PlatformDetailSheet: View {
                         if let secret = await perform({ await store.rotateWebhookSecret(platformID: record.id) }) {
                             rotatedSecret = secret
                             showSecret = true
+                            rotatePrompt = false
+                        } else if secretUncertain {
+                            // Slant may have rotated: drop any secret this sheet showed, and explain in the details
+                            // (with Reload Platform) rather than leave Rotate Secret one click from a second rotate.
+                            rotatedSecret = nil
+                            showSecret = false
                             rotatePrompt = false
                         }
                     }
@@ -688,14 +730,46 @@ func webhookRotateTypedConfirmAllowed(_ typed: String) -> Bool {
     typed.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("rotate") == .orderedSame
 }
 
-func displayedWebhookSecret(rotatedSecret: String?, currentSecret: String) -> String {
-    rotatedSecret ?? currentSecret
+/// The secret Show and Copy offer: none while it may have changed unseen (`uncertain`), else this sheet's rotated one,
+/// else the cached one.
+func displayedWebhookSecret(rotatedSecret: String?, currentSecret: String, uncertain: Bool = false) -> String {
+    guard !uncertain else { return "" }
+    return rotatedSecret ?? currentSecret
 }
 
+/// The details sheet's line while a platform's secret may have changed without Studio seeing the new one.
+let webhookSecretUncertainNote = "Slant may already have changed this secret, so Studio doesn’t show the one it had. Reload the platform to see the current secret."
+
+/// The in-app recipe, as Slant's docs verify a delivery: `timestamp` is the `X-Webhook-Timestamp` header in Unix
+/// milliseconds, and the body is the exact bytes received.
 let webhookVerificationRecipe = #"""
+timestamp = X-Webhook-Timestamp header (Unix time in milliseconds)
+rawBody   = the request body exactly as received, before any parsing
 X-Webhook-Signature-256 = "sha256=" + hex(HMAC-SHA256(secret, `${timestamp}.${rawBody}`))
-Reject timestamps older than 5 minutes.
+Reject the delivery when now - timestamp is 5 minutes (300000 ms) or more.
 """#
+
+/// Send Test Webhook's result. Slant's `success` and the endpoint's status say whether it arrived; the endpoint's own
+/// error text is clipped to one line like the failed-delivery rows.
+func webhookTestResultMessage(_ result: WebhookTestResult) -> String {
+    if let status = result.endpointStatus {
+        return (200..<300).contains(status)
+            ? "Delivered. Your endpoint returned HTTP \(status)."
+            : "Not delivered. Your endpoint returned HTTP \(status)."
+    }
+    if let message = result.message.flatMap(clippedWebhookText) {
+        return result.attempted ? message : "Not delivered: \(message)"
+    }
+    return result.attempted ? "Slant attempted delivery." : "Test webhook failed."
+}
+
+/// Create Platform's note on the default: the new platform becomes it only when none is set
+/// (`platformCreateBecomesDefault`).
+func platformComposerDefaultNote(currentDefault: String) -> String {
+    platformCreateBecomesDefault(currentDefault: currentDefault)
+        ? "It becomes your default platform for uploads and order drafts."
+        : "Your default platform stays as it is. To use the new one, choose Use as Default in its details."
+}
 
 // MARK: - Create / edit platform
 
@@ -717,6 +791,11 @@ struct PlatformComposerView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(editing == nil ? "Create platform" : "Edit platform").font(.title2.weight(.bold))
                 Text("A platform groups your uploads and orders.").foregroundStyle(.secondary)
+                if editing == nil {
+                    Text(platformComposerDefaultNote(currentDefault: store.platformID))
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }.padding(24)
             Divider()
             Form {
@@ -737,8 +816,9 @@ struct PlatformComposerView: View {
                                 Text("Leave the webhook URL blank to remove it from this platform.")
                                     .font(.caption).foregroundStyle(.secondary)
                                 SecureField("Webhook secret (optional)", text: $draft.webhookSecret)
-                                Text("32–256 printable ASCII characters. Leave blank to keep the current secret.")
+                                Text("32–256 printable ASCII characters. Leave blank to keep the current secret. A new secret replaces the current one at once, with no overlap, so update your receiver as soon as you save.")
                                     .font(.caption).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             } else {
                                 Text("Slant sends order status updates to this address. Leave it blank if you don’t run your own server. A signing secret is generated when the platform is created.")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -777,8 +857,9 @@ struct PlatformComposerView: View {
             } else {
                 saved = await store.createPlatform(draft)
             }
-            // Never retried. In Settings the app's error alert can sit behind this window, so repeat it here.
-            if saved { dismiss() } else if let error = store.error { validation = error }
+            // Never retried. The failure shows here, in the sheet, and is taken from the store so the main window's
+            // alert (behind Settings, or behind this sheet) doesn't also open and block menus (UI conventions).
+            if saved { dismiss() } else if let error = takeStoreErrorForSettings(store) { validation = error }
         }
     }
 }

@@ -301,11 +301,11 @@ final class ModelsUXTests: XCTestCase {
     func testWebhookResultMessages() {
         XCTAssertEqual(
             webhookTestResultMessage(WebhookTestResult(attempted: true, endpointStatus: 200, message: nil)),
-            "Slant attempted delivery; your endpoint returned HTTP 200"
+            "Delivered. Your endpoint returned HTTP 200."
         )
         XCTAssertEqual(
-            webhookTestResultMessage(WebhookTestResult(attempted: true, endpointStatus: 500, message: nil)),
-            "Slant attempted delivery; your endpoint returned HTTP 500"
+            webhookTestResultMessage(WebhookTestResult(attempted: false, endpointStatus: 500, message: nil)),
+            "Not delivered. Your endpoint returned HTTP 500."
         )
         XCTAssertEqual(
             webhookResendResultMessage(WebhookResendResult(attempted: 25, delivered: 2, failed: 1, expired: 0, remaining: 3)),

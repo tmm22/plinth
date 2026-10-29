@@ -281,16 +281,23 @@ func comparisonPacing(rateLimit: RateLimitInfo?, observedAt: Date?, now: Date, r
     return .stop("\(lead) Try again in about a minute.")
 }
 
-/// After a 429, when Slant says requests may resume: the reset time, else a numeric Retry-After, else a minute.
+/// After a 429, when requests may resume: the latest of Slant's reset time, a numeric Retry-After and a minute from
+/// now, at most an hour away. The minute is a floor because `X-RateLimit-Reset` can be only seconds ahead (it may
+/// mark when one counted request leaves a sliding window), and `GET /usage` reports a 60 s block after the limit is
+/// hit (unverified). Shared by Compare estimates, Check Cost, Import Orders, Pay Several Drafts and the Spending Report.
 func comparisonRateLimitedUntil(retryAfter: String?, rateLimitReset: String?, now: Date) -> Date {
-    if let reset = rateLimitResetDate(rateLimitReset, now: now), reset > now {
-        return min(reset, now.addingTimeInterval(3600))
+    var until = now.addingTimeInterval(comparisonRateLimitMinimumWait)
+    if let reset = rateLimitResetDate(rateLimitReset, now: now), reset > until {
+        until = reset
     }
     if let raw = retryAfter?.trimmingCharacters(in: .whitespaces), let seconds = TimeInterval(raw), seconds > 0 {
-        return now.addingTimeInterval(min(seconds, 3600))
+        until = max(until, now.addingTimeInterval(min(seconds, 3600)))
     }
-    return now.addingTimeInterval(60)
+    return min(until, now.addingTimeInterval(3600))
 }
+
+/// The least a paced batch waits after a 429 (`comparisonRateLimitedUntil`).
+let comparisonRateLimitMinimumWait: TimeInterval = 60
 
 enum ComparisonErrorDisposition: Equatable {
     /// The user stopped or closed the sheet.
