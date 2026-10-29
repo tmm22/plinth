@@ -2008,7 +2008,8 @@ struct OrderActionConfirmSheet: View {
                     EmptyView()
                 } else if writeAttempted || sharedOutcomeLock {
                     VStack(alignment: .trailing, spacing: 6) {
-                        if let reason = writeAttempted ? mutationLock.1 : unknownOutcomeBlockMessage {
+                        if let reason = writeAttempted ? mutationLock.1 : unknownOutcomeLockMessage(
+                            context: store.unknownOutcomeContext(orderID: orderID), currentStatus: fresh?["status"] as? String) {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
                         Button("Reload Order") { loadFresh(keepUnknownMessage: true) }

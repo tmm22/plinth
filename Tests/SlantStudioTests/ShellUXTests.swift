@@ -709,3 +709,23 @@ func applyClearAccountSession(hadRetry: Bool, accountLoaded: Bool) -> (error: St
 }
 
 func clearedDeliveryDetails(afterSessionClear _: DeliveryDetails?) -> DeliveryDetails? { nil }
+
+final class CancelLockShippedSinceTests: XCTestCase {
+    func testShippedSinceNoteOnlyForACancelSentWhileBeingMade() {
+        let cancel = UnknownOutcomeContext(action: .cancel, reviewedStatus: "PRINTING")
+        XCTAssertEqual(unknownOutcomeLockMessage(context: cancel, currentStatus: "SHIPPED"), unknownOutcomeShippedSinceCancelMessage)
+        XCTAssertEqual(unknownOutcomeLockMessage(context: cancel, currentStatus: "printing"), unknownOutcomeBlockMessage)
+        XCTAssertEqual(unknownOutcomeLockMessage(context: cancel, currentStatus: nil), unknownOutcomeBlockMessage)
+        let pay = UnknownOutcomeContext(action: .pay, reviewedStatus: "DRAFT")
+        XCTAssertEqual(unknownOutcomeLockMessage(context: pay, currentStatus: "SHIPPED"), unknownOutcomeBlockMessage)
+        XCTAssertEqual(unknownOutcomeLockMessage(context: nil, currentStatus: "SHIPPED"), unknownOutcomeBlockMessage)
+        // The note is shown exactly when the reload can't lift the lock.
+        XCTAssertFalse(unknownOutcomeResolvedByReload(context: cancel, reloadedStatus: "SHIPPED"))
+    }
+
+    func testBatchPayLockedMessageNamesTheOrder() {
+        XCTAssertTrue(batchPayLockedMessage(lockedOrderIDs: ["SLANT_1000000000001"]).hasPrefix("Order SLANT_1000000000001’s payment"))
+        XCTAssertTrue(batchPayLockedMessage(lockedOrderIDs: ["SLANT_1000000000002", "SLANT_1000000000001"]).hasPrefix("2 orders’ payment"))
+        XCTAssertTrue(batchPayLockedMessage(lockedOrderIDs: []).hasPrefix("An order’s payment"))
+    }
+}

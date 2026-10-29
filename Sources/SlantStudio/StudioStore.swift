@@ -487,6 +487,20 @@ func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStat
 }
 /// Shared copy when pay/cancel was sent but the order status hasn’t been reloaded yet.
 let unknownOutcomeBlockMessage = "This order’s last payment or cancel request didn’t confirm. Reload the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
+/// A cancel lock kept although the order moved on: it was sent while the order was being made and the order has
+/// shipped since, which doesn't show whether the refund was made (`outcomeResolved`). Reloading can't lift it.
+let unknownOutcomeShippedSinceCancelMessage = "Slant didn’t confirm your cancel and refund request, and the order has shipped since, which doesn’t show whether the refund was made. Check this order in your Slant dashboard. Studio won’t send another cancel or pay for drafts in a batch until you quit and reopen it."
+/// The lock note for an order's review: the shipped-since note when the reload can no longer lift the lock, else
+/// `unknownOutcomeBlockMessage`.
+func unknownOutcomeLockMessage(context: UnknownOutcomeContext?, currentStatus: String?) -> String {
+    guard let context, context.action == .cancel, let currentStatus else { return unknownOutcomeBlockMessage }
+    let reviewed = context.reviewedStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    let current = currentStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    if orderAttentionProductionStatuses.contains(reviewed), orderFulfillmentShippedStatuses.contains(current) {
+        return unknownOutcomeShippedSinceCancelMessage
+    }
+    return unknownOutcomeBlockMessage
+}
 /// Only refresh after connect when this attempt succeeded (never refresh on a failed key change).
 func shouldRefreshAfterConnect(succeeded: Bool) -> Bool { succeeded }
 func extractedWebhookSecret(from object: [String: Any]) -> String? {

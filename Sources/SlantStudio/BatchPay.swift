@@ -277,6 +277,14 @@ func batchPayConfirmTitle(count: Int, total: Decimal) -> String {
 
 let batchPayConfirmMessage = "Each order is charged to the payment method on your Slant account and sent to production, one at a time. Studio checks each one again just before paying it, and stops at the first that changed or wasn’t placed."
 
+/// Why Pay Several Drafts loads nothing while an order's pay/cancel outcome is unknown, naming the order (or how many)
+/// and the way out: a reload that shows the outcome, else the lock lasts the session.
+func batchPayLockedMessage(lockedOrderIDs: [String]) -> String {
+    let ids = lockedOrderIDs.sorted()
+    let which = ids.count == 1 ? "Order \(ids[0])’s" : ids.isEmpty ? "An order’s" : "\(ids.count) orders’"
+    return "\(which) payment or cancel result is unknown, so nothing is loaded for a batch. Reload it in Orders; if Slant can’t show the result, Studio keeps this lock until you quit."
+}
+
 /// Why the Pay button is unavailable, or nil.
 func batchPayPayBlockedReason(payableCount: Int, totalKnown: Bool, busy: Bool, locked: Bool, accountChanged: Bool) -> String? {
     if locked { return "An order’s payment or cancel result is unknown." }
@@ -486,7 +494,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
         guard phase == .choose, !ids.isEmpty, ids.count <= batchPayMaxDrafts else { return }
         guard !store.busy else { message = "Wait for the current task to finish, then try again."; return }
         guard store.unknownOutcomeOrderIDs.isEmpty else {
-            message = "An order’s payment or cancel result is unknown, so nothing is loaded for a batch."
+            message = batchPayLockedMessage(lockedOrderIDs: store.unknownOutcomeOrderGroups.compactMap { $0.sorted().first })
             return
         }
         stopRequested = false
