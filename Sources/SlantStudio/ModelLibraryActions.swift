@@ -88,8 +88,10 @@ func localModel(linkedTo remoteID: String, in models: [LocalModel]) -> LocalMode
     return models.first { $0.remoteID == remoteID }
 }
 
+/// Upload Again… for an uploaded model. Slant keeps one file per owner and name (30 Oct 2026), so an upload under the
+/// same name replaces the earlier file rather than adding a second; the same-name check that follows asks first.
 func reuploadConfirmationMessage(name: String) -> String {
-    "This uploads “\(name)” as a second file in your Slant account. The file already uploaded is not replaced or deleted, and existing orders keep using it. This Mac’s copy will link to the new file."
+    "This uploads “\(name)” to your Slant account again, and this Mac’s copy will link to the upload. Slant keeps one file per name, so Studio checks your Slant files first and asks before replacing a file with the same name."
 }
 
 // MARK: - Prepared material

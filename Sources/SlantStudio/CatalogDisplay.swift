@@ -73,6 +73,22 @@ func catalogPriceText(_ price: Any?, priceUnit: String) -> String {
     return "\(amount.hasPrefix("$") ? String(amount.dropFirst()) : amount) \(code)"
 }
 
+/// A component's or stationery item's `dimensions` as shown: Slant's own text, trimmed, with invisible direction marks
+/// and other format characters removed, and never with a unit added. Live `dimensions` is free text that often names
+/// its own units ("Ø6 x 2 mm", "1 in x 2 in", "12ft x 1.46in x 2.27 in") while `dimensionUnit` says "mm" on every row,
+/// inch rows included (30 Oct 2026), so neither `dimensionUnit` nor "mm" is appended. Nil when blank, or a placeholder
+/// whose numbers are all zero ("0 x 0 x 0").
+func catalogDimensionsText(_ raw: String) -> String? {
+    let visible = String(String.UnicodeScalarView(raw.unicodeScalars.filter { $0.properties.generalCategory != .format }))
+    let text = visible.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return nil }
+    let digits = text.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }
+    if !digits.isEmpty, digits.allSatisfy({ $0.properties.numericType != nil && $0.properties.numericValue == 0 }) {
+        return nil
+    }
+    return text
+}
+
 private func catalogText(_ record: Record, _ key: String) -> String {
     guard let text = record.values[key] as? String else { return "" }
     return text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -80,17 +96,15 @@ private func catalogText(_ record: Record, _ key: String) -> String {
 
 /// Readable facts for a stationery item (Catalog card detail and sheet): price, dimensions, weight, quantity and an
 /// not-available note. The Stationery schema has nullable `price` and `weight` and gives no units, so a unit is shown
-/// only when Slant sends one (`priceUnit`, `dimensionUnit`, `weightUnit`); none is assumed. What `quantity` counts
+/// only when Slant sends one (`priceUnit`, `weightUnit`; dimensions are shown as Slant writes them, `catalogDimensionsText`); none is assumed. What `quantity` counts
 /// isn't documented, so it is shown under Slant's own name. Absent, null or odd-typed values are left out.
 func stationeryFactRows(_ record: Record) -> [(String, String)] {
     var rows: [(String, String)] = []
     if catalogNumberText(record.values["price"]) != nil {
         rows.append(("Price", catalogPriceText(record.values["price"], priceUnit: catalogText(record, "priceUnit"))))
     }
-    let dimensions = catalogText(record, "dimensions")
-    if !dimensions.isEmpty {
-        let unit = catalogText(record, "dimensionUnit")
-        rows.append(("Dimensions", unit.isEmpty ? dimensions : "\(dimensions) \(unit)"))
+    if let dimensions = catalogDimensionsText(record.values["dimensions"] as? String ?? "") {
+        rows.append(("Dimensions", dimensions))
     }
     if let weight = catalogNumberText(record.values["weight"]) {
         let unit = catalogText(record, "weightUnit")

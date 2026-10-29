@@ -94,10 +94,13 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertNil(localModel(linkedTo: "file-1", in: []))
     }
 
-    func testReuploadConfirmationExplainsSecondFile() {
+    func testReuploadConfirmationNamesTheSameNameCheck() {
+        // Slant keeps one file per owner and name, so the old "second file, not replaced" promise was false.
         let message = reuploadConfirmationMessage(name: "Bracket")
-        XCTAssertTrue(message.contains("second file"))
-        XCTAssertTrue(message.contains("not replaced"))
+        XCTAssertTrue(message.contains("“Bracket”"))
+        XCTAssertTrue(message.contains("asks before replacing"))
+        XCTAssertFalse(message.contains("second file"))
+        XCTAssertFalse(message.contains("not replaced"))
     }
 
     // MARK: Prepared material

@@ -64,6 +64,8 @@ struct ModelsView: View {
     @State private var showHiddenFiles = false
     @State private var configurationRequest = 0
     @State private var pendingReuploadID: UUID?
+    /// An upload whose name is already in the seller's Slant files, waiting for Upload as… / Replace File / Cancel.
+    @State private var pendingNameConflict: UploadNameConflict?
     @State private var previewMesh: LoadedPreviewMesh?
     @State private var savingScaledCopy = false
     @State private var savingSTLCopy = false
@@ -131,6 +133,15 @@ struct ModelsView: View {
             Button("Keep Showing", role: .cancel) {}
         } message: { refusal in
             Text(cloudDeleteRefusalMessage(refusal))
+        }
+        // After an upload Slant stored in a file other library models were linked to (StudioStore.uploadModel).
+        .alert(
+            "Slant saved this upload in an existing file",
+            isPresented: Binding(get: { store.uploadLinkMovedMessage != nil }, set: { if !$0 { store.uploadLinkMovedMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(store.uploadLinkMovedMessage ?? "")
         }
         .sheet(item: renamingModel) { model in
             RenameModelSheet(model: model).environmentObject(store)
@@ -583,6 +594,22 @@ struct ModelsView: View {
                  ? unconfirmedReuploadConfirmationMessage(name: name)
                  : reuploadConfirmationMessage(name: name))
         }
+        .confirmationDialog(
+            "This name is already in your Slant files",
+            isPresented: Binding(get: { pendingNameConflict != nil }, set: { if !$0 { pendingNameConflict = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingNameConflict
+        ) { conflict in
+            Button("Upload as “\(conflict.suggested)”") { uploadAfterNameChoice(conflict, as: conflict.suggested) }
+                .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
+            Button("Replace File", role: .destructive) { uploadAfterNameChoice(conflict, as: conflict.name) }
+                .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
+            // Return and Escape cancel: no keyboard shortcut may upload (AGENTS.md), so either upload takes a click.
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: { conflict in
+            Text(slantUploadNameConflictMessage(existing: conflict.existing))
+        }
     }
 
     /// Shown for OBJ and 3MF models in place of the Improve for printing tools, which work on an STL copy.
@@ -916,7 +943,7 @@ struct ModelsView: View {
                         Text(support).font(.callout).foregroundStyle(.secondary)
                     }
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text("Analysing… Metrics appear once Slant finishes processing.")
+                        Text(metricsPendingCaption(createdAt: cloudFileDate(file, "createdAt"), now: Date()))
                             .font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
@@ -1076,24 +1103,51 @@ struct ModelsView: View {
     private func startUpload() {
         guard let model = store.selectedLocal else { return }
         let modelID = model.id
+        let name = model.name
         uploadFocusID = modelID
         uploadConfirmedIDs.remove(modelID)
         uploadFailedIDs.remove(modelID)
         Task {
-            let ran = await store.uploadModel(id: modelID)
-            guard ran else {
+            // Slant keeps one file per owner and name, so the whole file list is read first (read-only). Nothing is
+            // uploaded when it can't be read; a listed name asks before anything is sent.
+            guard let check = await store.checkUploadName(name) else {
                 if uploadFocusID == modelID { uploadFocusID = nil }
                 return
             }
-            if store.localModels.first(where: { $0.id == modelID })?.remoteID != nil {
-                uploadConfirmedIDs.insert(modelID)
-                uploadFailedIDs.remove(modelID)
-            } else {
-                uploadFailedIDs.insert(modelID)
-                uploadConfirmedIDs.remove(modelID)
+            switch check {
+            case .clear:
+                await upload(modelID, as: name)
+            case .conflict(let existing, let suggested):
+                if uploadFocusID == modelID { uploadFocusID = nil }
+                pendingNameConflict = UploadNameConflict(modelID: modelID, name: name, existing: existing, suggested: suggested)
             }
-            if uploadFocusID == modelID { uploadFocusID = nil }
         }
+    }
+
+    /// After the same-name choice: uploads under the suggested name or, for Replace File, the model's own name.
+    private func uploadAfterNameChoice(_ conflict: UploadNameConflict, as name: String) {
+        guard let modelID = conflict.modelID, store.localModels.contains(where: { $0.id == modelID }) else { return }
+        uploadFocusID = modelID
+        Task { await upload(modelID, as: name) }
+    }
+
+    private func upload(_ modelID: UUID, as name: String) async {
+        uploadFocusID = modelID
+        let ran = await store.uploadModel(id: modelID, as: name)
+        guard ran else {
+            if uploadFocusID == modelID { uploadFocusID = nil }
+            return
+        }
+        if store.localModels.first(where: { $0.id == modelID })?.remoteID != nil {
+            uploadConfirmedIDs.insert(modelID)
+            uploadFailedIDs.remove(modelID)
+        } else {
+            uploadFailedIDs.insert(modelID)
+            uploadConfirmedIDs.remove(modelID)
+        }
+        // A model whose link moved to this upload (Slant reused its file) is no longer confirmed as uploaded.
+        uploadConfirmedIDs = uploadConfirmedIDs.filter { id in store.localModels.first { $0.id == id }?.remoteID != nil }
+        if uploadFocusID == modelID { uploadFocusID = nil }
     }
 
     private func saveScaledCopy(_ model: LocalModel, mesh: STLMesh, factor: Double, fileDetails: ModelSourceDetails) {
@@ -1163,12 +1217,24 @@ struct ModelsView: View {
     }
 }
 
+/// An upload held back because its name is already in the seller's Slant files (`SlantUploadNameCheck.conflict`).
+struct UploadNameConflict: Equatable {
+    /// The library model to upload (Models), or nil for Upload from URL.
+    var modelID: UUID?
+    /// The name the seller asked for; Replace File uploads under it.
+    var name: String
+    /// The listed Slant file's name.
+    var existing: String
+    /// The next free "Name N"; Upload as… uses it.
+    var suggested: String
+}
+
 /// The next-action bar after an upload whose confirm wasn't answered clearly.
 let uploadUnconfirmedStatusText = uploadUnconfirmedMessage
 
 /// Upload Again… after an unconfirmed upload: a second upload may duplicate a file Studio can't remove from Slant.
 func unconfirmedReuploadConfirmationMessage(name: String) -> String {
-    "Slant may already have “\(name)” from the upload it didn’t confirm. Uploading again could add a second file, and Studio can’t remove files from Slant. Refresh first to check your Slant files."
+    "Slant may already have “\(name)” from the upload it didn’t confirm. Refresh first to check your Slant files. If a file with this name is there, Studio asks before an upload replaces it."
 }
 
 func printQuantity(_ text: String) -> Int? {
@@ -1319,6 +1385,7 @@ struct ImportFromURLSheet: View {
     @State private var url = ""
     @State private var name = ""
     @State private var validation: String?
+    @State private var pendingNameConflict: UploadNameConflict?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1354,6 +1421,25 @@ struct ImportFromURLSheet: View {
             .padding(20)
         }
         .frame(width: 480, height: validation == nil ? 350 : 420)
+        .confirmationDialog(
+            "This name is already in your Slant files",
+            isPresented: Binding(get: { pendingNameConflict != nil }, set: { if !$0 { pendingNameConflict = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingNameConflict
+        ) { conflict in
+            Button("Upload as “\(conflict.suggested)”") {
+                name = conflict.suggested
+                Task { await send(url, name: conflict.suggested) }
+            }
+            .disabled(store.busy || !store.hasKey)
+            Button("Replace File", role: .destructive) { Task { await send(url, name: conflict.name) } }
+                .disabled(store.busy || !store.hasKey)
+            // Return and Escape cancel: no keyboard shortcut may upload (AGENTS.md), so either upload takes a click.
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: { conflict in
+            Text(slantUploadNameConflictMessage(existing: conflict.existing))
+        }
     }
 
     private func importModel() {
@@ -1361,14 +1447,35 @@ struct ImportFromURLSheet: View {
             validation = problem
             return
         }
+        guard !store.platformID.isEmpty else {
+            validation = "Choose a default platform in Settings › Account."
+            return
+        }
         validation = nil
+        let link = url
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
-            if await store.importModelFromURL(url, name: name) {
-                dismiss()
-            } else if let message = takeStoreErrorForSettings(store) {
-                // Never retried. The window's alert would wait behind this sheet, so the reason is shown here instead.
-                validation = message
+            // Slant keeps one file per owner and name: read the whole file list first (read-only). Nothing is sent when
+            // it can't be read, and a listed name asks before anything is sent.
+            guard let check = await store.checkUploadName(trimmedName) else {
+                if let message = takeStoreErrorForSettings(store) { validation = message }
+                return
             }
+            switch check {
+            case .clear:
+                await send(link, name: trimmedName)
+            case .conflict(let existing, let suggested):
+                pendingNameConflict = UploadNameConflict(modelID: nil, name: trimmedName, existing: existing, suggested: suggested)
+            }
+        }
+    }
+
+    private func send(_ link: String, name: String) async {
+        if await store.importModelFromURL(link, name: name) {
+            dismiss()
+        } else if let message = takeStoreErrorForSettings(store) {
+            // Never retried. The window's alert would wait behind this sheet, so the reason is shown here instead.
+            validation = message
         }
     }
 }
@@ -1521,7 +1628,10 @@ func metricUnit(_ key: String, _ metrics: [String: Any]) -> String {
     if key == "weight" {
         if let unit = metrics["weightUnit"] as? String, !unit.isEmpty { return displayUnit(unit) }
     }
-    if let unit = (metrics["units"] as? [String: String])?[key], !unit.trimmingCharacters(in: .whitespaces).isEmpty {
+    // Live `metrics.units` names one `dimensions` unit for x, y and z (30 Oct 2026); a null unit is skipped.
+    let units = metrics["units"] as? [String: Any]
+    let named = (units?[key] as? String) ?? (["x", "y", "z"].contains(key) ? units?["dimensions"] as? String : nil)
+    if let unit = named, !unit.trimmingCharacters(in: .whitespaces).isEmpty {
         return displayUnit(unit)
     }
     return ["x": "mm", "y": "mm", "z": "mm", "weight": "g", "volume": "cm³", "printTimeEstimate": "min",
@@ -1594,12 +1704,7 @@ func slantProductionNotes(_ record: Record) -> String? {
 /// Upload and last-update dates from the File schema's `createdAt` / `updatedAt`, when they parse.
 /// The update is listed only when it differs from the upload.
 func cloudFileDateRows(_ record: Record, formatter: (Date) -> String = { $0.formatted(date: .abbreviated, time: .shortened) }) -> [(String, String)] {
-    func parse(_ key: String) -> Date? {
-        guard let text = record.values[key] as? String else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
-    }
+    func parse(_ key: String) -> Date? { cloudFileDate(record, key) }
     var rows: [(String, String)] = []
     let created = parse("createdAt")
     if let created { rows.append(("Uploaded", formatter(created))) }
@@ -1607,6 +1712,30 @@ func cloudFileDateRows(_ record: Record, formatter: (Date) -> String = { $0.form
         rows.append(("Updated", formatter(updated)))
     }
     return rows
+}
+
+/// A File record's ISO 8601 date (`createdAt`, `updatedAt`), with or without fractional seconds; nil otherwise.
+func cloudFileDate(_ record: Record, _ key: String) -> Date? {
+    guard let text = record.values[key] as? String else { return nil }
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+}
+
+/// How long after upload a file with no metrics stops reading as "still analysing" (a judgement: fresh uploads are
+/// measured within minutes).
+let metricsPendingStaleAfter: TimeInterval = 3600
+
+/// Model analysis's line while Slant reports no metrics. Slant's docs say every value reads null until the file has been
+/// analysed, so a fresh upload (or one with no readable upload date) is "Analysing…"; after an hour it says plainly that
+/// Slant hasn't measured it and what the seller can do. Copy only: Check Again stays one read per press, nothing polls,
+/// and nothing is claimed about why or about estimates.
+func metricsPendingCaption(createdAt: Date?, now: Date,
+                           formatter: (Date) -> String = { $0.formatted(date: .abbreviated, time: .omitted) }) -> String {
+    guard let createdAt, now.timeIntervalSince(createdAt) > metricsPendingStaleAfter else {
+        return "Analysing… Metrics appear once Slant finishes processing."
+    }
+    return "Slant hasn’t measured this model since it was uploaded on \(formatter(createdAt)). Check Again asks once more; if it stays unmeasured, try uploading the model again."
 }
 
 /// True until Slant reports a measured metric; `supportRequired` alone can be decided at upload.
@@ -1665,10 +1794,9 @@ func componentFactRows(_ record: Record) -> [(String, String)] {
     if metricDisplayValue(record.values["price"]) != nil {
         rows.append(("Price", catalogPriceText(record.values["price"], priceUnit: record.string("priceUnit"))))
     }
-    let dimensions = record.string("dimensions")
-    if !dimensions.isEmpty {
-        let unit = record.string("dimensionUnit")
-        rows.append(("Dimensions", unit.isEmpty ? dimensions : "\(dimensions) \(unit)"))
+    // Slant's free text as written: it carries its own units, and `dimensionUnit` ("mm" on every live row) doesn't.
+    if let dimensions = catalogDimensionsText(record.string("dimensions")) {
+        rows.append(("Dimensions", dimensions))
     }
     let weight = record.string("weight")
     // The Component schema sends `weight` as a number with a separate `weightUnit` ("g").
@@ -2002,7 +2130,7 @@ struct CatalogView: View {
             return [record.string("profile"), catalogColourDisplay(record.string("color"))]
                 .filter { !$0.isEmpty }.joined(separator: " · ")
         case .components:
-            return category ?? record.string("dimensions").nilIfEmpty.map { "\($0) mm" } ?? "Component"
+            return category ?? catalogDimensionsText(record.string("dimensions")) ?? "Component"
         case .stationery:
             return stationeryCardSubtitle(record)
         default:

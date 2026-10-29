@@ -210,7 +210,7 @@ final class ModelsUXTests: XCTestCase {
         ])
         let rows = Dictionary(uniqueKeysWithValues: componentFactRows(record))
         XCTAssertEqual(rows["Price"], "$4.50 / each")
-        XCTAssertEqual(rows["Dimensions"], "10x20x5 mm")
+        XCTAssertEqual(rows["Dimensions"], "10x20x5", "never with dimensionUnit added: live sends \"mm\" on inch rows too")
         XCTAssertEqual(rows["Weight"], "12g")
         XCTAssertEqual(rows["Tags"], "hinge, metal")
         XCTAssertEqual(componentCategoryLabel(record), "Hardware")

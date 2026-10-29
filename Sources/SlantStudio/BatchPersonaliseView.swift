@@ -47,7 +47,7 @@ func batchPersonaliseLoadTemplate(path: String) -> BatchPersonaliseTemplateState
 
 let batchPersonaliseNoOpenSCADNote = "OpenSCAD isn’t installed in Applications, so these orders use the plain model. Install it from openscad.org, then press Check Again to make each buyer’s model here. Slant’s generator allows only 5 models an hour, so Import Orders doesn’t use it."
 
-let batchPersonaliseSectionNote = "Choose which part of each buyer’s personalisation goes into the product’s template. When you create the drafts, Studio makes each buyer’s model with OpenSCAD on this Mac, checks it, uploads it to your Slant files named by its Etsy or Shopify order number, or “Personalised model” (never the buyer’s text or name) and uses it in their draft. The models aren’t added to your library, and these choices aren’t saved."
+let batchPersonaliseSectionNote = "Choose which part of each buyer’s personalisation goes into the product’s template. When you create the drafts, Studio makes each buyer’s model with OpenSCAD on this Mac, checks it, uploads it to your Slant files named by its Etsy or Shopify order number, or “Personalised model”, with a short random code so no two uploads share a name (never the buyer’s text or name), and uses it in their draft. The models aren’t added to your library, and these choices aren’t saved."
 
 /// Import Orders' Personalise with OpenSCAD disclosure label: how many of the products with a template are set to be
 /// personalised (`undecided` are still on Don't Personalise), or that OpenSCAD isn't installed.

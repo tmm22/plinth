@@ -373,7 +373,7 @@ func batchPersonaliseDraftLines(_ base: [OrderLine], models: [BatchPersonaliseMo
 /// The name a personalised model is uploaded under: never the buyer's text or name. The marketplace order number is
 /// included only in the forms those marketplaces use — Etsy's plain digits, Shopify's "#1234" — so nothing with
 /// letters (which could spell a name) goes into the file name. Studio's template takes any order ID the seller typed,
-/// so its uploads always get the neutral name.
+/// so its uploads always get the neutral name. The upload itself adds a random token (`batchPersonaliseUniqueUploadName`).
 func batchPersonaliseUploadName(source: OrderImportFormat, sourceOrderID: String, index: Int, count: Int) -> String {
     let id = sourceOrderID.trimmingCharacters(in: .whitespacesAndNewlines)
     let pattern: String?
@@ -385,6 +385,32 @@ func batchPersonaliseUploadName(source: OrderImportFormat, sourceOrderID: String
     let usesNumber = pattern.map { id.range(of: $0, options: .regularExpression) != nil } ?? false
     let base = usesNumber ? "\(source.marketplace) order \(id) personalised" : "Personalised model"
     return count > 1 ? "\(base) \(index + 1) of \(count)" : base
+}
+
+/// Short random tokens for personalised upload names, never repeated in a session. Slant keeps one file per owner and
+/// name (an upload under an earlier name reused that file, 30 Oct 2026), so two orders sharing "Personalised model", or
+/// a re-imported order, would otherwise write over each other's models and every such draft would print the last one.
+final class BatchPersonaliseUploadTokens: @unchecked Sendable {
+    static let shared = BatchPersonaliseUploadTokens()
+    private let lock = NSLock()
+    private var used: Set<String> = []
+
+    /// Six lower-case hex characters from a fresh UUID, unused this session.
+    func next() -> String {
+        lock.lock(); defer { lock.unlock() }
+        while true {
+            let token = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(6)).lowercased()
+            if used.insert(token).inserted { return token }
+        }
+    }
+}
+
+/// The name actually sent for a personalised upload: Studio's neutral name and a fresh token, made at send time so no
+/// two uploads (in a batch, the session, or an order imported again) share a name ("Etsy order 123 personalised 1 of 2
+/// · 7f3a9c"). The token is random, never derived from the buyer's text or the order.
+func batchPersonaliseUniqueUploadName(_ name: String, token: String = BatchPersonaliseUploadTokens.shared.next()) -> String {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return "\(trimmed.isEmpty ? "Personalised model" : trimmed) · \(token)"
 }
 
 // MARK: Outcomes
@@ -399,10 +425,13 @@ enum BatchPersonaliseUploadOutcome: Equatable {
 
 let batchPersonaliseUnknownUploadAdvice = "Its draft wasn’t created. The model may be in your Slant files."
 
-/// A confirmed upload must name its file (`publicFileServiceId`, `publicId` or `id`; never just a name).
+/// A confirmed upload must name its file through `uploadedFileID` (a non-empty string `publicFileServiceId`,
+/// `publicId` or `id`; never a name or a bare number), the same rule as Models' upload.
 func batchPersonaliseUploadOutcome(response object: [String: Any]) -> BatchPersonaliseUploadOutcome {
-    let id = Record(values: object).string("publicFileServiceId", "publicId", "id").trimmingCharacters(in: .whitespacesAndNewlines)
-    return id.isEmpty ? .unknown("Slant didn’t return the personalised model’s file ID. \(batchPersonaliseUnknownUploadAdvice)") : .uploaded(fileID: id)
+    guard let id = uploadedFileID(object) else {
+        return .unknown("Slant didn’t return the personalised model’s file ID. \(batchPersonaliseUnknownUploadAdvice)")
+    }
+    return .uploaded(fileID: id)
 }
 
 /// Refused only when the error proves Slant didn't act; timeouts, transport errors, 5xx, 408, 409 and replies Studio
@@ -547,7 +576,8 @@ func batchPersonaliseMakeAndUpload(_ job: BatchPersonaliseJob, client: APIClient
         if let reason = await hooks.pace() { return .stopped(reason) }
         if let reason = hooks.accountProblem() { return .stopped(reason) }
         hooks.status(count == 1 ? "Uploading the personalised model…" : "Uploading personalised model \(index + 1) of \(count)…")
-        let name = index < job.uploadNames.count ? job.uploadNames[index] : "Personalised model"
+        // A fresh token per upload, so this upload never reuses (and writes over) another file of the same name.
+        let name = batchPersonaliseUniqueUploadName(index < job.uploadNames.count ? job.uploadNames[index] : "Personalised model")
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(personalisationTempFolderPrefixes[1])\(UUID().uuidString)")
         let file = folder.appendingPathComponent("model.stl")
