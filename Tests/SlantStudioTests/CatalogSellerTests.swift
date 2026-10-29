@@ -42,7 +42,7 @@ final class CatalogSellerTests: XCTestCase {
         let withUnits = Record(values: ["dimensions": "4 x 6", "dimensionUnit": "in", "weight": 12, "weightUnit": "g",
                                         "price": "1.5", "priceUnit": "USD"])
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: stationeryFactRows(withUnits)),
-                       ["Dimensions": "4 x 6 in", "Weight": "12 g", "Price": "$1.50"])
+                       ["Dimensions": "4 x 6", "Weight": "12 g", "Price": "$1.50"], "Slant's dimensions text is shown as written, never with dimensionUnit added")
     }
 
     func testStationeryFactRowsTolerateNullsAndOddTypes() {
