@@ -105,6 +105,11 @@ final class OrderWatchRound5Tests: XCTestCase {
         XCTAssertTrue(orderWatchFetchedOrderFitsPlatform(["customer": ["platformId": "P1"]], platformID: " P1 "))
         XCTAssertFalse(orderWatchFetchedOrderFitsPlatform(["platformId": "P2"], platformID: "P1"))
         XCTAssertFalse(orderWatchFetchedOrderFitsPlatform(["platformId": "P2", "customer": ["platformId": "P3"]], platformID: "P1"))
+        // The only shape live Slant sends (every order seen, 29 Oct 2026): the platform in `customer.platformId`
+        // alone. This check is what scopes Show and notification-click reads, since Slant doesn't filter them.
+        XCTAssertFalse(orderWatchFetchedOrderFitsPlatform(["customer": ["platformId": "P2"]], platformID: "P1"))
+        XCTAssertFalse(orderWatchFetchedOrderFitsPlatform(["customer": ["platformId": "P2", "details": ["email": "a@example.com"]]],
+                                                          platformID: "P1"))
         XCTAssertTrue(orderWatchFetchedOrderFitsPlatform(["publicId": "X"], platformID: "P1"))
         XCTAssertTrue(orderWatchFetchedOrderFitsPlatform(["platformId": NSNull(), "customer": "odd"], platformID: "P1"))
         XCTAssertTrue(orderWatchFetchedOrderFitsPlatform(["platformId": "P2"], platformID: ""))

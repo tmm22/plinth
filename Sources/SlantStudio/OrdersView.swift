@@ -782,13 +782,12 @@ struct OrderComposerView: View {
         let prefill = store.pendingOrderPrefill
         store.pendingOrderPrefill = nil
         if let prefill {
-            // Keep the source order's platform unless the loaded list shows it is no longer available; say so if it isn't.
+            // Keep the source order's platform only when the loaded platform list has it; say so if it isn't used.
             if let platform = prefill.platformID {
-                if store.platforms.isEmpty || store.platforms.contains(where: { $0.id == platform }) {
-                    draftPlatformID = platform
-                } else {
-                    platformNotCopied = platform != draftPlatformID
-                }
+                let seed = orderComposerPlatformSeed(copied: platform, current: draftPlatformID,
+                                                     loadedPlatformIDs: store.platforms.map(\.id))
+                draftPlatformID = seed.platformID
+                platformNotCopied = seed.notCopied
             }
             sourceOrderNumber = prefill.sourceOrderNumber
             skippedItems = prefill.skippedItems
@@ -1077,12 +1076,22 @@ struct OrdersView: View {
     var needsAttentionBinding: Binding<Bool> {
         Binding(get: { needsAttentionOnly }, set: { needsAttentionOnly = $0; watchFocus = nil })
     }
-    var listRecords: [Record] {
-        if let focused = orderWatchFocusedRecords(store.orders, focus: watchFocus) { return focused }
-        if store.orderSearchActive { return orderAttentionFiltered(store.orders, enabled: needsAttentionOnly, now: Date()) }
+    /// The list's rows: the default platform's loaded orders (`store.ordersOnDefaultPlatform`; Slant's list may
+    /// hold other platforms'), then Show's focus, the typed search and Needs Attention. Display only: `selected` and every
+    /// duplicate, lock and charge check read the raw `store.orders`.
+    var listRecords: [Record] { listRecords(from: store.ordersOnDefaultPlatform) }
+    func listRecords(from orders: [Record]) -> [Record] {
+        if let focused = orderWatchFocusedRecords(orders, focus: watchFocus) { return focused }
+        if store.orderSearchActive { return orderAttentionFiltered(orders, enabled: needsAttentionOnly, now: Date()) }
         let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
-        return orderAttentionFiltered(store.orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) },
+        return orderAttentionFiltered(orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) },
                                       enabled: needsAttentionOnly, now: Date())
+    }
+    /// Loaded orders left out of the list because they name another platform.
+    var otherPlatformsHiddenCount: Int { store.orders.count - store.ordersOnDefaultPlatform.count }
+    /// The list is empty only because of the platform: the same filters over every loaded order would show some.
+    var listEmptyOnlyForPlatform: Bool {
+        otherPlatformsHiddenCount > 0 && listRecords.isEmpty && !listRecords(from: store.orders).isEmpty
     }
     var tableRows: [OrderTableRow] {
         orderTableRowsSorted(listRecords.map { OrderTableRow(record: $0) }, using: sortOrder)
@@ -1097,7 +1106,7 @@ struct OrdersView: View {
         return filter
     }
     var draftFilterValidation: String? { orderFilterValidationError(draftFilterPreview) }
-    var showsArriveByColumn: Bool { store.orders.contains { orderArriveByDate(orderObject($0.values)) != nil } }
+    var showsArriveByColumn: Bool { store.ordersOnDefaultPlatform.contains { orderArriveByDate(orderObject($0.values)) != nil } }
     func syncArriveByColumn() {
         columnCustomization[visibility: orderArriveByColumnID] = showsArriveByColumn ? .visible : .hidden
     }
@@ -1110,7 +1119,7 @@ struct OrdersView: View {
         HSplitView {
             VStack(spacing: 0) {
                 OrderWatchBanner { ids in showWatchedChanges(ids) }
-                if let focused = orderWatchFocusedRecords(store.orders, focus: watchFocus) {
+                if let focused = orderWatchFocusedRecords(store.ordersOnDefaultPlatform, focus: watchFocus) {
                     OrderWatchFocusBar(count: focused.count) { watchFocus = nil }
                 }
                 Table(tableRows, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columnCustomization) {
@@ -1175,9 +1184,18 @@ struct OrdersView: View {
                         .padding(.top, 6)
                 }
                 // Slant's Status filter uses its order status, which can lag its shipping record (OrderFollowUp.swift).
-                if !store.orderSearchActive, !store.orders.isEmpty,
-                   let hint = orderStatusFilterLagHintText(status: store.orderFilter.status, loaded: store.orders) {
+                if !store.orderSearchActive, !store.ordersOnDefaultPlatform.isEmpty,
+                   let hint = orderStatusFilterLagHintText(status: store.orderFilter.status, loaded: store.ordersOnDefaultPlatform) {
                     Text(hint)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                }
+                // Slant's list may hold other platforms' orders; those naming another platform aren't listed.
+                if !tableRows.isEmpty, let hidden = orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount) {
+                    Text(hidden)
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1418,7 +1436,8 @@ struct OrdersView: View {
             needsAttentionOnly = false
             search = ""
             sortOrder = orderTableDefaultSort(serverSortOrder: store.orderFilter.sortOrder)
-            let present = Set(ids.filter { id in store.orders.contains { $0.id == id } })
+            let shown = store.ordersOnDefaultPlatform
+            let present = Set(ids.filter { id in shown.contains { $0.id == id } })
             // Only the changes now listed count as seen; one that couldn't be read stays in the banner.
             OrderWatch.shared.acknowledge(ids: present)
             watchFocus = present.isEmpty ? nil : present
@@ -1600,7 +1619,10 @@ struct OrdersView: View {
     @ViewBuilder
     var filteredEmptyView: some View {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        if needsAttentionOnly {
+        if listEmptyOnlyForPlatform {
+            // Never blames the search or the dates: these orders match, but are on another platform.
+            otherPlatformsEmptyView
+        } else if needsAttentionOnly {
             ContentUnavailableView {
                 Label("Nothing needs attention", systemImage: "checkmark.circle")
             } description: {
@@ -1624,7 +1646,8 @@ struct OrdersView: View {
                 Label(moreOnServer ? "None on the pages loaded so far" : "No matching orders",
                       systemImage: "line.3.horizontal.decrease.circle")
             } description: {
-                Text(orderFilterEmptyDetail(store.orderFilter, search: query, moreOnServer: moreOnServer))
+                Text([orderFilterEmptyDetail(store.orderFilter, search: query, moreOnServer: moreOnServer),
+                      orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount)].compactMap { $0 }.joined(separator: " "))
             } actions: {
                 if store.orderFilter.isActive {
                     Button("Show All Orders") {
@@ -1633,6 +1656,17 @@ struct OrdersView: View {
                     .disabled(store.busy)
                 }
             }
+        }
+    }
+
+    /// Every loaded order that would be listed names another platform.
+    var otherPlatformsEmptyView: some View {
+        ContentUnavailableView {
+            Label("No orders on your default platform", systemImage: "storefront")
+        } description: {
+            Text(orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount) ?? "")
+        } actions: {
+            Button("Choose Platform…") { store.requestSettings(.account) }
         }
     }
 
@@ -1650,6 +1684,8 @@ struct OrdersView: View {
                 Button("New Order Draft…") { store.openOrderComposer() }
                     .disabled(store.orderDraftBlockedReason != nil || store.busy)
             }
+        } else if listRecords.isEmpty, otherPlatformsHiddenCount > 0 {
+            otherPlatformsEmptyView
         }
     }
 
@@ -2899,7 +2935,9 @@ func orderComposerPrefill(reordering order: Record) -> OrderComposerPrefill {
     let values = orderObject(order.values)
     let mapped = orderLinesForReorder(order)
     let provider = reorderText((values["options"] as? [String: Any])?["shippingProvider"]).uppercased()
-    let platform = reorderText(values["platformId"])
+    // Slant names an order's platform in `customer.platformId` (every order seen, 29 Oct 2026); a top-level
+    // `platformId` is read too, for other replies.
+    let platform = orderNamedPlatformID(values) ?? ""
     let number = orderNumber(values)
     return OrderComposerPrefill(
         lines: mapped.lines,
@@ -2909,6 +2947,13 @@ func orderComposerPrefill(reordering order: Record) -> OrderComposerPrefill {
         shippingProvider: orderShippingProviderChoices.contains { !$0.code.isEmpty && $0.code == provider } ? provider : "",
         platformID: platform.isEmpty ? nil : platform
     )
+}
+
+/// Duplicate as New Draft's platform: the source order's when the loaded platform list (Slant lists only enabled
+/// platforms) has it; otherwise the composer keeps `current`, and `notCopied` says so when they differ.
+func orderComposerPlatformSeed(copied: String, current: String, loadedPlatformIDs: [String]) -> (platformID: String, notCopied: Bool) {
+    if loadedPlatformIDs.contains(copied) { return (copied, false) }
+    return (current, copied != current)
 }
 
 /// Lines the composer opens with: prefilled lines, a blank line for a duplicate with nothing copyable (never an

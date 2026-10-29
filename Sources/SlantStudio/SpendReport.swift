@@ -329,9 +329,17 @@ func spendReportProductSKUs(_ products: [SavedProduct], localModels: [LocalModel
 /// Added to the scope note when the Orders list is filtered to Shipped.
 let spendReportShippedFilterLagNote = "Orders Slant still lists as Printing or Submitted aren’t included, even if Studio shows them as Shipped."
 
+/// Orders left out because they name another platform (Slant's list may hold other platforms' orders; `ordersShownOnPlatform`).
+func spendReportOtherPlatformsNote(_ count: Int) -> String? {
+    guard count > 0 else { return nil }
+    return count == 1 ? "1 order on another platform isn’t included." : "\(count.formatted()) orders on other platforms aren’t included."
+}
+
 /// What the loaded list covers, so a partial or filtered list isn't read as the whole account.
-func spendReportScopeNotes(searchActive: Bool, statusFilter: String?, hasDateRange: Bool, moreOnServer: Bool) -> [String] {
+func spendReportScopeNotes(searchActive: Bool, statusFilter: String?, hasDateRange: Bool, moreOnServer: Bool,
+                           otherPlatformOrders: Int = 0) -> [String] {
     var notes: [String] = []
+    if let platforms = spendReportOtherPlatformsNote(otherPlatformOrders) { notes.append(platforms) }
     if searchActive { notes.append("The Orders list shows search results, so only those orders are included. Clear the search to include the rest.") }
     if let statusFilter, !statusFilter.isEmpty {
         var note = "The Orders list is filtered to \(orderStatusTitle(statusFilter)) orders, so only those are included."
@@ -532,14 +540,26 @@ extension StudioStore {
     var spendReportNotes: [String] {
         spendReportScopeNotes(searchActive: orderSearchActive, statusFilter: orderFilter.status,
                               hasDateRange: orderFilter.startDate != nil || orderFilter.endDate != nil,
-                              moreOnServer: ordersHasMore && !orderSearchActive)
+                              moreOnServer: ordersHasMore && !orderSearchActive,
+                              otherPlatformOrders: spendReportOtherPlatformCount(orders))
     }
 
     var currentSpendReport: SpendReport { spendReport(for: orders) }
 
+    /// Both modes (the loaded list and Load the Whole Period) come through here. Slant's list may hold other
+    /// platforms' orders, so only those on the default platform are summed (`ordersShownOnPlatform`; orders naming no
+    /// platform are kept).
+    /// Unlike the Orders list, an order under the pay/cancel lock on another platform isn't kept: it isn't this
+    /// platform's spend.
     func spendReport(for records: [Record]) -> SpendReport {
-        SlantStudio.spendReport(orders: records, modelNames: orderItemModelNames(localModels: localModels, files: files),
-                    productSKUs: spendReportProductSKUs(savedProducts, localModels: localModels))
+        SlantStudio.spendReport(orders: ordersShownOnPlatform(records, platformID: platformID),
+                                modelNames: orderItemModelNames(localModels: localModels, files: files),
+                                productSKUs: spendReportProductSKUs(savedProducts, localModels: localModels))
+    }
+
+    /// How many of `records` the report leaves out for naming another platform.
+    func spendReportOtherPlatformCount(_ records: [Record]) -> Int {
+        records.count - ordersShownOnPlatform(records, platformID: platformID).count
     }
 }
 
@@ -599,7 +619,8 @@ let spendReportPeriodMaxPages = 50
 /// `GET /orders` query for one page of the period. Slant reads `startDate`/`endDate` as dates without saying in which
 /// time zone, and `endDate` is exclusive, so the request asks for a day either side and `spendReportPeriodOrders`
 /// keeps only the orders created inside the period on the Mac's calendar. Oldest first, so orders created while the
-/// pages load are added at the end and never shift a page already read.
+/// pages load are added at the end and never shift a page already read. `platformId` is sent, but Slant didn't filter
+/// by it in Studio's tests, so paging follows Slant's raw pages and `StudioStore.spendReport(for:)` scopes the rows.
 func spendReportPeriodQuery(_ interval: SpendReportInterval, page: Int, platformID: String,
                             calendar: Calendar = .current) -> [String: String] {
     let before = calendar.date(byAdding: .day, value: -1, to: interval.start) ?? interval.start
@@ -690,11 +711,15 @@ func spendReportPeriodSource(_ interval: SpendReportInterval, calendar: Calendar
 }
 
 /// Notes for a report built from a loaded period: platform scope and, when it isn't complete, how far it reaches.
+/// Slant's list didn't filter by platform in Studio's tests, so the scope is Studio's own (`StudioStore.spendReport(for:)`).
 func spendReportPeriodNotes(platformName: String?, complete: Bool, capReached: Bool, loadedCount: Int,
-                            lastCreated: Date?, calendar: Calendar = .current) -> [String] {
+                            lastCreated: Date?, otherPlatformOrders: Int = 0, calendar: Calendar = .current) -> [String] {
     var notes: [String] = []
+    let leftOut = spendReportOtherPlatformsNote(otherPlatformOrders)
     if let platformName, !platformName.isEmpty {
-        notes.append("Only orders on the platform “\(platformName)” are included, like the Orders list.")
+        notes.append((["Only orders on the platform “\(platformName)” are included."] + [leftOut].compactMap { $0 }).joined(separator: " "))
+    } else if let leftOut {
+        notes.append(leftOut)
     }
     if !complete {
         let reach = lastCreated.map { date -> String in
@@ -900,7 +925,8 @@ struct SpendingReportSheet: View {
         let report = loaded.map { store.spendReport(for: $0.records) } ?? store.currentSpendReport
         let notes = loaded.map {
             spendReportPeriodNotes(platformName: platformName($0.platformID), complete: $0.complete, capReached: $0.capReached,
-                                   loadedCount: $0.records.count, lastCreated: $0.lastCreated)
+                                   loadedCount: $0.records.count, lastCreated: $0.lastCreated,
+                                   otherPlatformOrders: store.spendReportOtherPlatformCount($0.records))
         } ?? store.spendReportNotes
         let source = loaded.map { spendReportPeriodSource($0.interval) } ?? spendReportLoadedListSource
         VStack(alignment: .leading, spacing: 0) {

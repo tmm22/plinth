@@ -136,6 +136,31 @@ final class OrderDetailExtrasTests: XCTestCase {
         XCTAssertEqual(otherCountry, ["country"])
     }
 
+    /// Live Slant nests the label address like the order's own details: `fulfillment.address` is
+    /// `{email, address: {name, line1, line2, city, state, zip, country}}` (invented values here).
+    func testNestedLiveLabelAddressIsCompared() {
+        func nested(_ address: [String: Any]) -> [String: Any] { ["email": "label@example.com", "address": address] }
+        let same: [String: Any] = ["name": "Ada", "line1": "123 MAIN ST", "line2": "", "city": "SPRINGFIELD", "state": "IL",
+                                   "zip": "62704", "country": "US"]
+        XCTAssertNil(orderLabelAddressAdvisory(order(shipping: shipping, label: nested(same))))
+        var otherCity = same; otherCity["city"] = "Shelbyville"
+        let advisory = orderLabelAddressAdvisory(order(shipping: shipping, label: nested(otherCity)))
+        XCTAssertEqual(advisory?.differences, ["city"])
+        XCTAssertEqual(advisory?.line, "The shipping label was made for: 123 MAIN ST, Shelbyville, IL, 62704, US. Check with Slant if this is wrong.")
+        // The label's email and name are never shown.
+        XCTAssertFalse(advisory?.line.contains("label@example.com") ?? true)
+        XCTAssertFalse(advisory?.line.contains("Ada") ?? true)
+        // A nested object without comparable parts shows nothing.
+        XCTAssertNil(orderLabelAddressAdvisory(order(shipping: shipping, label: nested(["name": "Ada"]))))
+        XCTAssertNil(orderLabelAddressAdvisory(order(shipping: shipping, label: ["email": "label@example.com", "address": NSNull()])))
+    }
+
+    func testProblemReportCaptionNamesSlantSupportAsTextOnly() {
+        XCTAssertTrue(orderProblemReportCaption.contains("support@slant3d.com"))
+        XCTAssertFalse(orderProblemReportCaption.contains("mailto:"))
+        XCTAssertTrue(orderProblemReportCaption.contains("doesn’t send anything"))
+    }
+
     func testPostcodeMatching() {
         XCTAssertTrue(orderPostcodesMatch("62704", "62704-1234"))
         XCTAssertTrue(orderPostcodesMatch("627041234", "62704"))

@@ -3,11 +3,13 @@ import XCTest
 
 /// The order watch follows the status Studio shows (`orderDisplayStatus`), so a PRINTING order whose shipping record
 /// says SHIPPED (live, 29 Oct 2026) is reported as shipped once; and Show / notification clicks read changed orders
-/// through a platform-filtered list when a default platform is set (live orders name no platform ID).
+/// with `GET /orders?publicId=&platformId=` when a default platform is set. Slant returned the order whatever
+/// `platformId` said, so the order's own `customer.platformId` (on every order seen) is what keeps it on the platform.
 final class OrderWatchShippingTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_790_000_000)
 
-    /// Shaped like the live list rows of 29 Oct 2026 (customer and address redacted; `platform` has no ID).
+    /// Shaped like the live list rows of 29 Oct 2026, with invented values (customer details trimmed; `platform` has no
+    /// ID; live rows also carry `customer.platformId`, which these tests don't need).
     private func liveOrder(_ id: String, status: Any?, fulfillment: Any? = nil, wrapped: Bool = false) -> Record {
         var order: [String: Any] = [
             "publicId": id, "createdAt": "2026-01-05T10:00:00Z", "updatedAt": "2026-01-08T10:00:00Z",
@@ -190,18 +192,25 @@ final class OrderWatchShippingTests: XCTestCase {
 
     func testListedReplyGivesOnlyTheExactOrderOnThePlatform() throws {
         let fetch = orderWatchFetch(id: "SLANT_1", platformID: "plat-1")
-        let row: [String: Any] = ["publicId": "SLANT_1", "status": "PRINTING", "platform": ["name": "Shop"]]
+        // Live-shaped: the platform is named only in `customer.platformId` (`platform` has no ID).
+        let row: [String: Any] = ["publicId": "SLANT_1", "status": "PRINTING", "platform": ["name": "Shop"],
+                                  "customer": ["platformId": "plat-1", "details": ["name": "Ada Lovelace"]]]
         let found = orderWatchFetchedRecord(try json(["success": true, "data": [row], "pagination": ["count": 1]]),
                                             fetch: fetch, id: "SLANT_1", platformID: "plat-1")
         XCTAssertEqual(found?.id, "SLANT_1")
-        // Another platform's order: Slant answers with an empty list.
+        // Another platform's order, as live Slant answers: it ignores `platformId` and returns the order, which names
+        // its own platform in `customer.platformId`. It is skipped like one not found.
+        var otherPlatforms = row; otherPlatforms["customer"] = ["platformId": "plat-2", "details": ["name": "Ada Lovelace"]]
+        XCTAssertNil(orderWatchFetchedRecord(try json(["success": true, "data": [otherPlatforms], "pagination": ["count": 1]]),
+                                             fetch: fetch, id: "SLANT_1", platformID: "plat-1"))
+        // If Slant ever does filter by `platformId`, an empty list is skipped too.
         XCTAssertNil(orderWatchFetchedRecord(try json(["success": true, "data": [], "pagination": ["count": 0]]),
                                              fetch: fetch, id: "SLANT_1", platformID: "plat-1"))
         // A reply that ignored publicId (the newest orders) never stands in for the order.
         let others: [[String: Any]] = [["publicId": "SLANT_2", "status": "DRAFT"], ["publicId": "slant_1", "status": "DRAFT"]]
         XCTAssertNil(orderWatchFetchedRecord(try json(["success": true, "data": others]), fetch: fetch, id: "SLANT_1", platformID: "plat-1"))
-        // An order that does name another platform is still refused.
-        var foreign = row; foreign["platformId"] = "plat-2"
+        // An order that names another platform only in a top-level `platformId` is refused too.
+        var foreign = row; foreign["customer"] = ["details": ["name": "Ada Lovelace"]]; foreign["platformId"] = "plat-2"
         XCTAssertNil(orderWatchFetchedRecord(try json(["success": true, "data": [foreign]]), fetch: fetch, id: "SLANT_1", platformID: "plat-1"))
         // Unreadable reply.
         XCTAssertNil(orderWatchFetchedRecord(APIResponse(data: Data("nope".utf8), statusCode: 200), fetch: fetch, id: "SLANT_1",
