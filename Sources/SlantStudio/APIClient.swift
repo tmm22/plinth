@@ -429,6 +429,20 @@ func uploadProtectedFiles(_ files: [Record], replacing: String? = nil) -> [Strin
     return protected
 }
 
+/// `protected` plus every library model's link (named after the model when the list didn't name it), except the file
+/// being replaced: the Models upload guard never writes over a file a library model uses.
+func uploadProtectedFilesAddingLibraryLinks(_ protected: [String: String], models: [LocalModel], replacing: String?) -> [String: String] {
+    let skipped = replacing?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    var result = protected
+    if !skipped.isEmpty { result[skipped] = nil }
+    for model in models {
+        guard let id = model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty, id != skipped,
+              result[id] == nil else { continue }
+        result[id] = model.name
+    }
+    return result
+}
+
 /// A Replace File: the listed file the seller chose to replace (its ID when known) and its name for the copy.
 struct UploadReplacement: Equatable, Sendable {
     var fileID: String?

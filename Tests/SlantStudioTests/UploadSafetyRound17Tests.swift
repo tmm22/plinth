@@ -226,3 +226,31 @@ final class UploadSafetyRound17Tests: XCTestCase {
         XCTAssertFalse(unloaded.contains("isn’t in your platform list"))
     }
 }
+
+final class UploadSafetyLeadFollowUpTests: XCTestCase {
+    func testModelsGuardAlsoProtectsLibraryLinksExceptTheReplacedFile() {
+        let models = [
+            LocalModel(name: "Stand", filePath: "/tmp/stand.stl", remoteID: " file-c "),
+            LocalModel(name: "Bracket", filePath: "/tmp/bracket.stl", remoteID: "file-a"),
+            LocalModel(name: "Clip", filePath: "/tmp/clip.stl")
+        ]
+        let listed = ["file-a": "Bracket listed", "file-b": "Hook"]
+        let kept = uploadProtectedFilesAddingLibraryLinks(listed, models: models, replacing: nil)
+        XCTAssertEqual(kept, ["file-a": "Bracket listed", "file-b": "Hook", "file-c": "Stand"])
+        let replacing = uploadProtectedFilesAddingLibraryLinks(listed, models: models, replacing: " file-a ")
+        XCTAssertEqual(replacing, ["file-b": "Hook", "file-c": "Stand"])
+        XCTAssertNotNil(uploadPlaceholderProtectedFile(["publicFileServiceId": "file-c"], protectedFiles: replacing))
+        XCTAssertNil(uploadPlaceholderProtectedFile(["publicFileServiceId": "file-a"], protectedFiles: replacing))
+    }
+
+    func testBatchPayNamesTheOrderNumberOverAnInternalID() {
+        XCTAssertEqual(batchPayLockedOrderLabel(["a1b2", "SLANT_1000000000001"]), "SLANT_1000000000001")
+        XCTAssertEqual(batchPayLockedOrderLabel(["b2", "a1"]), "a1")
+        XCTAssertNil(batchPayLockedOrderLabel([]))
+    }
+
+    func testPayOutcomeReadsTheStatusTrimmedAndInAnyCase() {
+        XCTAssertFalse(outcomeResolved(action: .pay, reviewedStatus: "DRAFT", reloadedStatus: " draft "))
+        XCTAssertTrue(outcomeResolved(action: .pay, reviewedStatus: "DRAFT", reloadedStatus: "submitted"))
+    }
+}

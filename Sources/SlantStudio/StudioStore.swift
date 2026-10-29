@@ -474,7 +474,7 @@ func orderOutcomeLockIDs(requested: String, order: [String: Any]?) -> [String] {
 }
 func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStatus: String) -> Bool {
     switch action {
-    case .pay: return reloadedStatus != "DRAFT"
+    case .pay: return reloadedStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != "DRAFT"
     case .cancel:
         let reviewed = reviewedStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let reloaded = reloadedStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -489,7 +489,7 @@ func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStat
 let unknownOutcomeBlockMessage = "This order’s last payment or cancel request didn’t confirm. Reload the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
 /// A cancel lock kept although the order moved on: it was sent while the order was being made and the order has
 /// shipped since, which doesn't show whether the refund was made (`outcomeResolved`). Reloading can't lift it.
-let unknownOutcomeShippedSinceCancelMessage = "Slant didn’t confirm your cancel and refund request, and the order has shipped since, which doesn’t show whether the refund was made. Check this order in your Slant dashboard. Studio won’t send another cancel or pay for drafts in a batch until you quit and reopen it."
+let unknownOutcomeShippedSinceCancelMessage = "Slant didn’t confirm your cancel and refund request, and the order has shipped since, which doesn’t show whether the refund was made. Check this order in your Slant dashboard. Studio won’t send another cancel, or pay drafts in a batch, until Slant shows the order cancelled or you quit and reopen Studio."
 /// The lock note for an order's review: the shipped-since note when the reload can no longer lift the lock, else
 /// `unknownOutcomeBlockMessage`.
 func unknownOutcomeLockMessage(context: UnknownOutcomeContext?, currentStatus: String?) -> String {
@@ -1632,6 +1632,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         let stage = UploadStageBox()
         let target = UploadTargetBox()
         var succeeded = false
+        // Library links are protected too (a linked file may be missing from the list just read); only the file the
+        // seller chose to replace may be written over.
+        let guarded = uploadProtectedFilesAddingLibraryLinks(protectedFiles, models: localModels, replacing: replacing?.fileID)
+        var unlinkedBeforeSending: [String] = []
         let ran = await run("Upload \(capturedName)", handlesError: { error in
             // Worded by the step that failed; a confirm with an unknown outcome is remembered for this model.
             let failedStage = stage.value
@@ -1640,7 +1644,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 // The replaced file (or the one Slant chose) may now hold part of this model: no model keeps a link to it.
                 let changed = Set([replacing?.fileID, target.value].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty })
-                let others = self.clearLinks(toFileIDs: changed, alsoUnlinking: capturedID)
+                let others = unlinkedBeforeSending + self.clearLinks(toFileIDs: changed, alsoUnlinking: capturedID)
                 // The bar shows the failed state (Upload Again), never "select it to estimate and order".
                 unconfirmedUploadModelIDs.remove(capturedID)
                 saveModels()
@@ -1656,10 +1660,17 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             // Quit asks first until the upload has its answer (SlantStudioApp.swift).
             let write = SlantWritesInFlight.shared.begin(.upload)
             defer { SlantWritesInFlight.shared.end(write) }
+            // A Replace File unlinks every model from the replaced file before anything is sent, and saves that, so a
+            // quit or crash mid-upload never leaves a model linked to a file that may hold another model's bytes. A
+            // confirmed upload links this model again.
+            if let replacedID = replacing?.fileID?.trimmingCharacters(in: .whitespacesAndNewlines), !replacedID.isEmpty {
+                unlinkedBeforeSending = clearLinks(toFileIDs: [replacedID], alsoUnlinking: capturedID)
+                saveModels()
+            }
             let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID,
                                                    checkPlaceholder: { placeholder in
                 target.value = uploadPlaceholderFileID(placeholder)
-                if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: protectedFiles) {
+                if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: guarded) {
                     throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
                 }
             }) { [weak self] next in
@@ -1675,7 +1686,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             // Slant keeps one file per owner and name, so it may have stored this upload in a file other library models
             // are linked to: that file now holds this model, so only this model keeps the link.
             let unlinked = modelsLosingLinkAfterUpload(fileID: remoteID, uploadedModelID: capturedID, in: localModels)
-            let unlinkedNames = localModels.filter { unlinked.contains($0.id) }.map(\.name)
+            let unlinkedNames = unlinkedBeforeSending + localModels.filter { unlinked.contains($0.id) }.map(\.name)
             for index in localModels.indices where unlinked.contains(localModels[index].id) {
                 localModels[index].remoteID = nil
             }
@@ -1943,6 +1954,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         // Nil: not a Replace File. Blank: a Replace File whose file ID isn't known (no link can be cleared by it).
         let replaced = replacingFileID?.trimmingCharacters(in: .whitespacesAndNewlines)
         var ok = false
+        var unlinkedBeforeSending: [String] = []
         let ran = await run("Upload model from URL", handlesError: { error in
             // `POST /files` has left the live OpenAPI; a 404 or 405 means Slant no longer takes links. An unclear reply
             // may still have added the file, so that copy says to refresh before uploading again.
@@ -1953,7 +1965,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             guard uploadFromURLUnclearMessage(error) != nil else { return false }
             if let replaced {
                 // A Replace File with an unclear outcome: the replaced file may now hold this link's model.
-                let others = self.clearLinks(toFileIDs: replaced.isEmpty ? [] : [replaced], alsoUnlinking: nil)
+                let others = unlinkedBeforeSending + self.clearLinks(toFileIDs: replaced.isEmpty ? [] : [replaced], alsoUnlinking: nil)
                 saveModels()
                 self.error = uploadFromURLReplaceUnclearMessage(error, fileName: replacingFileName, modelNames: others)
             } else {
@@ -1963,6 +1975,15 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         }) {
             var body: [String: Any] = ["URL": trimmedURL, "name": trimmedName, "platformId": platformID, "type": type]
             if !ownerID.isEmpty { body["ownerId"] = ownerID }
+            // Quit asks first until Slant answers, as for a Models upload (SlantStudioApp.swift).
+            let write = SlantWritesInFlight.shared.begin(.upload)
+            defer { SlantWritesInFlight.shared.end(write) }
+            // A Replace File unlinks every model from the replaced file before sending (saved), so neither a quit, a
+            // crash nor a reply without a file ID leaves a model linked to a file that may now hold this link's model.
+            if let replaced, !replaced.isEmpty {
+                unlinkedBeforeSending = clearLinks(toFileIDs: [replaced], alsoUnlinking: nil)
+                saveModels()
+            }
             let response = try await client.request("POST", path: "/files", body: body)
             noteRateLimit(from: response)
             ok = true
@@ -1972,8 +1993,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 // The same file ID may now hold different contents, so an estimate for it is no longer current.
                 if fileID == returnedID { estimate = nil }
                 let unlinked = modelsLosingLinkAfterUpload(fileID: returnedID, uploadedModelID: nil, in: localModels)
-                if !unlinked.isEmpty {
-                    let names = localModels.filter { unlinked.contains($0.id) }.map(\.name)
+                if !unlinked.isEmpty || !unlinkedBeforeSending.isEmpty {
+                    let names = unlinkedBeforeSending + localModels.filter { unlinked.contains($0.id) }.map(\.name)
                     for index in localModels.indices where unlinked.contains(localModels[index].id) {
                         localModels[index].remoteID = nil
                     }
