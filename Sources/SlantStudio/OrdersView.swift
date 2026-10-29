@@ -190,6 +190,8 @@ struct OrderComposerView: View {
     @State private var skippedItems: [String] = []
     @State private var deliveryCopied = true
     @State private var platformNotCopied = false
+    /// Whether the platform list had loaded when the duplicate was seeded (an empty list means it hadn't).
+    @State private var platformListLoadedAtSeed = true
     @State private var initialShippingProvider = ""
     @State private var initialDraftPlatformID = ""
     @State private var confirmDiscard = false
@@ -356,9 +358,8 @@ struct OrderComposerView: View {
                         Text("This order had no delivery details to copy. Enter them below.").font(.callout).foregroundStyle(.orange)
                     }
                     if platformNotCopied {
-                        Text(initialDraftPlatformID.isEmpty
-                             ? "This order’s platform isn’t in your platform list. Choose a platform under More options."
-                             : "This order’s platform isn’t in your platform list, so the draft uses your current platform. Check it under More options.")
+                        Text(orderComposerPlatformNotCopiedNote(platformsLoaded: platformListLoadedAtSeed,
+                                                                hasCurrentPlatform: !initialDraftPlatformID.isEmpty))
                             .font(.callout).foregroundStyle(.orange)
                     }
                     if !skippedItems.isEmpty {
@@ -788,6 +789,7 @@ struct OrderComposerView: View {
                                                      loadedPlatformIDs: store.platforms.map(\.id))
                 draftPlatformID = seed.platformID
                 platformNotCopied = seed.notCopied
+                platformListLoadedAtSeed = !store.platforms.isEmpty
             }
             sourceOrderNumber = prefill.sourceOrderNumber
             skippedItems = prefill.skippedItems
@@ -2955,6 +2957,17 @@ func orderComposerPrefill(reordering order: Record) -> OrderComposerPrefill {
 func orderComposerPlatformSeed(copied: String, current: String, loadedPlatformIDs: [String]) -> (platformID: String, notCopied: Bool) {
     if loadedPlatformIDs.contains(copied) { return (copied, false) }
     return (current, copied != current)
+}
+
+/// Duplicate as New Draft's note when the source order's platform wasn't copied. An empty platform list means the
+/// platforms haven't loaded, so Studio can't tell whether the platform is still there.
+func orderComposerPlatformNotCopiedNote(platformsLoaded: Bool, hasCurrentPlatform: Bool) -> String {
+    let lead = platformsLoaded
+        ? "This order’s platform isn’t in your platform list"
+        : "Your platforms haven’t loaded, so Studio couldn’t check this order’s platform"
+    return hasCurrentPlatform
+        ? "\(lead), so the draft uses your current platform. Check it under More options."
+        : "\(lead). Choose a platform under More options."
 }
 
 /// Lines the composer opens with: prefilled lines, a blank line for a duplicate with nothing copyable (never an

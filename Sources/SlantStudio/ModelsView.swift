@@ -63,7 +63,8 @@ struct ModelsView: View {
     @State private var pendingRemoval: LibrarySelection?
     @State private var showHiddenFiles = false
     @State private var configurationRequest = 0
-    @State private var pendingReuploadID: UUID?
+    /// Upload Again… when the same-name check found no file with the model's name: the one question before uploading.
+    @State private var pendingReupload: PendingReupload?
     /// An upload whose name is already in the seller's Slant files, waiting for Upload as… / Replace File / Cancel.
     @State private var pendingNameConflict: UploadNameConflict?
     @State private var previewMesh: LoadedPreviewMesh?
@@ -502,11 +503,8 @@ struct ModelsView: View {
         }
         if model.remoteID != nil {
             Divider()
-            // Only asks: the upload starts from the confirmation, and only for the selected model.
-            Button("Upload Again…") {
-                if store.selectedLocalID != model.id { store.select(model) }
-                pendingReuploadID = model.id
-            }
+            // Only asks: reads the file list (read-only), then one confirmation; the upload starts from that dialog.
+            Button("Upload Again…") { startUpload(model.id, reupload: true) }
             .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
         }
         Divider()
@@ -560,7 +558,7 @@ struct ModelsView: View {
             if !store.busy {
                 if uploadUnconfirmed, let local = store.selectedLocal {
                     // Slant may already hold the file and a standard key can't delete it: check first, then ask.
-                    Button("Upload Again…") { pendingReuploadID = local.id }
+                    Button("Upload Again…") { startUpload(local.id, reupload: true) }
                         .disabled(!store.hasKey || store.platformID.isEmpty)
                     Button("Refresh") { Task { await store.refresh() } }
                         .buttonStyle(.borderedProminent)
@@ -576,23 +574,20 @@ struct ModelsView: View {
         }
         .confirmationDialog(
             "Upload this model again?",
-            isPresented: Binding(get: { pendingReuploadID != nil }, set: { if !$0 { pendingReuploadID = nil } }),
+            isPresented: Binding(get: { pendingReupload != nil }, set: { if !$0 { pendingReupload = nil } }),
             titleVisibility: .visible,
-            presenting: pendingReuploadID
-        ) { id in
+            presenting: pendingReupload
+        ) { pending in
             Button("Upload Again") {
-                guard store.selectedLocalID == id else { return }
-                startUpload()
+                guard store.localModels.contains(where: { $0.id == pending.modelID }) else { return }
+                Task { await upload(pending.modelID, as: pending.name, protectedFiles: pending.protectedFiles) }
             }
             .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
             // Return cancels: no keyboard shortcut may upload (AGENTS.md), so uploading again takes a click.
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
-        } message: { id in
-            let name = store.localModels.first { $0.id == id }?.name ?? "This model"
-            Text(store.unconfirmedUploadModelIDs.contains(id)
-                 ? unconfirmedReuploadConfirmationMessage(name: name)
-                 : reuploadConfirmationMessage(name: name))
+        } message: { pending in
+            Text(reuploadNoConflictMessage(name: pending.name, earlierUploadUnconfirmed: pending.earlierUploadUnconfirmed))
         }
         .confirmationDialog(
             "This name is already in your Slant files",
@@ -600,15 +595,16 @@ struct ModelsView: View {
             titleVisibility: .visible,
             presenting: pendingNameConflict
         ) { conflict in
-            Button("Upload as “\(conflict.suggested)”") { uploadAfterNameChoice(conflict, as: conflict.suggested) }
+            Button("Upload as “\(conflict.suggested)”") { uploadAfterNameChoice(conflict, replacing: false) }
                 .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
-            Button("Replace File", role: .destructive) { uploadAfterNameChoice(conflict, as: conflict.name, replacing: true) }
+            Button("Replace File", role: .destructive) { uploadAfterNameChoice(conflict, replacing: true) }
                 .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
             // Return and Escape cancel: no keyboard shortcut may upload (AGENTS.md), so either upload takes a click.
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: { conflict in
-            Text(slantUploadNameConflictMessage(existing: conflict.existing))
+            Text(slantUploadNameConflictMessage(existing: conflict.existing, ownEarlierUpload: conflict.ownEarlierUpload,
+                                                earlierUploadUnconfirmed: conflict.earlierUploadUnconfirmed))
         }
     }
 
@@ -1100,45 +1096,61 @@ struct ModelsView: View {
         Task { await store.quote() }
     }
 
-    private func startUpload() {
-        guard let model = store.selectedLocal else { return }
+    /// Upload Model, Upload Again and Upload Again…: reads the whole file list first (read-only) and checks the name,
+    /// the linked cloud file's name for a linked model. Nothing is uploaded when it can't be read; a listed name asks
+    /// (Upload as… / Replace File / Cancel). `reupload` (Upload Again…, also from the context menu) asks once even
+    /// when the name is free, so a menu item never uploads by itself.
+    private func startUpload(_ requestedID: UUID? = nil, reupload: Bool = false) {
+        guard let model = requestedID.flatMap({ id in store.localModels.first { $0.id == id } }) ?? store.selectedLocal else { return }
+        if store.selectedLocalID != model.id { store.select(model) }
         let modelID = model.id
-        let name = model.name
+        let linkedFileID = model.remoteID
+        let unconfirmed = store.unconfirmedUploadModelIDs.contains(modelID)
         uploadFocusID = modelID
         uploadConfirmedIDs.remove(modelID)
         uploadFailedIDs.remove(modelID)
         Task {
-            // Slant keeps one file per owner and name, so the whole file list is read first (read-only). Nothing is
-            // uploaded when it can't be read; a listed name asks before anything is sent.
-            guard let check = await store.checkUploadName(name) else {
+            guard let result = await store.checkUploadName(model.name, linkedFileID: linkedFileID) else {
                 if uploadFocusID == modelID { uploadFocusID = nil }
                 return
             }
-            switch check {
+            switch result.check {
             case .clear:
-                await upload(modelID, as: name)
-            case .conflict(let existing, let suggested):
+                if reupload {
+                    if uploadFocusID == modelID { uploadFocusID = nil }
+                    pendingReupload = PendingReupload(modelID: modelID, name: result.name, earlierUploadUnconfirmed: unconfirmed,
+                                                      protectedFiles: result.protectedFiles())
+                } else {
+                    await upload(modelID, as: result.name, protectedFiles: result.protectedFiles())
+                }
+            case .conflict:
                 if uploadFocusID == modelID { uploadFocusID = nil }
-                pendingNameConflict = UploadNameConflict(modelID: modelID, name: name, existing: existing, suggested: suggested)
+                pendingNameConflict = UploadNameConflict(result: result, modelID: modelID, earlierUploadUnconfirmed: unconfirmed)
             }
         }
     }
 
-    /// After the same-name choice: uploads under the suggested name or, for Replace File, the model's own name.
-    private func uploadAfterNameChoice(_ conflict: UploadNameConflict, as name: String, replacing: Bool = false) {
+    /// After the same-name choice: uploads under the suggested name or, for Replace File, the checked name.
+    private func uploadAfterNameChoice(_ conflict: UploadNameConflict, replacing: Bool) {
         guard let modelID = conflict.modelID, store.localModels.contains(where: { $0.id == modelID }) else { return }
         uploadFocusID = modelID
-        Task { await upload(modelID, as: name, replacing: replacing) }
+        Task {
+            if replacing {
+                await upload(modelID, as: conflict.name, replacing: conflict.replacement,
+                             protectedFiles: conflict.protectedWhenReplacing)
+            } else {
+                await upload(modelID, as: conflict.suggested, protectedFiles: conflict.protectedFiles)
+            }
+        }
     }
 
-    private func upload(_ modelID: UUID, as name: String, replacing: Bool = false) async {
+    private func upload(_ modelID: UUID, as name: String, replacing: UploadReplacement? = nil,
+                        protectedFiles: [String: String]) async {
         uploadFocusID = modelID
-        let ran = await store.uploadModel(id: modelID, as: name, replacing: replacing)
-        guard ran else {
-            if uploadFocusID == modelID { uploadFocusID = nil }
-            return
-        }
-        if store.localModels.first(where: { $0.id == modelID })?.remoteID != nil {
+        let succeeded = await store.uploadModel(id: modelID, as: name, replacing: replacing, protectedFiles: protectedFiles)
+        // Only a confirmed upload linked to the file Slant returned says "Upload complete"; anything else (a refusal,
+        // an unknown outcome, a failed Replace File, or a run that didn't start) shows the failed state instead.
+        if succeeded, store.localModels.first(where: { $0.id == modelID })?.remoteID != nil {
             uploadConfirmedIDs.insert(modelID)
             uploadFailedIDs.remove(modelID)
         } else {
@@ -1221,21 +1233,46 @@ struct ModelsView: View {
 struct UploadNameConflict: Equatable {
     /// The library model to upload (Models), or nil for Upload from URL.
     var modelID: UUID?
-    /// The name the seller asked for; Replace File uploads under it.
+    /// The checked name; Replace File uploads under it.
     var name: String
     /// The listed Slant file's name.
     var existing: String
+    /// The listed file's own ID, when it has one.
+    var existingFileID: String?
     /// The next free "Name N"; Upload as… uses it.
     var suggested: String
+    /// The match is this model's linked file (its earlier upload).
+    var ownEarlierUpload: Bool
+    /// Slant didn't confirm this model's last upload, so the match may be that upload.
+    var earlierUploadUnconfirmed: Bool
+    /// The pre-PUT guard's lists: every file the check read, and the same less the file being replaced.
+    var protectedFiles: [String: String]
+    var protectedWhenReplacing: [String: String]
+
+    var replacement: UploadReplacement { UploadReplacement(fileID: existingFileID, fileName: existing) }
+}
+
+extension UploadNameConflict {
+    /// From a `.conflict` check; nil for `.clear`.
+    init?(result: SlantUploadNameCheckResult, modelID: UUID?, earlierUploadUnconfirmed: Bool) {
+        guard case .conflict(let existing, let suggested) = result.check else { return nil }
+        self.init(modelID: modelID, name: result.name, existing: existing, existingFileID: result.conflictFileID,
+                  suggested: suggested, ownEarlierUpload: result.conflictIsLinkedFile,
+                  earlierUploadUnconfirmed: earlierUploadUnconfirmed && !result.conflictIsLinkedFile,
+                  protectedFiles: result.protectedFiles(), protectedWhenReplacing: result.protectedFiles(replacing: result.conflictFileID))
+    }
+}
+
+/// Upload Again… with no file of that name listed: waiting for its one confirmation.
+struct PendingReupload: Equatable {
+    var modelID: UUID
+    var name: String
+    var earlierUploadUnconfirmed: Bool
+    var protectedFiles: [String: String]
 }
 
 /// The next-action bar after an upload whose confirm wasn't answered clearly.
 let uploadUnconfirmedStatusText = uploadUnconfirmedMessage
-
-/// Upload Again… after an unconfirmed upload: a second upload may duplicate a file Studio can't remove from Slant.
-func unconfirmedReuploadConfirmationMessage(name: String) -> String {
-    "Slant may already have “\(name)” from the upload it didn’t confirm. Refresh first to check your Slant files. If a file with this name is there, Studio asks before an upload replaces it."
-}
 
 func printQuantity(_ text: String) -> Int? {
     guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }),
@@ -1432,7 +1469,8 @@ struct ImportFromURLSheet: View {
                 Task { await send(url, name: conflict.suggested) }
             }
             .disabled(store.busy || !store.hasKey)
-            Button("Replace File", role: .destructive) { Task { await send(url, name: conflict.name) } }
+            // `POST /files` is one step, so the pre-PUT guard can't run here; an unclear outcome unlinks the file's models.
+            Button("Replace File", role: .destructive) { Task { await send(url, name: conflict.name, replacing: conflict.replacement) } }
                 .disabled(store.busy || !store.hasKey)
             // Return and Escape cancel: no keyboard shortcut may upload (AGENTS.md), so either upload takes a click.
             Button("Cancel", role: .cancel) {}
@@ -1457,21 +1495,22 @@ struct ImportFromURLSheet: View {
         Task {
             // Slant keeps one file per owner and name: read the whole file list first (read-only). Nothing is sent when
             // it can't be read, and a listed name asks before anything is sent.
-            guard let check = await store.checkUploadName(trimmedName) else {
+            guard let result = await store.checkUploadName(trimmedName, retryHint: slantUploadNameCheckRetryInURLSheet) else {
                 if let message = takeStoreErrorForSettings(store) { validation = message }
                 return
             }
-            switch check {
+            switch result.check {
             case .clear:
                 await send(link, name: trimmedName)
-            case .conflict(let existing, let suggested):
-                pendingNameConflict = UploadNameConflict(modelID: nil, name: trimmedName, existing: existing, suggested: suggested)
+            case .conflict:
+                pendingNameConflict = UploadNameConflict(result: result, modelID: nil, earlierUploadUnconfirmed: false)
             }
         }
     }
 
-    private func send(_ link: String, name: String) async {
-        if await store.importModelFromURL(link, name: name) {
+    private func send(_ link: String, name: String, replacing: UploadReplacement? = nil) async {
+        if await store.importModelFromURL(link, name: name, replacingFileID: replacing.map { $0.fileID ?? "" },
+                                          replacingFileName: replacing?.fileName ?? "") {
             dismiss()
         } else if let message = takeStoreErrorForSettings(store) {
             // Never retried. The window's alert would wait behind this sheet, so the reason is shown here instead.

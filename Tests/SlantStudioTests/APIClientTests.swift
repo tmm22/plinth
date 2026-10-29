@@ -24,6 +24,14 @@ private final class UploadStageRecorder: @unchecked Sendable {
     var all: [UploadStage] { lock.lock(); defer { lock.unlock() }; return stages }
 }
 
+private final class PathRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String] = []
+    func append(_ path: String) { lock.lock(); paths.append(path); lock.unlock() }
+    func reset() { lock.lock(); paths = []; lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return paths }
+}
+
 final class APIClientTests: XCTestCase {
     private func client() -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
@@ -353,6 +361,57 @@ final class APIClientTests: XCTestCase {
             XCTAssertFalse(uploadOutcomeUnknown(stage: stage.value, error: error))
             XCTAssertTrue(uploadFailureMessage(stage: stage.value, error: error).contains("refused the upload link"))
         }
+    }
+
+    /// The pre-PUT guard: a placeholder naming a protected file stops the upload before any bytes are sent, with the
+    /// stage still `.preparing` (nothing stored, not unknown), and an unprotected one goes ahead. Invented IDs only.
+    func testPlaceholderGuardStopsBeforeThePUT() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("model".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let paths = PathRecorder()
+        StubProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            switch request.url?.path {
+            case "/v2/api/files/direct-upload":
+                return (200, [:], Data(#"{"data":{"presignedUrl":"https://storage.example/model.stl","filePlaceholder":{"id":7,"publicFileServiceId":" file-kept "}}}"#.utf8))
+            case "/model.stl":
+                return (200, [:], Data())
+            case "/v2/api/files/confirm-upload":
+                return (200, [:], Data(#"{"data":{"publicFileServiceId":"file-kept"}}"#.utf8))
+            default:
+                XCTFail("Unexpected request \(request.url?.absoluteString ?? "")")
+                return (500, [:], Data())
+            }
+        }
+        let protected = ["file-kept": "Bracket"]
+        let stage = UploadStageBox()
+        do {
+            _ = try await client().upload(file: file, name: "Bracket 2", platformId: "platform", ownerId: "", checkPlaceholder: { placeholder in
+                if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: protected) {
+                    throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
+                }
+            }, stage: { stage.value = $0 })
+            XCTFail("Expected the guard to stop the upload")
+        } catch let error as UploadWouldOverwriteExistingFile {
+            XCTAssertEqual(error, UploadWouldOverwriteExistingFile(fileID: "file-kept", fileName: "Bracket"))
+            XCTAssertEqual(stage.value, .preparing)
+            XCTAssertFalse(uploadOutcomeUnknown(stage: stage.value, error: error))
+            XCTAssertFalse(uploadReplacementMayBePartial(stage: stage.value, replacingFileID: "file-other"))
+            XCTAssertEqual(uploadFailureMessage(stage: stage.value, error: error),
+                           "Nothing was uploaded: Slant would have saved this into your existing file “Bracket”. Choose another name and upload again.")
+            XCTAssertEqual(batchPersonaliseUploadOutcome(error: error), .refused(batchPersonaliseWouldOverwriteMessage))
+        }
+        XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload"], "no PUT and no confirm after the guard stops")
+
+        // The file the seller chose to replace isn't protected, so the same reply goes ahead.
+        paths.reset()
+        _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "", checkPlaceholder: { placeholder in
+            if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: [:]) {
+                throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
+            }
+        }, stage: { _ in })
+        XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload", "/model.stl", "/v2/api/files/confirm-upload"])
     }
 
     func testModelDownloadStopsAtTheSizeCap() async throws {

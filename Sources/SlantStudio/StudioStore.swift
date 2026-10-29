@@ -860,7 +860,13 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var orderFilter = OrderFilter()
     @Published var selectedEndpointID: String?
     @Published var canRetry = false
-    @Published var rateLimit: RateLimitInfo?
+    @Published var rateLimit: RateLimitInfo? {
+        didSet { rateLimitObservedAt = rateLimit == nil ? nil : Date() }
+    }
+    /// When `rateLimit` was last set: a low remaining count without a reset time is trusted for a minute only.
+    private(set) var rateLimitObservedAt: Date?
+    /// After a 429 to the same-name check's file-list read: no upload's check reads again until then.
+    private var uploadNameCheckRateLimitedUntil: Date?
     @Published var usage: [String: Any]?
     @Published var healthStatus: [String: Any]?
     @Published var lastDelivery: DeliveryDetails?
@@ -1264,6 +1270,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         connected = false
         files = []; platforms = []; orders = []; filaments = []; filamentsLoadedAt = nil; components = []; stationery = []
         draft = nil; estimate = nil; activities = []; usage = nil; healthStatus = nil; rateLimit = nil
+        uploadNameCheckRateLimitedUntil = nil
         fileID = ""; filamentID = ""
         accountLoaded = false; filesLoaded = false; ordersLoaded = false; loadedCatalogs = []
         orderSearchActive = false; fileSearchActive = false
@@ -1539,16 +1546,26 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     /// Reads every page of the seller's Slant files (read-only `GET /files`, all platforms, ≤ 50 pages of 100, 0.6 s
     /// apart) and checks `name` against them and the loaded list, before an upload. Slant keeps one file per owner and
-    /// name, so an upload under a listed name replaces that file for every draft that uses it (30 Oct 2026). Nil when
-    /// the check didn't run (busy) or couldn't read the whole list; the reason is then in `error` and nothing may be
-    /// uploaded. The list read here is used for this check only and never replaces `files`.
-    func checkUploadName(_ name: String) async -> SlantUploadNameCheck? {
+    /// name, so an upload under a listed name replaces that file for every draft that uses it (30 Oct 2026). For a
+    /// model linked to a cloud file (`linkedFileID`), the check uses that file's name, so Upload Again… is offered its
+    /// own file (`slantUploadNameCheckResult`). Nil when the check didn't run (busy), couldn't read the whole list or
+    /// stopped for the rate limit (at or below `orderWatchRateLimitReserve` left, or after a 429); the reason is then in
+    /// `error` and nothing may be uploaded. `retryHint` names how to try again where the check was started. The list
+    /// read here feeds the check and the pre-PUT guard only and never replaces `files`. Never retried.
+    func checkUploadName(_ name: String, linkedFileID: String? = nil,
+                         retryHint: String = slantUploadNameCheckRetryInModels) async -> SlantUploadNameCheckResult? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        var result: SlantUploadNameCheck?
+        var result: SlantUploadNameCheckResult?
         let generation = connectGeneration
-        _ = await run("Check Slant file names", retryable: true, retry: .refresh, handlesError: { error in
-            self.error = slantUploadNameCheckFailedMessage(name: trimmed, reason: friendlyAPIMessage(error))
+        _ = await run("Check Slant file names", handlesError: { error in
+            if error is SlantUploadNameCheckRateLimited {
+                self.error = slantUploadNameCheckRateLimitedMessage
+            } else if error is SlantUploadNameCheckTooManyFiles {
+                self.error = slantUploadNameCheckTooManyFilesMessage
+            } else {
+                self.error = slantUploadNameCheckFailedMessage(name: trimmed, reason: friendlyAPIMessage(error), retryHint: retryHint)
+            }
             return true
         }) {
             progress = "Checking your Slant files…"
@@ -1556,12 +1573,23 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             var page = 1
             var lastRequest: Date?
             while true {
+                // Leave the allowance to the seller's orders and the order watch: stop, never wait and read on.
+                if slantUploadNameCheckRateLimitStop(rateLimit: rateLimit, observedAt: rateLimitObservedAt,
+                                                     rateLimitedUntil: uploadNameCheckRateLimitedUntil, now: Date()) {
+                    throw SlantUploadNameCheckRateLimited()
+                }
                 if let lastRequest {
                     let wait = comparisonMinimumSpacing - Date().timeIntervalSince(lastRequest)
                     if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
                 }
                 lastRequest = Date()
-                let response = try await client.request("GET", path: "/files", query: ["limit": String(listPageSize), "page": String(page)])
+                let response: APIResponse
+                do {
+                    response = try await client.request("GET", path: "/files", query: ["limit": String(listPageSize), "page": String(page)])
+                } catch APIError.http(429, _, let retryAfter, let reset) {
+                    uploadNameCheckRateLimitedUntil = comparisonRateLimitedUntil(retryAfter: retryAfter, rateLimitReset: reset, now: Date())
+                    throw SlantUploadNameCheckRateLimited()
+                }
                 guard generation == connectGeneration else { throw StudioError("The Slant account changed while checking.") }
                 noteRateLimit(from: response)
                 guard slantFileNamePageIsReadable(response.json) else {
@@ -1571,20 +1599,24 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 listed.append(contentsOf: rows)
                 guard listHasMorePages(pagination: responsePagination(response), recordCount: rows.count,
                                        currentPage: page, pageSize: listPageSize) else { break }
-                guard page < slantUploadNameCheckMaxPages else {
-                    throw StudioError("Your Slant account lists more than \((slantUploadNameCheckMaxPages * listPageSize).formatted()) files.")
-                }
+                guard page < slantUploadNameCheckMaxPages else { throw SlantUploadNameCheckTooManyFiles() }
                 page += 1
             }
-            result = slantUploadNameCheck(name: trimmed, files: listed + files)
+            result = slantUploadNameCheckResult(name: trimmed, linkedFileID: linkedFileID, files: listed + files)
         }
         return result
     }
     /// Uploads a library model under `uploadName`, which the caller has checked with `checkUploadName` (and, for a
-    /// listed name, the seller chose to replace). Never retried. If Slant returns a file another library model is linked
-    /// to, that file now holds this model: only this model keeps the link, and `uploadLinkMovedMessage` says so.
+    /// listed name, the seller chose to replace the file in `replacing`). Never retried. The
+    /// pre-PUT guard stops before any bytes are sent when Slant offers to store the upload in one of `protectedFiles`
+    /// (every file the check read, less the one being replaced). If Slant returns a file another library model is
+    /// linked to, that file now holds this model: only this model keeps the link, and `uploadLinkMovedMessage` says so.
+    /// After a Replace File that failed once the PUT may have started, every model linked to the replaced file (this
+    /// one included) loses its link (`uploadReplacementMayBePartial`). True only when the upload was confirmed and this
+    /// model is linked to the file Slant returned.
     @discardableResult
-    func uploadModel(id: UUID, as uploadName: String, replacing: Bool = false) async -> Bool {
+    func uploadModel(id: UUID, as uploadName: String, replacing: UploadReplacement? = nil,
+                     protectedFiles: [String: String] = [:]) async -> Bool {
         guard let model = localModels.first(where: { $0.id == id }), !platformID.isEmpty else {
             showError("Choose a local model and a platform before uploading.")
             return false
@@ -1598,20 +1630,39 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             return false
         }
         let stage = UploadStageBox()
-        return await run("Upload \(capturedName)", handlesError: { error in
+        let target = UploadTargetBox()
+        var succeeded = false
+        let ran = await run("Upload \(capturedName)", handlesError: { error in
             // Worded by the step that failed; a confirm with an unknown outcome is remembered for this model.
             let failedStage = stage.value
-            if uploadOutcomeUnknown(stage: failedStage, error: error)
-                || uploadReplacementMayBePartial(stage: failedStage, error: error, replacing: replacing) {
+            let replacedID = replacing.map { $0.fileID ?? target.value ?? "" }
+            if uploadReplacementMayBePartial(stage: failedStage, replacingFileID: replacedID) {
+                // The replaced file (or the one Slant chose) may now hold part of this model: no model keeps a link to it.
+                let changed = Set([replacing?.fileID, target.value].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty })
+                let others = self.clearLinks(toFileIDs: changed, alsoUnlinking: capturedID)
+                // The bar shows the failed state (Upload Again), never "select it to estimate and order".
+                unconfirmedUploadModelIDs.remove(capturedID)
+                saveModels()
+                self.error = uploadReplacementPartialMessage(fileName: replacing?.fileName ?? "", modelName: model.name, otherModelNames: others)
+                return true
+            }
+            if uploadOutcomeUnknown(stage: failedStage, error: error) {
                 unconfirmedUploadModelIDs.insert(capturedID)
             }
-            self.error = uploadFailureMessage(stage: failedStage, error: error, replacing: replacing)
+            self.error = uploadFailureMessage(stage: failedStage, error: error)
             return true
         }) {
             // Quit asks first until the upload has its answer (SlantStudioApp.swift).
             let write = SlantWritesInFlight.shared.begin(.upload)
             defer { SlantWritesInFlight.shared.end(write) }
-            let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID) { [weak self] next in
+            let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID,
+                                                   checkPlaceholder: { placeholder in
+                target.value = uploadPlaceholderFileID(placeholder)
+                if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: protectedFiles) {
+                    throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
+                }
+            }) { [weak self] next in
                 stage.value = next
                 Task { @MainActor in self?.progress = next.progressText }
             }
@@ -1630,6 +1681,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             }
             if let index = localModels.firstIndex(where: { $0.id == capturedID }) {
                 localModels[index].remoteID = remoteID
+                succeeded = true
             }
             // The same file ID may now hold different contents, so an estimate for it is no longer current.
             if fileID == remoteID { estimate = nil }
@@ -1642,6 +1694,23 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             files.removeAll { $0.id == remoteID }; files.insert(record, at: 0)
             saveModels()
         }
+        return ran && succeeded
+    }
+    /// Clears the link of every library model linked to one of `fileIDs`, and of `alsoUnlinking`, after a replace whose
+    /// outcome leaves those files' contents in doubt. A selected file or estimate that points at one of them is cleared
+    /// too. The names of the other models that lost a link, in library order. The caller saves the library.
+    private func clearLinks(toFileIDs fileIDs: Set<String>, alsoUnlinking modelID: UUID?) -> [String] {
+        let affected = modelsLinked(toFileIDs: fileIDs, in: localModels)
+        let others = localModels.filter { affected.contains($0.id) && $0.id != modelID }.map(\.name)
+        for index in localModels.indices where affected.contains(localModels[index].id) || localModels[index].id == modelID {
+            localModels[index].remoteID = nil
+        }
+        let selected = fileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if fileIDs.contains(selected) || selectedLocalID.map({ affected.contains($0) || $0 == modelID }) == true {
+            fileID = ""
+            estimate = nil
+        }
+        return others
     }
     func quote() async {
         applyDefaultFilamentIfNeeded()
@@ -1859,20 +1928,37 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         }
         return result
     }
+    /// `POST /files` (one step: Slant fetches the link itself). The pre-PUT guard can't run here, because Slant
+    /// returns no placeholder before it stores the file. `replacingFileID`/`replacingFileName` name the file the seller
+    /// chose to replace (nil: not a Replace File; blank: its ID isn't known): when the outcome is unclear, every library
+    /// model linked to it loses its link.
     @discardableResult
-    func importModelFromURL(_ url: String, name: String) async -> Bool {
+    func importModelFromURL(_ url: String, name: String, replacingFileID: String? = nil, replacingFileName: String = "") async -> Bool {
         let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmedURL.lowercased().hasPrefix("https://") else { showError("Use an https:// link to upload a model."); return false }
         guard !trimmedName.isEmpty else { showError("Enter a name for the uploaded model."); return false }
         guard !platformID.isEmpty else { showError("Choose a default platform in Settings › Account."); return false }
         let type = importModelType(url: trimmedURL, name: trimmedName)
+        // Nil: not a Replace File. Blank: a Replace File whose file ID isn't known (no link can be cleared by it).
+        let replaced = replacingFileID?.trimmingCharacters(in: .whitespacesAndNewlines)
         var ok = false
         let ran = await run("Upload model from URL", handlesError: { error in
             // `POST /files` has left the live OpenAPI; a 404 or 405 means Slant no longer takes links. An unclear reply
             // may still have added the file, so that copy says to refresh before uploading again.
-            guard let message = uploadFromURLUnavailableMessage(error) ?? uploadFromURLUnclearMessage(error) else { return false }
-            self.error = message
+            if let message = uploadFromURLUnavailableMessage(error) {
+                self.error = message
+                return true
+            }
+            guard uploadFromURLUnclearMessage(error) != nil else { return false }
+            if let replaced {
+                // A Replace File with an unclear outcome: the replaced file may now hold this link's model.
+                let others = self.clearLinks(toFileIDs: replaced.isEmpty ? [] : [replaced], alsoUnlinking: nil)
+                saveModels()
+                self.error = uploadFromURLReplaceUnclearMessage(error, fileName: replacingFileName, modelNames: others)
+            } else {
+                self.error = uploadFromURLUnclearMessage(error)
+            }
             return true
         }) {
             var body: [String: Any] = ["URL": trimmedURL, "name": trimmedName, "platformId": platformID, "type": type]
@@ -2096,25 +2182,45 @@ func slantUploadNameKey(_ name: String) -> String {
     return words.folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
 }
 
-/// The name of a listed Slant file that an upload named `name` would share, else nil (also nil for a blank name).
-func slantUploadNameConflict(name: String, files: [Record]) -> String? {
+/// The listed Slant file an upload named `name` would share, else nil (also nil for a blank name). Several listed
+/// names may match the comparison key; the linked file (`preferredFileID`) wins, then an exact (trimmed) name, then
+/// the first listed.
+func slantUploadNameConflictRecord(name: String, files: [Record], preferredFileID: String? = nil) -> Record? {
     let key = slantUploadNameKey(name)
     guard !key.isEmpty else { return nil }
-    for file in files {
-        guard let listed = file.values["name"] as? String else { continue }
-        if slantUploadNameKey(listed) == key { return listed.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let matches = files.filter { file in
+        guard let listed = file.values["name"] as? String else { return false }
+        return slantUploadNameKey(listed) == key
     }
-    return nil
+    let preferred = preferredFileID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !preferred.isEmpty, let linked = matches.first(where: { uploadedFileID($0.values) == preferred }) { return linked }
+    let exact = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let same = matches.first(where: { ($0.values["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) == exact }) {
+        return same
+    }
+    return matches.first
+}
+
+/// The name of a listed Slant file that an upload named `name` would share, else nil (also nil for a blank name).
+func slantUploadNameConflict(name: String, files: [Record]) -> String? {
+    slantUploadNameConflictRecord(name: name, files: files).flatMap { ($0.values["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
 }
 
 /// The first of "Name 2", "Name 3", … that no listed Slant file shares (compared by `slantUploadNameKey`). The name's
-/// spacing is tidied; a trailing number is never read as a counter ("Bracket 50" becomes "Bracket 50 2").
+/// spacing is tidied; a trailing number is never read as a counter ("Bracket 50" becomes "Bracket 50 2"). A trailing
+/// .stl, .obj or .3mf (any case) stays last ("part.3mf" becomes "part 2.3mf"), so the suggestion keeps its type.
 func slantUploadUniqueName(name: String, files: [Record]) -> String {
-    let base = name.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    var base = name.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    var suffix = ""
+    let ext = (base as NSString).pathExtension
+    if ["stl", "obj", "3mf"].contains(ext.lowercased()) {
+        let stem = (base as NSString).deletingPathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stem.isEmpty { base = stem; suffix = ".\(ext)" }
+    }
     let taken = Set(files.compactMap { ($0.values["name"] as? String).map(slantUploadNameKey) })
     var number = 2
-    while taken.contains(slantUploadNameKey("\(base) \(number)")) { number += 1 }
-    return "\(base) \(number)"
+    while taken.contains(slantUploadNameKey("\(base) \(number)\(suffix)")) { number += 1 }
+    return "\(base) \(number)\(suffix)"
 }
 
 /// What the same-name check found before an upload.
@@ -2126,13 +2232,76 @@ enum SlantUploadNameCheck: Equatable {
 }
 
 func slantUploadNameCheck(name: String, files: [Record]) -> SlantUploadNameCheck {
-    guard let existing = slantUploadNameConflict(name: name, files: files) else { return .clear }
-    return .conflict(existing: existing, suggested: slantUploadUniqueName(name: name, files: files))
+    slantUploadNameCheckResult(name: name, linkedFileID: nil, files: files).check
 }
 
-/// The confirmation shown when an upload's name is already in the seller's Slant files.
-func slantUploadNameConflictMessage(existing: String) -> String {
-    "A file named “\(existing)” is already in your Slant files. Uploading with this name replaces that file for every draft that uses it."
+/// The whole result of the same-name check: what to upload as, what it matched, and the files the pre-PUT guard must
+/// protect (`protectedFiles(replacing:)`).
+struct SlantUploadNameCheckResult {
+    /// The name to upload as: the linked cloud file's name for a linked model when it is listed, else the name given.
+    var name: String
+    var check: SlantUploadNameCheck
+    /// The matching listed file's own ID, when it has one.
+    var conflictFileID: String?
+    /// The match is the model's linked file: its own earlier upload.
+    var conflictIsLinkedFile: Bool
+    /// Every file the check read (the fresh list, then the loaded one).
+    var files: [Record]
+
+    /// The pre-PUT guard's list: every file read, except the one the seller chose to replace.
+    func protectedFiles(replacing: String? = nil) -> [String: String] { uploadProtectedFiles(files, replacing: replacing) }
+}
+
+/// The same-name decision. For a model linked to a listed cloud file, the name is that file's, so a model uploaded as
+/// "Bracket 2" is checked against "Bracket 2" (its own file), never another model's "Bracket".
+func slantUploadNameCheckResult(name: String, linkedFileID: String?, files: [Record]) -> SlantUploadNameCheckResult {
+    let linked = linkedFileID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    var uploadName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !linked.isEmpty, let file = files.first(where: { uploadedFileID($0.values) == linked }),
+       let listed = (file.values["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !listed.isEmpty {
+        uploadName = listed
+    }
+    guard let record = slantUploadNameConflictRecord(name: uploadName, files: files, preferredFileID: linked),
+          let existing = (record.values["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+        return SlantUploadNameCheckResult(name: uploadName, check: .clear, conflictFileID: nil, conflictIsLinkedFile: false, files: files)
+    }
+    let conflictID = uploadedFileID(record.values)
+    return SlantUploadNameCheckResult(
+        name: uploadName,
+        check: .conflict(existing: existing, suggested: slantUploadUniqueName(name: uploadName, files: files)),
+        conflictFileID: conflictID,
+        conflictIsLinkedFile: !linked.isEmpty && conflictID == linked,
+        files: files)
+}
+
+/// The confirmation shown when an upload's name is already in the seller's Slant files. `ownEarlierUpload`: the match
+/// is the selected model's linked file. `earlierUploadUnconfirmed`: Slant didn't confirm this model's last upload, so
+/// the match may be that upload. Whether placed orders are affected is unverified, hence "possibly".
+func slantUploadNameConflictMessage(existing: String, ownEarlierUpload: Bool = false, earlierUploadUnconfirmed: Bool = false) -> String {
+    var text = "A file named “\(existing)” is already in your Slant files."
+    if ownEarlierUpload {
+        text += " It’s this model’s earlier upload."
+    } else if earlierUploadUnconfirmed {
+        text += " Slant didn’t confirm this model’s earlier upload, so this may be that upload."
+    }
+    return text + " Uploading with this name replaces that file for every draft that uses it, and possibly for orders not yet printed."
+}
+
+/// Upload Again… when the same-name check found no file with the model's name: the one question before uploading.
+func reuploadNoConflictMessage(name: String, earlierUploadUnconfirmed: Bool) -> String {
+    let lead = earlierUploadUnconfirmed
+        ? "Slant didn’t confirm the earlier upload of “\(name)”, and no file with this name is in your Slant files now."
+        : "No file named “\(name)” is in your Slant files now."
+    return "\(lead) This uploads it as a new file, and this Mac’s copy will link to it."
+}
+
+/// The other library models linked (trimmed) to one of `fileIDs`.
+func modelsLinked(toFileIDs fileIDs: Set<String>, in models: [LocalModel]) -> Set<UUID> {
+    guard !fileIDs.isEmpty else { return [] }
+    return Set(models.filter { model in
+        guard let id = model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else { return false }
+        return fileIDs.contains(id)
+    }.map(\.id))
 }
 
 /// Whether a `GET /files` page can be used for the same-name check: a list (empty is fine), and when it has rows, at
@@ -2151,11 +2320,34 @@ func slantFileNamePageIsReadable(_ json: Any?) -> Bool {
 /// The most pages of 100 the same-name check reads (5,000 files).
 let slantUploadNameCheckMaxPages = 50
 
+/// How to try the check again, where it was started: Models' upload buttons, or the Upload from URL sheet's Upload.
+let slantUploadNameCheckRetryInModels = "Upload again to check once more."
+let slantUploadNameCheckRetryInURLSheet = "Press Upload to try again."
+
 /// Why nothing was uploaded when the same-name check couldn't read the whole file list.
-func slantUploadNameCheckFailedMessage(name: String, reason: String) -> String {
+func slantUploadNameCheckFailedMessage(name: String, reason: String, retryHint: String = slantUploadNameCheckRetryInModels) -> String {
     let lead = "Studio couldn’t read all your Slant files to check for one already named “\(name)”, so nothing was uploaded."
     let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? "\(lead) Refresh, then upload again." : "\(lead) \(trimmed) Refresh, then upload again."
+    return trimmed.isEmpty ? "\(lead) \(retryHint)" : "\(lead) \(trimmed) \(retryHint)"
+}
+
+/// The same-name check stopped for the rate limit (`slantUploadNameCheckRateLimitStop`, or a 429 to its read).
+struct SlantUploadNameCheckRateLimited: Error {}
+let slantUploadNameCheckRateLimitedMessage = "Slant’s rate limit is nearly used up, so Studio didn’t check your Slant files and nothing was uploaded. Wait a minute, then upload again."
+
+/// The account lists more files than the check reads; refreshing can't help.
+struct SlantUploadNameCheckTooManyFiles: Error {}
+let slantUploadNameCheckTooManyFilesMessage = "Your Slant account lists more than \((slantUploadNameCheckMaxPages * listPageSize).formatted()) files. Studio checks every file’s name before an upload and can’t check that many, so nothing was uploaded."
+
+/// Whether the same-name check's next page read must stop: until a 429's wait has passed, or while Studio's known
+/// allowance is at or below the order watch's reserve (`orderWatchRateLimitReserve`). A low count with a reset time
+/// holds until that time; without one it is trusted for a minute after it was seen.
+func slantUploadNameCheckRateLimitStop(rateLimit: RateLimitInfo?, observedAt: Date?, rateLimitedUntil: Date?, now: Date) -> Bool {
+    if let until = rateLimitedUntil, until > now { return true }
+    guard let rateLimit, let remaining = rateLimit.remaining, remaining <= orderWatchRateLimitReserve else { return false }
+    if let reset = rateLimit.reset { return reset > now }
+    guard let observedAt else { return false }
+    return now.timeIntervalSince(observedAt) < 60
 }
 
 /// The other library models linked to `fileID` once `uploadedModelID` has been linked to it. Slant stored the upload
@@ -2223,10 +2415,32 @@ func uploadFromURLUnclearMessage(_ error: Error) -> String? {
     guard slantCreateOutcomeUnclear(error) else { return nil }
     return "\(slantUnclearReplyCause(error)), so the model may already be in your Slant files. Refresh and look for it there before uploading it again."
 }
+/// Upload from URL's copy after a Replace File whose outcome is unclear: the replaced file may now hold the link's
+/// model, and `modelNames` (the library models that were linked to it) are no longer linked.
+func uploadFromURLReplaceUnclearMessage(_ error: Error, fileName: String, modelNames: [String]) -> String {
+    let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let file = trimmed.isEmpty ? "the existing file in your Slant files" : "your Slant file “\(trimmed)”"
+    var text = "\(slantUnclearReplyCause(error)), so \(file) may now hold this model, or part of it, for every draft that uses it."
+    if let first = modelNames.first {
+        text += modelNames.count == 1
+            ? " “\(first)” was linked to that file and no longer is; upload it again before you use it in an order."
+            : " \(modelNames.count) models in your library were linked to that file and no longer are; upload them again before you use them in an order."
+    }
+    return text + " Refresh in the main window to see what Slant now lists."
+}
 /// Create Platform's copy when Slant may have made the platform anyway, else nil.
 func platformCreateUnclearMessage(_ error: Error) -> String? {
     guard slantCreateOutcomeUnclear(error) else { return nil }
     return "\(slantUnclearReplyCause(error)), so the platform may already exist. Use Reload Platforms in Settings › Account to check before creating it again."
+}
+/// The file ID Slant's upload placeholder named (`uploadPlaceholderFileID`), set from `APIClient.upload`'s check.
+final class UploadTargetBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var id: String?
+    var value: String? {
+        get { lock.lock(); defer { lock.unlock() }; return id }
+        set { lock.lock(); id = newValue; lock.unlock() }
+    }
 }
 /// The upload step currently running, set from `APIClient.upload`'s callback (any thread) and read on the main actor.
 final class UploadStageBox: @unchecked Sendable {

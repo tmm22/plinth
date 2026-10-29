@@ -39,11 +39,12 @@ final class FilesRound17Tests: XCTestCase {
         XCTAssertEqual(slantUploadNameCheck(name: "Hook", files: files(["Phone Stand"])), .clear)
         XCTAssertEqual(slantUploadNameCheck(name: "hook", files: files(["Hook"])), .conflict(existing: "Hook", suggested: "hook 2"))
         XCTAssertEqual(slantUploadNameConflictMessage(existing: "Hook"),
-                       "A file named “Hook” is already in your Slant files. Uploading with this name replaces that file for every draft that uses it.")
+                       "A file named “Hook” is already in your Slant files. Uploading with this name replaces that file for every draft that uses it, and possibly for orders not yet printed.")
         let failed = slantUploadNameCheckFailedMessage(name: "Hook", reason: "Slant didn’t reply in time.")
         XCTAssertTrue(failed.contains("nothing was uploaded"))
         XCTAssertTrue(failed.contains("Slant didn’t reply in time."))
-        XCTAssertTrue(failed.contains("Refresh"))
+        XCTAssertTrue(failed.hasSuffix(slantUploadNameCheckRetryInModels))
+        XCTAssertFalse(failed.contains("Refresh"), "the next step is the upload button, not Refresh")
         XCTAssertFalse(slantUploadNameCheckFailedMessage(name: "Hook", reason: " ").contains("  "))
     }
 

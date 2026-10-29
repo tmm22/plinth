@@ -423,6 +423,8 @@ enum BatchPersonaliseUploadOutcome: Equatable {
     case unknown(String)
 }
 
+let batchPersonaliseWouldOverwriteMessage = "Slant would have saved this personalised model into a file already in your Slant files, so nothing was uploaded and this draft wasn’t created."
+
 let batchPersonaliseUnknownUploadAdvice = "Its draft wasn’t created. The model may be in your Slant files."
 
 /// A confirmed upload must name its file through `uploadedFileID` (a non-empty string `publicFileServiceId`,
@@ -437,6 +439,8 @@ func batchPersonaliseUploadOutcome(response object: [String: Any]) -> BatchPerso
 /// Refused only when the error proves Slant didn't act; timeouts, transport errors, 5xx, 408, 409 and replies Studio
 /// can't read leave the outcome unknown.
 func batchPersonaliseUploadOutcome(error: Error) -> BatchPersonaliseUploadOutcome {
+    // The pre-PUT guard stopped before any bytes were sent: a definite refusal for this order only.
+    if error is UploadWouldOverwriteExistingFile { return .refused(batchPersonaliseWouldOverwriteMessage) }
     if orderMutationErrorProvesNoEffect(error) {
         if case APIError.http(429, _, _, _)? = error as? APIError {
             return .refused("Slant’s rate limit was reached, so the personalised model wasn’t uploaded and this draft wasn’t created.")
@@ -515,6 +519,20 @@ struct BatchPersonaliseRunHooks {
     var accountProblem: () -> String?
     var isStopRequested: () -> Bool
     var uploadSent: (Result<APIResponse, Error>) -> Void
+    /// File IDs (with names) an upload must never write over (`batchPersonaliseProtectedFiles`), read before each
+    /// upload. The pre-PUT guard stops an upload whose placeholder names one, before any bytes are sent.
+    var protectedFiles: () -> [String: String] = { [:] }
+}
+
+/// The personalised uploads' pre-PUT guard list: the loaded Slant files' own IDs and every library model's link.
+/// Their tokens should make every name new, but whatever Slant's naming rule, an upload never writes over these.
+func batchPersonaliseProtectedFiles(files: [Record], models: [LocalModel]) -> [String: String] {
+    var protected = uploadProtectedFiles(files)
+    for model in models {
+        guard let id = model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty, protected[id] == nil else { continue }
+        protected[id] = model.name
+    }
+    return protected
 }
 
 let batchPersonaliseStoppedMessage = "Stopped. The rest weren’t sent."
@@ -590,8 +608,16 @@ func batchPersonaliseMakeAndUpload(_ job: BatchPersonaliseJob, client: APIClient
         }
         let outcome: BatchPersonaliseUploadOutcome
         var failure: Error?
+        // Never write over a file Studio knows of, nor one this order already uploaded to.
+        var protected = hooks.protectedFiles()
+        for id in fileIDs where protected[id] == nil { protected[id] = "" }
         do {
-            let response = try await client.upload(file: file, name: name, platformId: platformID, ownerId: ownerID) { _ in }
+            let response = try await client.upload(file: file, name: name, platformId: platformID, ownerId: ownerID,
+                                                   checkPlaceholder: { placeholder in
+                if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: protected) {
+                    throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
+                }
+            }) { _ in }
             hooks.uploadSent(.success(response))
             outcome = batchPersonaliseUploadOutcome(response: responseObject(response))
         } catch {

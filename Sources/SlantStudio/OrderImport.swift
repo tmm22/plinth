@@ -1300,6 +1300,8 @@ enum OrderImportRowState: Equatable {
         var stopMessage: String?
         let ownerID = store.ownerID
         let accountChanged = "Stopped because the account or platform changed. The rest weren’t sent."
+        /// Personalised files uploaded in this batch: protected from later uploads as well (pre-PUT guard).
+        var uploadedFileIDs: Set<String> = []
 
         /// Waits as the pacing requires; a reason to stop, or nil. Personalised uploads share it with drafts.
         func pace() async -> String? {
@@ -1334,7 +1336,10 @@ enum OrderImportRowState: Equatable {
                         lastStart = Date()
                         switch result {
                         case .success(let response):
-                            if case .uploaded = batchPersonaliseUploadOutcome(response: responseObject(response)) { tally.modelsUploaded += 1 }
+                            if case .uploaded(let fileID) = batchPersonaliseUploadOutcome(response: responseObject(response)) {
+                                tally.modelsUploaded += 1
+                                uploadedFileIDs.insert(fileID)
+                            }
                             if response.rateLimit.hasValues {
                                 observedRateLimit = response.rateLimit
                                 store.rateLimit = response.rateLimit
@@ -1344,6 +1349,11 @@ enum OrderImportRowState: Equatable {
                                 rateLimitedUntil = comparisonRateLimitedUntil(retryAfter: retryAfter, rateLimitReset: reset, now: Date())
                             }
                         }
+                    },
+                    protectedFiles: {
+                        var protected = batchPersonaliseProtectedFiles(files: store.files, models: store.localModels)
+                        for id in uploadedFileIDs where protected[id] == nil { protected[id] = "" }
+                        return protected
                     }))
                 if case .ready(let fileIDs) = step {
                     if let lines = batchPersonaliseDraftLines(personalised.plan.baseLines, models: personalised.plan.models, fileIDs: fileIDs),

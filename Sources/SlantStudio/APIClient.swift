@@ -368,23 +368,91 @@ func uploadOutcomeUnknown(stage: UploadStage?, error: Error) -> Bool {
     return !orderMutationErrorProvesNoEffect(error)
 }
 
-/// Replace File reuses the existing Slant file (Slant keeps one file per owner and name, 30 Oct 2026), so a failure
-/// once the bytes may have started arriving can leave that file holding part of the new model: the storage PUT that
-/// failed for any reason, or a confirm whose outcome is unknown. A failure while asking for the link changed nothing.
-func uploadReplacementMayBePartial(stage: UploadStage?, error: Error, replacing: Bool) -> Bool {
-    guard replacing else { return false }
+/// Replace File reuses the existing Slant file (Slant keeps one file per owner and name, 30 Oct 2026), so once the
+/// storage PUT may have started, that file's contents may have changed whatever happened next: a failed PUT, a confirm
+/// whose outcome is unknown, and even a definite refusal at confirm (the PUT had already succeeded and the bytes may be
+/// stored under the file's key). A failure while asking for the link (`.preparing`, including the pre-PUT guard,
+/// `UploadWouldOverwriteExistingFile`) sent no bytes. `replacingFileID` is the file the seller chose to replace (blank
+/// when neither the listed record nor Slant's placeholder named its ID); nil for an upload that isn't a Replace File.
+func uploadReplacementMayBePartial(stage: UploadStage?, replacingFileID: String?) -> Bool {
+    guard replacingFileID != nil else { return false }
     switch stage {
-    case .uploading?: return true
-    case .confirming?: return uploadOutcomeUnknown(stage: stage, error: error)
+    case .uploading?, .confirming?: return true
     case .preparing?, nil: return false
     }
 }
-let uploadReplacementPartialMessage = "The upload stopped partway, so the existing file in your Slant files may now hold part of this model. Upload again with Replace File before you use it in an order."
+
+/// The failure copy after a Replace File that stopped once the PUT may have started. `fileName` is the replaced Slant
+/// file; `modelName` the model being uploaded (nil for Upload from URL); `otherModelNames` the other library models
+/// that were linked to that file. Every one of them has lost its link and must be uploaded again before ordering.
+func uploadReplacementPartialMessage(fileName: String, modelName: String?, otherModelNames: [String]) -> String {
+    let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let file = trimmed.isEmpty ? "the existing file in your Slant files" : "your Slant file “\(trimmed)”"
+    var text = "The upload stopped partway, so \(file) may now hold part of this model, for every draft that uses it."
+    if let modelName {
+        text += " “\(modelName)” is no longer linked to that file; upload it again before you use it in an order."
+    }
+    if let first = otherModelNames.first {
+        text += otherModelNames.count == 1
+            ? " “\(first)” was linked to that file too and no longer is; upload it again before you use it in an order."
+            : " \(otherModelNames.count) other models in your library were linked to that file and no longer are; upload them again before you use them in an order."
+    }
+    return text
+}
+
+/// The `publicFileServiceId` (a non-empty string) of the file `POST /files/direct-upload` would store the upload in,
+/// else nil. Slant returns an existing file's placeholder when the name is already used (30 Oct 2026).
+func uploadPlaceholderFileID(_ placeholder: [String: Any]) -> String? {
+    guard let raw = placeholder["publicFileServiceId"] as? String else { return nil }
+    let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    return id.isEmpty ? nil : id
+}
+
+/// The pre-PUT guard's decision: the protected file (ID and name) that the placeholder would write over, else nil.
+/// `protectedFiles` maps trimmed file IDs to their names. A placeholder without a string `publicFileServiceId` can't
+/// be checked and passes.
+func uploadPlaceholderProtectedFile(_ placeholder: [String: Any], protectedFiles: [String: String]) -> (id: String, name: String)? {
+    guard let id = uploadPlaceholderFileID(placeholder), let name = protectedFiles[id] else { return nil }
+    return (id, name)
+}
+
+/// File IDs (trimmed) with their names, for the pre-PUT guard: every record's own file ID (`uploadedFileID`, never a
+/// name), except `replacing`, the one file the seller chose to replace. Later records never overwrite an earlier
+/// record's name.
+func uploadProtectedFiles(_ files: [Record], replacing: String? = nil) -> [String: String] {
+    let skipped = replacing?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    var protected: [String: String] = [:]
+    for file in files {
+        guard let id = uploadedFileID(file.values), id != skipped, protected[id] == nil else { continue }
+        protected[id] = ((file.values["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return protected
+}
+
+/// A Replace File: the listed file the seller chose to replace (its ID when known) and its name for the copy.
+struct UploadReplacement: Equatable, Sendable {
+    var fileID: String?
+    var fileName: String
+}
+
+/// The pre-PUT guard stopped an upload: Slant returned the placeholder of a file that must not be overwritten, so no
+/// bytes were sent. A definite refusal: nothing changed on Slant.
+struct UploadWouldOverwriteExistingFile: LocalizedError, Equatable {
+    let fileID: String
+    let fileName: String
+    var errorDescription: String? { uploadWouldOverwriteMessage(fileName: fileName) }
+}
+
+func uploadWouldOverwriteMessage(fileName: String) -> String {
+    let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let file = trimmed.isEmpty ? "one of your existing Slant files" : "your existing file “\(trimmed)”"
+    return "Nothing was uploaded: Slant would have saved this into \(file). Choose another name and upload again."
+}
 
 /// Upload failure copy by the step that failed. A storage refusal isn't about the API key, and a local file is never
 /// told to use a secure link.
-func uploadFailureMessage(stage: UploadStage?, error: Error, replacing: Bool = false) -> String {
-    if uploadReplacementMayBePartial(stage: stage, error: error, replacing: replacing) { return uploadReplacementPartialMessage }
+func uploadFailureMessage(stage: UploadStage?, error: Error) -> String {
+    if let guarded = error as? UploadWouldOverwriteExistingFile { return uploadWouldOverwriteMessage(fileName: guarded.fileName) }
     if uploadOutcomeUnknown(stage: stage, error: error) { return uploadUnconfirmedMessage }
     switch stage {
     case .preparing?:
@@ -588,8 +656,12 @@ struct APIClient {
     }
 
     /// The three requests of an upload. `stage` is called synchronously before each one is sent, so a caller can word a
-    /// failure by the step that failed (`uploadFailureMessage`); the errors thrown are unchanged.
+    /// failure by the step that failed (`uploadFailureMessage`); the errors thrown are unchanged. `checkPlaceholder`
+    /// runs on the `filePlaceholder` that direct-upload returned, before the PUT: an error it throws stops the upload
+    /// with no bytes sent (the stage is still `.preparing`). Slant returns an existing file's placeholder for a name it
+    /// already holds, so callers use it to refuse writing over files that must be kept (`uploadPlaceholderProtectedFile`).
     func upload(file: URL, name: String, platformId: String, ownerId: String,
+                checkPlaceholder: (([String: Any]) throws -> Void)? = nil,
                 stage: @escaping @Sendable (UploadStage) -> Void) async throws -> APIResponse {
         guard file.isFileURL, FileManager.default.isReadableFile(atPath: file.path) else {
             throw APIError.invalidRequest("Select a readable local model file.")
@@ -612,6 +684,8 @@ struct APIClient {
             throw APIError.invalidResponse(uploadLinkMissingMessage)
         }
         try Task.checkCancellation()
+        // Before any bytes are sent: the caller may refuse the file Slant chose to store this upload in.
+        try checkPlaceholder?(placeholder)
         stage(.uploading)
         var put = URLRequest(url: url)
         put.httpMethod = "PUT"

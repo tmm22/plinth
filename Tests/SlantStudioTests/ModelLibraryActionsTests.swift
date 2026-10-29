@@ -94,13 +94,13 @@ final class ModelLibraryActionsTests: XCTestCase {
         XCTAssertNil(localModel(linkedTo: "file-1", in: []))
     }
 
-    func testReuploadConfirmationNamesTheSameNameCheck() {
-        // Slant keeps one file per owner and name, so the old "second file, not replaced" promise was false.
-        let message = reuploadConfirmationMessage(name: "Bracket")
-        XCTAssertTrue(message.contains("“Bracket”"))
-        XCTAssertTrue(message.contains("asks before replacing"))
+    func testReuploadWithoutAConflictAsksOnceAndPromisesNoSecondFile() {
+        // Slant keeps one file per owner and name; Upload Again… asks this only when the check found no such file.
+        let message = reuploadNoConflictMessage(name: "Bracket", earlierUploadUnconfirmed: false)
+        XCTAssertTrue(message.contains("No file named “Bracket”"))
         XCTAssertFalse(message.contains("second file"))
-        XCTAssertFalse(message.contains("not replaced"))
+        let unconfirmed = reuploadNoConflictMessage(name: "Bracket", earlierUploadUnconfirmed: true)
+        XCTAssertTrue(unconfirmed.contains("didn’t confirm the earlier upload of “Bracket”"))
     }
 
     // MARK: Prepared material
