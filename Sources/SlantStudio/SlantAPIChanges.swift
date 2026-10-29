@@ -35,20 +35,23 @@ let slantAPIComparisonVersion = 2
 
 // MARK: - Semantic comparison
 
-/// Wording and examples: changes to these never count. `scripts/check-slant-api.py` treats the same keys as wording.
-private let slantAPIIgnoredKeys: Set<String> = ["description", "summary", "title", "example", "examples", "externalDocs"]
+// The five key lists below are mirrored in `scripts/check-slant-api.py` (WORDING_KEYS, NAME_MAPS, DATA_KEYS,
+// ORDERED_LIST_KEYS, METHODS), and `SlantAPIScriptParityTests` compares them: change both together.
+
+/// Wording and examples: changes to these never count.
+let slantAPIIgnoredKeys: Set<String> = ["description", "summary", "title", "example", "examples", "externalDocs"]
 /// Objects whose keys are names (properties, paths, schemas, status codes, media types…), never keywords, so a
 /// property called `description` is compared like any other.
-private let slantAPINameMapKeys: Set<String> = [
+let slantAPINameMapKeys: Set<String> = [
     "paths", "properties", "patternProperties", "schemas", "responses", "content", "headers", "securitySchemes",
     "parameters", "requestBodies", "links", "callbacks", "encoding", "variables", "mapping", "definitions", "$defs",
     "dependentSchemas", "webhooks", "scopes", "pathItems"
 ]
 /// Values that are data, not schema: kept as they are (an `enum` is still compared as a set).
-private let slantAPIDataKeys: Set<String> = ["enum", "default", "const"]
+let slantAPIDataKeys: Set<String> = ["enum", "default", "const"]
 /// Arrays whose order means something. Every other OpenAPI array (required, enum, parameters, tags, allOf…) is a set.
-private let slantAPIOrderedArrayKeys: Set<String> = ["servers", "prefixItems"]
-private let slantAPIMethods = ["get", "put", "post", "delete", "options", "head", "patch", "trace"]
+let slantAPIOrderedArrayKeys: Set<String> = ["servers", "prefixItems"]
+let slantAPIMethods = ["get", "put", "post", "delete", "options", "head", "patch", "trace"]
 private let slantAPIMaxDepth = 64
 
 /// One JSON value as text with sorted keys, so equal values give equal text.
