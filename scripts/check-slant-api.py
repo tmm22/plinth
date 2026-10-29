@@ -23,7 +23,8 @@ Run before every release and whenever the app's API change check fires:
    changes those are.
 3. Checks that every difference between Studio's openapi.json and that
    snapshot is tagged with `x-slant-studio-source: docs|live` on the changed
-   node or an ancestor, or is text appended to Slant's own description. A
+   node or an ancestor, or is text appended to Slant's own non-empty
+   description (a description where Slant has none needs a tag). A
    tag at the document root or directly inside a name map (where it would
    read as a path or property name) is itself reported and exempts nothing.
 
@@ -478,8 +479,9 @@ def untagged_patches(studio, upstream, keys=(), names=False, out=None, tagged=No
             if key not in studio:
                 out.append((here, "removed without a tag on its parent"))
             elif (key == "description" and not child_names and isinstance(studio[key], str)
-                  and isinstance(upstream.get(key, ""), str) and studio[key].startswith(upstream.get(key, ""))):
-                continue  # Slant's text kept, Studio's note appended
+                  and isinstance(upstream.get(key), str) and upstream[key].strip()
+                  and studio[key].startswith(upstream[key])):
+                continue  # Slant's text kept, Studio's note appended (a description where Slant has none needs a tag)
             else:
                 untagged_patches(studio[key], upstream.get(key, MISSING), here, child_names, out, tagged)
         return out
@@ -716,6 +718,16 @@ def self_test():
                 contains=["use docs or live"])
             run("text appended to Slant's description", EXIT_SAME,
                 studio=_edited(base, (order + ("description",), "An order. Studio's note.")))
+            run("a description where Slant has none needs a tag", EXIT_UNTAGGED,
+                studio=_edited(base, (get_orders + ("parameters", 1, "description"), "Studio's note.")),
+                contains=["parameter page (query) › description: added without a tag"])
+            empty = _edited(base, (get_orders + ("parameters", 1, "description"), ""))
+            run("a description where Slant's is empty needs a tag", EXIT_UNTAGGED, old=empty, live=empty,
+                studio=_edited(base, (get_orders + ("parameters", 1, "description"), " Studio's note.")),
+                contains=["without a tag"])
+            run("a description where Slant has none, tagged on its parameter", EXIT_SAME,
+                studio=_edited(base, (get_orders + ("parameters", 1, "description"), "Studio's note."),
+                               (get_orders + ("parameters", 1, TAG), "live")), contains=["live 1"])
             run("an operation lost from Studio's spec", EXIT_UNTAGGED,
                 studio=_edited(base, (("paths", "/files"), _DELETE)), contains=["has lost POST /files"])
             run("a tagged new operation", EXIT_SAME,
