@@ -9,8 +9,12 @@ import SwiftUI
 // - Preferences: every key the new domain lacks is copied once (never overwriting), with order notifications carried
 //   as off, because macOS treats Plinth as a new app that needs permission again.
 // - Application Support/SlantStudio is copied (never moved or changed) to Application Support/Plinth with the
-//   library's file paths rewritten, verified, and only then put in place. A failed copy leaves Plinth using the old
-//   folder for this launch (`AppSupportLocation`), and it tries again next launch.
+//   library's file paths rewritten, verified, and only then put in place, carrying a hidden marker file so a crash
+//   before the preference marker is never mistaken for a conflict. A failed copy leaves Plinth using the old folder for
+//   this launch (`AppSupportLocation`), and it tries again next launch. When both folders hold the seller's data,
+//   Plinth's is used and a notice says so until the seller dismisses it.
+// - While Slant Studio runs alongside Plinth, a notice asks the seller to quit it: the two apps don't share the
+//   unknown-outcome lock, the unconfirmed-draft guard or the quit guard.
 // - Keychain items are copied lazily, one account at a time, when a store first reads them (`KeychainItemStore`).
 //   Migration never deletes an old item; removing a key in Plinth also tries to remove the old one.
 // Nothing here logs a secret or a path.
@@ -30,7 +34,12 @@ enum LegacyMigrationKeys {
     static let supportFolder = "plinth.migration.supportFolder"
     static let keychainAccounts = "plinth.migration.keychainAccounts"
     static let notifyWasOn = "plinth.migration.notifyWasOn"
+    /// Launches on which Slant Studio's preferences file existed but couldn't be read.
+    static let defaultsUnreadableLaunches = "plinth.migration.defaultsUnreadableLaunches"
 }
+
+/// Launches after the first on which an unreadable preferences file is tried again; after them the copy is given up.
+let legacyDefaultsUnreadableRetryLimit = 3
 
 /// Which app this build is running as, from its bundle ID.
 enum AppIdentity: Equatable, Sendable {
@@ -71,9 +80,10 @@ extension UserDefaults: MigrationDefaults {}
 enum DefaultsMergeDecision {
     /// The marker is set: the copy already happened.
     case alreadyDone
-    /// Slant Studio never saved preferences on this Mac.
+    /// Slant Studio never saved preferences on this Mac, its file is empty, or it stayed unreadable on every try.
     case nothingToCopy
-    /// The old preferences file exists but couldn't be read: try again next launch, with no marker.
+    /// The old preferences file exists but couldn't be read: try again next launch, with no marker (at most
+    /// `legacyDefaultsUnreadableRetryLimit` times).
     case retryLater
     case copy(DefaultsCopy)
 }
@@ -86,12 +96,16 @@ struct DefaultsCopy {
 }
 
 /// What to copy from Slant Studio's preferences: every key the new domain doesn't have, except the migration's own.
+/// `unreadableLaunchesSoFar` counts earlier launches that found the file but couldn't read it.
 func defaultsMergePlan(legacyDomain: [String: Any]?, legacyPlistExists: Bool, newDomainKeys: Set<String>,
-                       markerSet: Bool) -> DefaultsMergeDecision {
+                       markerSet: Bool, unreadableLaunchesSoFar: Int = 0) -> DefaultsMergeDecision {
     if markerSet { return .alreadyDone }
-    guard let legacyDomain, !(legacyDomain.isEmpty && legacyPlistExists) else {
-        return legacyPlistExists ? .retryLater : .nothingToCopy
+    guard let legacyDomain else {
+        guard legacyPlistExists, unreadableLaunchesSoFar < legacyDefaultsUnreadableRetryLimit else { return .nothingToCopy }
+        return .retryLater
     }
+    // An empty domain (a file with nothing in it) has nothing to bring over; waiting would never change that.
+    if legacyDomain.isEmpty { return .nothingToCopy }
     var values: [(key: String, value: Any)] = []
     var turnsOffNotifications = false
     for key in legacyDomain.keys.sorted() where !key.hasPrefix(LegacyMigrationKeys.prefix) && !newDomainKeys.contains(key) {
@@ -123,6 +137,14 @@ let supportFolderUserDataFiles = ["models.json", "products.json", "products.unre
                                   "seller-address.json", "seller-address.unreadable.json"]
 /// Folders that hold the seller's data when not empty.
 let supportFolderUserDataFolders = ["Models", "Removed"]
+/// A hidden file the copy carries into Application Support/Plinth before it is put in place: a Plinth folder holding it
+/// is the migration's own copy (even after a crash before the preference marker), never a conflict. It is never user
+/// data, never compared when verifying, and nothing in the app lists the folder's top level.
+let supportFolderMovedMarkerName = ".moved-from-slant-studio"
+
+func supportFolderHasMoveMarker(_ folder: URL, fileManager: FileManager = .default) -> Bool {
+    fileManager.fileExists(atPath: folder.appendingPathComponent(supportFolderMovedMarkerName).path)
+}
 
 func supportFolderHasUserData(_ folder: URL, fileManager: FileManager = .default) -> Bool {
     for name in supportFolderUserDataFiles where fileManager.fileExists(atPath: folder.appendingPathComponent(name).path) {
@@ -143,9 +165,13 @@ enum SupportFolderPlan: Equatable {
     case setAsideThenCopy
     /// Both folders hold user data: Plinth's is used and nothing is merged.
     case conflict
+    /// Plinth's folder is the migration's own copy (it carries `supportFolderMovedMarkerName`).
+    case alreadyMoved
 }
 
-func supportFolderPlan(legacyHasUserData: Bool, newExists: Bool, newHasUserData: Bool) -> SupportFolderPlan {
+func supportFolderPlan(legacyHasUserData: Bool, newExists: Bool, newHasUserData: Bool,
+                       newHasMoveMarker: Bool = false) -> SupportFolderPlan {
+    if newExists, newHasMoveMarker { return .alreadyMoved }
     guard legacyHasUserData else { return .nothing }
     guard newExists else { return .copy }
     return newHasUserData ? .conflict : .setAsideThenCopy
@@ -154,9 +180,11 @@ func supportFolderPlan(legacyHasUserData: Bool, newExists: Bool, newHasUserData:
 func supportFolderPlan(legacy: URL, new: URL, fileManager: FileManager = .default) -> SupportFolderPlan {
     var isDirectory: ObjCBool = false
     let newExists = fileManager.fileExists(atPath: new.path, isDirectory: &isDirectory)
+    let newIsFolder = newExists && isDirectory.boolValue
     return supportFolderPlan(legacyHasUserData: supportFolderHasUserData(legacy, fileManager: fileManager),
                              newExists: newExists,
-                             newHasUserData: newExists && isDirectory.boolValue && supportFolderHasUserData(new, fileManager: fileManager))
+                             newHasUserData: newIsFolder && supportFolderHasUserData(new, fileManager: fileManager),
+                             newHasMoveMarker: newIsFolder && supportFolderHasMoveMarker(new, fileManager: fileManager))
 }
 
 /// The forms of `folder`'s path a saved absolute path may use: as given and with symbolic links resolved.
@@ -178,9 +206,11 @@ func pathRemappedIntoFolder(_ path: String, legacy: URL, new: URL) -> String? {
 }
 
 /// models.json with every `filePath` inside `legacy` rewritten into `new`, every other key and value kept. Nil when
-/// nothing changes or the file isn't the expected JSON list (it is then copied unchanged).
+/// nothing changes or the file isn't a library the app's own decoder reads (it is then copied unchanged, and loads in
+/// Plinth exactly as it did in Slant Studio).
 func modelsJSONRemappingFilePaths(_ data: Data, legacy: URL, new: URL) -> Data? {
-    guard var rows = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return nil }
+    guard (try? JSONDecoder().decode([LocalModel].self, from: data)) != nil,
+          var rows = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return nil }
     var changed = false
     for index in rows.indices {
         guard var row = rows[index] as? [String: Any], let path = row["filePath"] as? String,
@@ -252,11 +282,13 @@ private func libraryWithoutPaths(_ models: [LocalModel]) -> [Data]? {
 }
 
 /// Checks a finished copy before it is put in place: the same files (models.json and products.json may differ in size,
-/// having been rewritten), the same library apart from paths, and every remapped model file present when its original
-/// exists.
+/// having been rewritten; the copy's own `supportFolderMovedMarkerName` isn't compared), the same library apart from
+/// paths, and every remapped model file present when its original exists.
 func verifySupportFolderCopy(legacy: URL, copy: URL, finalLocation: URL, fileManager: FileManager = .default) -> Bool {
     guard var original = supportFolderInventory(legacy, fileManager: fileManager),
           var copied = supportFolderInventory(copy, fileManager: fileManager) else { return false }
+    original[supportFolderMovedMarkerName] = nil
+    copied[supportFolderMovedMarkerName] = nil
     for rewritten in ["models.json", "products.json"] {
         if original[rewritten] != nil, copied[rewritten] != nil { original[rewritten] = 0; copied[rewritten] = 0 }
     }
@@ -289,6 +321,8 @@ enum SupportFolderMigrationResult: Equatable {
     case moved(models: Int)
     /// Both folders hold data; Plinth's is used.
     case conflict
+    /// Plinth's folder is an earlier launch's copy whose preference marker was never written.
+    case alreadyMoved
     /// Something failed; nothing is in place, and the old folder is used this launch.
     case failed
 }
@@ -310,6 +344,7 @@ func migrateSupportFolder(legacy: URL, new: URL, fileManager: FileManager = .def
     switch plan {
     case .nothing: return .notNeeded
     case .conflict: return .conflict
+    case .alreadyMoved: return .alreadyMoved
     case .setAsideThenCopy:
         let aside = parent.appendingPathComponent(supportFolderSetAsidePrefix + UUID().uuidString)
         do { try fileManager.moveItem(at: new, to: aside) } catch { return .failed }
@@ -334,12 +369,17 @@ func migrateSupportFolder(legacy: URL, new: URL, fileManager: FileManager = .def
        let rewritten = productsJSONRemappingTemplatePaths(data, legacy: legacy, new: new) {
         do { try rewritten.write(to: productsURL, options: .atomic) } catch { return fail() }
     }
+    // Marks the copy as the migration's own before it can appear under Plinth's name.
+    do {
+        try Data().write(to: temporary.appendingPathComponent(supportFolderMovedMarkerName), options: .withoutOverwriting)
+    } catch { return fail() }
     guard verifySupportFolderCopy(legacy: source, copy: temporary, finalLocation: new, fileManager: fileManager) else {
         return fail()
     }
     // moveItem refuses an existing destination, so a folder that appeared meanwhile is never merged into.
     do { try fileManager.moveItem(at: temporary, to: new) } catch {
         try? fileManager.removeItem(at: temporary)
+        if supportFolderHasMoveMarker(new, fileManager: fileManager) { return .alreadyMoved }
         return supportFolderHasUserData(new, fileManager: fileManager) ? .conflict : .failed
     }
     let models = (try? Data(contentsOf: new.appendingPathComponent("models.json")))
@@ -391,6 +431,10 @@ struct LegacyMigrationOutcome: Equatable, Sendable {
     /// Counts for Activity; nil when nothing moved this launch.
     var movedModels: Int?
     var movedSettings: Int?
+    /// Both folders hold the seller's data, so Plinth kept its own and left Slant Studio's where it is.
+    var libraryKeptSeparate = false
+    /// Slant Studio's folder, only in the packaged Plinth app (Remove of the seller's address also deletes its copy).
+    var slantStudioDirectory: URL?
 }
 
 /// Everything the launch step reads, injectable for tests.
@@ -408,9 +452,14 @@ struct LegacyMigrationEnvironment {
 }
 
 /// Whether the launch step would copy anything now (preferences or the folder); decides the Quit Slant Studio alert.
+/// Preferences count only when they can be read and hold a key Plinth lacks: an empty or unreadable file never makes
+/// the seller wait.
 func legacyMigrationWouldCopy(_ environment: LegacyMigrationEnvironment) -> Bool {
     guard environment.identity == .plinth else { return false }
-    if environment.defaults.object(forKey: LegacyMigrationKeys.defaults) as? Bool != true, environment.legacyPlistExists {
+    if environment.defaults.object(forKey: LegacyMigrationKeys.defaults) as? Bool != true, environment.legacyPlistExists,
+       case .copy(let copy) = defaultsMergePlan(legacyDomain: environment.legacyDomain(), legacyPlistExists: true,
+                                                newDomainKeys: environment.newDomainKeys, markerSet: false),
+       !copy.values.isEmpty {
         return true
     }
     if environment.defaults.object(forKey: LegacyMigrationKeys.supportFolder) as? Bool == true { return false }
@@ -427,14 +476,18 @@ func performLegacyMigration(_ environment: LegacyMigrationEnvironment) -> Legacy
     case .other: return LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy)
     case .plinth: break
     }
-    var outcome = LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy)
+    var outcome = LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy,
+                                         slantStudioDirectory: legacy)
     let defaults = environment.defaults
 
     let marker = defaults.object(forKey: LegacyMigrationKeys.defaults) as? Bool == true
+    let unreadable = defaults.object(forKey: LegacyMigrationKeys.defaultsUnreadableLaunches) as? Int ?? 0
     switch defaultsMergePlan(legacyDomain: marker ? nil : environment.legacyDomain(),
                              legacyPlistExists: environment.legacyPlistExists,
-                             newDomainKeys: environment.newDomainKeys, markerSet: marker) {
-    case .alreadyDone, .retryLater: break
+                             newDomainKeys: environment.newDomainKeys, markerSet: marker,
+                             unreadableLaunchesSoFar: unreadable) {
+    case .alreadyDone: break
+    case .retryLater: defaults.set(unreadable + 1, forKey: LegacyMigrationKeys.defaultsUnreadableLaunches)
     case .nothingToCopy: defaults.set(true, forKey: LegacyMigrationKeys.defaults)
     case .copy(let copy):
         let count = applyDefaultsMerge(copy, to: defaults)
@@ -443,14 +496,15 @@ func performLegacyMigration(_ environment: LegacyMigrationEnvironment) -> Legacy
 
     guard defaults.object(forKey: LegacyMigrationKeys.supportFolder) as? Bool != true else { return outcome }
     switch migrateSupportFolder(legacy: legacy, new: plinth, fileManager: environment.fileManager) {
-    case .notNeeded:
+    case .notNeeded, .alreadyMoved:
         defaults.set(true, forKey: LegacyMigrationKeys.supportFolder)
     case .moved(let models):
         defaults.set(true, forKey: LegacyMigrationKeys.supportFolder)
         outcome.movedModels = models
     case .conflict:
-        // Plinth's own data is used. No marker: if that folder is removed, the next launch brings Slant Studio's over.
-        break
+        // Plinth's own data is used. No marker until the seller dismisses the notice: if that folder is removed
+        // first, the next launch brings Slant Studio's over.
+        outcome.libraryKeptSeparate = true
     case .failed:
         outcome.supportDirectory = legacy
         outcome.otherSupportDirectory = plinth
@@ -485,6 +539,9 @@ enum AppSupportLocation {
     /// The other app's folder: never written, and refused as an export destination.
     static var otherDirectory: URL { LegacyMigrationLaunch.outcome.otherSupportDirectory }
     static var copyFailedThisLaunch: Bool { LegacyMigrationLaunch.outcome.copyFailed }
+    static var libraryKeptSeparateThisLaunch: Bool { LegacyMigrationLaunch.outcome.libraryKeptSeparate }
+    /// Slant Studio's folder, only in the packaged Plinth app; nil otherwise. Used only to delete the seller's address.
+    static var slantStudioDirectory: URL? { LegacyMigrationLaunch.outcome.slantStudioDirectory }
 }
 
 @MainActor enum LegacyMigration {
@@ -514,7 +571,7 @@ enum AppSupportLocation {
             app.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Quit Slant Studio first"
-            alert.informativeText = "Plinth brings over your library, keys and settings from Slant Studio once it has quit."
+            alert.informativeText = "Plinth can bring over your library, keys and settings only after Slant Studio has quit. Quit it, then choose Try Again."
             alert.addButton(withTitle: "Try Again")
             alert.addButton(withTitle: "Quit Plinth")
             if alert.runModal() == .alertSecondButtonReturn { exit(0) }
@@ -522,12 +579,21 @@ enum AppSupportLocation {
     }
 }
 
-/// Activity's one line about the move: counts only, never paths or secrets. Nil when nothing moved this launch.
+/// Activity's one line about the move: counts only, never paths or secrets, and no zero counts. Nil when nothing was
+/// counted this launch.
 func legacyMigrationActivityDetail(_ outcome: LegacyMigrationOutcome) -> String? {
     var parts: [String] = []
-    if let models = outcome.movedModels { parts.append(models == 1 ? "1 model" : "\(models) models") }
-    if let settings = outcome.movedSettings { parts.append(settings == 1 ? "1 setting" : "\(settings) settings") }
+    if let models = outcome.movedModels, models > 0 { parts.append(models == 1 ? "1 model" : "\(models) models") }
+    if let settings = outcome.movedSettings, settings > 0 {
+        parts.append(settings == 1 ? "1 setting" : "\(settings) settings")
+    }
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
+/// Activity's line when both folders hold the seller's data: no paths. Nil otherwise.
+func legacyMigrationKeptSeparateActivity(_ outcome: LegacyMigrationOutcome) -> (title: String, detail: String)? {
+    guard outcome.libraryKeptSeparate else { return nil }
+    return (legacyLibraryKeptSeparateActivityTitle, legacyLibraryKeptSeparateActivityDetail)
 }
 
 // MARK: Keychain
@@ -692,18 +758,33 @@ struct KeychainItemStore: Sendable {
 // MARK: Notice
 
 enum LegacyMigrationNoticeKind: Equatable, Identifiable {
+    case slantStudioOpen
     case folderNotMoved
+    case libraryKeptSeparate
     case notificationsOff
     var id: Self { self }
 }
 
-/// The notices to show at the top of the main window. Nothing at all when everything moved.
+/// The notices to show at the top of the main window, the both-apps-open warning first. Nothing at all when everything
+/// moved and Slant Studio isn't running.
 func legacyMigrationNotices(copyFailedThisLaunch: Bool, folderNoticeDismissed: Bool, notificationsWereOn: Bool,
-                            notificationsOnNow: Bool, orderWatchEnabled: Bool) -> [LegacyMigrationNoticeKind] {
+                            notificationsOnNow: Bool, orderWatchEnabled: Bool, slantStudioOpen: Bool = false,
+                            libraryKeptSeparate: Bool = false,
+                            libraryNoticeDismissed: Bool = false) -> [LegacyMigrationNoticeKind] {
     var notices: [LegacyMigrationNoticeKind] = []
+    if slantStudioOpen { notices.append(.slantStudioOpen) }
     if copyFailedThisLaunch, !folderNoticeDismissed { notices.append(.folderNotMoved) }
+    if libraryKeptSeparate, !libraryNoticeDismissed { notices.append(.libraryKeptSeparate) }
     if notificationsWereOn, !notificationsOnNow, orderWatchEnabled { notices.append(.notificationsOff) }
     return notices
+}
+
+/// Whether another app with Slant Studio's bundle ID is running alongside this one. `endedPID` is an app that has just
+/// quit (it may still be listed). A build running as Slant Studio itself never shows the notice.
+func slantStudioRunsAlongside(runningLegacyPIDs: [pid_t], ownPID: pid_t, endedPID: pid_t? = nil,
+                              identity: AppIdentity) -> Bool {
+    guard identity != .legacy else { return false }
+    return runningLegacyPIDs.contains { $0 != ownPID && $0 != endedPID }
 }
 
 /// Whether the saved "notifications were on" flag has served its purpose and can go: notifications are on again, or
@@ -714,15 +795,56 @@ func legacyNotifyFlagIsSpent(notificationsOnNow: Bool, orderWatchEnabled: Bool) 
 
 /// Activity title for the one-time move. The old name is allowed in this file only (AppNameCopyTests).
 let legacyMigrationActivityTitle = "Moved from Slant Studio"
-let legacyFolderNotMovedNoticeText = "Plinth couldn’t bring over your Slant Studio library and settings this time, so it is using them where they are. It will try again next time it opens. Nothing was deleted."
+let legacyFolderNotMovedNoticeText = "Plinth couldn’t copy your Slant Studio library this time, so it is using it where it is. It will try again the next time it opens. Nothing was deleted."
+let legacyLibraryKeptSeparateNoticeText = "Plinth already had its own library, so it didn’t bring over Slant Studio’s. Slant Studio’s library is still in its own folder; nothing was deleted."
+let legacyLibraryKeptSeparateActivityTitle = "Kept Plinth’s own library"
+let legacyLibraryKeptSeparateActivityDetail = "Slant Studio’s library was left in its own folder. Nothing was deleted."
+let legacySlantStudioOpenNoticeText = "Slant Studio is open too. Quit it while you use Plinth: the two apps don’t share their payment and draft safeguards."
 let legacyNotificationsOffNoticeText = "Order notifications are off for now: macOS treats Plinth as a new app, so it needs your permission again."
 
 @MainActor final class LegacyMigrationNoticeState: ObservableObject {
     static let shared = LegacyMigrationNoticeState()
     @Published private(set) var folderNoticeDismissed = false
+    @Published private(set) var libraryNoticeDismissed = false
     @Published private(set) var notificationsWereOn = UserDefaults.standard.bool(forKey: LegacyMigrationKeys.notifyWasOn)
+    /// Another app with Slant Studio's bundle ID is running. Read from NSWorkspace only once watching starts (at launch).
+    @Published private(set) var slantStudioOpen = false
+    /// Launch and quit observers, added once and kept for the app's lifetime (this object is never released).
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     func dismissFolderNotice() { folderNoticeDismissed = true }
+
+    /// The seller accepts Plinth's own library: the folder marker is written, so neither the notice nor the check comes
+    /// back. Slant Studio's folder is left as it is.
+    func dismissLibraryNotice() {
+        libraryNoticeDismissed = true
+        UserDefaults.standard.set(true, forKey: LegacyMigrationKeys.supportFolder)
+    }
+
+    /// Starts following Slant Studio's launches and quits. Read-only: it never blocks, asks or sends anything.
+    func startWatchingForSlantStudio() {
+        guard workspaceObservers.isEmpty, runningAppIdentity != .legacy else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            let observer = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                guard app?.bundleIdentifier == legacyAppBundleIdentifier else { return }
+                let ended = notification.name == NSWorkspace.didTerminateApplicationNotification ? app?.processIdentifier : nil
+                MainActor.assumeIsolated { self?.refreshSlantStudioOpen(endedPID: ended) }
+            }
+            workspaceObservers.append(observer)
+        }
+        refreshSlantStudioOpen(endedPID: nil)
+    }
+
+    private func refreshSlantStudioOpen(endedPID: pid_t?) {
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: legacyAppBundleIdentifier)
+            .filter { !$0.isTerminated }
+            .map(\.processIdentifier)
+        let open = slantStudioRunsAlongside(runningLegacyPIDs: running, ownPID: ProcessInfo.processInfo.processIdentifier,
+                                            endedPID: endedPID, identity: runningAppIdentity)
+        if open != slantStudioOpen { slantStudioOpen = open }
+    }
 
     func clearNotificationsFlag() {
         notificationsWereOn = false
@@ -730,8 +852,8 @@ let legacyNotificationsOffNoticeText = "Order notifications are off for now: mac
     }
 }
 
-/// Shown at the top of the main window only when something from Slant Studio needs the seller's attention. No button
-/// is the default, so Return does nothing.
+/// Shown at the top of the main window only when something from Slant Studio needs the seller's attention, or while
+/// Slant Studio runs alongside Plinth. No button is the default, so Return does nothing.
 struct LegacyMigrationNoticeView: View {
     @ObservedObject private var state = LegacyMigrationNoticeState.shared
     @ObservedObject private var orderWatch = OrderWatch.shared
@@ -740,7 +862,10 @@ struct LegacyMigrationNoticeView: View {
         legacyMigrationNotices(copyFailedThisLaunch: AppSupportLocation.copyFailedThisLaunch,
                                folderNoticeDismissed: state.folderNoticeDismissed,
                                notificationsWereOn: state.notificationsWereOn,
-                               notificationsOnNow: orderWatch.notify, orderWatchEnabled: orderWatch.enabled)
+                               notificationsOnNow: orderWatch.notify, orderWatchEnabled: orderWatch.enabled,
+                               slantStudioOpen: state.slantStudioOpen,
+                               libraryKeptSeparate: AppSupportLocation.libraryKeptSeparateThisLaunch,
+                               libraryNoticeDismissed: state.libraryNoticeDismissed)
     }
 
     var body: some View {
@@ -748,9 +873,15 @@ struct LegacyMigrationNoticeView: View {
         VStack(spacing: 8) {
             ForEach(shown) { notice in
                 switch notice {
+                case .slantStudioOpen:
+                    row(legacySlantStudioOpenNoticeText, symbol: "exclamationmark.triangle") { EmptyView() }
                 case .folderNotMoved:
                     row(legacyFolderNotMovedNoticeText, symbol: "exclamationmark.triangle") {
                         Button("Dismiss") { state.dismissFolderNotice() }
+                    }
+                case .libraryKeptSeparate:
+                    row(legacyLibraryKeptSeparateNoticeText, symbol: "info.circle") {
+                        Button("Dismiss") { state.dismissLibraryNotice() }
                     }
                 case .notificationsOff:
                     row(legacyNotificationsOffNoticeText, symbol: "bell.slash") {
@@ -765,7 +896,10 @@ struct LegacyMigrationNoticeView: View {
         }
         .padding(.horizontal, shown.isEmpty ? 0 : 12)
         .padding(.top, shown.isEmpty ? 0 : 8)
-        .onAppear { clearSpentFlag() }
+        .onAppear {
+            clearSpentFlag()
+            state.startWatchingForSlantStudio()
+        }
         .onChange(of: orderWatch.notify) { _, _ in clearSpentFlag() }
         .onChange(of: orderWatch.enabled) { _, _ in clearSpentFlag() }
     }

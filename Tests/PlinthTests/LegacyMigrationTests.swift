@@ -90,8 +90,6 @@ final class LegacyMigrationTests: XCTestCase {
     }
 
     /// The gate compares with the bundle ID the packaged app is built with.
-    /// NOTE: implementer I4 changes scripts/build-app.sh in parallel. Until that change is merged the script still
-    /// carries Slant Studio's ID and this test skips; after the merge it must pass (the lead removes the skip).
     func testBuildScriptUsesThePlinthBundleIdentifier() throws {
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("scripts/build-app.sh")
@@ -157,8 +155,16 @@ final class LegacyMigrationTests: XCTestCase {
         if case .retryLater = defaultsMergePlan(legacyDomain: nil, legacyPlistExists: true, newDomainKeys: [], markerSet: false) {} else {
             XCTFail("An unreadable old domain must be tried again")
         }
-        if case .retryLater = defaultsMergePlan(legacyDomain: [:], legacyPlistExists: true, newDomainKeys: [], markerSet: false) {} else {
-            XCTFail("An empty read of an existing file must be tried again")
+        if case .retryLater = defaultsMergePlan(legacyDomain: nil, legacyPlistExists: true, newDomainKeys: [], markerSet: false,
+                                                unreadableLaunchesSoFar: legacyDefaultsUnreadableRetryLimit - 1) {} else {
+            XCTFail("Still within the retry limit")
+        }
+        if case .nothingToCopy = defaultsMergePlan(legacyDomain: nil, legacyPlistExists: true, newDomainKeys: [], markerSet: false,
+                                                   unreadableLaunchesSoFar: legacyDefaultsUnreadableRetryLimit) {} else {
+            XCTFail("An old file that stays unreadable is given up after the retries")
+        }
+        if case .nothingToCopy = defaultsMergePlan(legacyDomain: [:], legacyPlistExists: true, newDomainKeys: [], markerSet: false) {} else {
+            XCTFail("An empty old domain has nothing to copy")
         }
         if case .nothingToCopy = defaultsMergePlan(legacyDomain: nil, legacyPlistExists: false, newDomainKeys: [], markerSet: false) {} else {
             XCTFail("A fresh install has nothing to copy")
@@ -166,6 +172,39 @@ final class LegacyMigrationTests: XCTestCase {
         if case .alreadyDone = defaultsMergePlan(legacyDomain: ["a": 1], legacyPlistExists: true, newDomainKeys: [], markerSet: true) {} else {
             XCTFail("The marker ends the copy")
         }
+    }
+
+    func testAnUnreadableOldFileIsTriedOnFourLaunchesThenMarkedAndNeverBlocks() {
+        let defaults = FakeDefaults()
+        // The plist exists but reads as nil: Slant Studio running never makes the seller wait for it.
+        XCTAssertFalse(legacyMigrationWouldCopy(environment(defaults, legacyDomain: nil, legacyPlistExists: true)))
+        for launch in 1...legacyDefaultsUnreadableRetryLimit {
+            _ = performLegacyMigration(environment(defaults, legacyDomain: nil, legacyPlistExists: true))
+            XCTAssertNil(defaults.values[LegacyMigrationKeys.defaults], "launch \(launch) leaves the marker unset")
+            XCTAssertEqual(defaults.values[LegacyMigrationKeys.defaultsUnreadableLaunches] as? Int, launch)
+        }
+        let last = performLegacyMigration(environment(defaults, legacyDomain: nil, legacyPlistExists: true))
+        XCTAssertEqual(defaults.values[LegacyMigrationKeys.defaults] as? Bool, true)
+        XCTAssertNil(last.movedSettings)
+        XCTAssertFalse(legacyMigrationWouldCopy(environment(defaults, legacyDomain: ["a": 1], legacyPlistExists: true)))
+    }
+
+    func testAnEmptyOldFileIsMarkedAtOnceAndNeverBlocks() {
+        let defaults = FakeDefaults()
+        XCTAssertFalse(legacyMigrationWouldCopy(environment(defaults, legacyDomain: [:], legacyPlistExists: true)))
+        let outcome = performLegacyMigration(environment(defaults, legacyDomain: [:], legacyPlistExists: true))
+        XCTAssertEqual(defaults.values[LegacyMigrationKeys.defaults] as? Bool, true)
+        XCTAssertNil(outcome.movedSettings)
+        XCTAssertNil(legacyMigrationActivityDetail(outcome))
+    }
+
+    func testOnlyReadableNewKeysMakeTheSellerWait() {
+        let defaults = FakeDefaults()
+        XCTAssertTrue(legacyMigrationWouldCopy(environment(defaults, legacyDomain: ["a": 1], legacyPlistExists: true)))
+        XCTAssertFalse(legacyMigrationWouldCopy(environment(defaults, legacyDomain: ["a": 1], legacyPlistExists: true, newKeys: ["a"])),
+                       "Every key is already set in Plinth, so nothing would be copied")
+        XCTAssertFalse(legacyMigrationWouldCopy(environment(defaults, legacyDomain: [LegacyMigrationKeys.defaults: true],
+                                                            legacyPlistExists: true)), "The migration's own keys never count")
     }
 
     // MARK: Support folder plan
@@ -176,6 +215,12 @@ final class LegacyMigrationTests: XCTestCase {
         XCTAssertEqual(supportFolderPlan(legacyHasUserData: true, newExists: false, newHasUserData: false), .copy)
         XCTAssertEqual(supportFolderPlan(legacyHasUserData: true, newExists: true, newHasUserData: false), .setAsideThenCopy)
         XCTAssertEqual(supportFolderPlan(legacyHasUserData: true, newExists: true, newHasUserData: true), .conflict)
+        XCTAssertEqual(supportFolderPlan(legacyHasUserData: true, newExists: true, newHasUserData: true, newHasMoveMarker: true),
+                       .alreadyMoved)
+        XCTAssertEqual(supportFolderPlan(legacyHasUserData: false, newExists: true, newHasUserData: true, newHasMoveMarker: true),
+                       .alreadyMoved)
+        XCTAssertEqual(supportFolderPlan(legacyHasUserData: true, newExists: false, newHasUserData: false, newHasMoveMarker: true),
+                       .copy)
     }
 
     func testUserDataMeansSavedFilesOrNonEmptyModelsOrRemoved() throws {
@@ -201,13 +246,12 @@ final class LegacyMigrationTests: XCTestCase {
         // Escaped slashes, as JSONEncoder writes them; a record from a later version; paths outside the folder.
         let json = #"""
         [{"id":"11111111-1111-1111-1111-111111111111","name":"A","filePath":"\/Users\/me\/Library\/Application Support\/SlantStudio\/Models\/A.stl","futureRecord":{"x":[1,2.5,true]},"added":783456789.123456},
-         {"id":"22222222-2222-2222-2222-222222222222","name":"B","filePath":"/Users/me/Desktop/B.stl"},
-         {"id":"33333333-3333-3333-3333-333333333333","name":"C","filePath":"/Users/me/Library/Application Support/SlantStudioBackup/Models/C.stl"},
-         "not a model"]
+         {"id":"22222222-2222-2222-2222-222222222222","name":"B","filePath":"/Users/me/Desktop/B.stl","added":1},
+         {"id":"33333333-3333-3333-3333-333333333333","name":"C","filePath":"/Users/me/Library/Application Support/SlantStudioBackup/Models/C.stl","added":2}]
         """#
         let data = try XCTUnwrap(modelsJSONRemappingFilePaths(Data(json.utf8), legacy: old, new: new))
         let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [Any])
-        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(rows.count, 3)
         let first = try XCTUnwrap(rows[0] as? [String: Any])
         XCTAssertEqual(first["filePath"] as? String, "/Users/me/Library/Application Support/Plinth/Models/A.stl")
         XCTAssertEqual(first["name"] as? String, "A")
@@ -217,7 +261,16 @@ final class LegacyMigrationTests: XCTestCase {
         XCTAssertEqual((rows[1] as? [String: Any])?["filePath"] as? String, "/Users/me/Desktop/B.stl")
         XCTAssertEqual((rows[2] as? [String: Any])?["filePath"] as? String,
                        "/Users/me/Library/Application Support/SlantStudioBackup/Models/C.stl")
-        XCTAssertEqual(rows[3] as? String, "not a model")
+    }
+
+    func testModelsRewriteLeavesALibraryTheDecoderRejectsAlone() {
+        let old = URL(fileURLWithPath: "/x/SlantStudio"), new = URL(fileURLWithPath: "/x/Plinth")
+        // The second row has no `added`, so the app's decoder refuses the whole library.
+        let json = #"[{"id":"11111111-1111-1111-1111-111111111111","name":"A","filePath":"/x/SlantStudio/Models/A.stl","added":1},"#
+            + #"{"id":"22222222-2222-2222-2222-222222222222","name":"B","filePath":"/x/SlantStudio/Models/B.stl"}]"#
+        XCTAssertNil(try? JSONDecoder().decode([LocalModel].self, from: Data(json.utf8)))
+        XCTAssertNil(modelsJSONRemappingFilePaths(Data(json.utf8), legacy: old, new: new))
+        XCTAssertNil(modelsJSONRemappingFilePaths(Data(#"[{"filePath":"/x/SlantStudio/a"}, "not a model"]"#.utf8), legacy: old, new: new))
     }
 
     func testModelsRewriteLeavesMalformedOrUnchangedFilesAlone() {
@@ -281,8 +334,39 @@ final class LegacyMigrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: plinth.appendingPathComponent("Thumbnails/x.png").path))
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix(".Plinth-migrating-") }
         XCTAssertEqual(leftovers, [])
-        // Run again: both folders hold data now, so nothing is merged.
-        XCTAssertEqual(migrateSupportFolder(legacy: legacy, new: plinth), .conflict)
+        // The copy carries the migration's marker file; the old folder never does.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: plinth.appendingPathComponent(supportFolderMovedMarkerName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.appendingPathComponent(supportFolderMovedMarkerName).path))
+        XCTAssertFalse(supportFolderUserDataFiles.contains(supportFolderMovedMarkerName))
+        // Run again: Plinth's folder is the migration's own copy, so it is never a conflict and nothing is merged.
+        XCTAssertEqual(migrateSupportFolder(legacy: legacy, new: plinth), .alreadyMoved)
+    }
+
+    func testACrashAfterTheMoveButBeforeTheMarkerCountsAsMovedWithNoNotice() throws {
+        try makeLegacyLibrary()
+        XCTAssertEqual(migrateSupportFolder(legacy: legacy, new: plinth), .moved(models: 2))
+        let library = try Data(contentsOf: plinth.appendingPathComponent("models.json"))
+        // The preference marker was never written (the app stopped right after the move).
+        let defaults = FakeDefaults()
+        defaults.values[LegacyMigrationKeys.defaults] = true
+        XCTAssertFalse(legacyMigrationWouldCopy(environment(defaults)))
+        let outcome = performLegacyMigration(environment(defaults))
+        XCTAssertEqual(outcome.supportDirectory, plinth)
+        XCTAssertFalse(outcome.libraryKeptSeparate)
+        XCTAssertFalse(outcome.copyFailed)
+        XCTAssertNil(legacyMigrationKeptSeparateActivity(outcome))
+        XCTAssertEqual(defaults.values[LegacyMigrationKeys.supportFolder] as? Bool, true)
+        XCTAssertEqual(try Data(contentsOf: plinth.appendingPathComponent("models.json")), library)
+    }
+
+    func testVerificationIgnoresTheMarkerFileOnly() throws {
+        try makeLegacyLibrary()
+        let copy = root.appendingPathComponent("Copy", isDirectory: true)
+        try FileManager.default.copyItem(at: legacy, to: copy)
+        try Data().write(to: copy.appendingPathComponent(supportFolderMovedMarkerName))
+        XCTAssertTrue(verifySupportFolderCopy(legacy: legacy, copy: copy, finalLocation: plinth))
+        try write("extra", to: copy.appendingPathComponent(".other-hidden-file"))
+        XCTAssertFalse(verifySupportFolderCopy(legacy: legacy, copy: copy, finalLocation: plinth))
     }
 
     func testAPlinthFolderWithoutUserDataIsSetAsideNeverDeleted() throws {
@@ -302,11 +386,52 @@ final class LegacyMigrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: plinth.appendingPathComponent("order-watch.json").path))
     }
 
+    func testAConflictIsReportedUntilTheSellerDismissesIt() throws {
+        try makeLegacyLibrary()
+        try write("[]", to: plinth.appendingPathComponent("models.json"))
+        let defaults = FakeDefaults()
+        let outcome = performLegacyMigration(environment(defaults))
+        XCTAssertEqual(outcome.supportDirectory, plinth)
+        XCTAssertTrue(outcome.libraryKeptSeparate)
+        XCTAssertNil(outcome.movedModels)
+        XCTAssertNil(defaults.values[LegacyMigrationKeys.supportFolder], "No marker until the seller dismisses the notice")
+        let activity = try XCTUnwrap(legacyMigrationKeptSeparateActivity(outcome))
+        XCTAssertFalse(activity.title.contains("/"))
+        XCTAssertFalse(activity.detail.contains("/"))
+        XCTAssertEqual(legacyMigrationNotices(copyFailedThisLaunch: false, folderNoticeDismissed: false, notificationsWereOn: false,
+                                              notificationsOnNow: false, orderWatchEnabled: true,
+                                              libraryKeptSeparate: outcome.libraryKeptSeparate), [.libraryKeptSeparate])
+        XCTAssertEqual(legacyMigrationNotices(copyFailedThisLaunch: false, folderNoticeDismissed: false, notificationsWereOn: false,
+                                              notificationsOnNow: false, orderWatchEnabled: true,
+                                              libraryKeptSeparate: true, libraryNoticeDismissed: true), [])
+        // Dismiss writes the folder marker; from then on the launch step never looks again.
+        defaults.values[LegacyMigrationKeys.supportFolder] = true
+        let next = performLegacyMigration(environment(defaults))
+        XCTAssertFalse(next.libraryKeptSeparate)
+        XCTAssertEqual(try String(contentsOf: plinth.appendingPathComponent("models.json"), encoding: .utf8), "[]")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.appendingPathComponent("models.json").path))
+    }
+
     func testAMalformedLibraryIsCopiedUnchanged() throws {
         try write("{ not json", to: legacy.appendingPathComponent("models.json"))
         try write("solid", to: legacy.appendingPathComponent("Models/A.stl"))
         XCTAssertEqual(migrateSupportFolder(legacy: legacy, new: plinth), .moved(models: 0))
         XCTAssertEqual(try String(contentsOf: plinth.appendingPathComponent("models.json"), encoding: .utf8), "{ not json")
+    }
+
+    func testALibraryWithARowTheDecoderRejectsIsCopiedByteForByte() throws {
+        try write("solid", to: legacy.appendingPathComponent("Models/A.stl"))
+        let inside = legacy.appendingPathComponent("Models/A.stl").path
+        // Valid JSON, but the second row lacks `added`: the app's decoder refuses it, so nothing may be rewritten.
+        let json = #"[{"id":"11111111-1111-1111-1111-111111111111","name":"A","filePath":"\#(inside)","added":1},"#
+            + #"{"id":"22222222-2222-2222-2222-222222222222","name":"B","filePath":"\#(inside)"}]"#
+        try write(json, to: legacy.appendingPathComponent("models.json"))
+        let defaults = FakeDefaults()
+        let outcome = performLegacyMigration(environment(defaults))
+        XCTAssertFalse(outcome.copyFailed, "The copy must not fail verification on every launch")
+        XCTAssertEqual(outcome.supportDirectory, plinth)
+        XCTAssertEqual(try Data(contentsOf: plinth.appendingPathComponent("models.json")), Data(json.utf8))
+        XCTAssertNil(legacyMigrationActivityDetail(outcome), "No “0 models” line")
     }
 
     func testModelsOutsideTheFolderKeepTheirPaths() throws {
@@ -417,9 +542,9 @@ final class LegacyMigrationTests: XCTestCase {
         XCTAssertFalse(legacyAppBlocksMigration(runningLegacyPIDs: [7], ownPID: 7, migrationWouldCopy: true))
 
         let defaults = FakeDefaults()
-        XCTAssertTrue(legacyMigrationWouldCopy(environment(defaults, legacyPlistExists: true)))
+        XCTAssertTrue(legacyMigrationWouldCopy(environment(defaults, legacyDomain: ["a": 1], legacyPlistExists: true)))
         defaults.values[LegacyMigrationKeys.defaults] = true
-        XCTAssertFalse(legacyMigrationWouldCopy(environment(defaults, legacyPlistExists: true)))
+        XCTAssertFalse(legacyMigrationWouldCopy(environment(defaults, legacyDomain: ["a": 1], legacyPlistExists: true)))
         try makeLegacyLibrary()
         XCTAssertTrue(legacyMigrationWouldCopy(environment(defaults)))
         try write("[]", to: plinth.appendingPathComponent("models.json"))
@@ -473,14 +598,71 @@ final class LegacyMigrationTests: XCTestCase {
                                               notificationsOnNow: false, orderWatchEnabled: true), [.notificationsOff])
         XCTAssertEqual(legacyMigrationNotices(copyFailedThisLaunch: true, folderNoticeDismissed: false, notificationsWereOn: true,
                                               notificationsOnNow: false, orderWatchEnabled: true), [.folderNotMoved, .notificationsOff])
+        // Slant Studio running alongside comes first; the folder and library notices never both apply.
+        XCTAssertEqual(legacyMigrationNotices(copyFailedThisLaunch: true, folderNoticeDismissed: false, notificationsWereOn: true,
+                                              notificationsOnNow: false, orderWatchEnabled: true, slantStudioOpen: true),
+                       [.slantStudioOpen, .folderNotMoved, .notificationsOff])
+        XCTAssertEqual(legacyMigrationNotices(copyFailedThisLaunch: false, folderNoticeDismissed: false, notificationsWereOn: false,
+                                              notificationsOnNow: false, orderWatchEnabled: true, slantStudioOpen: true,
+                                              libraryKeptSeparate: true), [.slantStudioOpen, .libraryKeptSeparate])
         XCTAssertTrue(legacyNotifyFlagIsSpent(notificationsOnNow: true, orderWatchEnabled: true))
         XCTAssertTrue(legacyNotifyFlagIsSpent(notificationsOnNow: false, orderWatchEnabled: false))
         XCTAssertFalse(legacyNotifyFlagIsSpent(notificationsOnNow: false, orderWatchEnabled: true))
     }
 
+    func testTheBothAppsNoticeFollowsOnlyAnotherSlantStudioProcess() {
+        XCTAssertTrue(slantStudioRunsAlongside(runningLegacyPIDs: [42], ownPID: 7, identity: .plinth))
+        XCTAssertTrue(slantStudioRunsAlongside(runningLegacyPIDs: [42], ownPID: 7, identity: .other), "swift run warns too")
+        XCTAssertFalse(slantStudioRunsAlongside(runningLegacyPIDs: [], ownPID: 7, identity: .plinth))
+        XCTAssertFalse(slantStudioRunsAlongside(runningLegacyPIDs: [7], ownPID: 7, identity: .plinth))
+        XCTAssertFalse(slantStudioRunsAlongside(runningLegacyPIDs: [42], ownPID: 7, endedPID: 42, identity: .plinth),
+                       "An app that has just quit may still be listed")
+        XCTAssertTrue(slantStudioRunsAlongside(runningLegacyPIDs: [42, 43], ownPID: 7, endedPID: 42, identity: .plinth))
+        XCTAssertFalse(slantStudioRunsAlongside(runningLegacyPIDs: [42], ownPID: 7, identity: .legacy),
+                       "A build running as Slant Studio never warns about itself")
+        XCTAssertTrue(legacySlantStudioOpenNoticeText.contains("don’t share their payment and draft safeguards"))
+    }
+
+    func testSellerAddressRemoveAlsoListsSlantStudiosCopiesOnlyWhenGiven() {
+        let required = [plinth.appendingPathComponent("seller-address.json"), plinth.appendingPathComponent("seller-address.unreadable.json")]
+        let none = sellerAddressFilesToRemove(supportDirectory: plinth, slantStudioDirectory: nil)
+        XCTAssertEqual(none.required, required)
+        XCTAssertEqual(none.bestEffort, [])
+        let both = sellerAddressFilesToRemove(supportDirectory: plinth, slantStudioDirectory: legacy)
+        XCTAssertEqual(both.required, required)
+        XCTAssertEqual(both.bestEffort, [legacy.appendingPathComponent("seller-address.json"),
+                                         legacy.appendingPathComponent("seller-address.unreadable.json")])
+        // A launch whose copy failed works in Slant Studio's folder: each file is listed once, as required.
+        let failed = sellerAddressFilesToRemove(supportDirectory: legacy, slantStudioDirectory: legacy)
+        XCTAssertEqual(failed.required.map(\.lastPathComponent), ["seller-address.json", "seller-address.unreadable.json"])
+        XCTAssertEqual(failed.bestEffort, [])
+        // Only the packaged Plinth app's launch step names Slant Studio's folder.
+        let defaults = FakeDefaults()
+        XCTAssertEqual(performLegacyMigration(environment(defaults)).slantStudioDirectory, legacy)
+        XCTAssertNil(performLegacyMigration(environment(defaults, identity: .other)).slantStudioDirectory)
+        XCTAssertNil(performLegacyMigration(environment(defaults, identity: .legacy)).slantStudioDirectory)
+    }
+
+    func testTheActivityLineOmitsZeroCounts() {
+        func detail(_ models: Int?, _ settings: Int?) -> String? {
+            legacyMigrationActivityDetail(LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy,
+                                                                 movedModels: models, movedSettings: settings))
+        }
+        XCTAssertNil(detail(0, nil))
+        XCTAssertNil(detail(0, 0))
+        XCTAssertEqual(detail(0, 3), "3 settings")
+        XCTAssertEqual(detail(2, 0), "2 models")
+        XCTAssertEqual(detail(1, 1), "1 model · 1 setting")
+    }
+
     func testNoticeAndActivityTextNamesNoPathsOrSecrets() {
         XCTAssertTrue(legacyFolderNotMovedNoticeText.contains("Nothing was deleted."))
         XCTAssertFalse(legacyFolderNotMovedNoticeText.contains("/"))
+        XCTAssertTrue(legacyLibraryKeptSeparateNoticeText.contains("nothing was deleted"))
+        for text in [legacyLibraryKeptSeparateNoticeText, legacyLibraryKeptSeparateActivityTitle,
+                     legacyLibraryKeptSeparateActivityDetail, legacySlantStudioOpenNoticeText] {
+            XCTAssertFalse(text.contains("/"), text)
+        }
         XCTAssertTrue(legacyNotificationsOffNoticeText.contains("permission"))
         let outcome = LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy, movedModels: 1, movedSettings: 1)
         let detail = legacyMigrationActivityDetail(outcome)

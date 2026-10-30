@@ -176,7 +176,11 @@ final class PlinthAppDelegate: NSObject, NSApplicationDelegate {
     /// the app is delivered (OrderWatch.swift holds it until the window and store exist).
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Normally done already by the App's init(); this only guards a different start-up order.
-        MainActor.assumeIsolated { LegacyMigration.runAtLaunch() }
+        MainActor.assumeIsolated {
+            LegacyMigration.runAtLaunch()
+            // The "Slant Studio is open too" notice follows launches and quits from here on (read-only, idempotent).
+            LegacyMigrationNoticeState.shared.startWatchingForSlantStudio()
+        }
         if orderWatchNotificationsAvailable() { UNUserNotificationCenter.current().delegate = OrderWatchNotificationDelegate.shared }
         // One main window only (the store is shared): no window tabs, whose + button would open a second one. Set
         // before the first window, so the tab menu items never appear.

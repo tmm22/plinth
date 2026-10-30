@@ -4,26 +4,11 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 # The SwiftPM product, which names the executable and its resource bundle.
-# Phase R of the Plinth rename sets this to Plinth with the package rename.
 PRODUCT="Plinth"
 APP_DIR="$PROJECT_DIR/dist/Plinth.app"
-
-# Plinth was called Slant Studio. Unregister and remove a leftover build of it so
-# Open With doesn't list both apps, unless it is running (then it is left alone).
+# Plinth was called Slant Studio. A build of the old app is never removed here: it is the owner's way back, and it
+# may be running. The script only mentions it once Plinth is built (see the end).
 LEGACY_APP_DIR="$PROJECT_DIR/dist/Slant Studio.app"
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-if [ -d "$LEGACY_APP_DIR" ]; then
-    # pgrep -f takes a regular expression: escape the path so its dots and any other special characters match literally.
-    LEGACY_EXEC_PATTERN="$(printf '%s' "$LEGACY_APP_DIR/Contents/MacOS/" | sed 's/[][\.*^$+?(){}|]/\\&/g')"
-    if pgrep -f "$LEGACY_EXEC_PATTERN" >/dev/null 2>&1; then
-        printf 'Note: %s is running, so it was left in place. Quit it and build again to remove it.\n' "$LEGACY_APP_DIR"
-    else
-        if [ -x "$LSREGISTER" ]; then
-            "$LSREGISTER" -u "$LEGACY_APP_DIR" >/dev/null 2>&1 || true
-        fi
-        rm -rf "$LEGACY_APP_DIR"
-    fi
-fi
 
 swift build -c release
 BIN_DIR="$(swift build -c release --show-bin-path)"
@@ -114,3 +99,6 @@ plutil -lint "$APP_DIR/Contents/Info.plist"
 codesign --force --deep --sign - "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 printf 'Built %s\nLaunch with: open "%s"\n' "$APP_DIR" "$APP_DIR"
+if [ -d "$LEGACY_APP_DIR" ]; then
+    printf 'Note: %s is still there and was left alone. Delete it once you no longer need it; until then Open With may list the app twice.\n' "$LEGACY_APP_DIR"
+fi

@@ -45,7 +45,7 @@ final class AppNameCopyTests: XCTestCase {
         XCTAssertFalse(mentionsStudio(printReviewSystemPrompt))
         XCTAssertTrue(printReviewSystemPrompt.contains("the app's own measurements"))
         XCTAssertTrue(printReviewSystemPrompt.contains("a Mac app called Plinth"))
-        XCTAssertTrue(printReviewSystemPrompt.contains("the plinth tool below is a base under a model"))
+        XCTAssertTrue(printReviewSystemPrompt.contains("(in the app's own messages, Plinth means the app; the plinth tool below, and a plinth the seller mentions, is a base under a model)"))
         // The honesty rule is kept.
         XCTAssertTrue(printReviewSystemPrompt.contains("Say the app's checks found no problems only when its measurements say so."))
         XCTAssertFalse(mentionsStudio(printReviewPlanTool.description))
@@ -58,7 +58,7 @@ final class AppNameCopyTests: XCTestCase {
 
     func testTheAccessoryPromptsSayTheAppAndDefineTheName() {
         XCTAssertFalse(mentionsStudio(accessorySystemPrompt))
-        XCTAssertTrue(accessorySystemPrompt.contains("The seller works in a Mac app called Plinth; when a message says Plinth, it means the app."))
+        XCTAssertTrue(accessorySystemPrompt.contains("The seller works in a Mac app called Plinth. In the app's own messages, Plinth means the app; in the seller's words, a plinth may be a base under a model, so read it in context."))
         XCTAssertTrue(accessorySystemPrompt.contains("The app renders it with OpenSCAD"))
         for tool in accessoryTools {
             XCTAssertFalse(mentionsStudio(tool.description), tool.name)

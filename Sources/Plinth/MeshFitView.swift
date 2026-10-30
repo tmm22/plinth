@@ -403,7 +403,7 @@ struct MeshFitSheet: View {
         switch request.tool {
         case .scale: return "Save Scaled Copy"
         case .flatBase: return "Save Copy with Flat Base"
-        case .plinth: return "Save Copy with Plinth"
+        case .plinth: return "Save Copy with a Plinth"
         case .fitCoupon: return "Save Fit Coupon"
         }
     }

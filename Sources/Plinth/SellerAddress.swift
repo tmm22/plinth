@@ -132,6 +132,22 @@ func sampleOrderPrefill(fileID: String, filamentID: String, defaultFilamentID: S
     return prefill
 }
 
+/// The files Remove deletes. `required`: the address and its unreadable copy in the folder in use (a failure is
+/// reported). `bestEffort`: the same two files in Slant Studio's folder, passed only by the packaged Plinth app, which
+/// copied them there from (failures ignored), so "It is deleted from this Mac" stays true. Nothing else in that folder
+/// is ever touched, and a file already listed as required isn't listed again.
+func sellerAddressFilesToRemove(supportDirectory: URL, slantStudioDirectory: URL?) -> (required: [URL], bestEffort: [URL]) {
+    func files(in folder: URL) -> [URL] {
+        let address = folder.appendingPathComponent(sellerAddressFileName)
+        return [address, sellerAddressBackupURL(for: address)]
+    }
+    let required = files(in: supportDirectory)
+    guard let slantStudioDirectory else { return (required, []) }
+    let requiredPaths = Set(required.map { $0.standardizedFileURL.path })
+    let bestEffort = files(in: slantStudioDirectory).filter { !requiredPaths.contains($0.standardizedFileURL.path) }
+    return (required, bestEffort)
+}
+
 extension StudioStore {
     static var sellerAddressURL: URL { supportDirectory.appendingPathComponent(sellerAddressFileName) }
 
@@ -145,10 +161,16 @@ extension StudioStore {
         sellerAddress = trimmed
     }
 
-    /// Deletes the saved address (and any unreadable copy of it) from this Mac.
+    /// Deletes the saved address (and any unreadable copy of it) from this Mac, including the copy the app kept under
+    /// its old name (`sellerAddressFilesToRemove`).
     func removeSellerAddress() throws {
-        for url in [Self.sellerAddressURL, sellerAddressBackupURL(for: Self.sellerAddressURL)]
-        where FileManager.default.fileExists(atPath: url.path) {
+        let files = sellerAddressFilesToRemove(supportDirectory: Self.supportDirectory,
+                                               slantStudioDirectory: AppSupportLocation.slantStudioDirectory)
+        // The old app's copies first and ignoring failures, so they go even when the current copy can't be removed.
+        for url in files.bestEffort where FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        for url in files.required where FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
         sellerAddress = nil

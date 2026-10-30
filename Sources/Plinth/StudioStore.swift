@@ -973,6 +973,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         if let detail = legacyMigrationActivityDetail(LegacyMigrationLaunch.outcome) {
             activities.insert(Activity(title: legacyMigrationActivityTitle, detail: detail, success: true), at: 0)
         }
+        if let kept = legacyMigrationKeptSeparateActivity(LegacyMigrationLaunch.outcome) {
+            activities.insert(Activity(title: kept.title, detail: kept.detail, success: true), at: 0)
+        }
         savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
         sellerAddress = loadSellerAddress(from: Self.sellerAddressURL)
         // Personalisation hook (Personalisation.swift): remove leftover OpenSCAD temp folders; stop local runs on quit.

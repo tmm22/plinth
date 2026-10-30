@@ -90,7 +90,8 @@ final class ModelsReviewFixesTests: XCTestCase {
         XCTAssertTrue(isPersonalisationTempFolderName("SlantStudio-Personalised-\(id)"))
         XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-"))
         XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-\(id)-extra"))
-        XCTAssertFalse(isPersonalisationTempFolderName("PlinthListing-\(id)"))
+        XCTAssertFalse(isPersonalisationTempFolderName("SlantStudioListing-\(id)"))
+        XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-notauuid"))
     }
 
     func testStaleFoldersRespectAnotherRunningCopy() {

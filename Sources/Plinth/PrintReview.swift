@@ -1040,8 +1040,9 @@ let printReviewRenderPixelSize = 768
 let printReviewRenderRasterBudget = 120_000_000
 
 let printReviewSystemPrompt = """
-You review 3D models for FDM printing for a small online seller who uses a Mac app called Plinth (when a message says \
-Plinth, it means the app; the plinth tool below is a base under a model). Slant 3D prints them on \
+You review 3D models for FDM printing for a small online seller who uses a Mac app called Plinth (in the app's own \
+messages, Plinth means the app; the plinth tool below, and a plinth the seller mentions, is a base under a model). \
+Slant 3D prints them on \
 demand with fixed settings it publishes, which can't be changed for an order or a part: 0.2 mm layers (0.3 mm first \
 layer), a 0.4 mm nozzle, 1 mm walls (about 2 lines), 25% grid-like infill, overhangs up to 50° from vertical, no \
 brims, a textured bed and a 220 mm cube build volume. Slant prints the model in the orientation it is uploaded in, \
