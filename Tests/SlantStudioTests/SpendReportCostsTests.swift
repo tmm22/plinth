@@ -19,12 +19,12 @@ final class SpendReportCostsTests: XCTestCase {
         return item
     }
 
-    /// The live list shape (23 Oct 2026): costs as strings, the item price is the whole line's price.
-    private func order(_ id: String, status: String = "QUEUED", created: String = "2026-10-01T09:00:00.000Z",
+    /// Mirrors the live order list's shape with synthetic values: costs as strings, the item price is the whole line's price.
+    private func order(_ id: String, status: String = "QUEUED", created: String = "2026-10-12T09:30:15.250Z",
                        printing: Any? = nil, delivery: Any? = nil, country: Any? = "AU",
                        items: [[String: Any]] = [], extra: [String: Any] = [:]) -> Record {
         var values: [String: Any] = ["publicId": id, "status": status, "createdAt": created, "items": items,
-                                     "customer": ["details": ["address": ["country": country ?? NSNull(), "city": "Townly"]]]]
+                                     "customer": ["details": ["address": ["country": country ?? NSNull(), "city": "Example City"]]]]
         if let printing { values["printingCost"] = printing }
         if let delivery { values["deliveryCost"] = delivery }
         for (key, value) in extra { values[key] = value }
@@ -35,8 +35,8 @@ final class SpendReportCostsTests: XCTestCase {
 
     func testItemPriceIsTheLineTotalAndAveragesPerUnit() {
         let orders = [
-            order("A", printing: "19.86", delivery: "41.20", items: [printItem("f1", quantity: 2, price: "19.86")]),
-            order("B", printing: "9.93", delivery: "41.20", items: [printItem("f1", quantity: 1, price: "9.93")]),
+            order("A", printing: "16.90", delivery: "41.20", items: [printItem("f1", quantity: 2, price: "16.90")]),
+            order("B", printing: "8.45", delivery: "41.20", items: [printItem("f1", quantity: 1, price: "8.45")]),
             order("C", printing: "6.15", delivery: "22.80", items: [printItem("f2", quantity: 1, price: "6.15")]),
         ]
         let report = spendReport(orders: orders, modelNames: ["f1": "Desk Tidy", "f2": "Bracket"])
@@ -44,27 +44,27 @@ final class SpendReportCostsTests: XCTestCase {
         let tidy = report.productCosts[0]
         XCTAssertEqual(tidy.orders, 2)
         XCTAssertEqual(tidy.units, 3)
-        XCTAssertEqual(tidy.total, Decimal(string: "29.79"))
-        XCTAssertEqual(tidy.averagePerUnit, Decimal(string: "9.93"))
+        XCTAssertEqual(tidy.total, Decimal(string: "25.35"))
+        XCTAssertEqual(tidy.averagePerUnit, Decimal(string: "8.45"))
         XCTAssertEqual(report.ordersWithoutItemPrices, 0)
     }
 
     func testOrdersWhosePricesDontAddUpAreLeftOutNotSplit() {
         let orders = [
             // Two prints with one order-level cost that doesn't match the items: never split by guesswork.
-            order("A", printing: "30.00", items: [printItem("f1", quantity: 1, price: "9.93"), printItem("f2", quantity: 1, price: "6.15")]),
+            order("A", printing: "30.00", items: [printItem("f1", quantity: 1, price: "8.45"), printItem("f2", quantity: 1, price: "6.15")]),
             // No item price at all.
-            order("B", printing: "9.93", items: [printItem("f1", quantity: 1, price: nil)]),
+            order("B", printing: "8.45", items: [printItem("f1", quantity: 1, price: nil)]),
             // No order printing cost to check against.
-            order("C", items: [printItem("f1", quantity: 1, price: "9.93")]),
+            order("C", items: [printItem("f1", quantity: 1, price: "8.45")]),
             // A non-USD item price.
-            order("D", printing: "9.93", items: [printItem("f1", quantity: 1, price: "9.93", currency: "EUR")]),
+            order("D", printing: "8.45", items: [printItem("f1", quantity: 1, price: "8.45", currency: "EUR")]),
             // A fractional quantity.
-            order("E", printing: "9.93", items: [printItem("f1", quantity: 1.5, price: "9.93")]),
-            // Junk that a lenient parser would read as 9.
-            order("F", printing: "9.93", items: [printItem("f1", quantity: 1, price: "9.93abc")]),
+            order("E", printing: "8.45", items: [printItem("f1", quantity: 1.5, price: "8.45")]),
+            // Junk that a lenient parser would read as 8.
+            order("F", printing: "8.45", items: [printItem("f1", quantity: 1, price: "8.45abc")]),
             // Order in another currency.
-            order("G", printing: "9.93", items: [printItem("f1", quantity: 1, price: "9.93")], extra: ["currency": "GBP"]),
+            order("G", printing: "8.45", items: [printItem("f1", quantity: 1, price: "8.45")], extra: ["currency": "GBP"]),
         ]
         let report = spendReport(orders: orders)
         XCTAssertTrue(report.productCosts.isEmpty)
@@ -75,11 +75,11 @@ final class SpendReportCostsTests: XCTestCase {
 
     func testMultiItemOrderWithMatchingPricesCountsEachPrint() {
         let component: [String: Any] = ["type": "COMPONENT", "componentId": "c1", "quantity": 4, "price": "2.00", "currency": "USD"]
-        let orders = [order("A", printing: "18.08", items: [printItem("f1", quantity: 1, price: "9.93"),
+        let orders = [order("A", printing: "16.60", items: [printItem("f1", quantity: 1, price: "8.45"),
                                                             printItem("f2", quantity: 1, price: "6.15"), component])]
         let report = spendReport(orders: orders)
         XCTAssertEqual(report.productCosts.count, 2, "components aren't printing products")
-        XCTAssertEqual(Set(report.productCosts.map(\.total)), [Decimal(string: "9.93")!, Decimal(string: "6.15")!])
+        XCTAssertEqual(Set(report.productCosts.map(\.total)), [Decimal(string: "8.45")!, Decimal(string: "6.15")!])
     }
 
     func testSinglePrintSavedProductGroupsReuploadsBySKU() {
@@ -91,7 +91,7 @@ final class SpendReportCostsTests: XCTestCase {
         let product = SavedProduct(name: "Desk Tidy", sku: "TIDY-1", lines: [line])
         let skus = spendReportProductSKUs([product], localModels: [model])
         let orders = [
-            order("A", printing: "9.93", items: [printItem("f-old", quantity: 1, price: "9.93")]),
+            order("A", printing: "8.45", items: [printItem("f-old", quantity: 1, price: "8.45")]),
             order("B", printing: "21.00", items: [printItem("f-new", quantity: 2, price: "21.00")]),
             // The item's own SKU, as drafts from the saved product send it, in another case.
             order("C", printing: "10.50", items: [printItem("f-other", quantity: 1, price: "10.50", sku: "tidy-1")]),
@@ -101,12 +101,12 @@ final class SpendReportCostsTests: XCTestCase {
         XCTAssertEqual(report.productCosts[0].key, "sku:tidy-1")
         XCTAssertEqual(report.productCosts[0].orders, 3)
         XCTAssertEqual(report.productCosts[0].units, 4)
-        XCTAssertEqual(report.productCosts[0].averagePerUnit, Decimal(string: "10.36"), "41.43 ÷ 4 = 10.3575, to the cent")
+        XCTAssertEqual(report.productCosts[0].averagePerUnit, Decimal(string: "9.99"), "39.95 ÷ 4 = 9.9875, to the cent")
     }
 
     func testAnUnknownSKUDoesNotMergeDifferentFiles() {
         let orders = [
-            order("A", printing: "9.93", items: [printItem("f1", quantity: 1, price: "9.93", sku: "KIT")]),
+            order("A", printing: "8.45", items: [printItem("f1", quantity: 1, price: "8.45", sku: "KIT")]),
             order("B", printing: "6.15", items: [printItem("f2", quantity: 1, price: "6.15", sku: "KIT")]),
         ]
         let report = spendReport(orders: orders)
@@ -115,8 +115,8 @@ final class SpendReportCostsTests: XCTestCase {
 
     func testDraftsAndCancelledOrdersAreNotCosted() {
         let orders = [
-            order("A", status: "DRAFT", printing: "9.93", delivery: "41.20", items: [printItem("f1", quantity: 1, price: "9.93")]),
-            order("B", status: "CANCELED", printing: "9.93", delivery: "41.20", items: [printItem("f1", quantity: 1, price: "9.93")]),
+            order("A", status: "DRAFT", printing: "8.45", delivery: "41.20", items: [printItem("f1", quantity: 1, price: "8.45")]),
+            order("B", status: "CANCELED", printing: "8.45", delivery: "41.20", items: [printItem("f1", quantity: 1, price: "8.45")]),
         ]
         let report = spendReport(orders: orders)
         XCTAssertTrue(report.productCosts.isEmpty)
@@ -153,13 +153,13 @@ final class SpendReportCostsTests: XCTestCase {
 
     func testTextAndCSVIncludeCostsThroughCSVField() {
         let orders = [
-            order("A", printing: "19.86", delivery: "41.20", items: [printItem("f1", quantity: 2, price: "19.86")]),
+            order("A", printing: "16.90", delivery: "41.20", items: [printItem("f1", quantity: 2, price: "16.90")]),
             order("B", printing: "6.15", delivery: "22.80", items: [printItem("f2", quantity: 1, price: "6.15")]),
         ]
         let report = spendReport(orders: orders, modelNames: ["f1": "=SUM(A1)", "f2": "Bracket"], calendar: calendar("UTC"))
         let csv = spendReportCSV(report)
         XCTAssertTrue(csv.contains("\r\n\r\nProduct,SKU,Orders,Units,Printing cost (USD),Average per unit (USD)\r\n"))
-        XCTAssertTrue(csv.contains("'=SUM(A1),,1,2,19.86,9.93\r\n"), csv)
+        XCTAssertTrue(csv.contains("'=SUM(A1),,1,2,16.90,8.45\r\n"), csv)
         XCTAssertTrue(csv.contains("Bracket,,1,1,6.15,6.15\r\n"))
         XCTAssertTrue(csv.contains("Destination country,Country code,Orders,Delivery (USD),Average (USD),Lowest (USD),Highest (USD)\r\n"))
         XCTAssertTrue(csv.contains("Australia (AU),AU,2,64.00,32.00,22.80,41.20\r\n"), csv)
@@ -167,7 +167,7 @@ final class SpendReportCostsTests: XCTestCase {
         let text = spendReportText(report, notes: [], calendar: calendar("UTC"), source: "created 1 Aug – 24 Oct 2026, loaded for this report")
         XCTAssertTrue(text.contains("From 2 orders created 1 Aug – 24 Oct 2026, loaded for this report."))
         XCTAssertTrue(text.contains("Average printing cost per product\n"))
-        XCTAssertTrue(text.contains("=SUM(A1) — 2 units in 1 order — $19.86 — $9.93 each\n"))
+        XCTAssertTrue(text.contains("=SUM(A1) — 2 units in 1 order — $16.90 — $8.45 each\n"))
         XCTAssertTrue(text.contains("Delivery by destination country\n\(spendReportDeliveryCaption)\n"))
         XCTAssertTrue(text.contains(" — 2 orders — average $32.00 — $22.80–$41.20\n"))
     }

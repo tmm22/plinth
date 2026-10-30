@@ -4,15 +4,16 @@ import SwiftUI
 
 /// Fixes from live testing against Slant on 23 Oct 2026 (Models and Settings).
 final class LiveReviewFixesTests: XCTestCase {
-    // Headers observed on GET /v2/api/filaments: Date 08:10:25 GMT, X-RateLimit-Reset 1800000685873 (08:11:25.873Z).
-    private let liveNow = Date(timeIntervalSince1970: 1_800_000_625)
-    private let liveReset = "1800000685873"
+    // Synthetic values in the shape live GET /v2/api/filaments replies use: the reply's Date, then an
+    // X-RateLimit-Reset in epoch milliseconds 60.873 s later.
+    private let liveNow = Date(timeIntervalSince1970: 1_800_000_000)
+    private let liveReset = "1800000060873"
 
     // MARK: X-RateLimit-Reset
 
     func testResetHeaderIsReadAsEpochMilliseconds() throws {
         let reset = try XCTUnwrap(rateLimitResetDate(liveReset, now: liveNow))
-        XCTAssertEqual(reset.timeIntervalSince1970, 1_800_000_685.873, accuracy: 0.0005)
+        XCTAssertEqual(reset.timeIntervalSince1970, 1_800_000_060.873, accuracy: 0.0005)
         XCTAssertEqual(reset.timeIntervalSince(liveNow), 60.873, accuracy: 0.0005)
         let info = rateLimitInfo(from: ["X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "99",
                                         "X-RateLimit-Reset": liveReset, "X-RateLimit-Role": "free"], now: liveNow)
@@ -23,8 +24,8 @@ final class LiveReviewFixesTests: XCTestCase {
     }
 
     func testResetHeaderToleratesSecondsAndRelativeValues() {
-        XCTAssertEqual(rateLimitResetDate("1800000685", now: liveNow), Date(timeIntervalSince1970: 1_800_000_685))
-        XCTAssertEqual(rateLimitResetDate(" 1800000685.5 ", now: liveNow), Date(timeIntervalSince1970: 1_800_000_685.5))
+        XCTAssertEqual(rateLimitResetDate("1800000060", now: liveNow), Date(timeIntervalSince1970: 1_800_000_060))
+        XCTAssertEqual(rateLimitResetDate(" 1800000060.5 ", now: liveNow), Date(timeIntervalSince1970: 1_800_000_060.5))
         XCTAssertEqual(rateLimitResetDate("45", now: liveNow), liveNow.addingTimeInterval(45), "small value: seconds from now")
         XCTAssertEqual(rateLimitResetDate("0", now: liveNow), liveNow)
         // A past reset is still a date; callers only wait for one in the future.
@@ -32,8 +33,8 @@ final class LiveReviewFixesTests: XCTestCase {
     }
 
     func testResetHeaderRejectsGarbage() {
-        for raw: String? in [nil, "", "  ", "soon", "-5", "-1800000685873", "nan", "NaN", "inf", "1e400", "12abc",
-                             "1800000685873000", // microseconds: would be ~58,000 years away
+        for raw: String? in [nil, "", "  ", "soon", "-5", "-1800000060873", "nan", "NaN", "inf", "1e400", "12abc",
+                             "1800000060873000", // microseconds: would be ~57,000 years away
                              "200000",          // relative but more than a day away
                              "60000"] {         // relative milliseconds would be 16.7 h: refused, not trusted
             XCTAssertNil(rateLimitResetDate(raw, now: liveNow), String(describing: raw))
@@ -45,7 +46,7 @@ final class LiveReviewFixesTests: XCTestCase {
     func testTooManyRequestsCopyUsesTheRealWait() {
         XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: liveReset, now: liveNow),
                        "Too many requests. Try again in about 61 seconds.")
-        XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: "1800000565873", now: liveNow),
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: "1799999940873", now: liveNow),
                        "Too many requests. Wait a moment, then try again.", "a past reset gives no countdown")
         XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: "garbage", now: liveNow),
                        "Too many requests. Wait a moment, then try again.")

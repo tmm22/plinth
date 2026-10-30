@@ -563,7 +563,10 @@ final class ReplicaGeneratorTests: XCTestCase {
     }
 
     @MainActor private func makeTestConnection() -> ImageTo3DConnection {
-        ImageTo3DConnection(defaults: UserDefaults(suiteName: "replica-tests-\(UUID().uuidString)")!)
+        let suite = testDefaultsSuiteName("replica-tests")
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { removeTestDefaultsSuite(defaults, named: suite) }
+        return ImageTo3DConnection(defaults: defaults)
     }
 
     private var cat: ReplicaInputs { ReplicaInputs(name: "Cat", size: size(.height, 25), purpose: .functional) }

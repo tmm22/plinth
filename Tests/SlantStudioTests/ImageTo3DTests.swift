@@ -380,9 +380,9 @@ final class ImageTo3DTests: XCTestCase {
     }
 
     @MainActor func testConnectionPreferencesHoldNoSecrets() {
-        let suite = "ImageTo3DTests-\(UUID().uuidString)"
+        let suite = testDefaultsSuiteName("ImageTo3DTests")
         let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaultsSuite(defaults, named: suite) }
         let connection = ImageTo3DConnection(defaults: defaults)
         XCTAssertEqual(connection.selectedService, .meshy)
         XCTAssertEqual(connection.tripoRegion, .international)

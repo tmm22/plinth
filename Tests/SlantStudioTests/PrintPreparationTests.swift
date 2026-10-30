@@ -28,9 +28,9 @@ final class PrintPreparationTests: XCTestCase {
     // MARK: Settings
 
     func testSettingsDefaultToOnAndOn() throws {
-        let name = "PrintPreparationTests-\(UUID().uuidString)"
+        let name = testDefaultsSuiteName("PrintPreparationTests")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { removeTestDefaultsSuite(defaults, named: name) }
         XCTAssertEqual(PrintPreparationSettings(defaults: defaults), PrintPreparationSettings(enabled: true, internalWalls: true, bottomChamfer: true))
         defaults.set(false, forKey: printPreparationInternalWallsDefaultsKey)
         XCTAssertEqual(PrintPreparationSettings(defaults: defaults), PrintPreparationSettings(enabled: true, internalWalls: false))

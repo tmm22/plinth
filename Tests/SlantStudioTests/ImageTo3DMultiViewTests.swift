@@ -176,9 +176,9 @@ final class ImageTo3DMultiViewTests: XCTestCase {
     }
 
     @MainActor func testUnconfirmedRecordsCarryTheKind() throws {
-        let suite = "SlantStudioTests.r8.\(UUID().uuidString)"
+        let suite = testDefaultsSuiteName("r8")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaultsSuite(defaults, named: suite) }
         let connection = ImageTo3DConnection(defaults: defaults)
         let unknown = ImageTo3DStop(reason: .outcomeUnknown, stage: .sending, service: .meshy, taskID: nil, detail: "",
                                     requestKind: .multiImageGeneration)

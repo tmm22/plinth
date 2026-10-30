@@ -1,4 +1,4 @@
-# Claude Code instructions for Slant Studio
+# Claude Code instructions for Plinth
 
 @AGENTS.md
 

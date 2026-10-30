@@ -166,9 +166,9 @@ final class ImagePreparationTests: XCTestCase {
     }
 
     func testGrantAndResetStoreOnlyAFlagAndDate() throws {
-        let suite = "SlantStudioTests.consent.\(UUID().uuidString)"
+        let suite = testDefaultsSuiteName("consent")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaultsSuite(defaults, named: suite) }
         let store = ImageSharingConsentStore(defaults: defaults)
         XCTAssertFalse(store.hasConsented(.anthropic))
         let when = Date(timeIntervalSince1970: 1_792_800_000)
@@ -185,9 +185,9 @@ final class ImagePreparationTests: XCTestCase {
     }
 
     func testRunWithConsentOnlyAsksTheFirstTime() throws {
-        let suite = "SlantStudioTests.consent.\(UUID().uuidString)"
+        let suite = testDefaultsSuiteName("consent")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaultsSuite(defaults, named: suite) }
         let store = ImageSharingConsentStore(defaults: defaults)
         var pending: ImageSharingConsentRequest?
         var sends = 0
