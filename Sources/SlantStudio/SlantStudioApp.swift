@@ -6,6 +6,11 @@ struct SlantStudioApp: App {
     @NSApplicationDelegateAdaptor(SlantStudioAppDelegate.self) private var appDelegate
     @StateObject private var store = StudioStore()
     @StateObject private var modalPresentation = ModalPresentationMonitor()
+    init() {
+        // First, before the store or anything else reads preferences, the Keychain or the support folder: the one-time
+        // move from Slant Studio (LegacyMigration.swift). It does nothing outside the packaged Plinth app.
+        LegacyMigration.runAtLaunch()
+    }
     var body: some Scene {
         WindowGroup(id: mainWindowID) {
             StudioView().environmentObject(store)

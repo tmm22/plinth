@@ -117,42 +117,25 @@ func shopifyCredentialFieldProblem(_ value: String, name: String) -> String? {
 
 /// The credentials item, kept apart from the Slant key's (`KeychainStore`, account "api-key").
 enum ShopifyKeychainStore {
-    private static let service = "SlantStudio"
     private static let account = "shopify-credentials"
-    private static var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service, kSecAttrAccount as String: account]
-    }
+    /// Plinth's service; the packaged app brings the details over from Slant Studio's on first read.
+    private static var item: KeychainItemStore { .standard(account: account) }
 
     static func load() throws -> ShopifyStoredConnection? {
-        var attributes = query
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(attributes as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw APIError.keychain(status) }
-        guard let data = result as? Data, let stored = try? JSONDecoder().decode(ShopifyStoredConnection.self, from: data) else {
+        let saved = try item.load()
+        if saved == .none { return nil }
+        guard case .data(let data) = saved, let stored = try? JSONDecoder().decode(ShopifyStoredConnection.self, from: data) else {
             throw StudioError("The saved Shopify details couldn’t be read. Disconnect Shopify in Settings and connect again.")
         }
         return stored
     }
 
     static func save(_ stored: ShopifyStoredConnection) throws {
-        let data = try JSONEncoder().encode(stored)
-        let values: [String: Any] = [kSecValueData as String: data]
-        var status = SecItemUpdate(query as CFDictionary, values as CFDictionary)
-        if status == errSecItemNotFound {
-            var attributes = query.merging(values) { _, new in new }
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(attributes as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw APIError.keychain(status) }
+        try item.save(try JSONEncoder().encode(stored))
     }
 
     static func delete() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw APIError.keychain(status) }
+        try item.delete()
     }
 }
 

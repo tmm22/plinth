@@ -1121,8 +1121,9 @@ final class AnthropicClient: @unchecked Sendable {
 
 // MARK: Keychain
 
-/// A service's API key in its own Keychain item (service "SlantStudio"), kept apart from the Slant key ("api-key")
-/// and Shopify's details. Readable only on this Mac while it is unlocked.
+/// A service's API key in its own Keychain item (service "Plinth"), kept apart from the Slant key ("api-key")
+/// and Shopify's details. Readable only on this Mac while it is unlocked. The packaged app brings each key over from
+/// Slant Studio's service on first read (LegacyMigration.swift).
 struct AIServiceKeychainItem: Equatable, Sendable {
     let account: String
 
@@ -1130,39 +1131,23 @@ struct AIServiceKeychainItem: Equatable, Sendable {
     static let meshy = AIServiceKeychainItem(account: "meshy-api-key")
     static let tripo = AIServiceKeychainItem(account: "tripo-api-key")
 
-    private var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "SlantStudio", kSecAttrAccount as String: account]
-    }
+    private var item: KeychainItemStore { .standard(account: account) }
 
     func load() throws -> String? {
-        var attributes = query
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(attributes as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw APIError.keychain(status) }
-        guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+        let saved = try item.load()
+        if saved == .none { return nil }
+        guard case .data(let data) = saved, let value = String(data: data, encoding: .utf8) else {
             throw StudioError("The saved key couldn’t be read. Remove it in Settings and add it again.")
         }
         return value
     }
 
     func save(_ value: String) throws {
-        let values: [String: Any] = [kSecValueData as String: Data(value.utf8)]
-        var status = SecItemUpdate(query as CFDictionary, values as CFDictionary)
-        if status == errSecItemNotFound {
-            var attributes = query.merging(values) { _, new in new }
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(attributes as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw APIError.keychain(status) }
+        try item.save(Data(value.utf8))
     }
 
     func delete() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw APIError.keychain(status) }
+        try item.delete()
     }
 }
 

@@ -761,22 +761,14 @@ struct APIClient {
 }
 
 enum KeychainStore {
-    private static let service = "SlantStudio"
     private static let account = "api-key"
-    private static var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service, kSecAttrAccount as String: account]
-    }
+    /// Plinth's service; the packaged app brings the key over from Slant Studio's on first read (LegacyMigration.swift).
+    private static var item: KeychainItemStore { .standard(account: account) }
 
     static func load() throws -> String {
-        var attributes = query
-        attributes[kSecReturnData as String] = true
-        attributes[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(attributes as CFDictionary, &result)
-        if status == errSecItemNotFound { return "" }
-        guard status == errSecSuccess else { throw APIError.keychain(status) }
-        guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+        let saved = try item.load()
+        if saved == .none { return "" }
+        guard case .data(let data) = saved, let value = String(data: data, encoding: .utf8) else {
             throw APIError.invalidResponse("The saved API key could not be decoded.")
         }
         return value
@@ -785,18 +777,10 @@ enum KeychainStore {
     static func save(_ key: String) throws {
         let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { try delete(); return }
-        let values: [String: Any] = [kSecValueData as String: Data(normalized.utf8)]
-        var status = SecItemUpdate(query as CFDictionary, values as CFDictionary)
-        if status == errSecItemNotFound {
-            var attributes = query.merging(values) { _, new in new }
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            status = SecItemAdd(attributes as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw APIError.keychain(status) }
+        try item.save(Data(normalized.utf8))
     }
 
     static func delete() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw APIError.keychain(status) }
+        try item.delete()
     }
 }

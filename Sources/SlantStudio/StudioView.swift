@@ -26,6 +26,8 @@ struct StudioView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Only when something from Slant Studio needs attention (LegacyMigration.swift); otherwise takes no space.
+            .safeAreaInset(edge: .top, spacing: 0) { LegacyMigrationNoticeView() }
             .background(Color.studioCanvas)
             .navigationTitle(detailTitle)
             .toolbar {
