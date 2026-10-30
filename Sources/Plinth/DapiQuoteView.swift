@@ -109,7 +109,12 @@ struct DapiQuoteSheet: View {
             set: { if !$0 { runner.declineAnother() } }
         ), titleVisibility: .visible) {
             // No shortcut: it may use one more quote from the allowance.
-            Button("Get Another Quote") { runner.getQuote(fileURL: model.url, format: model.format, confirmedAnother: true) }
+            Button("Get Another Quote") {
+                // The sheet's own checks again (model still in the library, key, country, quantity).
+                if getQuoteDisabled { runner.declineAnother() } else {
+                    runner.getQuote(fileURL: model.url, format: model.format, confirmedAnother: true)
+                }
+            }
             Button("Don’t Quote", role: .cancel) { runner.declineAnother() }
                 .keyboardShortcut(.defaultAction)
         } message: {
@@ -138,6 +143,9 @@ struct DapiQuoteSheet: View {
             Task { await connection.refreshOnboarding() }
         }
         .task(id: model.url) {
+            // Only needed to disable Get Quote while an earlier quote write is still waiting; the run hashes the
+            // file itself and checks again, so a large file isn't read on every opening.
+            guard !connection.quoteWritesInFlight.isEmpty else { return }
             let url = model.url
             fileHash = try? await Task.detached(priority: .utility) { try dapiFileSHA256(at: url) }.value
         }

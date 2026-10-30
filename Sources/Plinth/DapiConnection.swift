@@ -123,7 +123,8 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
     /// cleared by closing a sheet, so a reopened sheet can't send a second one meanwhile.
     @Published private(set) var quoteWritesInFlight: Set<String> = []
     /// File SHA-256s whose upload or quote create had an unknown outcome this session. Memory only; cleared for a file
-    /// once a usable quote for it is found, and for all on a key save or removal.
+    /// once a usable quote for it is found. A key save or removal never clears them: Plinth can't tell whether a new
+    /// key belongs to the same 3DAPI account (an account may hold up to 10 keys), as with Slant's outcome lock.
     @Published private(set) var quoteWritesUnknown: Set<String> = []
 
     private var client: (any DapiQuoting)?
@@ -274,7 +275,6 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         keyGeneration += 1
         client = candidate
         readyQuotes = [:]
-        quoteWritesUnknown = []
         account = checked
         onboarding = nil
         isConfigured = true
@@ -309,7 +309,6 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         keyGeneration += 1
         client = nil
         readyQuotes = [:]
-        quoteWritesUnknown = []
         account = nil
         onboarding = nil
         isConfigured = false

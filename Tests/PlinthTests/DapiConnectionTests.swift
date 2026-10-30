@@ -224,13 +224,14 @@ final class DapiConnectionTests: XCTestCase {
         XCTAssertFalse(connection.quoteWriteOutcomeUnknown(forFileHash: "abc"))
         XCTAssertTrue(connection.quoteWriteOutcomeUnknown(forFileHash: "def"))
 
-        // A new key starts afresh, and so does removing it.
+        // A new key may belong to the same 3DAPI account, so neither replacing nor removing it clears the records.
         let replaced = await connection.saveAndTest(key: otherIntegratorKey)
         XCTAssertNil(replaced)
-        XCTAssertFalse(connection.quoteWriteOutcomeUnknown(forFileHash: "def"))
+        XCTAssertTrue(connection.quoteWriteOutcomeUnknown(forFileHash: "def"))
         connection.noteQuoteWriteUnknown(forFileHash: "ghi")
         try connection.remove()
-        XCTAssertFalse(connection.quoteWriteOutcomeUnknown(forFileHash: "ghi"))
+        XCTAssertTrue(connection.quoteWriteOutcomeUnknown(forFileHash: "ghi"))
+        XCTAssertTrue(connection.quoteWriteOutcomeUnknown(forFileHash: "def"))
         // Nothing about them reaches preferences.
         XCTAssertEqual(Set((defaults.persistentDomain(forName: suite) ?? [:]).keys), [DapiConnection.keySavedDefaultsKey])
     }

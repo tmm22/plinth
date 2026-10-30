@@ -699,7 +699,6 @@ func dapiUnusableQuoteMessage(_ quote: DapiQuote) -> String? {
 
         // 4. The allowance, read fresh: nothing is uploaded while quoting is paused or the round is used up. A failed
         //    read doesn't stop it (3DAPI refuses with a code anyway).
-        phase = .uploading
         let allowance = await environment.readAllowance()
         if stopped { end(.problem("Stopped. Nothing was sent.")); return }
         if let problem = dapiAllowanceProblem(allowance) {
@@ -712,6 +711,7 @@ func dapiUnusableQuoteMessage(_ quote: DapiQuote) -> String? {
         }
 
         // 5. Upload once, then create one quote.
+        phase = .uploading
         guard let created = await uploadAndCreate(client: client, fileURL: fileURL, format: format, contentType: contentType,
                                                   size: currentSize, hash: hash, name: name) else { return }
         quote = created
