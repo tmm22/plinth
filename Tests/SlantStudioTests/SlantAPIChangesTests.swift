@@ -286,14 +286,14 @@ final class SlantAPISignalsTests: XCTestCase {
         let later = Date(timeIntervalSince1970: 1_794_000_000)
         let dated = slantAPISpecChangeSentence(areas: ["Orders"], changedOn: later)
         XCTAssertTrue(dated.hasPrefix("Slant changed its API on "), dated)
-        XCTAssertTrue(dated.contains("(Orders), after this version of Studio was made. Studio carries on as before, but some details may be missing or wrong until it’s updated. If anything in Orders looks odd, check it on Slant."), dated)
+        XCTAssertTrue(dated.contains("(Orders), after this version of Plinth was made. Plinth carries on as before, but some details may be missing or wrong until it’s updated. If anything in Orders looks odd, check it on Slant."), dated)
         XCTAssertEqual(slantAPISpecChangeSentence(areas: ["Files", "Orders"], changedOn: nil),
-                       "Slant’s API has changed (Files and Orders) since this version of Studio was made. Studio carries on as before, but some details may be missing or wrong until it’s updated. If anything in Orders looks odd, check it on Slant.")
+                       "Slant’s API has changed (Files and Orders) since this version of Plinth was made. Plinth carries on as before, but some details may be missing or wrong until it’s updated. If anything in Orders looks odd, check it on Slant.")
         // Orders is named only when the change touches it.
         XCTAssertTrue(slantAPISpecChangeSentence(areas: ["Files"], changedOn: nil).hasSuffix("until it’s updated. If anything looks odd, check it on Slant."))
         XCTAssertEqual(slantAPIStatusSentence(["ON_HOLD"], more: false),
-                       "Slant sent an order status Studio doesn’t recognise (ON_HOLD). Studio won’t offer Cancel for those orders or count them in the Spending Report; check them on Slant.")
-        XCTAssertTrue(slantAPIStatusSentence(["A", "B"], more: true).hasPrefix("Slant sent order statuses Studio doesn’t recognise (A, B and others)."))
+                       "Slant sent an order status Plinth doesn’t recognise (ON_HOLD). Plinth won’t offer Cancel for those orders or count them in the Spending Report; check them on Slant.")
+        XCTAssertTrue(slantAPIStatusSentence(["A", "B"], more: true).hasPrefix("Slant sent order statuses Plinth doesn’t recognise (A, B and others)."))
         // A Last-Modified no later than the bundled copy's isn't shown as the change's date.
         var record = SlantAPICheckRecord(checkedAt: later, areas: ["Orders"], changeToken: changedToken, changedOn: slantAPIBundledSpecDate)
         XCTAssertNil(slantAPIChangeDate(record))
@@ -339,10 +339,10 @@ final class SlantAPISignalsTests: XCTestCase {
     func testSettingsStateText() {
         XCTAssertEqual(slantAPISettingsStateText(record: SlantAPICheckRecord(), bundleAvailable: true), "Not checked yet.")
         XCTAssertEqual(slantAPISettingsStateText(record: SlantAPICheckRecord(checkedAt: Date()), bundleAvailable: true),
-                       "Matches the API this version of Studio was made for.")
+                       "Matches the API this version of Plinth was made for.")
         let changed = SlantAPICheckRecord(checkedAt: Date(), areas: ["Files", "Orders"], changeToken: changedToken)
         XCTAssertEqual(slantAPISettingsStateText(record: changed, bundleAvailable: true),
-                       "Changed since this version of Studio was made: Files and Orders.")
+                       "Changed since this version of Plinth was made: Files and Orders.")
         XCTAssertTrue(slantAPISettingsStateText(record: changed, bundleAvailable: false).contains("missing"))
         XCTAssertEqual(slantAPIChangedOperationsText(SlantAPIDifference(areas: ["Orders"], operations: ["GET /orders"], definitions: ["Order"])),
                        "Changed operations: GET /orders · definitions: Order")

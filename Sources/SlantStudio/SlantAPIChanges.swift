@@ -489,7 +489,7 @@ func slantAPIFetchErrorText(_ error: SlantAPISpecFetchError) -> String {
     case .noConnection: "no internet connection"
     case .timedOut: "Slant didn’t answer in time"
     case .transport: "couldn’t reach Slant"
-    case .redirected(let status): "Slant redirected the request (HTTP \(status)), which Studio doesn’t follow"
+    case .redirected(let status): "Slant redirected the request (HTTP \(status)), which Plinth doesn’t follow"
     case .http(let status): "Slant answered HTTP \(status)"
     case .tooLarge: "the reply was larger than 2 MB"
     case .unreadable: "the reply wasn’t a readable API description"
@@ -661,12 +661,12 @@ func slantAPISpecChangeSentence(areas: [String], changedOn: Date?) -> String {
     let list = slantAPIAreaListText(areas)
     // The notice sits above the orders list; it names Orders only when the change touches it.
     let check = areas.contains("Orders") ? "If anything in Orders looks odd, check it on Slant." : "If anything looks odd, check it on Slant."
-    let tail = "Studio carries on as before, but some details may be missing or wrong until it’s updated. \(check)"
+    let tail = "Plinth carries on as before, but some details may be missing or wrong until it’s updated. \(check)"
     if let changedOn {
         let day = changedOn.formatted(date: .abbreviated, time: .omitted)
-        return "Slant changed its API on \(day) (\(list)), after this version of Studio was made. \(tail)"
+        return "Slant changed its API on \(day) (\(list)), after this version of Plinth was made. \(tail)"
     }
-    return "Slant’s API has changed (\(list)) since this version of Studio was made. \(tail)"
+    return "Slant’s API has changed (\(list)) since this version of Plinth was made. \(tail)"
 }
 
 /// Studio's handling of a status it doesn't recognise: `orderCanRequestCancellation` offers no Cancel for it, and the
@@ -674,10 +674,10 @@ func slantAPISpecChangeSentence(areas: [String], changedOn: Date?) -> String {
 func slantAPIStatusSentence(_ words: [String], more: Bool) -> String {
     let list = words.joined(separator: ", ") + (more ? " and others" : "")
     let what = words.count == 1 && !more ? "an order status" : "order statuses"
-    return "Slant sent \(what) Studio doesn’t recognise (\(list)). Studio won’t offer Cancel for those orders or count them in the Spending Report; check them on Slant."
+    return "Slant sent \(what) Plinth doesn’t recognise (\(list)). Plinth won’t offer Cancel for those orders or count them in the Spending Report; check them on Slant."
 }
 
-let slantAPIUnreadableSentence = "Slant sent an order list Studio couldn’t read, so some orders may not be shown."
+let slantAPIUnreadableSentence = "Slant sent an order list Plinth couldn’t read, so some orders may not be shown."
 
 /// The notice's lines, empty when hidden: the spec change unless dismissed, statuses not yet dismissed, and an
 /// unreadable order list unless dismissed.
@@ -707,10 +707,10 @@ func slantAPIDismissing(record: SlantAPICheckRecord, signals: SlantAPIRuntimeSig
 
 /// Settings › Advanced › Slant API: the state of the comparison.
 func slantAPISettingsStateText(record: SlantAPICheckRecord, bundleAvailable: Bool) -> String {
-    guard bundleAvailable else { return "Studio’s copy of Slant’s API description is missing, so it can’t compare." }
+    guard bundleAvailable else { return "Plinth’s copy of Slant’s API description is missing, so it can’t compare." }
     guard record.checkedAt != nil else { return "Not checked yet." }
-    guard record.hasChange else { return "Matches the API this version of Studio was made for." }
-    var text = "Changed since this version of Studio was made: \(slantAPIAreaListText(record.areas, limit: slantAPIMaxSavedAreas))."
+    guard record.hasChange else { return "Matches the API this version of Plinth was made for." }
+    var text = "Changed since this version of Plinth was made: \(slantAPIAreaListText(record.areas, limit: slantAPIMaxSavedAreas))."
     if let date = slantAPIChangeDate(record) {
         text += " Slant updated it on \(date.formatted(date: .abbreviated, time: .omitted))."
     }
@@ -722,7 +722,7 @@ func slantAPICheckActivityDetail(_ outcome: Result<SlantAPIDifference?, SlantAPI
     switch outcome {
     case .success(nil): return "Not changed since the last check"
     case .success(let difference?):
-        if difference.isEmpty { return "Matches the API this version of Studio was made for" }
+        if difference.isEmpty { return "Matches the API this version of Plinth was made for" }
         return "Changed: \(slantAPIAreaListText(difference.areas, limit: slantAPIMaxSavedAreas)) (\(difference.operations.count) operations, \(difference.definitions.count) definitions)"
     case .failure(let error): return "Couldn’t check: \(slantAPIFetchErrorText(error))"
     }
@@ -884,7 +884,7 @@ func slantAPICheckActivityDetail(_ outcome: Result<SlantAPIDifference?, SlantAPI
         noteStatuses(records.map { orderObject($0.values)["status"] })
         if slantAPIOrderListLooksUnreadable(records: records, pagination: responsePagination(response), firstPage: firstPage),
            signals.noteUnreadableOrderList() {
-            log(Activity(title: "Unreadable order list", detail: "Slant’s order list reply couldn’t be read by this version of Studio", success: false))
+            log(Activity(title: "Unreadable order list", detail: "Slant’s order list reply couldn’t be read by this version of Plinth", success: false))
         }
     }
 
@@ -896,7 +896,7 @@ func slantAPICheckActivityDetail(_ outcome: Result<SlantAPIDifference?, SlantAPI
     private func noteStatuses(_ values: [Any?]) {
         guard values.contains(where: { slantAPIUnrecognisedStatusWord($0) != nil }) else { return }
         for word in signals.note(statusValues: values) {
-            log(Activity(title: "Unrecognised order status", detail: "Slant sent \(word), which this version of Studio doesn’t recognise", success: false))
+            log(Activity(title: "Unrecognised order status", detail: "Slant sent \(word), which this version of Plinth doesn’t recognise", success: false))
         }
     }
 

@@ -299,7 +299,7 @@ enum InternalWallsSkipReason: String, Equatable, Sendable, CaseIterable {
         case .wouldChangeShellCount:
             return "No internal walls were added: the slots would change the number of separate parts."
         case .resultFailedChecks:
-            return "No internal walls were added: the result didn’t pass Studio’s mesh checks."
+            return "No internal walls were added: the result didn’t pass Plinth’s mesh checks."
         case .nothingPlanned:
             return "No internal walls were planned for this part."
         case .noFeatureSuitable:
@@ -376,7 +376,7 @@ func internalWallsSkipNote(_ kind: InternalWallsKind, _ skip: InternalWallsFeatu
     case .tooShort: why = "there isn’t room for a ring or slot at least \(Int(internalWallsMinimumSlotHeightMM)) mm tall"
     case .tooThin: why = "under \(internalWallsThinMinimumMM.formatted()) mm thick, which would leave less than \(Int(internalWallsTargetedClearanceMM)) mm each side of a slot"
     case .wouldRemoveTooMuch: why = "it would remove too much of the part"
-    case .limitReached: why = "Studio’s limit per part was reached"
+    case .limitReached: why = "Plinth’s limit per part was reached"
     case .couldNotJoin: why = "its opening couldn’t be joined into the base"
     case .hollow: why = skip.count == 1 ? "it is hollow, so a slot through its middle would cut into its hole"
         : "they are hollow, so a slot through the middle would cut into the hole"
@@ -633,7 +633,7 @@ func internalWallsSummary(_ result: InternalWallsResult) -> String {
     var summary = "Adds internal walls: \(internalWallsList(made))\(lengths), \(width) mm wide, \(opening) through the bed face."
     summary += " About \(Int(result.removedVolumeMM3.rounded()).formatted()) mm³ (\(String(format: "%.1f", result.removedFraction * 100))%) removed"
     summary += " and \(Int(result.addedSurfaceAreaMM2.rounded()).formatted()) mm² of internal surface added: an estimated"
-    summary += " \(Int((result.estimatedExtraMaterialFraction * 100).rounded()))% more filament (Studio’s estimate from Slant’s 1 mm walls and 25% infill, 25 Oct 2026), so request a new Slant quote."
+    summary += " \(Int((result.estimatedExtraMaterialFraction * 100).rounded()))% more filament (Plinth’s estimate from Slant’s 1 mm walls and 25% infill, 25 Oct 2026), so request a new Slant quote."
     summary += " \(parts) before and after."
     return summary + internalWallsDroppedSlotsNote(result.droppedSlots)
 }

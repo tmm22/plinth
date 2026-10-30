@@ -86,9 +86,9 @@ final class OrdersUXTests: XCTestCase {
         // Still explained where it's informative; the review sheet and Workbench keep the full reason.
         // A status Studio doesn't recognise is named as such (quoted), not described as uncancellable.
         XCTAssertEqual(orderDetailCancelBlockedNote("ON_HOLD"),
-                       "Studio doesn’t recognise this order’s status (“ON_HOLD”), so it doesn’t offer Cancel. Check the order on Slant.")
+                       "Plinth doesn’t recognise this order’s status (“ON_HOLD”), so it doesn’t offer Cancel. Check the order on Slant.")
         XCTAssertEqual(orderDetailCancelBlockedNote(""),
-                       "Slant didn’t return this order’s status, so Studio doesn’t offer Cancel. Check the order on Slant.")
+                       "Slant didn’t return this order’s status, so Plinth doesn’t offer Cancel. Check the order on Slant.")
         XCTAssertNil(orderDetailCancelBlockedNote("PRINTING"))
         XCTAssertEqual(orderCancellationBlockedReason("CANCELED"), "This order was already cancelled.")
     }

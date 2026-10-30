@@ -65,7 +65,7 @@ final class ShippingRecordDisplayTests: XCTestCase {
         let plain = Record(values: order())
         XCTAssertEqual(orderStatusFilterLagHintText(status: "SHIPPED", loaded: []), orderStatusFilterLagHint)
         XCTAssertEqual(orderStatusFilterLagHint,
-                       "Slant’s filter uses its own order status, so orders Studio shows as Shipped while Slant still says Printing or Submitted are listed under that status.")
+                       "Slant’s filter uses its own order status, so orders Plinth shows as Shipped while Slant still says Printing or Submitted are listed under that status.")
         XCTAssertEqual(orderStatusFilterLagHintText(status: "PRINTING", loaded: [plain, lagging]), orderStatusFilterLagHint)
         XCTAssertEqual(orderStatusFilterLagHintText(status: " printing ", loaded: [lagging]), orderStatusFilterLagHint)
         XCTAssertNil(orderStatusFilterLagHintText(status: "PRINTING", loaded: [plain]))
@@ -83,7 +83,7 @@ final class ShippingRecordDisplayTests: XCTestCase {
         // The Spending Report counts Printing and Submitted orders as spend, but a Shipped-filtered list leaves out the
         // ones Slant still lists that way.
         let notes = spendReportScopeNotes(searchActive: false, statusFilter: "SHIPPED", hasDateRange: false, moreOnServer: false)
-        XCTAssertEqual(notes, ["The Orders list is filtered to Shipped orders, so only those are included. Orders Slant still lists as Printing or Submitted aren’t included, even if Studio shows them as Shipped."])
+        XCTAssertEqual(notes, ["The Orders list is filtered to Shipped orders, so only those are included. Orders Slant still lists as Printing or Submitted aren’t included, even if Plinth shows them as Shipped."])
         XCTAssertTrue(spendReportCountedStatuses.isSuperset(of: ["PRINTING", "SUBMITTED"]))
         XCTAssertFalse(spendReportScopeNotes(searchActive: false, statusFilter: "PRINTING", hasDateRange: false,
                                              moreOnServer: false)[0].contains("Shipped"))

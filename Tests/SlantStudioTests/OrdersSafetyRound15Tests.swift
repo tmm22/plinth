@@ -207,11 +207,11 @@ final class OrdersSafetyRound15Tests: XCTestCase {
 
     func testAnUnrecognisedStatusIsNamedInsteadOfCalledUncancellable() {
         XCTAssertEqual(orderCancellationBlockedReason("ON_HOLD"),
-                       "Studio doesn’t recognise this order’s status (“ON_HOLD”), so it doesn’t offer Cancel. Check the order on Slant.")
+                       "Plinth doesn’t recognise this order’s status (“ON_HOLD”), so it doesn’t offer Cancel. Check the order on Slant.")
         XCTAssertEqual(orderDetailCancelBlockedNote(" awaiting_pickup "),
-                       "Studio doesn’t recognise this order’s status (“awaiting_pickup”), so it doesn’t offer Cancel. Check the order on Slant.")
+                       "Plinth doesn’t recognise this order’s status (“awaiting_pickup”), so it doesn’t offer Cancel. Check the order on Slant.")
         XCTAssertEqual(orderCancellationBlockedReason(""),
-                       "Slant didn’t return this order’s status, so Studio doesn’t offer Cancel. Check the order on Slant.")
+                       "Slant didn’t return this order’s status, so Plinth doesn’t offer Cancel. Check the order on Slant.")
         let long = orderCancellationBlockedReason(String(repeating: "Z", count: 80) + "\n\u{7}") ?? ""
         XCTAssertTrue(long.contains("(“" + String(repeating: "Z", count: 40) + "…”)"), long)
         XCTAssertEqual(orderCancelConfirmAllowed(status: "ON_HOLD", loaded: true).1, orderCancellationBlockedReason("ON_HOLD"))
@@ -315,7 +315,7 @@ final class OrdersSafetyRound15Tests: XCTestCase {
         let table = statusTable
         // Every known status is in the table exactly once, and the table holds one status Studio doesn't know.
         let known = table.map(\.status).filter { orderKnownStatuses.contains($0) }
-        XCTAssertEqual(Set(known), orderKnownStatuses, "add a row for each status Studio recognises")
+        XCTAssertEqual(Set(known), orderKnownStatuses, "add a row for each status Plinth recognises")
         XCTAssertEqual(known.count, orderKnownStatuses.count)
         XCTAssertEqual(table.filter { !orderKnownStatuses.contains($0.status) }.count, 1)
 

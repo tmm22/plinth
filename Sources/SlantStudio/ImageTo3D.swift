@@ -312,7 +312,7 @@ enum ImageTo3DError: LocalizedError, Equatable, Sendable {
             case 403: return "\(service.title) refused this request.\(detail)"
             case 404: return "\(service.title) couldn’t find that task. It may have been deleted or expired."
             case 400, 422: return "\(service.title) couldn’t accept that request.\(detail)"
-            case 300...399: return "\(service.title) redirected the request, so Studio stopped."
+            case 300...399: return "\(service.title) redirected the request, so Plinth stopped."
             case 500...599: return "\(service.title) is having trouble right now (HTTP \(status))."
             default: return "\(service.title) couldn’t complete that request (HTTP \(status)).\(detail)"
             }
@@ -325,11 +325,11 @@ enum ImageTo3DError: LocalizedError, Equatable, Sendable {
             let detail = message.isEmpty ? "" : " \(message)"
             return "\(service.title) needs a paid plan with enough credits for API use.\(detail)"
         case .transport(let message):
-            return "Studio couldn’t reach the service: \(message)"
+            return "Plinth couldn’t reach the service: \(message)"
         case .invalidResponse(let message):
             return message
         case .responseTooLarge:
-            return "The service’s reply was larger than Studio reads, so it was ignored."
+            return "The service’s reply was larger than Plinth reads, so it was ignored."
         case .downloadRefused(let message):
             return message
         case .modelTooLarge:
@@ -471,10 +471,10 @@ func imageTo3DPollDelay(consecutiveFailures: Int, retryAfter: TimeInterval?, sug
 func imageTo3DDownloadURLProblem(_ url: URL) -> String? {
     guard url.scheme?.lowercased() == "https" else { return "The service didn’t return a secure (https) model link." }
     guard let host = url.host, !host.isEmpty else { return "The service returned a model link without a host." }
-    guard url.user == nil, url.password == nil else { return "The service returned a model link with sign-in details, so Studio didn’t follow it." }
-    guard url.fragment == nil else { return "The service returned an unusual model link, so Studio didn’t follow it." }
+    guard url.user == nil, url.password == nil else { return "The service returned a model link with sign-in details, so Plinth didn’t follow it." }
+    guard url.fragment == nil else { return "The service returned an unusual model link, so Plinth didn’t follow it." }
     if host == "localhost" || host.hasSuffix(".local") || host.hasSuffix(".localhost") || imageTo3DHostIsIPLiteral(host) {
-        return "The service returned a model link to a local address, so Studio didn’t follow it."
+        return "The service returned a model link to a local address, so Plinth didn’t follow it."
     }
     return nil
 }
@@ -641,7 +641,7 @@ private final class ImageTo3DBoundedDownload: NSObject, URLSessionDataDelegate, 
         defer { session.finishTasksAndInvalidate() }
         guard FileManager.default.createFile(atPath: destination.path, contents: nil),
               let handle = try? FileHandle(forWritingTo: destination) else {
-            throw ImageTo3DError.downloadRefused("Studio couldn’t create a temporary file for the model.")
+            throw ImageTo3DError.downloadRefused("Plinth couldn’t create a temporary file for the model.")
         }
         self.handle = handle
         var request = URLRequest(url: url)
@@ -675,7 +675,7 @@ private final class ImageTo3DBoundedDownload: NSObject, URLSessionDataDelegate, 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         guard imageTo3DRedirectAllowed(from: response.url ?? task.currentRequest?.url, to: request.url) else {
-            fail(ImageTo3DError.downloadRefused("The model link redirected somewhere Studio doesn’t follow."), task: task)
+            fail(ImageTo3DError.downloadRefused("The model link redirected somewhere Plinth doesn’t follow."), task: task)
             completionHandler(nil)
             return
         }
@@ -719,7 +719,7 @@ private final class ImageTo3DBoundedDownload: NSObject, URLSessionDataDelegate, 
             return
         }
         do { try handle?.write(contentsOf: data) } catch {
-            fail(ImageTo3DError.downloadRefused("Studio couldn’t save the model to a temporary file."), task: dataTask)
+            fail(ImageTo3DError.downloadRefused("Plinth couldn’t save the model to a temporary file."), task: dataTask)
         }
     }
 
@@ -750,7 +750,7 @@ private final class ImageTo3DBoundedDownload: NSObject, URLSessionDataDelegate, 
     }
 }
 
-let imageTo3DTooLargeMessage = "The generated model is larger than 128 MB, so Studio didn’t download it."
+let imageTo3DTooLargeMessage = "The generated model is larger than 128 MB, so Plinth didn’t download it."
 
 /// A new `SlantStudio-Generated3D-<UUID>` folder in the temporary directory. The caller removes it after import;
 /// leftovers go at the next launch.
@@ -1164,24 +1164,24 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
         case .notSent:
             return "Nothing was made by \(service.title).\(detailText)"
         case .outcomeUnknown:
-            return "Studio couldn’t tell whether \(service.title) started the task, so it wasn’t sent again.\(detailText)\(dashboard)"
+            return "Plinth couldn’t tell whether \(service.title) started the task, so it wasn’t sent again.\(detailText)\(dashboard)"
         case .taskEnded(let state):
             return "\(service.title) stopped the task: \(state.title.lowercased()).\(detailText)"
         case .conversionRefused:
             return "\(service.title) made the model but refused to convert it, so nothing more was sent.\(detailText)"
         case .timedOut:
-            return "\(service.title) was still working after 10 minutes, so Studio stopped waiting. The task carries on at \(service.title)."
+            return "\(service.title) was still working after 10 minutes, so Plinth stopped waiting. The task carries on at \(service.title)."
         case .statusUnreadable:
-            return "Studio couldn’t read the task’s progress.\(detailText)\(dashboard)"
+            return "Plinth couldn’t read the task’s progress.\(detailText)\(dashboard)"
         case .downloadFailed:
-            return "\(service.title) made the model, but Studio couldn’t download it.\(detailText)"
+            return "\(service.title) made the model, but Plinth couldn’t download it.\(detailText)"
         case .modelTooLarge:
             // `detail` names the limit hit when it wasn't the download's 128 MB.
             let limit = detail.isEmpty ? "over 128 MB" : detail
             let kept = service == .meshy ? " (Meshy keeps it for 3 days)" : ""
             let task = taskID.map { ", task \($0)" } ?? ""
             let advice = higherDetailRequested ? " Generating again without Higher detail may help." : ""
-            return "\(service.title)’s model was too detailed for Studio (\(limit)), so it wasn’t used. The credits for it were spent, and the model stays on \(service.title)’s dashboard\(kept)\(task).\(advice)"
+            return "\(service.title)’s model was too detailed for Plinth (\(limit)), so it wasn’t used. The credits for it were spent, and the model stays on \(service.title)’s dashboard\(kept)\(task).\(advice)"
         case .cancelled:
             return taskID == nil ? "Stopped before anything was sent." : "Stopped. \(service.title) may still finish the task and charge for it."
         }
@@ -1386,7 +1386,7 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
     progress(ImageTo3DProgress(stage: .downloading, taskID: lastID, state: .succeeded, percent: nil))
     let folder: URL
     do { folder = try makeFolder() } catch {
-        return stop(.downloadFailed, .downloading, lastID, "Studio couldn’t make a temporary folder.", resume: downloadPoint)
+        return stop(.downloadFailed, .downloading, lastID, "Plinth couldn’t make a temporary folder.", resume: downloadPoint)
     }
     let safeID = imageTo3DTaskIDIsSafe(lastID) ? lastID : "model"
     do {

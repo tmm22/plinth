@@ -4,7 +4,7 @@ import Foundation
 struct TrashedLibraryFile: Equatable, Sendable {
     /// The file's location in the Trash, when the system reported it.
     let trashedURL: URL?
-    /// Where Finder's Put Back returns the file (a named copy in Slant Studio's support folder).
+    /// Where Finder's Put Back returns the file (a named copy in Plinth's support folder).
     let putBackURL: URL
 }
 

@@ -489,7 +489,7 @@ func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStat
 let unknownOutcomeBlockMessage = "This order’s last payment or cancel request didn’t confirm. Reload the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
 /// A cancel lock kept although the order moved on: it was sent while the order was being made and the order has
 /// shipped since, which doesn't show whether the refund was made (`outcomeResolved`). Reloading can't lift it.
-let unknownOutcomeShippedSinceCancelMessage = "Slant didn’t confirm your cancel and refund request, and the order has shipped since, which doesn’t show whether the refund was made. Check this order in your Slant dashboard. Studio won’t send another cancel, or pay drafts in a batch, until Slant shows the order cancelled or you quit and reopen Studio."
+let unknownOutcomeShippedSinceCancelMessage = "Slant didn’t confirm your cancel and refund request, and the order has shipped since, which doesn’t show whether the refund was made. Check this order in your Slant dashboard. Plinth won’t send another cancel, or pay drafts in a batch, until Slant shows the order cancelled or you quit and reopen Plinth."
 /// The lock note for an order's review: the shipped-since note when the reload can no longer lift the lock, else
 /// `unknownOutcomeBlockMessage`.
 func unknownOutcomeLockMessage(context: UnknownOutcomeContext?, currentStatus: String?) -> String {
@@ -956,7 +956,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     init() {
         do { apiKey = try KeychainStore.load() } catch {
             // With no key loaded, the main window shows its Connect Slant Account prompt.
-            showError("Slant Studio couldn’t read the saved key. Enter it again in Settings.")
+            showError("Plinth couldn’t read your saved Slant API key. Enter it again in Settings.")
         }
         let path = Self.supportDirectory.appendingPathComponent("models.json")
         if let data = try? Data(contentsOf: path), let saved = try? JSONDecoder().decode([LocalModel].self, from: data) { localModels = saved }
@@ -1021,7 +1021,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil, keepsPlacement: Bool = false, filledPockets: Bool = false, fromPrintReadyCopy: Bool = false, fitCoupon: Bool = false) -> UUID? {
         let ext = url.pathExtension.lowercased()
         guard ["stl", "obj", "3mf"].contains(ext) else {
-            showError("Slant Studio accepts STL, OBJ, and 3MF models.")
+            showError("Plinth accepts STL, OBJ, and 3MF models.")
             return nil
         }
         let access = url.startAccessingSecurityScopedResource()
@@ -2347,18 +2347,18 @@ let slantUploadNameCheckRetryInURLSheet = "Press Upload to try again."
 
 /// Why nothing was uploaded when the same-name check couldn't read the whole file list.
 func slantUploadNameCheckFailedMessage(name: String, reason: String, retryHint: String = slantUploadNameCheckRetryInModels) -> String {
-    let lead = "Studio couldn’t read all your Slant files to check for one already named “\(name)”, so nothing was uploaded."
+    let lead = "Plinth couldn’t read all your Slant files to check for one already named “\(name)”, so nothing was uploaded."
     let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? "\(lead) \(retryHint)" : "\(lead) \(trimmed) \(retryHint)"
 }
 
 /// The same-name check stopped for the rate limit (`slantUploadNameCheckRateLimitStop`, or a 429 to its read).
 struct SlantUploadNameCheckRateLimited: Error {}
-let slantUploadNameCheckRateLimitedMessage = "Slant’s rate limit is nearly used up, so Studio didn’t check your Slant files and nothing was uploaded. Wait a minute, then upload again."
+let slantUploadNameCheckRateLimitedMessage = "Slant’s rate limit is nearly used up, so Plinth didn’t check your Slant files and nothing was uploaded. Wait a minute, then upload again."
 
 /// The account lists more files than the check reads; refreshing can't help.
 struct SlantUploadNameCheckTooManyFiles: Error {}
-let slantUploadNameCheckTooManyFilesMessage = "Your Slant account lists more than \((slantUploadNameCheckMaxPages * listPageSize).formatted()) files. Studio checks every file’s name before an upload and can’t check that many, so nothing was uploaded."
+let slantUploadNameCheckTooManyFilesMessage = "Your Slant account lists more than \((slantUploadNameCheckMaxPages * listPageSize).formatted()) files. Plinth checks every file’s name before an upload and can’t check that many, so nothing was uploaded."
 
 /// Whether the same-name check's next page read must stop: until a 429's wait has passed, or while Studio's known
 /// allowance is at or below the order watch's reserve (`orderWatchRateLimitReserve`). A low count with a reset time

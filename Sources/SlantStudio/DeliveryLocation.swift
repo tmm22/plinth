@@ -65,7 +65,7 @@ final class DeliveryLocationLookup: NSObject, ObservableObject, @preconcurrency 
         message = nil
         // SwiftPM command-line runs don't include the permission purpose strings.
         guard Bundle.main.object(forInfoDictionaryKey: "NSLocationUsageDescription") != nil else {
-            message = "Open the packaged Slant Studio app to use location, or enter your address manually."
+            message = "Open the packaged Plinth app to use location, or enter your address manually."
             return
         }
         let token = UUID()
@@ -117,7 +117,7 @@ final class DeliveryLocationLookup: NSObject, ObservableObject, @preconcurrency 
             locationRequested = true
             manager.requestLocation()
         case .denied, .restricted:
-            fail("Location access is unavailable. Enter your address manually, or allow Slant Studio in System Settings → Privacy & Security → Location Services.")
+            fail("Location access is unavailable. Enter your address manually, or allow Plinth in System Settings → Privacy & Security → Location Services.")
         @unknown default:
             fail("Location is unavailable. Enter your address manually.")
         }

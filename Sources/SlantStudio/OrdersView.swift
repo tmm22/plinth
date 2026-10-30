@@ -2353,7 +2353,7 @@ func orderPayActivityDetail(_ outcome: BatchPayOutcome) -> String {
     switch outcome {
     case .placed: return "Completed"
     case .notPlaced(let reason): return "Accepted, but not placed. " + reason
-    case .unrecognised(let status): return "Accepted; Slant now shows the status \(status), which Studio doesn’t recognise"
+    case .unrecognised(let status): return "Accepted; Slant now shows the status \(status), which Plinth doesn’t recognise"
     case .unclear: return "Accepted, but Slant’s reply didn’t show the order’s status, so it may still be charged"
     case .changed, .refused, .unknown, .notSent: return "Not confirmed"
     }
@@ -2546,9 +2546,9 @@ func orderCancellationBlockedReason(_ status: String) -> String? {
     // Every other known status can be cancelled, so what's left is a status Studio doesn't know (Slant changed its
     // statuses without notice on 26 Oct 2026): say so rather than claim Slant can't cancel it.
     if shown.isEmpty {
-        return "Slant didn’t return this order’s status, so Studio doesn’t offer Cancel. Check the order on Slant."
+        return "Slant didn’t return this order’s status, so Plinth doesn’t offer Cancel. Check the order on Slant."
     }
-    return "Studio doesn’t recognise this order’s status (“\(orderStatusQuoted(shown))”), so it doesn’t offer Cancel. Check the order on Slant."
+    return "Plinth doesn’t recognise this order’s status (“\(orderStatusQuoted(shown))”), so it doesn’t offer Cancel. Check the order on Slant."
 }
 /// A status from Slant as quoted in copy: at most 40 characters, control characters dropped.
 func orderStatusQuoted(_ status: String) -> String {
@@ -2964,7 +2964,7 @@ func orderComposerPlatformSeed(copied: String, current: String, loadedPlatformID
 func orderComposerPlatformNotCopiedNote(platformsLoaded: Bool, hasCurrentPlatform: Bool) -> String {
     let lead = platformsLoaded
         ? "This order’s platform isn’t in your platform list"
-        : "Your platforms haven’t loaded, so Studio couldn’t check this order’s platform"
+        : "Your platforms haven’t loaded, so Plinth couldn’t check this order’s platform"
     return hasCurrentPlatform
         ? "\(lead), so the draft uses your current platform. Check it under More options."
         : "\(lead). Choose a platform under More options."

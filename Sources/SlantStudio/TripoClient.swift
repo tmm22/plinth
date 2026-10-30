@@ -191,7 +191,7 @@ func tripoUploadError(_ error: ImageTo3DError, which: String, count: Int) -> Ima
     case .http, .downloadRefused, .modelTooLarge:
         return .invalidInput("\(error.userMessage) \(nothing)")
     case .transport(let message):
-        return .invalidInput("Studio couldn’t reach Tripo: \(message) \(nothing)")
+        return .invalidInput("Plinth couldn’t reach Tripo: \(message) \(nothing)")
     case .invalidResponse, .responseTooLarge:
         return .invalidInput("Tripo’s reply couldn’t be read. \(nothing)")
     }
@@ -299,7 +299,7 @@ struct TripoClient: ImageTo3DProvider {
     private func create(_ path: String, json: [String: Any], knownTaskID: String?) async -> ImageTo3DCreateResult {
         guard JSONSerialization.isValidJSONObject(json),
               let body = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]) else {
-            return .notSent(.invalidInput("Studio couldn’t build that Tripo request."))
+            return .notSent(.invalidInput("Plinth couldn’t build that Tripo request."))
         }
         let outcome: Result<String, Error>
         do {
@@ -322,7 +322,7 @@ struct TripoClient: ImageTo3DProvider {
     private func send(_ method: String, _ path: String, body: Data? = nil, contentType: String? = nil) async throws -> ImageTo3DHTTPReply {
         guard imageTo3DKeyProblem(apiKey, service: .tripo) == nil else { throw ImageTo3DError.notConfigured(.tripo) }
         guard let url = imageTo3DAPIURL(host: region.apiHost, path: path) else {
-            throw ImageTo3DError.invalidInput("Studio couldn’t build that Tripo request.")
+            throw ImageTo3DError.invalidInput("Plinth couldn’t build that Tripo request.")
         }
         var request = URLRequest(url: url)
         request.httpMethod = method

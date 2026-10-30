@@ -73,7 +73,7 @@ final class OrdersRound13Tests: XCTestCase {
         XCTAssertEqual(report.excludedPaymentProblems, 1)
         XCTAssertEqual(report.excludedUnrecognised, 4)
         XCTAssertEqual(spendReportExclusionLine(report),
-                       "Left out: 1 order with a payment problem, 4 orders with a status Studio doesn’t recognise (HELD, LOST, ON_HOLD and 1 more).")
+                       "Left out: 1 order with a payment problem, 4 orders with a status Plinth doesn’t recognise (HELD, LOST, ON_HOLD and 1 more).")
         XCTAssertFalse(spendReportExclusionLine(report)?.contains("payment error") == true)
         XCTAssertEqual(spendReportUnrecognisedStatusNames([]), "")
         XCTAssertEqual(spendReportUnrecognisedStatusNames(["X"]), " (X)")

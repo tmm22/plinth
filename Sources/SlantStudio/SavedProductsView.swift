@@ -275,7 +275,7 @@ struct SavedProductsSheet: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
-            Text("The product is removed from Slant Studio. Models, drafts and orders aren’t changed, and nothing is sent to Slant.")
+            Text("The product is removed from Plinth. Models, drafts and orders aren’t changed, and nothing is sent to Slant.")
         }
         .confirmationDialog("Discard changes to this product?", isPresented: $confirmDiscardEdit) {
             Button("Discard Changes", role: .destructive) { finishEditing() }

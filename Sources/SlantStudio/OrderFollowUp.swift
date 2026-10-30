@@ -144,7 +144,7 @@ let orderShippingDetailsChangedMessage = "This order’s shipping record or trac
 
 /// Status-filter hint (the Orders list and its filtered-empty text): Slant filters by its order status, which can lag
 /// its shipping record, so such orders are listed under Printing or Submitted, not Shipped.
-let orderStatusFilterLagHint = "Slant’s filter uses its own order status, so orders Studio shows as Shipped while Slant still says Printing or Submitted are listed under that status."
+let orderStatusFilterLagHint = "Slant’s filter uses its own order status, so orders Plinth shows as Shipped while Slant still says Printing or Submitted are listed under that status."
 
 /// The hint under the Orders list for the chosen status filter, or nil. Always under Shipped (orders not loaded may
 /// be listed under Printing or Submitted instead); under another status only while a loaded order with that raw
@@ -485,7 +485,7 @@ struct ShopFollowUpSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Tracking for your shop").font(.title2.bold())
-                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop; marks last until you quit Studio. Only loaded orders are listed.")
+                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop; marks last until you quit Plinth. Only loaded orders are listed.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

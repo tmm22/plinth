@@ -225,7 +225,7 @@ func replicaPlanChangedMessage(buttonTitle: String) -> String {
 func replicaGenerateBlockedReasons(photoReady: Bool, photoPreparing: Bool, nameText: String, sizeText: String,
                                    service: ImageTo3DService, hasKey: Bool, extraPhotosWithoutFront: Bool = false) -> [String] {
     var reasons: [String] = []
-    if photoPreparing { reasons.append("Wait while Studio prepares the photos.") }
+    if photoPreparing { reasons.append("Wait while Plinth prepares the photos.") }
     else if extraPhotosWithoutFront { reasons.append("Add a front photo: the other views go with it.") }
     else if !photoReady { reasons.append("Choose a photo of the object.") }
     if let problem = replicaNameProblem(nameText) { reasons.append(problem == "Enter a name." ? "Enter a name for the replica." : problem) }
@@ -276,7 +276,7 @@ func replicaHigherDetailNote(service: ImageTo3DService) -> String {
     case .meshy: what = "Meshy generates the shape at Ultra 2K for finer surface detail, for \(meshyHigherDetailCredits) more credits each time."
     case .tripo: what = "Tripo generates detailed geometry for \(tripoHigherDetailCredits) more credits each time."
     }
-    return "\(what) Studio keeps up to \(replicaDisplayTriangleCeiling.formatted()) triangles of it. Fine detail can print differently, so check the result."
+    return "\(what) Plinth keeps up to \(replicaDisplayTriangleCeiling.formatted()) triangles of it. Fine detail can print differently, so check the result."
 }
 
 /// Shown under Higher detail, which is off and disabled, for a functional part.
@@ -426,7 +426,7 @@ func replicaResumeNote(_ stop: ImageTo3DStop, action: ReplicaResumeAction) -> St
     }
     let conversionPending = stop.service == .tripo && stop.resumePoint.map { $0.conversionTaskID == nil && $0.sourceKind != .conversion } == true
     if conversionPending {
-        return "\(action.title) carries on with the same task, so the model isn’t made again. Once it’s finished, Studio sends its conversion to STL once, which costs about \(tripoConvertBasicCredits) \(stop.service.title) credits."
+        return "\(action.title) carries on with the same task, so the model isn’t made again. Once it’s finished, Plinth sends its conversion to STL once, which costs about \(tripoConvertBasicCredits) \(stop.service.title) credits."
     }
     return "\(action.title) carries on with the same task. Nothing new is made or charged."
 }
@@ -459,7 +459,7 @@ func replicaUnconfirmedNotice(_ requests: [ImageTo3DUnconfirmedRequest], overflo
     let more = overflowed && !labels.isEmpty ? " and older ones" : ""
     let services = Set(listed.map(\.service))
     let dashboard = services.count == 1 ? "\(services.first!.title)’s dashboard" : "each service’s dashboard"
-    return "Studio couldn’t confirm what happened to \(list)\(more) this session. They may have spent credits, and a finished model may be waiting there: check \(dashboard) before generating again."
+    return "Plinth couldn’t confirm what happened to \(list)\(more) this session. They may have spent credits, and a finished model may be waiting there: check \(dashboard) before generating again."
 }
 
 func replicaGenerateAgainMessage(lastStop: ImageTo3DStop?, modelAlreadyMade: Bool, earlierNotice: String?,
@@ -493,7 +493,7 @@ func replicaCloseWarning(hasUnsavedModel: Bool, lastStop: ImageTo3DStop?, servic
     if hasUnsavedModel {
         let name = service?.title ?? "the service"
         return ReplicaCloseWarning(title: "Close without saving the replica?",
-                                   message: "The model \(name) made isn’t in your library, and Studio doesn’t keep it. Getting it back means generating, and paying for, it again.",
+                                   message: "The model \(name) made isn’t in your library, and Plinth doesn’t keep it. Getting it back means generating, and paying for, it again.",
                                    confirmTitle: "Close Without Saving")
     }
     guard let lastStop, lastStop.creditsMayHaveBeenSpent else { return nil }
@@ -502,13 +502,13 @@ func replicaCloseWarning(hasUnsavedModel: Bool, lastStop: ImageTo3DStop?, servic
         // Finished and paid for; nothing is running, and nothing more can be done with it here.
         let kept = lastStop.service == .meshy ? " (Meshy keeps it for 3 days)" : ""
         return ReplicaCloseWarning(title: "Close without the model \(name) made?",
-                                   message: "\(name) made the model and charged for it, but it was too detailed for Studio. It stays on \(name)’s dashboard\(kept).",
+                                   message: "\(name) made the model and charged for it, but it was too detailed for Plinth. It stays on \(name)’s dashboard\(kept).",
                                    confirmTitle: "Close")
     }
     let task = lastStop.taskID.map { " for task \($0)" } ?? ""
-    let resume = replicaResumeAction(for: lastStop).map { " Once this closes, Studio can’t \($0.title) for it." } ?? ""
+    let resume = replicaResumeAction(for: lastStop).map { " Once this closes, Plinth can’t \($0.title) for it." } ?? ""
     return ReplicaCloseWarning(title: "Close while \(name) may have charged?",
-                               message: "\(name) may have charged for this request, and may still finish the model.\(resume) Check \(name)’s dashboard\(task). Studio remembers this request until you quit, and asks before generating again.",
+                               message: "\(name) may have charged for this request, and may still finish the model.\(resume) Check \(name)’s dashboard\(task). Plinth remembers this request until you quit, and asks before generating again.",
                                confirmTitle: "Close")
 }
 
@@ -531,17 +531,17 @@ enum ReplicaProcessingError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unreadable(let reason):
-            return "Studio couldn’t read the model the service made: \(reason)"
+            return "Plinth couldn’t read the model the service made: \(reason)"
         case .flat(let axis):
             return "The model has no \(axis.rawValue.lowercased()) to scale to. Choose another measurement and Process Again."
         case .exceedsBuildVolume(let size, let longest):
             return "At \(size.label), the replica would be \(String(format: "%.0f", longest)) mm on its longest side, more than Slant’s \(Int(slantBuildVolumeMM)) mm build volume. Enter a smaller size, then Process Again: the model is still here, so nothing is sent or charged."
         case .modelTooLarge(let limit):
-            return "The model is too detailed for Studio to read (\(limit))."
+            return "The model is too detailed for Plinth to read (\(limit))."
         case .tooDetailed(let triangles):
-            return "Studio couldn’t simplify the model below \(STLMesh.maximumTriangles.formatted()) triangles (it still has \(triangles.formatted())), so it can’t be added to your library and nothing was saved. The service keeps this model on its dashboard."
+            return "Plinth couldn’t simplify the model below \(STLMesh.maximumTriangles.formatted()) triangles (it still has \(triangles.formatted())), so it can’t be added to your library and nothing was saved. The service keeps this model on its dashboard."
         case .invalidResult:
-            return "The processed model didn’t pass Studio’s checks, so it wasn’t saved."
+            return "The processed model didn’t pass Plinth’s checks, so it wasn’t saved."
         }
     }
 }
@@ -823,7 +823,7 @@ func replicaChecksFoundNoProblems(_ processed: ReplicaProcessed) -> Bool {
 }
 
 /// What "no problems" covers, so it isn't read as more than was checked.
-let replicaNoProblemsLine = "Studio’s checks found no problems: the mesh is closed, no walls are thinner than 2 mm, no small features were found, and under \(Int(replicaOverhangShareLimit * 100))% of the surface overhangs more than 45°. Strength and fit aren’t checked."
+let replicaNoProblemsLine = "Plinth’s checks found no problems: the mesh is closed, no walls are thinner than 2 mm, no small features were found, and under \(Int(replicaOverhangShareLimit * 100))% of the surface overhangs more than 45°. Strength and fit aren’t checked."
 
 /// Source details for the copy: where it came from, display-only. The date isn't recorded.
 func replicaSourceDetails(service: ImageTo3DService) -> ModelSourceDetails {
@@ -844,7 +844,7 @@ func replicaPrintReviewContext(service: ImageTo3DService, size: ReplicaSize, pur
     if let meshyReport {
         let list = meshyReport.findings
         let detail = list.isEmpty ? "" : ": " + list.joined(separator: "; ")
-        findings.append("Meshy’s printability check of its original model (before Studio’s repair), at this size: \(meshyReport.verdict.rawValue)\(detail).")
+        findings.append("Meshy’s printability check of its original model (before Plinth’s repair), at this size: \(meshyReport.verdict.rawValue)\(detail).")
     }
     return PrintReviewContext(origin: replicaOriginText(service: service), intendedSizeNote: size.reviewNote,
                               purpose: purpose.rawValue, findings: findings)

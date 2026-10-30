@@ -170,7 +170,7 @@ enum ShopifyFulfilmentCheck: Equatable {
     }
 }
 
-let shopifyItemsNotRecordedReason = "Studio didn’t record which of this order’s items the Slant draft holds, so it can’t mark only those as fulfilled. Add its tracking in Shopify."
+let shopifyItemsNotRecordedReason = "Plinth didn’t record which of this order’s items the Slant draft holds, so it can’t mark only those as fulfilled. Add its tracking in Shopify."
 
 /// The same-order check's inputs for an order imported without its store; nil skips the check (the draft names the
 /// connected store).
@@ -461,7 +461,7 @@ enum ShopifyTrackingRowState: Equatable {
             }
         }
         if unknown > 0 {
-            message = "Stopped: Shopify didn’t confirm one send. Check that order in Shopify before sending it again; Studio checks it again first."
+            message = "Stopped: Shopify didn’t confirm one send. Check that order in Shopify before sending it again; Plinth checks it again first."
         } else if shopChanged {
             message = ShopifyError.shopChanged.errorDescription
         } else if refusedInRow >= shopifyTrackingMaxConsecutiveRefusals {
@@ -492,7 +492,7 @@ enum ShopifyTrackingRowState: Equatable {
                                                             variables: ["id": id], estimatedCost: 250)
         } catch ShopifyError.protectedCustomerData where identity != nil {
             // Only this order needs the address; the others can still be checked.
-            return .unavailable("Shopify didn’t share this order’s address with Studio’s app, so Studio can’t confirm it’s the order this draft was imported from. Add its tracking in Shopify.")
+            return .unavailable("Shopify didn’t share this order’s address with the app you connected, so Plinth can’t confirm it’s the order this draft was imported from. Add its tracking in Shopify.")
         }
         return shopifyFulfilmentCheck(detail, trackingNumbers: candidate.trackingNumbers, sourceItems: items, identity: identity)
     }
@@ -530,7 +530,7 @@ struct ShopifyTrackingSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Send tracking to Shopify").font(.title2.bold())
-                Text("Adds Slant’s tracking to each Shopify order in \(shop) and marks the items Slant made as fulfilled; anything else in the order stays unfulfilled. Studio checks each order first and skips any that Shopify already shows as fulfilled or with this tracking.")
+                Text("Adds Slant’s tracking to each Shopify order in \(shop) and marks the items Slant made as fulfilled; anything else in the order stays unfulfilled. Plinth checks each order first and skips any that Shopify already shows as fulfilled or with this tracking.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -539,7 +539,7 @@ struct ShopifyTrackingSheet: View {
                 .frame(minHeight: 220)
             Toggle("Email customers their shipping details", isOn: $notifyCustomer)
                 .disabled(runner.running)
-                .help("Shopify sends its shipping confirmation email to each customer whose order is sent. Studio remembers this choice.")
+                .help("Shopify sends its shipping confirmation email to each customer whose order is sent. Plinth remembers this choice.")
             if !shopMatches {
                 Label("The Shopify connection changed in Settings. Close this and open it again to send to the connected store.",
                       systemImage: "exclamationmark.triangle.fill")
@@ -583,7 +583,7 @@ struct ShopifyTrackingSheet: View {
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text("Shopify marks the items Slant made in each order as fulfilled with this tracking, which Studio can’t undo. \(notifyCustomer ? "Customers are emailed their shipping details." : "Customers aren’t emailed.") Studio sends one order at a time and stops if Shopify doesn’t confirm one.")
+            Text("Shopify marks the items Slant made in each order as fulfilled with this tracking, which Plinth can’t undo. \(notifyCustomer ? "Customers are emailed their shipping details." : "Customers aren’t emailed.") Plinth sends one order at a time and stops if Shopify doesn’t confirm one.")
         }
         .onAppear {
             if !registered { registered = true; connection.trackingSheetOpened() }

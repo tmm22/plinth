@@ -70,7 +70,7 @@ struct OrderWatchSettingsSection: View {
 
     var body: some View {
         Section {
-            Toggle("Check orders while Slant Studio is open", isOn: $watch.enabled)
+            Toggle("Check orders while Plinth is open", isOn: $watch.enabled)
             Toggle("Notify me about order changes", isOn: Binding(get: { watch.notify }, set: { watch.setNotify($0) }))
                 .disabled(!watch.enabled || watch.requestingPermission || !orderWatchNotificationsAvailable())
             Toggle("Show count on Dock icon", isOn: $watch.dockBadge)
@@ -78,7 +78,7 @@ struct OrderWatchSettingsSection: View {
                 .help("The Dock icon shows the same count as Orders in the sidebar: payment problems, reviews, cancellations and shipments you haven’t looked at")
             if watch.notificationsDenied {
                 HStack {
-                    Text("Notifications are turned off for Slant Studio in System Settings.")
+                    Text("Notifications are turned off for Plinth in System Settings.")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Open Notification Settings") {
@@ -106,7 +106,7 @@ struct OrderWatchSettingsSection: View {
         } header: {
             Text("Order updates")
         } footer: {
-            Text("Every few minutes, Studio reads your newest and most recently updated orders and lists status changes to those on the default platform in Orders. Only each order’s ID, status and when it was seen are saved on this Mac, and they’re forgotten when you change the default platform or disconnect. Notifications (an order shipped or was cancelled) show the order number and status, never customer details; clicking one opens the order.")
+            Text("Every few minutes, Plinth reads your newest and most recently updated orders and lists status changes to those on the default platform in Orders. Only each order’s ID, status and when it was seen are saved on this Mac, and they’re forgotten when you change the default platform or disconnect. Notifications (an order shipped or was cancelled) show the order number and status, never customer details; clicking one opens the order.")
                 .settingsFooterLayout()
         }
         .confirmationDialog("Forget saved order statuses?", isPresented: $confirmForget, titleVisibility: .visible) {

@@ -23,7 +23,7 @@ enum ImageSharingService: String, CaseIterable, Identifiable, Sendable {
     var sentDescription: String {
         switch self {
         case .anthropic:
-            return "the photo you choose, the details you type (such as measurements and notes) and pictures Studio renders of the models it makes"
+            return "the photo you choose, the details you type (such as measurements and notes) and pictures Plinth renders of the models it makes"
         case .meshy, .tripo:
             return self == .meshy
                 ? "the photos you choose (and, if you use its free printability check, the size you typed)"
@@ -43,11 +43,11 @@ struct ImageSharingConsentText: Equatable {
 func imageSharingConsentText(_ service: ImageSharingService) -> ImageSharingConsentText {
     ImageSharingConsentText(
         title: "Send photos to \(service.displayName)?",
-        message: "To do this, Studio sends \(service.displayName) \(service.sentDescription). "
+        message: "To do this, Plinth sends \(service.displayName) \(service.sentDescription). "
             + "Photos are resized and their location, camera and other hidden details are removed first. "
             + "\(service.displayName) handles what it receives under its own terms and privacy policy. "
             + "Don’t include customers’ names, addresses or other personal details. "
-            + "Studio asks once; you can reset this in Settings › Design Tools › Photo sharing.",
+            + "Plinth asks once; you can reset this in Settings › Design Tools › Photo sharing.",
         allowButton: "Allow and Send",
         cancelButton: "Don’t Send")
 }
@@ -182,7 +182,7 @@ struct ImageSharingConsentSettingsSection: View {
         } header: {
             Text("Photo sharing")
         } footer: {
-            Text("Studio asks once per service before sending it a photo. Only your answer and its date are kept on this Mac; Studio doesn’t keep the photos or details you send.")
+            Text("Plinth asks once per service before sending it a photo. Only your answer and its date are kept on this Mac; Plinth doesn’t keep the photos or details you send.")
                 .settingsFooterLayout()
         }
     }

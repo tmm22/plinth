@@ -30,10 +30,10 @@ func shopifyFormCredential(kind: ShopifySignInKind, clientID: String, clientSecr
 /// One line about what the app may do, from Test Connection's scopes.
 func shopifyScopeStatusLine(_ scopes: ShopifyScopeSummary) -> String {
     switch (scopes.canReadOrders, scopes.canFulfil) {
-    case (true, true): return "Studio can import orders and send tracking."
-    case (true, false): return "Studio can import orders. To send tracking too, add write_merchant_managed_fulfillment_orders."
-    case (false, true): return "Studio can send tracking, but can’t read orders: add read_orders."
-    case (false, false): return "The app has neither read_orders nor a fulfilment scope, so Studio can’t use it yet."
+    case (true, true): return "Plinth can import orders and send tracking."
+    case (true, false): return "Plinth can import orders. To send tracking too, add write_merchant_managed_fulfillment_orders."
+    case (false, true): return "Plinth can send tracking, but can’t read orders: add read_orders."
+    case (false, false): return "The app has neither read_orders nor a fulfilment scope, so Plinth can’t use it yet."
     }
 }
 
@@ -112,7 +112,7 @@ struct ShopifySettingsSection: View {
                     Text(shopifySetupSteps)
                     Text("Shopify shares customers’ names and addresses with custom apps on its Grow plan or higher.")
                 }
-                Text("Import Orders › Fetch from Shopify and Tracking for Your Shop › Send Tracking to Shopify use these details. They are kept in the macOS Keychain on this Mac, and Studio contacts only your store’s myshopify.com address.")
+                Text("Import Orders › Fetch from Shopify and Tracking for Your Shop › Send Tracking to Shopify use these details. They are kept in the macOS Keychain on this Mac, and Plinth contacts only your store’s myshopify.com address.")
                 Link("Shopify’s Guide to Dev Dashboard Apps", destination: URL(string: "https://help.shopify.com/en/manual/apps/app-types/custom-apps")!)
             }
             .settingsFooterLayout()

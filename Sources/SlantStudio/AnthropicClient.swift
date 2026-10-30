@@ -549,13 +549,13 @@ enum AnthropicError: LocalizedError, Equatable {
             default: return message.isEmpty ? "Claude stopped part-way with an error (\(type))." : "Claude stopped part-way: \(message)"
             }
         case .transport(let message):
-            return "Studio couldn’t reach Anthropic: \(message)"
+            return "Plinth couldn’t reach Anthropic: \(message)"
         case .timedOut:
-            return "Anthropic stopped responding, so Studio gave up waiting. Try again."
+            return "Anthropic stopped responding, so Plinth gave up waiting. Try again."
         case .invalidResponse(let message):
             return message
         case .responseTooLarge:
-            return "Claude’s reply was larger than Studio reads, so it was ignored."
+            return "Claude’s reply was larger than Plinth reads, so it was ignored."
         case .incomplete:
             return "The connection to Anthropic ended before Claude finished. Try again."
         }
@@ -604,7 +604,7 @@ func anthropicHTTPErrorMessage(status: Int, type: String?, message: String, retr
     case 529:
         return "Anthropic is overloaded right now. Try again in a few minutes."
     case 300...399:
-        return "Anthropic redirected the request, so Studio stopped."
+        return "Anthropic redirected the request, so Plinth stopped."
     case 500...599:
         return "Anthropic is having trouble right now (HTTP \(status)). Try again in a moment."
     default:
@@ -776,7 +776,7 @@ struct AnthropicStreamAccumulator {
     /// Applies one event. Throws for an `error` event or a malformed stream.
     mutating func handle(_ event: AnthropicSSEEvent) throws -> [AnthropicStreamProgress] {
         guard let json = try? AnthropicJSON.parse(event.data) else {
-            throw AnthropicError.invalidResponse("Anthropic sent part of a reply Studio couldn’t read.")
+            throw AnthropicError.invalidResponse("Anthropic sent part of a reply Plinth couldn’t read.")
         }
         let type = json["type"]?.stringValue ?? event.event ?? ""
         switch type {
@@ -853,7 +853,7 @@ struct AnthropicStreamAccumulator {
         }
     }
 
-    private var malformed: AnthropicError { .invalidResponse("Anthropic’s reply arrived out of order, so Studio stopped reading it.") }
+    private var malformed: AnthropicError { .invalidResponse("Anthropic’s reply arrived out of order, so Plinth stopped reading it.") }
 
     /// The finished reply. Throws `.incomplete` when the stream ended before `message_stop`.
     func message() throws -> AnthropicMessage {
@@ -907,7 +907,7 @@ struct AnthropicStreamAccumulator {
                 if let schema = schemas[name] {
                     problem = anthropicSchemaProblem(input, schema: schema)
                 } else {
-                    problem = "Claude asked for a tool Studio didn’t offer (\(aiServiceRedacted(name, limit: 60)))."
+                    problem = "Claude asked for a tool the app didn’t offer (\(aiServiceRedacted(name, limit: 60)))."
                 }
             } else {
                 input = empty

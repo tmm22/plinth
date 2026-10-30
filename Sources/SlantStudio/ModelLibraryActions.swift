@@ -57,7 +57,7 @@ func exportDestinationProblem(source: URL, destination: URL, supportDirectory: U
     let to = destination.standardizedFileURL.resolvingSymlinksInPath().path
     let support = supportDirectory.standardizedFileURL.resolvingSymlinksInPath().path
     if from == to || to == support || to.hasPrefix(support + "/") {
-        return "Choose a folder outside Slant Studio’s library, such as Documents or Desktop."
+        return "Choose a folder outside Plinth’s library, such as Documents or Desktop."
     }
     return nil
 }

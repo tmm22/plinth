@@ -1216,7 +1216,7 @@ struct ModelsView: View {
                 // Link only the model this download added, never whatever happens to be selected afterwards.
                 guard let importedID = store.importModelReturningID(path, origin: .downloadedFromSlant),
                       let index = store.localModels.firstIndex(where: { $0.id == importedID }) else {
-                    throw StudioError(store.error ?? "Studio couldn’t add the downloaded model to your library.")
+                    throw StudioError(store.error ?? "Plinth couldn’t add the downloaded model to your library.")
                 }
                 store.localModels[index].remoteID = id
                 store.localModels[index].name = (file["name"] as? String).flatMap {
@@ -1396,8 +1396,8 @@ func materialPickerSections(_ filaments: [Record]) -> [MaterialPickerSection] {
 
 func localModelRemovalMessage(name: String, isUploaded: Bool, movesToTrash: Bool = true) -> String {
     var message = movesToTrash
-        ? "“\(name)” will be removed from Slant Studio and its library copy moved to the Trash. To restore it, choose Edit › Undo. The original file on your Mac isn’t touched."
-        : "“\(name)” will be removed from Slant Studio. The original file on your Mac isn’t touched."
+        ? "“\(name)” will be removed from Plinth and its library copy moved to the Trash. To restore it, choose Edit › Undo. The original file on your Mac isn’t touched."
+        : "“\(name)” will be removed from Plinth. The original file on your Mac isn’t touched."
     if isUploaded { message += " The uploaded copy stays in your Slant account." }
     return message
 }

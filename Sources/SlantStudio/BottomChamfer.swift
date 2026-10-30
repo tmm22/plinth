@@ -86,7 +86,7 @@ enum BottomChamferSkipReason: String, Equatable, Sendable, CaseIterable {
         case .wouldReduceContactTooMuch:
             return "No bottom chamfer was added: it would take more than \(Int(((1 - bottomChamferMinimumContactFraction) * 100).rounded()))% of the part’s contact with the bed."
         case .resultFailedChecks:
-            return "No bottom chamfer was added: the result didn’t pass Studio’s mesh checks."
+            return "No bottom chamfer was added: the result didn’t pass Plinth’s mesh checks."
         case .recessInBedFace:
             return "No bottom chamfer was added: the bottom face has a shallow recess or step."
         }

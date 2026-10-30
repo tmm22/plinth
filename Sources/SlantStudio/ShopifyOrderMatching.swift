@@ -186,10 +186,10 @@ func shopifyNamesMatch(_ lhs: String, _ rhs: String) -> Bool {
 func shopifyIdentityProblem(shopifyName: String, shopifyPostcode: String, slantName: String, slantPostcode: String) -> String? {
     let shopifyBlank = shopifyName.trimmingCharacters(in: .whitespaces).isEmpty || shopifyPostcode.trimmingCharacters(in: .whitespaces).isEmpty
     if shopifyBlank {
-        return "Shopify didn’t share this order’s name and postcode, so Studio can’t confirm it’s the order this draft was imported from. Add its tracking in Shopify."
+        return "Shopify didn’t share this order’s name and postcode, so Plinth can’t confirm it’s the order this draft was imported from. Add its tracking in Shopify."
     }
     if slantName.trimmingCharacters(in: .whitespaces).isEmpty || slantPostcode.trimmingCharacters(in: .whitespaces).isEmpty {
-        return "This Slant order has no recipient name or postcode to compare, so Studio can’t confirm it’s the same order. Add its tracking in Shopify."
+        return "This Slant order has no recipient name or postcode to compare, so Plinth can’t confirm it’s the same order. Add its tracking in Shopify."
     }
     let nameMatches = shopifyNamesMatch(shopifyName, slantName)
     let postcodeMatches = shopifyPostcodesMatch(shopifyPostcode, slantPostcode)
@@ -246,7 +246,7 @@ func shopifyAllocateFulfilment(_ sourceItems: [ShopifySourceItem], lines: [Shopi
             case .sku(let sku): label = "SKU \(sku)"
             case .name(let name): label = "“\(name)”"
             }
-            return .failure(StudioError("Shopify doesn’t show \(item.quantity) unfulfilled unit\(item.quantity == 1 ? "" : "s") of \(label) on this order, so Studio can’t tell which items Slant made. Add its tracking in Shopify."))
+            return .failure(StudioError("Shopify doesn’t show \(item.quantity) unfulfilled unit\(item.quantity == 1 ? "" : "s") of \(label) on this order, so Plinth can’t tell which items Slant made. Add its tracking in Shopify."))
         }
     }
     let result = lines.indices.filter { taken[$0] > 0 }.map { ShopifyFulfilmentLine(id: lines[$0].id, quantity: taken[$0]) }

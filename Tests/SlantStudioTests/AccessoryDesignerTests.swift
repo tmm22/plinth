@@ -208,7 +208,7 @@ final class AccessoryDesignerTests: XCTestCase {
         XCTAssertTrue(text.contains("Build volume: fits"))
         XCTAssertTrue(text.contains("Flat contact with the bed: 600 mm²"))
         XCTAssertTrue(text.contains("Customizer values found: 1 (width)."))
-        XCTAssertTrue(text.contains("Studio can accept this render"))
+        XCTAssertTrue(text.contains("The app can accept this render"))
         XCTAssertTrue(accessoryStudioCheckLines(result.facts).contains("Fits Slant’s 220 mm build volume"))
     }
 
@@ -650,7 +650,7 @@ final class AccessoryDesignerTests: XCTestCase {
         // A 10 mm cube on the bed and a 10 × 10 × 5 mm block floating at Z = 5: its 100 mm² underside overhangs.
         let mesh = try STLMesh.validated(boxTriangles(.zero, SIMD3(10, 10, 10)) + boxTriangles(SIMD3(20, 0, 5), SIMD3(30, 10, 10)))
         let result = try render(try mesh.stlCopyData())
-        XCTAssertEqual(result.facts.overhang, overhangShare(mesh), "Studio's shared overhang rule")
+        XCTAssertEqual(result.facts.overhang, overhangShare(mesh), "Plinth's shared overhang rule")
         XCTAssertEqual(result.facts.overhang.overhangAreaMM2, 100, accuracy: 0.001)
         XCTAssertEqual(result.facts.overhang.fraction, 0.1, accuracy: 0.0001)
         XCTAssertTrue(result.facts.hasNotableOverhangs)
@@ -989,14 +989,14 @@ extension AccessoryDesignerTests {
         XCTAssertNotNil(passing.passingFitTest)
         let result = toolResultTexts(accessoryRenderToolResult(.rendered(passing), toolUseID: "t1", renderNumber: 1, maxRenders: 4))
         XCTAssertEqual(result.images, 5)
-        XCTAssertTrue(result.texts[1].hasPrefix("Fit-test piece: Studio rendered this file again with fit_test = true"), result.texts[1])
+        XCTAssertTrue(result.texts[1].hasPrefix("Fit-test piece: the app rendered this file again with fit_test = true"), result.texts[1])
         XCTAssertTrue(result.texts[1].contains("volume: 2% of the part’s"), result.texts[1])
         XCTAssertTrue(result.texts[1].contains("the piece’s code reports the same fit sizes as the part’s (1 of 1)"))
         XCTAssertTrue(result.texts[1].contains("not the shape"))
         XCTAssertTrue(result.texts[1].contains("Overhangs: no downward faces"))
         XCTAssertTrue(result.texts[1].contains("5.0 mm high, 25% of the part’s 20.0 mm"), result.texts[1])
         XCTAssertFalse(result.texts[1].contains("Clearance:"), "The code has a clearance value")
-        XCTAssertTrue(result.texts[1].contains("passes Studio’s checks"))
+        XCTAssertTrue(result.texts[1].contains("passes the app’s checks"))
         XCTAssertTrue(result.texts.contains { $0.hasPrefix("Fit-test piece: Three-quarter view") })
         XCTAssertEqual(result.texts.last, accessoryPhotoComparisonText)
 
@@ -1009,7 +1009,7 @@ extension AccessoryDesignerTests {
         XCTAssertTrue(failed.texts[1].contains("doesn’t pass"))
 
         // OpenSCAD couldn't make the piece.
-        let broken = try renderWithPiece(piece: .failed("OpenSCAD didn’t finish within 120 seconds, so Studio stopped it."))
+        let broken = try renderWithPiece(piece: .failed("OpenSCAD didn’t finish within 120 seconds, so Plinth stopped it."))
         XCTAssertTrue(try XCTUnwrap(accessoryFitTestFactsText(broken)).contains("and it failed. OpenSCAD didn’t finish"))
         // Declared, but not made (the run makes it only after an acceptable render).
         XCTAssertTrue(try XCTUnwrap(accessoryFitTestFactsText(try renderWithPiece(piece: nil))).contains("not made"))
@@ -1204,7 +1204,7 @@ extension AccessoryDesignerTests {
 
     func testAFailedPieceLeavesThePartAcceptable() async throws {
         let part = try render(try boxSTL(.zero, SIMD3(40, 30, 20)), code: fitTestCode)
-        let renderer = VariantRenderer(part: .rendered(part), piece: .failed("OpenSCAD didn’t finish within 120 seconds, so Studio stopped it."))
+        let renderer = VariantRenderer(part: .rendered(part), piece: .failed("OpenSCAD didn’t finish within 120 seconds, so Plinth stopped it."))
         let stub = StubClaude([.success(toolCall("t1", "render_scad", ["code": .string(fitTestCode)])),
                                .success(toolCall("t2", "finish_design", finishInput))])
         let run = makeVariantRun(stub, renderer: renderer)
@@ -1285,7 +1285,7 @@ extension AccessoryDesignerTests {
         XCTAssertFalse(kept.isAcceptable)
         XCTAssertEqual(kept.problems.last, accessoryFitTestEqualsPartProblem)
         let sent = toolResultTexts(try XCTUnwrap(lastUserBlocks(stub.requests[1]).first))
-        XCTAssertTrue(sent.texts[0].contains("Studio can’t accept this render as the finished design yet"), sent.texts[0])
+        XCTAssertTrue(sent.texts[0].contains("The app can’t accept this render as the finished design yet"), sent.texts[0])
         XCTAssertTrue(sent.texts[1].contains("The piece is the same model as the part."))
         guard case .toolResult(_, _, let refused, _) = try XCTUnwrap(lastUserBlocks(stub.requests[2]).first) else { return XCTFail("No tool result") }
         XCTAssertTrue(refused)
@@ -1331,7 +1331,7 @@ extension AccessoryDesignerTests {
         let piece = try XCTUnwrap(render.passingFitTest)
         XCTAssertNil(piece.image)
         let text = try XCTUnwrap(accessoryFitTestFactsText(render))
-        XCTAssertTrue(text.contains("The piece passes Studio’s checks."))
+        XCTAssertTrue(text.contains("The piece passes the app’s checks."))
         XCTAssertFalse(text.contains("its picture follows"))
         XCTAssertEqual(toolResultTexts(accessoryRenderToolResult(.rendered(render), toolUseID: "t", renderNumber: 1, maxRenders: 4)).images, 4)
     }

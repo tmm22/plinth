@@ -51,7 +51,7 @@ func queuedImportNote(count: Int) -> String? {
         scheduleDrain()
     }
 
-    /// Also used by order notification clicks (OrderWatch.swift), the Dock icon, Window › Slant Studio and the menu
+    /// Also used by order notification clicks (OrderWatch.swift), the Dock icon, Window › Plinth and the menu
     /// commands that act in the main window. Returns true when the window had been closed and a new one was asked for.
     @discardableResult
     func revealMainWindow() -> Bool {

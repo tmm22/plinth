@@ -26,10 +26,10 @@ extension ShellUXTests {
             XCTAssertFalse(section.body.contains("github"), "The repository is private: \(section.title)")
             // Sentence-case headings.
             let rest = section.title.dropFirst()
-            XCTAssertFalse(rest.split(separator: " ").contains { $0.first?.isUppercase == true && $0 != "Studio" },
+            XCTAssertFalse(rest.split(separator: " ").contains { $0.first?.isUppercase == true && $0 != "Plinth" },
                            "Sentence case: \(section.title)")
         }
-        XCTAssertTrue(studioHelpSections.contains { $0.body.contains("Window › Slant Studio") })
+        XCTAssertTrue(studioHelpSections.contains { $0.body.contains("Window › Plinth") })
     }
 
     func testActivityStatusIconsHaveMeaningfulLabels() {

@@ -212,7 +212,7 @@ struct GeneratedReplicaFile {
                 final.higherDetailRequested = options?.higherDetail ?? false
                 stopped(final, host: host)
             case .failure(let error):
-                let detail = (error as? ReplicaProcessingError)?.errorDescription ?? "Studio couldn’t read the downloaded file."
+                let detail = (error as? ReplicaProcessingError)?.errorDescription ?? "Plinth couldn’t read the downloaded file."
                 stopped(ImageTo3DStop(reason: .downloadFailed, stage: .downloading, service: model.service,
                                       taskID: model.conversionTaskID ?? model.sourceTaskID, detail: detail,
                                       resumePoint: ImageTo3DResumePoint(sourceTaskID: model.sourceTaskID, sourceKind: model.sourceKind,
@@ -346,7 +346,7 @@ struct GeneratedReplicaFile {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
             try processed.stlData.write(to: url, options: .atomic)
         } catch {
-            processingProblem = "Studio couldn’t write the replica to a temporary file, so it wasn’t saved."
+            processingProblem = "Plinth couldn’t write the replica to a temporary file, so it wasn’t saved."
             return
         }
         guard let id = host.importReplica(url, intent: inputs.purpose.partIntent,
@@ -481,7 +481,7 @@ struct ReplicaGeneratorSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Generate a replica from an image").font(.title2.weight(.bold))
-                Text("\(service.title) makes a 3D model from a front photo, and up to three more views if you add them. Studio then scales it to the size you give, repairs it on this Mac and shows you the result before saving it as a new model in your library. Nothing is uploaded to Slant.")
+                Text("\(service.title) makes a 3D model from a front photo, and up to three more views if you add them. Plinth then scales it to the size you give, repairs it on this Mac and shows you the result before saving it as a new model in your library. Nothing is uploaded to Slant.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -536,7 +536,7 @@ struct ReplicaGeneratorSheet: View {
         } header: {
             Text("Photos")
         } footer: {
-            Text("Studio resizes each photo and removes its location, camera and other hidden details before sending it. Photos aren’t saved.")
+            Text("Plinth resizes each photo and removes its location, camera and other hidden details before sending it. Photos aren’t saved.")
                 .settingsFooterLayout()
         }
     }
@@ -627,7 +627,7 @@ struct ReplicaGeneratorSheet: View {
         } header: {
             Text("Replica")
         } footer: {
-            Text("Neither service knows how big the object really is, so Studio scales the model to this measurement. Studio asks the service for more detail than it keeps, then simplifies on this Mac: a display piece keeps up to \(replicaDisplayTriangleCeiling.formatted()) triangles; a functional part \(replicaTriangleTarget.formatted()), so Reinforce and Auto-improve can work on it. The purpose is also passed to Review for Printing with Claude.")
+            Text("Neither service knows how big the object really is, so Plinth scales the model to this measurement. Plinth asks the service for more detail than it keeps, then simplifies on this Mac: a display piece keeps up to \(replicaDisplayTriangleCeiling.formatted()) triangles; a functional part \(replicaTriangleTarget.formatted()), so Reinforce and Auto-improve can work on it. The purpose is also passed to Review for Printing with Claude.")
                 .settingsFooterLayout()
         }
         .disabled(inputsLocked)
@@ -687,7 +687,7 @@ struct ReplicaGeneratorSheet: View {
                     if let task = session.progress?.taskID {
                         Text("Task \(task)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
-                    Text("Studio checks every few seconds; a model usually takes a few minutes. Stop leaves the task running at the service, which may still charge for it.")
+                    Text("Plinth checks every few seconds; a model usually takes a few minutes. Stop leaves the task running at the service, which may still charge for it.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             case .stopped:
@@ -766,11 +766,11 @@ struct ReplicaGeneratorSheet: View {
                     Text("Turned Upright").tag(ReplicaUpAxis.y)
                 }
                 .pickerStyle(.segmented)
-                Text("If the picture shows the model lying on its back, choose Turned Upright. Studio processes it again on this Mac; nothing is sent or charged.")
+                Text("If the picture shows the model lying on its back, choose Turned Upright. Plinth processes it again on this Mac; nothing is sent or charged.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        DisclosureGroup("What Studio changed") {
+        DisclosureGroup("What Plinth changed") {
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(processed.changes.enumerated()), id: \.offset) { _, line in
                     Text(line).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -808,11 +808,11 @@ struct ReplicaGeneratorSheet: View {
                     session.analyzeWithMeshy(longestSideMM: Double(processed.extentMM.max()), host: store)
                 }
                 .disabled(session.analyzing || session.meshyReport != nil)
-                .help("Free. Meshy checks its own model (before Studio’s repair) for holes and thin walls at this size.")
+                .help("Free. Meshy checks its own model (before Plinth’s repair) for holes and thin walls at this size.")
                 if session.analyzing { ProgressView().controlSize(.small) }
             }
             if let report = session.meshyReport {
-                Text("\(report.summary) This is Meshy’s view of its original model, before Studio’s repair.")
+                Text("\(report.summary) This is Meshy’s view of its original model, before Plinth’s repair.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if let problem = session.analysisProblem {
                 Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)

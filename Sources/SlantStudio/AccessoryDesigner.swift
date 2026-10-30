@@ -186,7 +186,8 @@ func accessoryFirstTurn(_ brief: AccessoryDesignBrief, photos: [PreparedImage], 
 let accessorySystemPrompt = """
 You design small functional accessories for 3D printing, as parametric OpenSCAD code, from a seller's photos and \
 measurements. The seller sells printed products; Slant 3D prints them on demand on FDM printers with fixed settings \
-that can't be changed for an order or a part.
+that can't be changed for an order or a part. The seller works in a Mac app called \
+Plinth; when a message says Plinth, it means the app.
 
 Slant's print settings
 - Published by Slant: 0.2 mm layers (0.3 mm first layer), a 0.4 mm nozzle, 1 mm walls (about 2 lines), 25% grid-like \
@@ -202,7 +203,7 @@ How you work
 - The photos show the object the accessory is for (or a sketch or an example). Photos have no reliable scale: take \
 sizes only from the typed measurements. If a size you need isn't measured, ask with ask_seller rather than guess, \
 unless a sensible default is clearly fine; then say what you assumed.
-- Call render_scad with the complete OpenSCAD file. Studio renders it with OpenSCAD on the seller's Mac and replies \
+- Call render_scad with the complete OpenSCAD file. The app renders it with OpenSCAD on the seller's Mac and replies \
 with facts it measured itself (size, mesh check, wall thickness, overhangs and their heights, flat contact with the \
 bed, build-volume fit, the fit sizes your code echoed, OpenSCAD messages) and pictures from the three-quarter, front, \
 side and top views. Look at them critically and fix what is wrong.
@@ -215,7 +216,7 @@ their positions. Fix what matters before you finish. If you keep a difference on
 adding the estimate's ±3 mm on each side. If they skip, use the estimate with generous clearance and say so.
 - If the part carries weight (a hook, bracket, shelf or mount) and the seller hasn't said how much, ask about the load.
 - You have at most 4 renders and 10 replies, so plan the design before the first render and make each render count.
-- When the latest render is right, call finish_design. Studio accepts finish_design only right after a render that is \
+- When the latest render is right, call finish_design. The app accepts finish_design only right after a render that is \
 one closed solid within the 220 mm build volume. In photo_check, say in one or two sentences how the design matches \
 the photos and any difference you kept on purpose; if the photos show the object rather than the accessory, say so \
 ("The photos show the object, not the accessory") and say how the design lines up with the object's features. Say it \
@@ -228,13 +229,13 @@ OpenSCAD conventions
 - Every dimension and option is a named top-level variable set to a plain literal, declared before the first module, \
 with a Customizer comment on the same line, for example `phone_thickness = 9.5; // [5:0.1:20] Phone thickness (mm)`. \
 Group them with /* [Section] */ comments and put derived values in a /* [Hidden] */ section after the editable ones, \
-so the seller can adjust the design later in Studio's Personalise from Template.
+so the seller can adjust the design later in the app's Personalise from Template.
 - $fn between 32 and 96 for curves. Keep each render well under a minute: avoid minkowski() on complex shapes, long \
 hull() chains and deep recursion.
 - Report every size that has to fit with echo and its name, such as `echo("slot_width", slot_width);`: slot and gap \
-widths, hole diameters, inner lengths and depths. Studio shows them to the seller beside the typed measurements and \
+widths, hole diameters, inner lengths and depths. The app shows them to the seller beside the typed measurements and \
 sends them back with the facts.
-- No include, use, import(), surface(), dxf_ modules or file = arguments; everything in one file. Studio refuses \
+- No include, use, import(), surface(), dxf_ modules or file = arguments; everything in one file. The app refuses \
 those, and any text that looks like a file path.
 
 Designing for FDM printing (Slant's settings above, no supports)
@@ -245,9 +246,9 @@ where it carries none, and never under 1.0 mm anywhere.
 - Never leave closed internal voids or hidden pockets: Slant bills each one as an extra body (about $0.39 each in a \
 Slant estimate on 25 Oct 2026). Where a thick region carries load, thin slots about 0.25 mm wide that open through the bottom face make the \
 slicer add walls inside it while the part stays one body. Slant didn't require supports for their 0.25 mm ceilings in \
-a test, though Studio may list them as overhangs.
+a test, though the app may list them as overhangs.
 - Overhangs at most 45° from vertical (Slant allows 50°; 45° leaves a margin); chamfer rather than leave flat \
-ceilings; bridges under 5 mm. Studio reports any steeper downward faces and their heights: fix them.
+ceilings; bridges under 5 mm. The app reports any steeper downward faces and their heights: fix them.
 - Holes: vertical holes print about 0.2 mm small, so add 0.2–0.4 mm to their diameter. Screw clearance holes: M3 \
 3.4 mm, M4 4.5 mm. Make horizontal holes teardrop-shaped, point up.
 - A flat base with a generous footprint, and a 0.5 mm chamfer on the bottom edge against elephant's foot. Round the \
@@ -284,10 +285,10 @@ keep both and join them with a thin bar. Make a slice through a clip or other fl
 or the feature's full width, so it flexes like the part.
 - The piece must be one closed solid sitting flat on Z = 0, as small and low as possible: aim for under about 15% of \
 the full part's volume.
-- After each render Studio can accept, Studio renders the same file again with fit_test = true on the seller's Mac. \
+- After each render the app can accept, the app renders the same file again with fit_test = true on the seller's Mac. \
 That doesn't count as one of your renders. It reports the piece's size and height, its share of the part's volume, \
 its overhangs, whether it is one closed solid on the bed and no larger than the part, and whether its code reports \
-every fit size with the same value, plus one picture when it passes. Studio doesn't check that the piece's shape \
+every fit size with the same value, plus one picture when it passes. The app doesn't check that the piece's shape \
 matches the part's fit region: check that in the picture. If a check fails, fix it in your next render.
 - If the seller reports a fit-test result, change the clearance, not the measurement, and keep fit_test. Apply the \
 amount to the fit size: "the slot was 0.3 mm too tight" means the slot must be 0.3 mm wider, so a clearance per side \
@@ -296,9 +297,9 @@ ask them to measure the printed piece with calipers.
 
 Honesty
 - Never call a design strong, approved, guaranteed or safe, and never give a strength percentage. Say "likely weak \
-point" or "below the 2 mm guideline"; say "checks found no problems" only when Studio's checks really found none.
+point" or "below the 2 mm guideline"; say "checks found no problems" only when the app's checks really found none.
 - Never promise a fit: say what matches the photos and the measurements, not that a part fits perfectly.
-- Studio's measured facts outrank your intent: if they disagree, fix the code.
+- The app's measured facts outrank your intent: if they disagree, fix the code.
 """
 
 /// Tool names, as Claude calls them.
@@ -312,7 +313,7 @@ enum AccessoryToolName {
 let accessoryTools: [AnthropicTool] = [
     AnthropicTool(
         name: AccessoryToolName.render,
-        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. Studio replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures; when the code declares fit_test, also the facts of the fit-test piece Studio renders from it. Code using include, use, import(), surface(), dxf_ modules or a file = argument, or text that looks like a file path, is refused without rendering.",
+        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. The app replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures; when the code declares fit_test, also the facts of the fit-test piece the app renders from it. Code using include, use, import(), surface(), dxf_ modules or a file = argument, or text that looks like a file path, is refused without rendering.",
         inputSchema: [
             "type": "object",
             "properties": ["code": ["type": "string", "description": "The complete OpenSCAD file, at most 64 KB."]],
@@ -330,7 +331,7 @@ let accessoryTools: [AnthropicTool] = [
         ]),
     AnthropicTool(
         name: AccessoryToolName.finish,
-        description: "Finish when the latest render is the design to keep. Studio shows the seller that render, its own checks and what you write here.",
+        description: "Finish when the latest render is the design to keep. The app shows the seller that render, its own checks and what you write here.",
         inputSchema: [
             "type": "object",
             "properties": [
@@ -909,20 +910,20 @@ func accessoryFitTestFactsText(_ render: AccessoryRender) -> String? {
     case .notBoolean:
         return "Fit-test piece: none, because fit_test isn’t true or false: \(declare)."
     case .defaultTrue:
-        return "Fit-test piece: none. fit_test is true in the code, so this render is already the piece and the file doesn’t make the whole part. Set fit_test = false; Studio makes the piece itself."
+        return "Fit-test piece: none. fit_test is true in the code, so this render is already the piece and the file doesn’t make the whole part. Set fit_test = false; the app makes the piece itself."
     case .ready:
         break
     }
     var lines: [String] = []
     switch render.fitTest {
     case nil:
-        lines.append("Fit-test piece: not made, because Studio makes it only after a render it can accept as the finished design.")
+        lines.append("Fit-test piece: not made, because the app makes it only after a render it can accept as the finished design.")
     case .stopped?:
-        lines.append("Fit-test piece: not made, because the seller pressed Stop while Studio was rendering it.")
+        lines.append("Fit-test piece: not made, because the seller pressed Stop while the app was rendering it.")
     case .failed(let text)?:
-        lines.append("Fit-test piece: Studio rendered this file again with fit_test = true, and it failed. \(text)\nFix this in your next render.")
+        lines.append("Fit-test piece: the app rendered this file again with fit_test = true, and it failed. \(text)\nFix this in your next render.")
     case .made(let piece)?:
-        lines.append("Fit-test piece: Studio rendered this file again with fit_test = true (not one of your renders).")
+        lines.append("Fit-test piece: the app rendered this file again with fit_test = true (not one of your renders).")
         let size = piece.facts.sizeMM
         let check = piece.check
         var sizeLine = "Size: \(accessoryOneDecimal(size.x)) × \(accessoryOneDecimal(size.y)) × \(accessoryOneDecimal(size.z)) mm (\(accessoryFitTestHeightText(check))); triangles: \(piece.facts.triangles.formatted())"
@@ -934,16 +935,16 @@ func accessoryFitTestFactsText(_ render: AccessoryRender) -> String? {
                      + "Under half the part’s volume: \(yes(check.isSmallerThanPart)).")
         lines.append(accessoryOverhangLine(check.overhang, location: piece.facts.overhangLocation))
         if check.partFitSizeCount == 0 {
-            lines.append("Fit sizes: the part’s code reports none, so Studio had none to compare.")
+            lines.append("Fit sizes: the part’s code reports none, so the app had none to compare.")
         } else if check.fitSizeMismatches.isEmpty {
-            lines.append("Fit sizes: the piece’s code reports the same fit sizes as the part’s (\(check.partFitSizeCount) of \(check.partFitSizeCount)). Studio compares only these values and the size and volume, not the shape, so check in the picture that the piece keeps every slot, hole or clip that must fit.")
+            lines.append("Fit sizes: the piece’s code reports the same fit sizes as the part’s (\(check.partFitSizeCount) of \(check.partFitSizeCount)). The app compares only these values and the size and volume, not the shape, so check in the picture that the piece keeps every slot, hole or clip that must fit.")
         } else {
             lines.append("Fit sizes that differ or are missing: " + check.fitSizeMismatches.map(accessoryFitSizeMismatchText).joined(separator: "; ") + ".")
         }
         if check.equalsPart {
             lines.append("The piece is the same model as the part. \(accessoryFitTestEqualsPartProblem)")
         } else if check.passes {
-            lines.append(piece.image != nil ? "The piece passes Studio’s checks; its picture follows the part’s." : "The piece passes Studio’s checks.")
+            lines.append(piece.image != nil ? "The piece passes the app’s checks; its picture follows the part’s." : "The piece passes the app’s checks.")
             if check.isLargerThanNeeded { lines.append("It is larger than it needs to be: cut it down to just the fit-critical region.") }
         } else {
             lines.append("The piece doesn’t pass: \(check.problems.joined(separator: " ")) Fix this in your next render.")
@@ -985,7 +986,7 @@ private func accessoryOneDecimal(_ value: Float) -> String { String(format: "%.1
 /// the same model as the part.
 func accessoryRenderFactsText(_ facts: AccessoryRenderFacts, renderNumber: Int, maxRenders: Int, extraProblems: [String] = []) -> String {
     var lines: [String] = []
-    lines.append("Render \(renderNumber) of \(maxRenders) this round, made by OpenSCAD on the seller’s Mac and measured by Studio.")
+    lines.append("Render \(renderNumber) of \(maxRenders) this round, made by OpenSCAD on the seller’s Mac and measured by the app.")
     let size = facts.sizeMM
     lines.append("Size: \(accessoryOneDecimal(size.x)) × \(accessoryOneDecimal(size.y)) × \(accessoryOneDecimal(size.z)) mm (X width × Y depth × Z height).")
     if facts.sitsOnBed {
@@ -1014,7 +1015,7 @@ func accessoryRenderFactsText(_ facts: AccessoryRenderFacts, renderNumber: Int, 
         lines.append("  - These need supports, which Slant may not add. Chamfer them to 45° or less, make horizontal holes teardrop-shaped, or turn the part so they face up.")
     }
     if facts.fitSizes.isEmpty {
-        lines.append("Fit sizes echoed by the code: none. echo(\"name\", value) every size that must fit (slot widths, hole diameters, inner lengths) so Studio can show them beside the seller’s measurements.")
+        lines.append("Fit sizes echoed by the code: none. echo(\"name\", value) every size that must fit (slot widths, hole diameters, inner lengths) so the app can show them beside the seller’s measurements.")
     } else {
         lines.append("Fit sizes echoed by the code: \(facts.fitSizes.map(accessoryFitSizeText).joined(separator: ", ")). Check each against the seller’s measurement plus clearance.")
     }
@@ -1033,9 +1034,9 @@ func accessoryRenderFactsText(_ facts: AccessoryRenderFacts, renderNumber: Int, 
     }
     let problems = accessoryRenderProblems(facts) + extraProblems
     if problems.isEmpty {
-        lines.append("Studio can accept this render as the finished design.")
+        lines.append("The app can accept this render as the finished design.")
     } else {
-        lines.append("Studio can’t accept this render as the finished design yet: \(problems.joined(separator: " "))")
+        lines.append("The app can’t accept this render as the finished design yet: \(problems.joined(separator: " "))")
     }
     return lines.joined(separator: "\n")
 }
@@ -1063,11 +1064,11 @@ func accessoryOpenSCADFailureText(_ error: OpenSCADRunError, messages: [String])
     var text: String
     switch error {
     case .timedOut(let seconds):
-        text = "OpenSCAD didn’t finish within \(Int(seconds)) seconds, so Studio stopped it. Lower $fn, and avoid minkowski() on complex shapes, long hull() chains and deep recursion."
+        text = "OpenSCAD didn’t finish within \(Int(seconds)) seconds, so Plinth stopped it. Lower $fn, and avoid minkowski() on complex shapes, long hull() chains and deep recursion."
     case .outputTooLarge:
-        text = "OpenSCAD’s output grew past Studio’s 128 MB limit, so Studio stopped it. Lower $fn and simplify the shape."
+        text = "OpenSCAD’s output grew past Plinth’s 128 MB limit, so Plinth stopped it. Lower $fn and simplify the shape."
     case .tooMuchMemory:
-        text = "OpenSCAD used too much memory, so Studio stopped it. Lower $fn, and avoid minkowski() on complex shapes, long hull() chains and deep recursion."
+        text = "OpenSCAD used too much memory, so Plinth stopped it. Lower $fn, and avoid minkowski() on complex shapes, long hull() chains and deep recursion."
     case .failed(let status, _):
         text = "OpenSCAD couldn’t render the code (exit code \(status))."
     case .noOutput:
@@ -1227,7 +1228,7 @@ func renderAccessoryDesign(code: String, variant: AccessoryRenderVariant = .desi
     case .fitTest:
         assignments = accessoryFitTestAssignments(code)
         guard !assignments.isEmpty else {
-            return .failed("The code doesn’t declare fit_test = false; as a top-level value, so Studio can’t make a fit-test piece.")
+            return .failed("The code doesn’t declare fit_test = false; as a top-level value, so the app can’t make a fit-test piece.")
         }
     }
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(accessoryTempFolderPrefix)\(UUID().uuidString)")
@@ -1237,7 +1238,7 @@ func renderAccessoryDesign(code: String, variant: AccessoryRenderVariant = .desi
         try Data(code.utf8).write(to: scad, options: .atomic)
     } catch {
         try? FileManager.default.removeItem(at: folder)
-        return .failed("Studio couldn’t write the code to a temporary file: \(error.localizedDescription)")
+        return .failed("Plinth couldn’t write the code to a temporary file: \(error.localizedDescription)")
     }
     defer { try? FileManager.default.removeItem(at: folder) }
     let capture = OpenSCADLogCapture()
@@ -1343,7 +1344,7 @@ func accessoryLibraryName(suggested: String, description: String) -> String {
 /// then Claude's code unchanged, so `fit_test` stays an adjustable value.
 func accessoryTemplateFileText(code: String, name: String) -> String {
     let title = name.split(whereSeparator: \.isNewline).joined(separator: " ")
-    var header = "// \(title)\n// Designed with Claude in Slant Studio. Check every measurement on a test print before selling.\n"
+    var header = "// \(title)\n// Designed with Claude in the Plinth app. Check every measurement on a test print before selling.\n"
     if accessoryFitTestDeclaration(code) == .ready {
         let parameters = scadTemplateParameters(code).parameters
         func named(_ name: String) -> String {
@@ -1410,18 +1411,18 @@ func accessoryFitTestTranscriptLine(_ outcome: AccessoryFitTestOutcome) -> Strin
         let size = piece.facts.sizeMM
         var line = "Fit-test piece: \(accessoryOneDecimal(size.x)) × \(accessoryOneDecimal(size.y)) × \(accessoryOneDecimal(size.z)) mm"
         if let share = piece.check.volumeShare { line += ", \(accessoryShareLabel(share)) of the part’s volume" }
-        return line + (piece.check.passes ? ", passes Studio’s checks" : ", doesn’t pass Studio’s checks; Claude is told why")
+        return line + (piece.check.passes ? ", passes Plinth’s checks" : ", doesn’t pass Plinth’s checks; Claude is told why")
     }
 }
 
 /// Anthropic's limit on pictures in one request.
 let accessoryMaximumImagesPerRequest = 100
 
-let accessoryImageLimitText = "This conversation has too many pictures for Claude, so Studio didn’t send it. Start Over, or save what you have."
+let accessoryImageLimitText = "This conversation has too many pictures for Claude, so Plinth didn’t send it. Start Over, or save what you have."
 
 /// When the seller's answer or note would take the conversation over the picture limit: nothing changes, and a
 /// finished design keeps its Save buttons.
-let accessoryNoteImageLimitText = "Studio didn’t send this to Claude: the conversation has too many pictures for Claude. Save what you have, or close this window and start a new design."
+let accessoryNoteImageLimitText = "Plinth didn’t send this to Claude: the conversation has too many pictures for Claude. Save what you have, or close this window and start a new design."
 
 /// Pictures in the messages: image blocks, and images inside tool results.
 func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
@@ -1584,7 +1585,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
     private func takeOutgoingBlocks() -> [AnthropicInputBlock] {
         var blocks = pendingResults
         for id in openToolUseIDs {
-            blocks.append(.toolResult(toolUseID: id, content: [.text("Not run: Studio runs one tool per reply, or the seller stopped the design here.")], isError: true))
+            blocks.append(.toolResult(toolUseID: id, content: [.text("Not run: the app runs one tool per reply, or the seller stopped the design here.")], isError: true))
         }
         pendingResults = []
         openToolUseIDs = []
@@ -1708,7 +1709,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
             if let problem = scadSafetyProblem(code) {
                 lastAcceptableRender = nil
                 transcript.append(AccessoryTranscriptEntry(kind: .refusedCode(problem)))
-                addResult(.toolResult(toolUseID: use.id, content: [.text("Studio didn’t run this code. \(problem)")], isError: true), for: use.id)
+                addResult(.toolResult(toolUseID: use.id, content: [.text("The app didn’t run this code. \(problem)")], isError: true), for: use.id)
                 return .next
             }
             rendersThisRound += 1
@@ -1765,7 +1766,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
             return .waitForSeller
         case AccessoryToolName.finish:
             guard let accepted = lastAcceptableRender else {
-                addResult(.toolResult(toolUseID: use.id, content: [.text("Studio can’t finish yet: the latest render_scad call didn’t give one closed solid within the build volume. Fix the code and render again.")], isError: true), for: use.id)
+                addResult(.toolResult(toolUseID: use.id, content: [.text("The app can’t finish yet: the latest render_scad call didn’t give one closed solid within the build volume. Fix the code and render again.")], isError: true), for: use.id)
                 return .next
             }
             let fields = accessoryFinishFields(use.input)
@@ -1773,7 +1774,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
             // seller should print the whole part to check the fit.
             finish = AccessoryFinish(name: fields.name, summary: fields.summary, printOrientation: fields.orientation,
                                      notes: fields.notes, photoCheck: fields.photoCheck, render: accepted)
-            addResult(.toolResult(toolUseID: use.id, content: [.text("Studio showed the seller this design. If they ask for changes, their note follows.")]), for: use.id)
+            addResult(.toolResult(toolUseID: use.id, content: [.text("The app showed the seller this design. If they ask for changes, their note follows.")]), for: use.id)
             return .finished
         default:
             addResult(use.errorResult, for: use.id)
@@ -1786,13 +1787,13 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
 func accessorySetAsideText(_ stopReason: AnthropicStopReason?) -> String {
     switch stopReason {
     case .maxTokens?:
-        return "Claude’s reply was cut off before it finished, so Studio set it aside. Send Again sends the same request."
+        return "Claude’s reply was cut off before it finished, so Plinth set it aside. Send Again sends the same request."
     case .other("model_context_window_exceeded")?:
-        return "Claude’s reply was cut off because the conversation reached the model’s length limit, so Studio set it aside. Start Over with fewer or smaller photos or a shorter brief; Send Again would most likely stop the same way."
+        return "Claude’s reply was cut off because the conversation reached the model’s length limit, so Plinth set it aside. Start Over with fewer or smaller photos or a shorter brief; Send Again would most likely stop the same way."
     case .other(let raw)?:
-        return "Claude’s reply ended before it finished (\(accessoryClipped(raw, 60))), so Studio set it aside. Send Again sends the same request."
+        return "Claude’s reply ended before it finished (\(accessoryClipped(raw, 60))), so Plinth set it aside. Send Again sends the same request."
     default:
-        return "Claude’s reply ended before it finished, so Studio set it aside. Send Again sends the same request."
+        return "Claude’s reply ended before it finished, so Plinth set it aside. Send Again sends the same request."
     }
 }
 

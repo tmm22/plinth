@@ -278,7 +278,7 @@ final class AccessorySuggestionsTests: XCTestCase {
         let empty = toolReply(suggestionInput([ideaJSON("Gun Rack"), ideaJSON("", description: "x")]))
         guard case .unusable(let emptyText) = accessorySuggestionOutcome(empty) else { return XCTFail("No ideas is a failure") }
         XCTAssertTrue(emptyText.contains("didn’t suggest any ideas"))
-        XCTAssertTrue(emptyText.contains("Studio left out 1 idea it doesn’t suggest."))
+        XCTAssertTrue(emptyText.contains("Plinth left out 1 idea it doesn’t suggest."))
         XCTAssertFalse(emptyText.contains("Gun"))
     }
 
@@ -815,7 +815,7 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertEqual(accessoryIdeaHardwareText(AccessoryIdea(title: "A", description: "B", hardware: ["2 × M3 screws"])), "Needs: 2 × M3 screws")
         XCTAssertNil(accessoryIdeaHardwareText(AccessoryIdea(title: "A", description: "B")))
         XCTAssertEqual(accessoryIdeaMeasureText(idea), "You’ll measure: Headband width, Ear cup depth")
-        XCTAssertEqual(accessorySuggestionLeftOutText(2), "Studio left out 2 ideas it doesn’t suggest.")
+        XCTAssertEqual(accessorySuggestionLeftOutText(2), "Plinth left out 2 ideas it doesn’t suggest.")
     }
 
     func testStalenessModeAndBlockedReasons() {
@@ -843,7 +843,7 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertFalse(accessoryOffersSeparateSuggestAgain(ideaCount: 12, mode: .again), "A stale list's own button already replaces")
         XCTAssertEqual(accessorySuggestBlockedReason(photoCount: 1, preparingPhotos: 0, claudeConfigured: true, suggesting: false,
                                                      designStarted: false, hint: "", ideaCount: 12, mode: .more),
-                       "12 ideas is the most Studio keeps.")
+                       "12 ideas is the most Plinth keeps.")
         // Replacing ideas the seller paid for asks first.
         XCTAssertTrue(accessorySuggestAgainNeedsConfirmation(ideaCount: 1))
         XCTAssertFalse(accessorySuggestAgainNeedsConfirmation(ideaCount: 0))
@@ -878,7 +878,7 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertEqual(accessoryCloseConfirmation(designStarted: false, ideasHeld: true, suggesting: false)?.title, "Close and discard these ideas?")
         XCTAssertNotNil(accessoryCloseConfirmation(designStarted: false, ideasHeld: false, suggesting: true))
         XCTAssertEqual(accessoryCloseConfirmation(designStarted: true, ideasHeld: false, suggesting: false)?.message,
-                       "Studio doesn’t keep the photos, the conversation or designs you haven’t saved.")
+                       "Plinth doesn’t keep the photos, the conversation or designs you haven’t saved.")
         XCTAssertTrue(accessoryCloseConfirmation(designStarted: true, ideasHeld: true, suggesting: false)?.message.contains("the suggested ideas") == true)
     }
 
@@ -944,7 +944,7 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertEqual(run.identification?.name, "Secret Model X")
         XCTAssertEqual(run.suggestedFor, inputs)
         XCTAssertEqual(run.message?.isProblem, false)
-        XCTAssertEqual(run.message?.text, "Claude suggested 2 ideas. Studio left out 1 idea it doesn’t suggest.")
+        XCTAssertEqual(run.message?.text, "Claude suggested 2 ideas. Plinth left out 1 idea it doesn’t suggest.")
         XCTAssertGreaterThan(run.cost.usd, 0)
         XCTAssertFalse(run.costMayBeHigher)
         XCTAssertEqual(log.entries.count, 1)

@@ -88,14 +88,14 @@ struct PrintPreparationPanel: View {
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text("Fillets fill inside corners and thickened walls take space from cavities, so holes, slots and faces that meet another part can come out tighter. Do this only if nothing on this part has to fit. Studio saves a further copy and keeps this one.")
+            Text("Fillets fill inside corners and thickened walls take space from cavities, so holes, slots and faces that meet another part can come out tighter. Do this only if nothing on this part has to fit. Plinth saves a further copy and keeps this one.")
         }
         .onDisappear { followUp.stop() }
     }
 
     private var progressView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            SectionHeading(title: "Preparing for printing…", caption: "Studio is making a separate print-ready copy. This model stays as it is.")
+            SectionHeading(title: "Preparing for printing…", caption: "Plinth is making a separate print-ready copy. This model stays as it is.")
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 if queue.current?.modelID == model.id, !queue.status.isEmpty {
@@ -129,12 +129,12 @@ struct PrintPreparationPanel: View {
             if let copy = printReadyCopy(of: model, in: store.localModels) {
                 SectionHeading(title: "Print-ready copy saved", caption: "\(copy.name). This model is unchanged.")
             } else {
-                SectionHeading(title: "Print-ready copy", caption: "Studio made a print-ready copy, which has since been removed from your library. This model is unchanged.")
+                SectionHeading(title: "Print-ready copy", caption: "Plinth made a print-ready copy, which has since been removed from your library. This model is unchanged.")
             }
             originalActions
         case .nothingToChange?:
             SectionHeading(title: "Print-ready copy", caption: printPreparationNothingToChange)
-            lines(status?.lines ?? [], title: "What Studio checked")
+            lines(status?.lines ?? [], title: "What Plinth checked")
             originalActions
         case .noCopy?:
             SectionHeading(title: "Print-ready copy", caption: "No new print-ready copy was made.")

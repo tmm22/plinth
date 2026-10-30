@@ -218,7 +218,7 @@ enum OrderImportFormat: String, Equatable, CaseIterable {
         switch self {
         case .etsy: return "Etsy Sold Order Items"
         case .shopify: return "Shopify orders export"
-        case .template: return "Studio template"
+        case .template: return "Plinth order template"
         }
     }
     var marketplace: String {
@@ -325,7 +325,7 @@ func orderImportLayout(header: [String]) throws -> OrderImportLayout {
         }
         return OrderImportLayout(format: spec.format, columns: columns)
     }
-    throw StudioError("Studio couldn’t recognise this file’s columns. It reads Etsy “Sold Order Items” CSV files, Shopify order exports and Studio’s template (\(orderImportTemplateHeader.joined(separator: ", "))). Use Save Template… for an example.")
+    throw StudioError("Plinth couldn’t recognise this file’s columns. It reads Etsy “Sold Order Items” CSV files, Shopify order exports and Plinth’s order template (\(orderImportTemplateHeader.joined(separator: ", "))). Use Save Template… for an example.")
 }
 
 // MARK: Orders
@@ -1360,7 +1360,7 @@ enum OrderImportRowState: Equatable {
                        let built = try? personalised.makeBody(lines) {
                         body = built
                     } else {
-                        step = .notMade("Studio couldn’t build the draft with the personalised model, so it wasn’t sent.")
+                        step = .notMade("Plinth couldn’t build the draft with the personalised model, so it wasn’t sent.")
                     }
                 }
                 switch step {
@@ -1559,7 +1559,7 @@ struct OrderImportSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Import orders").font(.title2.bold())
-                Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Studio’s template. Each item must match a saved product by SKU, or one you choose under Match products. Drafts aren’t charged: afterwards you review and pay them in Orders, one at a time or together with Pay Several Drafts… in the Orders toolbar’s More menu.")
+                Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Plinth’s order template. Each item must match a saved product by SKU, or one you choose under Match products. Drafts aren’t charged: afterwards you review and pay them in Orders, one at a time or together with Pay Several Drafts… in the Orders toolbar’s More menu.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let hint = shopifyImportIntroHint(shop: shopify.shop) {
                     Text(hint).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -1647,7 +1647,7 @@ struct OrderImportSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 360)
                     .disabled(runner.running)
-                Text("Slant needs an email for every order. \(parse.format == .etsy ? "Etsy files don’t include buyers’ emails, so" : "Some orders have none;") enter one to use for these orders, such as your shop’s. Studio never fills one in for you.")
+                Text("Slant needs an email for every order. \(parse.format == .etsy ? "Etsy files don’t include buyers’ emails, so" : "Some orders have none;") enter one to use for these orders, such as your shop’s. Plinth never fills one in for you.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if !fallbackEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !isEmailAddress(fallbackEmail) {
                     Text("Enter an email like name@example.com.").font(.caption).foregroundStyle(.orange)
@@ -1938,7 +1938,7 @@ struct OrderImportSheet: View {
     private func confirmMessage(_ checks: [String: OrderImportCheck]) -> String {
         guard let parsed else { return "" }
         let ids = readyIDs(parsed, checks: checks)
-        var text = "These are drafts: nothing is charged. Studio creates them one at a time on platform \(platformName) and stops if Slant doesn’t confirm one. Afterwards, review and pay them in Orders, one at a time or together with Pay Several Drafts… in the Orders toolbar’s More menu."
+        var text = "These are drafts: nothing is charged. Plinth creates them one at a time on platform \(platformName) and stops if Slant doesn’t confirm one. Afterwards, review and pay them in Orders, one at a time or together with Pay Several Drafts… in the Orders toolbar’s More menu."
         let fallbackCount = ids.filter { checks[$0]?.usesFallbackEmail == true }.count
         if fallbackCount > 0 {
             let email = fallbackEmail.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1955,7 +1955,7 @@ struct OrderImportSheet: View {
     private func chooseFile() {
         let panel = NSOpenPanel()
         panel.title = "Import Orders"
-        panel.message = "Choose an Etsy “Sold Order Items” CSV, a Shopify orders export or a file made from Studio’s template."
+        panel.message = "Choose an Etsy “Sold Order Items” CSV, a Shopify orders export or a file made from Plinth’s order template."
         panel.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .plainText]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false

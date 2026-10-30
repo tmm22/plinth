@@ -335,7 +335,7 @@ final class ImageTo3DMultiViewTests: XCTestCase {
         XCTAssertFalse(replicaHigherDetailAvailable(for: .functional))
         XCTAssertEqual(replicaHigherDetailFunctionalNote, "Functional parts are simplified to 20,000 triangles, so higher detail would be lost.")
         XCTAssertTrue(replicaHigherDetailNote(service: .meshy).contains("Ultra 2K"))
-        XCTAssertTrue(replicaHigherDetailNote(service: .meshy).contains("Studio keeps up to 200,000 triangles"))
+        XCTAssertTrue(replicaHigherDetailNote(service: .meshy).contains("Plinth keeps up to 200,000 triangles"))
         XCTAssertTrue(replicaHigherDetailNote(service: .tripo).contains("20 more credits"))
     }
 
@@ -354,7 +354,7 @@ final class ImageTo3DMultiViewTests: XCTestCase {
         XCTAssertNil(replicaResumeAction(for: stop), "no Try Download Again")
         XCTAssertTrue(stop.creditsMayHaveBeenSpent)
         XCTAssertFalse(imageTo3DStopIsUnconfirmed(stop), "a known outcome, explained in the sheet")
-        for phrase in ["too detailed for Studio", "over 128 MB", "credits for it were spent", "Meshy’s dashboard",
+        for phrase in ["too detailed for Plinth", "over 128 MB", "credits for it were spent", "Meshy’s dashboard",
                        "Meshy keeps it for 3 days", "without Higher detail"] {
             XCTAssertTrue(stop.userMessage.contains(phrase), "\(phrase): \(stop.userMessage)")
         }

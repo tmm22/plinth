@@ -440,7 +440,7 @@ struct MeshyClient: ImageTo3DProvider {
 
     private func send(_ method: String, _ path: String, body: [String: Any]? = nil) async throws -> ImageTo3DHTTPReply {
         guard imageTo3DKeyProblem(apiKey, service: .meshy) == nil else { throw ImageTo3DError.notConfigured(.meshy) }
-        guard let url = imageTo3DAPIURL(host: meshyAPIHost, path: path) else { throw ImageTo3DError.invalidInput("Studio couldn’t build that Meshy request.") }
+        guard let url = imageTo3DAPIURL(host: meshyAPIHost, path: path) else { throw ImageTo3DError.invalidInput("Plinth couldn’t build that Meshy request.") }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = method == "GET" ? 30 : imageTo3DRequestTimeout
@@ -449,7 +449,7 @@ struct MeshyClient: ImageTo3DProvider {
         if let body {
             guard JSONSerialization.isValidJSONObject(body),
                   let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else {
-                throw ImageTo3DError.invalidInput("Studio couldn’t build that Meshy request.")
+                throw ImageTo3DError.invalidInput("Plinth couldn’t build that Meshy request.")
             }
             request.httpBody = data
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

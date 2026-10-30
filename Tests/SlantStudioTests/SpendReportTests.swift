@@ -59,7 +59,7 @@ final class SpendReportTests: XCTestCase {
         XCTAssertEqual(report.excludedUnrecognised, 2)
         XCTAssertEqual(report.undated, 2)
         XCTAssertEqual(spendReportExclusionLine(report),
-                       "Left out: 1 draft, 1 cancelled order, 1 order with a payment problem, 2 orders with a status Studio doesn’t recognise (REFUNDED, no status), 2 orders without a date.")
+                       "Left out: 1 draft, 1 cancelled order, 1 order with a payment problem, 2 orders with a status Plinth doesn’t recognise (REFUNDED, no status), 2 orders without a date.")
         XCTAssertNil(spendReportExclusionLine(SpendReport()))
     }
 

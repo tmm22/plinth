@@ -85,11 +85,11 @@ enum HiddenPocketsSkipReason: String, Equatable, Sendable, CaseIterable {
         case .tooManyTriangles:
             return "This model has more than \(hiddenPocketsMaximumTriangles.formatted()) triangles, too many to fill hidden pockets. Simplify a copy first."
         case .noPockets: return "This model has no hidden pockets to fill."
-        case .resultFailedChecks: return "The pockets weren’t filled: the result didn’t pass Studio’s mesh checks."
+        case .resultFailedChecks: return "The pockets weren’t filled: the result didn’t pass Plinth’s mesh checks."
         case .tooManyParts:
             return "The pockets weren’t filled: there are too many separate parts to check."
         case .couldNotConfirm:
-            return "The pockets weren’t filled: Studio couldn’t confirm that every one lies wholly inside the part, so removing it could change the part’s surface."
+            return "The pockets weren’t filled: Plinth couldn’t confirm that every one lies wholly inside the part, so removing it could change the part’s surface."
         }
     }
 }
