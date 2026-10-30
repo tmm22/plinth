@@ -97,7 +97,7 @@ private func dapiIsPrintableToken(_ text: String) -> Bool {
 }
 
 /// Why the key can't be sent as a header, or nil. Empty is handled separately (`.missingKey`).
-func dapiKeyProblem(_ key: String) -> String? {
+func dapiKeyHeaderProblem(_ key: String) -> String? {
     guard dapiIsPrintableToken(key), key.utf8.count <= 512 else {
         return "The saved 3DAPI key has spaces or characters a key never has. Copy it again from the 3DAPI dashboard and save it in Settings."
     }
@@ -649,7 +649,7 @@ struct DapiClient: DapiQuoting {
     func makeAPIRequest(method: String, path: String, query: [(String, String)] = [], body: [String: Any]? = nil,
                         idempotencyKey: String? = nil) throws -> URLRequest {
         guard !apiKey.isEmpty else { throw DapiError.missingKey }
-        if let problem = dapiKeyProblem(apiKey) { throw DapiError.notSent(problem) }
+        if let problem = dapiKeyHeaderProblem(apiKey) { throw DapiError.notSent(problem) }
         guard let url = dapiAPIURL(path: path, query: query), url.host == dapiAPIHost else {
             throw DapiError.notSent("Plinth couldn’t build a safe 3DAPI address for this request, so nothing was sent.")
         }

@@ -120,7 +120,8 @@ protocol DapiQuoting: Sendable {
     func quotes(named name: String, maxPages: Int) async throws -> [DapiQuote]
     /// `POST /v2/uploads` (purpose `quote_file`), then the presigned PUT of the file's bytes to the `upload_url` it
     /// returns (never with the key). Returns the `upl_` ID. A failure after `POST /v2/uploads` was sent is
-    /// `.outcomeUnknown` or `.refused`; nothing is ever sent twice.
+    /// `.outcomeUnknown` or `.refused`, except a storage link Plinth refuses to use, which is `.notSent`: no bytes
+    /// left the Mac, and the empty upload can't become a quote and expires in 24 hours. Nothing is ever sent twice.
     func uploadQuoteFile(at fileURL: URL, fileName: String, contentType: String, idempotencyKey: String) async throws -> String
     /// `POST /v2/quotes` for an upload. Returns the new quote (usually "processing").
     func createQuote(uploadID: String, name: String, idempotencyKey: String) async throws -> DapiQuote
