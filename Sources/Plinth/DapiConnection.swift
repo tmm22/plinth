@@ -24,7 +24,7 @@ let dapiRequiredScopes = ["quotes:read", "quotes:write", "orders:read"]
 /// Where a seller makes an integrator account (one email can't hold both a seller and an integrator account).
 let dapiIntegratorSignUpURL = URL(string: "https://www.dapi.digital/integrator/sign-up")!
 
-/// Longest key Plinth accepts. Integrator keys are 67 characters (`sk_` and 64 hex); the designer format is
+/// Longest key Plinth accepts. 3DAPI's example integrator key is `sk_` and 63 hex characters (no length is documented); the designer format is
 /// undocumented, so the limit is generous.
 let dapiMaxKeyLength = 256
 /// Shortest key Plinth accepts: anything shorter is a partial paste.
