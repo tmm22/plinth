@@ -872,6 +872,7 @@ struct ModelsView: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 CompareEstimatesButton(modelName: selectedModelName) // EstimateComparison.swift
+                DapiQuoteButton() // DapiQuoteView.swift
                 if let estimate = store.estimate {
                     Divider()
                     HStack(alignment: .firstTextBaseline) {
