@@ -14,6 +14,8 @@ swift test
 open "dist/Plinth.app"
 ```
 
+You need a Slant 3D account and an API key: create the key in your Slant 3D dashboard at <https://slant3dapi.com>, then paste it into **Plinth › Settings… › Account** (its **Get an API Key** link opens the same site).
+
 Or open `Package.swift` in Xcode / `swift run Plinth`. Packaging is ad-hoc signed for the current Mac; public distribution needs Developer ID signing and notarization. The script never removes an earlier `dist/Slant Studio.app` build (your way back to the old app); when one is there it says so after building. Delete it once you no longer need it; until then **Open With** may list the app twice.
 
 ## Moving from Slant Studio
@@ -239,4 +241,4 @@ Teardrop roofs, mounting collars and edge chamfers or rounding change fit-critic
 
 Plinth is released under the MIT License: see [LICENSE](LICENSE). It uses [Euclid](https://github.com/nicklockwood/Euclid) 0.10.0, which is also MIT-licensed; Euclid's licence ships inside the app bundle.
 
-`Sources/Plinth/Resources/slant-openapi-upstream.json` and `Sources/Plinth/Resources/openapi.json` are Slant 3D's description of its API (the latter with Plinth's tagged notes added). They are not covered by the MIT License.
+`Sources/Plinth/Resources/slant-openapi-upstream.json` and `Sources/Plinth/Resources/openapi.json` are snapshots of Slant 3D's public API description, which Slant publishes at <https://slant3dapi.com/v2/api/openapi.json> (the latter with Plinth's tagged notes added). Plinth bundles them for its API Workbench and its API change check. They remain Slant 3D's and are not covered by the MIT License.

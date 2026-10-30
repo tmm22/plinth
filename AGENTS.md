@@ -4,6 +4,8 @@ Plinth (formerly Slant Studio) is a native SwiftUI macOS 14+ app built with Swif
 
 ## How work is done
 
+Outside contributors: open a pull request instead of pushing to `main`; run `swift test` (and `./scripts/build-app.sh` for UI changes) and say what you verified. The maintainer runs the remaining stages before merging.
+
 Every task follows this process. Scale the number of agents to the size of the task, but keep every stage. Use the strongest available model (currently Claude Opus 5.5) for every sub agent.
 
 1. **Research and audit in parallel.** One agent studies comparable apps and platform conventions. Another audits the code for gaps, with file:line evidence, and checks each gap against the rules below. Every idea gets a frank verdict: genuinely useful, or polish.

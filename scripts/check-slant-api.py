@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Slant's live OpenAPI description against Studio's snapshot of it.
+"""Check Slant's live OpenAPI description against Plinth's snapshot of it.
 
 Run before every release and whenever the app's API change check fires:
 
@@ -21,7 +21,7 @@ Run before every release and whenever the app's API change check fires:
    maps, `info` other than its version, the top-level tags list, parameter
    order and path items without operations; the output says which contract
    changes those are.
-3. Checks that every difference between Studio's openapi.json and that
+3. Checks that every difference between Plinth's openapi.json and that
    snapshot is tagged with `x-plinth-source: docs|live` on the changed
    node or an ancestor, or is text appended to Slant's own non-empty
    description (a description where Slant has none needs a tag). A
@@ -441,7 +441,7 @@ def compare_with_snapshot(snapshot, live):
 
 
 # ---------------------------------------------------------------------------
-# Studio's patched spec against the snapshot.
+# Plinth's patched spec against the snapshot.
 
 def contains_tag(value):
     if isinstance(value, dict):
@@ -450,7 +450,7 @@ def contains_tag(value):
 
 
 def untagged_patches(studio, upstream, keys=(), names=False, out=None, tagged=None):
-    """Differences in Studio's spec that sit under no x-plinth-source tag.
+    """Differences in Plinth's spec that sit under no x-plinth-source tag.
 
     `upstream` is MISSING where Slant's snapshot has nothing at that place."""
     out = [] if out is None else out
@@ -481,7 +481,7 @@ def untagged_patches(studio, upstream, keys=(), names=False, out=None, tagged=No
             elif (key == "description" and not child_names and isinstance(studio[key], str)
                   and isinstance(upstream.get(key), str) and upstream[key].strip()
                   and studio[key].startswith(upstream[key])):
-                continue  # Slant's text kept, Studio's note appended (a description where Slant has none needs a tag)
+                continue  # Slant's text kept, Plinth's note appended (a description where Slant has none needs a tag)
             else:
                 untagged_patches(studio[key], upstream.get(key, MISSING), here, child_names, out, tagged)
         return out
@@ -511,10 +511,10 @@ def check_patches(studio, snapshot):
     tagged = {}
     problems = untagged_patches(studio, snapshot, tagged=tagged)
     counts = ", ".join(f"{source} {count}" for source, count in sorted(tagged.items())) or "none"
-    print(f"\nStudio's openapi.json against the snapshot: tagged patches ({counts}).")
+    print(f"\nPlinth's openapi.json against the snapshot: tagged patches ({counts}).")
     lost = sorted(operations(snapshot) - operations(studio))
     for op in lost:
-        print(f"  Studio's spec has lost {op}")
+        print(f"  Plinth's spec has lost {op}")
     if not problems:
         print("  Every other difference is tagged or appended description text.")
         return not lost
@@ -693,9 +693,9 @@ def self_test():
             run("a reordered required list inside allOf is no change", EXIT_SAME,
                 live=_edited(base, (all_of + (1, "required"), ["b", "a"])), excludes=["Contract changes"])
 
-            print("Studio's openapi.json against the snapshot:")
+            print("Plinth's openapi.json against the snapshot:")
             tagged_type = _edited(base, (properties + ("status",), {"type": "integer", TAG: "live"}))
-            run("an unchanged Studio spec", EXIT_SAME, contains=["tagged patches (none)"])
+            run("an unchanged Plinth spec", EXIT_SAME, contains=["tagged patches (none)"])
             run("an untagged patch", EXIT_UNTAGGED,
                 studio=_edited(base, (properties + ("status", "type"), "integer")), contains=["without a tag"])
             run("a tagged patch", EXIT_SAME, studio=tagged_type, contains=["live 1"])
@@ -717,18 +717,18 @@ def self_test():
                 studio=_edited(base, (properties + ("status",), {"type": "integer", TAG: "guess"})),
                 contains=["use docs or live"])
             run("text appended to Slant's description", EXIT_SAME,
-                studio=_edited(base, (order + ("description",), "An order. Studio's note.")))
+                studio=_edited(base, (order + ("description",), "An order. Plinth's note.")))
             run("a description where Slant has none needs a tag", EXIT_UNTAGGED,
-                studio=_edited(base, (get_orders + ("parameters", 1, "description"), "Studio's note.")),
+                studio=_edited(base, (get_orders + ("parameters", 1, "description"), "Plinth's note.")),
                 contains=["parameter page (query) › description: added without a tag"])
             empty = _edited(base, (get_orders + ("parameters", 1, "description"), ""))
             run("a description where Slant's is empty needs a tag", EXIT_UNTAGGED, old=empty, live=empty,
-                studio=_edited(base, (get_orders + ("parameters", 1, "description"), " Studio's note.")),
+                studio=_edited(base, (get_orders + ("parameters", 1, "description"), " Plinth's note.")),
                 contains=["without a tag"])
             run("a description where Slant has none, tagged on its parameter", EXIT_SAME,
-                studio=_edited(base, (get_orders + ("parameters", 1, "description"), "Studio's note."),
+                studio=_edited(base, (get_orders + ("parameters", 1, "description"), "Plinth's note."),
                                (get_orders + ("parameters", 1, TAG), "live")), contains=["live 1"])
-            run("an operation lost from Studio's spec", EXIT_UNTAGGED,
+            run("an operation lost from Plinth's spec", EXIT_UNTAGGED,
                 studio=_edited(base, (("paths", "/files"), _DELETE)), contains=["has lost POST /files"])
             run("a tagged new operation", EXIT_SAME,
                 studio=_edited(base, (("paths", "/extra"), {"get": {TAG: "docs", "responses": {}}})))
@@ -843,8 +843,8 @@ def report(args, snapshot_bytes, snapshot, studio, live_bytes, live):
         print(f"\nWrote the live spec over {args.snapshot}; openapi.json is checked against it below.")
 
     patches_clean = check_patches(studio, snapshot)
-    next_step = ("bring openapi.json, Studio and docs/API_REFERENCE.md into line until this check exits 0"
-                 if updated else "run again with --update-snapshot, then bring openapi.json and Studio into line")
+    next_step = ("bring openapi.json, Plinth and docs/API_REFERENCE.md into line until this check exits 0"
+                 if updated else "run again with --update-snapshot, then bring openapi.json and Plinth into line")
     if code == EXIT_CONTRACT:
         print(f"\nResult: Slant's contract changed. Read the diff; {next_step}.")
     elif code == EXIT_WORDING:
