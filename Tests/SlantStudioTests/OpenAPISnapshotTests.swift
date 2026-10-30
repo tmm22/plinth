@@ -56,7 +56,28 @@ final class OpenAPISnapshotTests: XCTestCase {
         XCTAssertEqual(bad, [])
     }
 
-    static let sourceTag = "x-slant-studio-source"
+    static let sourceTag = "x-plinth-source"
+
+    /// The source tag was renamed with the app (it was `x-slant-studio-source`): every tag uses the new name.
+    func testSourceTagsUseThePlinthName() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "openapi", withExtension: "json"))
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertGreaterThan(text.components(separatedBy: "\"\(Self.sourceTag)\":").count - 1, 0)
+        XCTAssertFalse(text.contains("x-slant-studio-source"))
+        var tags = 0
+        func walk(_ value: Any) {
+            if let dictionary = value as? [String: Any] {
+                if dictionary[Self.sourceTag] != nil { tags += 1 }
+                dictionary.values.forEach(walk)
+            } else if let array = value as? [Any] {
+                array.forEach(walk)
+            }
+        }
+        walk(try document("openapi"))
+        XCTAssertGreaterThan(tags, 0)
+        XCTAssertFalse(try String(contentsOf: XCTUnwrap(Bundle.module.url(forResource: "slant-openapi-upstream", withExtension: "json")),
+                                  encoding: .utf8).contains("x-plinth-source"), "Slant's own spec carries no tag of ours")
+    }
 
     /// JSON-pointer-like paths of every source tag at the document root or directly inside a name map (`paths`,
     /// `properties`, `encoding`…, the app's `slantAPINameMapKeys`), where it would read as a path or property name and,

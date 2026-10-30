@@ -33,7 +33,7 @@ struct MeshToolsNote: Equatable {
 
 /// Temporary folders for results on their way into the library: `<prefix><UUID>`, removed after the import and, if
 /// Studio stopped first, at the next launch (`personalisationTempFolderPrefixes`).
-let meshToolsTempFolderPrefix = "SlantStudio-MeshTools-"
+let meshToolsTempFolderPrefix = "Plinth-MeshTools-"
 
 /// Session-only notes about copies these tools made, keyed by the new model's ID. Never saved.
 @MainActor enum MeshToolsNotes {

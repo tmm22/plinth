@@ -314,7 +314,7 @@ func slantAPIURL(path: String, query: [String: String]) -> URL? {
     return components.url
 }
 
-/// `User-Agent` for Slant API requests only: `SlantStudio/<version> (macOS <version>)`. A missing or odd bundle
+/// `User-Agent` for Slant API requests only: `Plinth/<version> (macOS <version>)`. A missing or odd bundle
 /// version reads "dev" (as in `swift test` and `swift run`).
 func slantUserAgent(appVersion: String?, os: OperatingSystemVersion) -> String {
     let trimmed = appVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -324,7 +324,7 @@ func slantUserAgent(appVersion: String?, os: OperatingSystemVersion) -> String {
     let macOS = os.patchVersion > 0
         ? "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
         : "\(os.majorVersion).\(os.minorVersion)"
-    return "SlantStudio/\(version) (macOS \(macOS))"
+    return "Plinth/\(version) (macOS \(macOS))"
 }
 
 let slantStudioUserAgent = slantUserAgent(
@@ -718,7 +718,7 @@ struct APIClient {
               url.user == nil, url.password == nil, url.fragment == nil else {
             throw APIError.invalidResponse("Slant didn’t return a secure HTTPS download link. Try again.")
         }
-        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudio-Download-\(UUID().uuidString)")
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Plinth-Download-\(UUID().uuidString)")
         guard FileManager.default.createFile(atPath: destination.path, contents: nil),
               let handle = try? FileHandle(forWritingTo: destination) else {
             throw StudioError("Studio couldn’t save the download to a temporary file.")

@@ -5,7 +5,7 @@ import Security
 //
 // The provider-neutral layer behind Generate a Replica from an Image: one to four labelled photos (already prepared,
 // re-encoded without metadata, by ImagePreparation.swift) go to the seller's chosen service — Meshy or Tripo3D — which
-// makes a mesh that Studio downloads as STL or 3MF into a `SlantStudio-Generated3D-…` temporary folder. One photo uses
+// makes a mesh that Studio downloads as STL or 3MF into a `Plinth-Generated3D-…` temporary folder. One photo uses
 // the service's single-image endpoint; two to four use its multi-view endpoint (`ImageTo3DTaskKind.multiImageGeneration`).
 //
 // Rules this layer keeps:
@@ -44,7 +44,7 @@ let imageTo3DDefaultTriangleTarget = 20_000
 /// Longest API key accepted in Settings.
 let imageTo3DMaxKeyLength = 256
 /// Temporary folder prefix for downloaded models; added to the launch clean-up in Personalisation.swift.
-let imageTo3DTempFolderPrefix = "SlantStudio-Generated3D-"
+let imageTo3DTempFolderPrefix = "Plinth-Generated3D-"
 
 // MARK: Services
 
@@ -752,7 +752,7 @@ private final class ImageTo3DBoundedDownload: NSObject, URLSessionDataDelegate, 
 
 let imageTo3DTooLargeMessage = "The generated model is larger than 128 MB, so Studio didn’t download it."
 
-/// A new `SlantStudio-Generated3D-<UUID>` folder in the temporary directory. The caller removes it after import;
+/// A new `Plinth-Generated3D-<UUID>` folder in the temporary directory. The caller removes it after import;
 /// leftovers go at the next launch.
 func makeImageTo3DTempFolder() throws -> URL {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("\(imageTo3DTempFolderPrefix)\(UUID().uuidString)")

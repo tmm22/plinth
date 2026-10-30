@@ -37,7 +37,7 @@ struct MeshFitRequest: Identifiable {
 }
 
 /// Temporary folders for copies being saved; removed right after import, and at launch if a crash left one.
-let meshFitTempFolderPrefix = "SlantStudio-MeshFit-"
+let meshFitTempFolderPrefix = "Plinth-MeshFit-"
 
 /// Why `tool` can't edit this model, or nil when it can.
 func meshFitEditBlockedReason(_ model: LocalModel, tool: MeshFitTool) -> String? {

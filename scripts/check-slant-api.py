@@ -22,7 +22,7 @@ Run before every release and whenever the app's API change check fires:
    order and path items without operations; the output says which contract
    changes those are.
 3. Checks that every difference between Studio's openapi.json and that
-   snapshot is tagged with `x-slant-studio-source: docs|live` on the changed
+   snapshot is tagged with `x-plinth-source: docs|live` on the changed
    node or an ancestor, or is text appended to Slant's own non-empty
    description (a description where Slant has none needs a tag). A
    tag at the document root or directly inside a name map (where it would
@@ -56,7 +56,7 @@ TIMEOUT_SECONDS = 30
 RESOURCES = Path(__file__).resolve().parent.parent / "Sources" / "SlantStudio" / "Resources"
 SNAPSHOT = RESOURCES / "slant-openapi-upstream.json"
 STUDIO_SPEC = RESOURCES / "openapi.json"
-TAG = "x-slant-studio-source"
+TAG = "x-plinth-source"
 TAG_VALUES = ("docs", "live")
 # WORDING_KEYS, ORDERED_LIST_KEYS, NAME_MAPS, DATA_KEYS and METHODS mirror SlantAPIChanges.swift, and
 # SlantAPIScriptParityTests compares them with it: change both together. Wording: `slantAPIIgnoredKeys`.
@@ -90,7 +90,7 @@ def fetch_live():
         raise CheckFailed("the spec URL must be https")
     opener = urllib.request.build_opener(NoRedirects)  # no cookie or auth handlers
     request = urllib.request.Request(SPEC_URL, headers={"Accept": "application/json",
-                                                        "User-Agent": "SlantStudio-api-check"})
+                                                        "User-Agent": "Plinth-api-check"})
     try:
         with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
             if response.status != 200:
@@ -450,7 +450,7 @@ def contains_tag(value):
 
 
 def untagged_patches(studio, upstream, keys=(), names=False, out=None, tagged=None):
-    """Differences in Studio's spec that sit under no x-slant-studio-source tag.
+    """Differences in Studio's spec that sit under no x-plinth-source tag.
 
     `upstream` is MISSING where Slant's snapshot has nothing at that place."""
     out = [] if out is None else out

@@ -311,14 +311,83 @@ final class PrintPreparationTests: XCTestCase {
     // MARK: Housekeeping
 
     func testStudioCopyTempFoldersAreCleanedAtLaunch() {
-        XCTAssertEqual(personalisationTempFolderPrefixes[0], "SlantStudio-OpenSCAD-")
-        XCTAssertEqual(personalisationTempFolderPrefixes[1], "SlantStudio-Personalised-")
+        XCTAssertEqual(personalisationTempFolderPrefixes[0], "Plinth-OpenSCAD-")
+        XCTAssertEqual(personalisationTempFolderPrefixes[1], "Plinth-Personalised-")
         for prefix in [printReadyTempFolderPrefix, autoImproveTempFolderPrefix, preparedCopyTempFolderPrefix, edgeEditTempFolderPrefix,
                        reinforceTempFolderPrefix, stlCopyTempFolderPrefix, scaledCopyTempFolderPrefix] {
-            XCTAssertTrue(prefix.hasPrefix("SlantStudio-"))
+            XCTAssertTrue(prefix.hasPrefix("Plinth-"))
             XCTAssertTrue(isPersonalisationTempFolderName("\(prefix)\(UUID().uuidString)"), prefix)
             XCTAssertTrue(studioTempFolderURL(prefix: prefix).lastPathComponent.hasPrefix(prefix))
         }
         XCTAssertEqual(Set(personalisationTempFolderPrefixes).count, personalisationTempFolderPrefixes.count)
+    }
+
+    func testTempFoldersAreMadeWithPlinthNamesAndSlantStudioNamesAreStillCleaned() {
+        // Every folder is made under a Plinth name, and the list starts with them (callers index [0] and [1]).
+        XCTAssertEqual(Array(personalisationTempFolderPrefixes.prefix(currentTempFolderPrefixes.count)), currentTempFolderPrefixes)
+        for prefix in currentTempFolderPrefixes + [ModelDragExport.folderPrefix] {
+            XCTAssertTrue(prefix.hasPrefix("Plinth-"), prefix)
+            XCTAssertFalse(prefix.hasPrefix("SlantStudio-"), prefix)
+        }
+        for prefix in [imageTo3DTempFolderPrefix, meshToolsTempFolderPrefix, meshFitTempFolderPrefix, replicaTempFolderPrefix,
+                       accessoryTempFolderPrefix, printReadyTempFolderPrefix, autoImproveTempFolderPrefix,
+                       preparedCopyTempFolderPrefix, edgeEditTempFolderPrefix, reinforceTempFolderPrefix, stlCopyTempFolderPrefix,
+                       scaledCopyTempFolderPrefix, hiddenPocketsTempFolderPrefix] {
+            XCTAssertTrue(currentTempFolderPrefixes.contains(prefix), prefix)
+        }
+        // Slant Studio's names come after, one for each current name, and are still recognised for clean-up: they may
+        // hold buyer personalisation text.
+        XCTAssertEqual(Array(personalisationTempFolderPrefixes.suffix(legacyTempFolderPrefixes.count)), legacyTempFolderPrefixes)
+        XCTAssertEqual(personalisationTempFolderPrefixes.count, currentTempFolderPrefixes.count + legacyTempFolderPrefixes.count)
+        // Every name Slant Studio made (its 15) is listed, each the old form of a current one.
+        XCTAssertEqual(legacyTempFolderPrefixes.count, 15)
+        XCTAssertEqual(Set(legacyTempFolderPrefixes).count, legacyTempFolderPrefixes.count)
+        for legacy in legacyTempFolderPrefixes {
+            XCTAssertTrue(legacy.hasPrefix("SlantStudio-"), legacy)
+            XCTAssertTrue(currentTempFolderPrefixes.contains("Plinth-" + legacy.dropFirst("SlantStudio-".count)), legacy)
+        }
+        XCTAssertTrue(legacyTempFolderPrefixes.contains("SlantStudio-OpenSCAD-"))
+        XCTAssertTrue(legacyTempFolderPrefixes.contains("SlantStudio-Personalised-"))
+        let id = UUID().uuidString
+        XCTAssertTrue(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-\(id)"))
+        XCTAssertTrue(isPersonalisationTempFolderName("SlantStudio-Personalised-\(id)"))
+        XCTAssertTrue(isPersonalisationTempFolderName("SlantStudio-Generated3D-\(id)"))
+        XCTAssertTrue(isPersonalisationTempFolderName("SlantStudio-PocketsFilled-\(id)"))
+        XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-notauuid"))
+        XCTAssertEqual(stalePersonalisationTempFolderNames([("SlantStudio-OpenSCAD-\(id)", nil)], now: Date(),
+                                                           otherInstanceMayBeRunning: false), ["SlantStudio-OpenSCAD-\(id)"])
+        // The callers that index the list make Plinth folders.
+        XCTAssertTrue("\(personalisationTempFolderPrefixes[0])\(id)".hasPrefix("Plinth-OpenSCAD-"))
+        XCTAssertTrue("\(personalisationTempFolderPrefixes[1])\(id)".hasPrefix("Plinth-Personalised-"))
+        for prefix in currentTempFolderPrefixes {
+            XCTAssertTrue(studioTempFolderURL(prefix: prefix).lastPathComponent.hasPrefix("Plinth-"), prefix)
+        }
+    }
+
+    func testAnotherCopyUnderEitherBundleIDKeepsItsFolders() {
+        let me: pid_t = 100
+        func running(_ table: [String: [pid_t]]) -> (String) -> [pid_t] { { table[$0] ?? [] } }
+        XCTAssertEqual(appBundleIdentifier, "io.github.tmm22.plinth")
+        XCTAssertEqual(legacyAppBundleIdentifier, "app.slantstudio.mac")
+        // Alone (only this process is listed under its own ID).
+        XCTAssertFalse(otherAppInstanceMayBeRunning(currentBundleID: appBundleIdentifier, myProcessID: me,
+                                                    runningProcessIDs: running([appBundleIdentifier: [me]])))
+        XCTAssertFalse(otherAppInstanceMayBeRunning(currentBundleID: appBundleIdentifier, myProcessID: me, runningProcessIDs: running([:])))
+        // Another Plinth, or an old Slant Studio, is running.
+        XCTAssertTrue(otherAppInstanceMayBeRunning(currentBundleID: appBundleIdentifier, myProcessID: me,
+                                                   runningProcessIDs: running([appBundleIdentifier: [me, 200]])))
+        XCTAssertTrue(otherAppInstanceMayBeRunning(currentBundleID: appBundleIdentifier, myProcessID: me,
+                                                   runningProcessIDs: running([appBundleIdentifier: [me], legacyAppBundleIdentifier: [300]])))
+        // Run as the old ID (or any other), Plinth's copies still count, and so does a copy under that ID.
+        XCTAssertTrue(otherAppInstanceMayBeRunning(currentBundleID: legacyAppBundleIdentifier, myProcessID: me,
+                                                   runningProcessIDs: running([appBundleIdentifier: [200]])))
+        XCTAssertTrue(otherAppInstanceMayBeRunning(currentBundleID: "com.example.other", myProcessID: me,
+                                                   runningProcessIDs: running(["com.example.other": [me, 400]])))
+        XCTAssertTrue(otherAppInstanceMayBeRunning(currentBundleID: "com.example.other", myProcessID: me,
+                                                   runningProcessIDs: running([legacyAppBundleIdentifier: [300]])))
+        XCTAssertFalse(otherAppInstanceMayBeRunning(currentBundleID: "com.example.other", myProcessID: me,
+                                                    runningProcessIDs: running(["com.example.other": [me]])))
+        // Without a bundle ID this copy can't tell, so it assumes another may be running.
+        XCTAssertTrue(otherAppInstanceMayBeRunning(currentBundleID: nil, myProcessID: me, runningProcessIDs: running([:])))
     }
 }

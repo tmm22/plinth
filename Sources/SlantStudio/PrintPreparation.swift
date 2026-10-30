@@ -1282,13 +1282,13 @@ struct PrintPreparationTeardropOutcome: Equatable, Sendable {
 
 /// Folders Studio's copy tools write through on their way into the library. Each is the prefix followed by a UUID and
 /// is listed in `personalisationTempFolderPrefixes`, so the launch clean-up removes any a crash leaves behind.
-let printReadyTempFolderPrefix = "SlantStudio-PrintReady-"
-let autoImproveTempFolderPrefix = "SlantStudio-AutoImprove-"
-let preparedCopyTempFolderPrefix = "SlantStudio-Prepared-"
-let edgeEditTempFolderPrefix = "SlantStudio-EdgeEdit-"
-let reinforceTempFolderPrefix = "SlantStudio-Reinforce-"
-let stlCopyTempFolderPrefix = "SlantStudio-STLCopy-"
-let scaledCopyTempFolderPrefix = "SlantStudio-ScaledCopy-"
+let printReadyTempFolderPrefix = "Plinth-PrintReady-"
+let autoImproveTempFolderPrefix = "Plinth-AutoImprove-"
+let preparedCopyTempFolderPrefix = "Plinth-Prepared-"
+let edgeEditTempFolderPrefix = "Plinth-EdgeEdit-"
+let reinforceTempFolderPrefix = "Plinth-Reinforce-"
+let stlCopyTempFolderPrefix = "Plinth-STLCopy-"
+let scaledCopyTempFolderPrefix = "Plinth-ScaledCopy-"
 
 /// A new, uniquely named folder URL (not yet created) in the temporary directory.
 func studioTempFolderURL(prefix: String) -> URL {

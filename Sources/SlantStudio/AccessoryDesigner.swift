@@ -18,7 +18,7 @@ import simd
 // Claude's renders) to get a small fit-test piece, checks it against the part (`accessoryFitTestCheck`) and reports it
 // to Claude. A passing piece can be saved as its own library model, "<name> (fit test)".
 
-let accessoryTempFolderPrefix = "SlantStudio-Accessory-"
+let accessoryTempFolderPrefix = "Plinth-Accessory-"
 let accessoryMaximumPhotos = 3
 let accessoryMaximumMeasurements = 12
 let accessoryDescriptionMaximumLength = 1_000

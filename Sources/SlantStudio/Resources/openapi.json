@@ -21,7 +21,7 @@
       "platform-workflow": "A Platform ID is required on most requests, as it is the organizational foundation of the API. Create or utilize one of the already created platforms and attach the ID to requests where it is required according to individual endpoint specifications.",
       "openscad-rate-limit": "5 OpenSCAD generations per hour, one in flight",
       "webhook-signature": "HMAC-SHA256 over `${timestamp}.${rawBody}` with the platform's webhookSecret, where timestamp is the X-Webhook-Timestamp header exactly as sent (Unix milliseconds) and rawBody is the exact bytes received; header X-Webhook-Signature-256 is sha256=<hex>; reject when Date.now() − timestamp is 300000 ms or more",
-      "x-slant-studio-source": "docs"
+      "x-plinth-source": "docs"
     }
   },
   "servers": [
@@ -112,7 +112,7 @@
             "description": "Technical error details"
           }
         },
-        "x-slant-studio-source": "live"
+        "x-plinth-source": "live"
       },
       "Address": {
         "type": "object",
@@ -163,7 +163,7 @@
             "type": "string",
             "format": "uuid",
             "description": "Live (29 Oct 2026): every order seen names its platform here, including a draft created with a top-level platformId.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "details": {
             "type": "object",
@@ -216,7 +216,7 @@
               "3mf"
             ],
             "description": "File type. Slant's docs: stl, obj and 3mf are supported for uploads; defaults to stl. Live (29 Oct 2026): every file record reads stl, including two 3MF uploads, whose stored bytes are Slant's binary STL conversion (\"Binary STL converted from 3MF by file-service\"). OBJ uploads are unverified.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "notes": {
             "type": "string",
@@ -403,33 +403,33 @@
             "nullable": true,
             "additionalProperties": true,
             "description": "Live and Slant's docs: the item's options.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "printItem": {
             "type": "object",
             "nullable": true,
             "additionalProperties": true,
             "description": "Live and Slant's docs: for PRINT items, the file, filament and estimated print completion.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "componentItem": {
             "type": "object",
             "nullable": true,
             "additionalProperties": true,
             "description": "Slant's docs: for COMPONENT items, the component.",
-            "x-slant-studio-source": "docs"
+            "x-plinth-source": "docs"
           },
           "stationeryItem": {
             "type": "object",
             "nullable": true,
             "additionalProperties": true,
             "description": "Slant's docs: for STATIONERY items, the stationery.",
-            "x-slant-studio-source": "docs"
+            "x-plinth-source": "docs"
           },
           "estimatedPrintCompletion": {
             "nullable": true,
             "description": "Live: on the item and on printItem; null on every order seen (29 Oct 2026).",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "createdAt": {
             "type": "string",
@@ -462,18 +462,18 @@
           "platformId": {
             "type": "string",
             "format": "uuid",
-            "x-slant-studio-source": "live",
+            "x-plinth-source": "live",
             "description": "Absent on every order seen (6, one platform; 29 Oct 2026); they name their platform in customer.platformId."
           },
           "ownerId": {
             "type": "string",
             "description": "Your application's user ID. Absent on every order seen (6, one platform; 29 Oct 2026).",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "creatorId": {
             "type": "string",
             "format": "uuid",
-            "x-slant-studio-source": "live",
+            "x-plinth-source": "live",
             "description": "Absent on every order seen (6, one platform; 29 Oct 2026)."
           },
           "paymentId": {
@@ -510,7 +510,7 @@
             ],
             "nullable": true,
             "description": "Shipping and tracking information",
-            "x-slant-studio-source": "docs"
+            "x-plinth-source": "docs"
           },
           "items": {
             "type": "array",
@@ -521,7 +521,7 @@
           "options": {
             "type": "object",
             "nullable": true,
-            "x-slant-studio-source": "docs",
+            "x-plinth-source": "docs",
             "properties": {
               "shippingProvider": {
                 "type": "string",
@@ -530,7 +530,7 @@
                   "SHIPSTATION"
                 ],
                 "description": "Shipping cost / label provider preference documented on Orders page.",
-                "x-slant-studio-source": "docs"
+                "x-plinth-source": "docs"
               }
             },
             "additionalProperties": true
@@ -540,7 +540,7 @@
             "nullable": true,
             "additionalProperties": true,
             "description": "Live (29 Oct 2026): every order carries metadata, null or an object, on list rows and GET /orders/{publicOrderId} alike.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "platform": {
             "type": "object",
@@ -572,7 +572,7 @@
                 "format": "date-time"
               }
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "createdAt": {
             "type": "string",
@@ -600,7 +600,7 @@
             "type": "string",
             "description": "Platform description. Can be null (live, 29 Oct 2026).",
             "nullable": true,
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "url": {
             "type": "string",
@@ -612,7 +612,7 @@
             "format": "uri",
             "description": "Webhook endpoint for order status updates. Can be null (live, 29 Oct 2026).",
             "nullable": true,
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "webhookSecret": {
             "type": "string",
@@ -981,7 +981,7 @@
             "type": "string",
             "description": "Formatted X x Y x Z string. Live (29 Oct 2026): free text that often carries its own units (mm, in, ft, a diameter sign), whatever dimensionUnit says; some rows send \"\" or omit it, and one sends \"0 x 0 x 0\".",
             "example": "58.2 x 58.2 x 8",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "dimensionUnit": {
             "type": "string",
@@ -1162,7 +1162,7 @@
       "Fulfillment": {
         "type": "object",
         "description": "Shipping and tracking information returned on orders.",
-        "x-slant-studio-source": "docs",
+        "x-plinth-source": "docs",
         "properties": {
           "status": {
             "type": "string"
@@ -1185,7 +1185,7 @@
                 "$ref": "#/components/schemas/Address"
               }
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "trackingNumbers": {
             "type": "array",
@@ -1198,13 +1198,13 @@
             "type": "string",
             "nullable": true,
             "description": "Null on every order seen (live, 29 Oct 2026).",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "providerStatus": {
             "type": "string",
             "nullable": true,
             "description": "Null on every order seen (live, 29 Oct 2026).",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "labelPrinted": {
             "type": "boolean"
@@ -1222,7 +1222,7 @@
       "OrderTotals": {
         "type": "object",
         "description": "Slant's docs: printingCost, deliveryCost and totalCost for the order, as numbers (example 35.53, 4.79, 40.32). The order's own printingCost and deliveryCost are strings, in the docs and live; whether the live draft reply's totals are numbers is unverified.",
-        "x-slant-studio-source": "docs",
+        "x-plinth-source": "docs",
         "properties": {
           "printingCost": {
             "type": "number",
@@ -1240,7 +1240,7 @@
       },
       "DraftOrderData": {
         "type": "object",
-        "x-slant-studio-source": "docs",
+        "x-plinth-source": "docs",
         "description": "Draft order response data shape documented on Orders page.",
         "properties": {
           "order": {
@@ -1267,42 +1267,42 @@
         "schema": {
           "type": "integer"
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       },
       "X-RateLimit-Remaining": {
         "description": "Requests remaining in current window",
         "schema": {
           "type": "integer"
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       },
       "X-RateLimit-Reset": {
         "description": "Epoch milliseconds (live, 23 and 29 Oct 2026). Slant's docs say \"Unix timestamp\" and their sample multiplies it by 1000. What it marks is unresolved: some live replies gave a fixed time, up to about 60 s ahead, that stayed put while X-RateLimit-Remaining fell; others gave a time a few seconds ahead that moved later with each request while X-RateLimit-Remaining stayed level or went back up by one (29 Oct 2026).",
         "schema": {
           "type": "integer"
         },
-        "x-slant-studio-source": "live"
+        "x-plinth-source": "live"
       },
       "X-RateLimit-Role": {
         "description": "Account tier (free only for now)",
         "schema": {
           "type": "string"
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       },
       "X-Webhook-Timestamp": {
         "description": "Unix timestamp (ms) when the webhook was sent",
         "schema": {
           "type": "string"
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       },
       "X-Webhook-Signature-256": {
         "description": "HMAC-SHA256 signature of timestamp + raw body, prefixed with sha256=",
         "schema": {
           "type": "string"
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       }
     }
   },
@@ -1492,7 +1492,7 @@
                     ],
                     "default": "stl",
                     "description": "File type. Docs: stl, obj, 3mf. Defaults to stl.",
-                    "x-slant-studio-source": "docs"
+                    "x-plinth-source": "docs"
                   }
                 }
               }
@@ -1504,7 +1504,7 @@
             "description": "File imported; see File schema"
           }
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       }
     },
     "/files/owner/{ownerId}": {
@@ -1940,7 +1940,7 @@
                 }
               }
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           }
         }
       }
@@ -1971,7 +1971,7 @@
                   "name": {
                     "type": "string",
                     "description": "File name (will be sanitized). Slant's docs: \"Sanitized before storing. Unique to ownerId\". Live (30 Oct 2026): a second direct-upload with the same name as an existing file returned that file's filePlaceholder and storage key, and its confirm-upload returned the same publicFileServiceId, so the second upload's bytes go to the existing file's storage object (inferred from the shared key: the two test files were identical). Whether the match ignores case or the extension is unverified.",
-                    "x-slant-studio-source": "live"
+                    "x-plinth-source": "live"
                   },
                   "platformId": {
                     "type": "string",
@@ -1991,7 +1991,7 @@
                     ],
                     "default": "stl",
                     "description": "Include your type here. stl, 3mf, obj are the current supported file types. Defaults to stl.",
-                    "x-slant-studio-source": "docs"
+                    "x-plinth-source": "docs"
                   }
                 }
               }
@@ -2293,7 +2293,7 @@
             }
           }
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       }
     },
     "/platforms/{platformId}": {
@@ -2707,7 +2707,7 @@
             }
           }
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       }
     },
     "/platforms/{platformId}/webhook": {
@@ -2832,7 +2832,7 @@
             }
           }
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       }
     },
     "/platforms/{platformId}/webhook/{webhookId}/resend": {
@@ -3019,7 +3019,7 @@
                 }
               }
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           }
         }
       }
@@ -3045,7 +3045,7 @@
               "format": "uuid"
             },
             "description": "Slant's docs don't list this filter. Live (29 Oct 2026): an unknown or malformed platformId (not-a-uuid) was accepted and ignored, and every order on the account was returned. Whether the ID of a second platform the account owns filters the list is unverified. Every order seen names its platform in customer.platformId.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "ownerId",
@@ -3054,7 +3054,7 @@
               "type": "string"
             },
             "description": "Slant's docs don't list this filter. Live (29 Oct 2026): an unknown ownerId was ignored and every order on the account was returned. Live orders carry no ownerId.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "status",
@@ -3070,7 +3070,7 @@
               ]
             },
             "description": "Case insensitive. Any other value is refused with 400 \"Invalid status filter\" (live, 28 Oct 2026).",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "startDate",
@@ -3080,7 +3080,7 @@
               "format": "date"
             },
             "description": "Only return orders created at or after this point. Slant's docs: ISO 8601 (example 2026-01-01T00:00:00Z); this spec: format date. Live (29 Oct 2026) accepts both: a date-time's time and offset are applied (send + as %2B), and a date-only value means midnight at the start of that day, consistent with UTC, so the day is included.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "endDate",
@@ -3090,7 +3090,7 @@
               "format": "date"
             },
             "description": "Only return orders created before this point. Slant's docs: \"Only return orders up to this point\", ISO 8601 (example 2026-02-01T00:00:00Z); this spec: format date. Live (29 Oct 2026) accepts both: a date-time's time and offset are applied, and a date-only value means midnight at the start of that day, consistent with UTC, so the day itself is excluded.",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "page",
@@ -3111,7 +3111,7 @@
               "default": 50
             },
             "description": "Slant's docs allow up to 200; this spec says 100. Live: limit=200 accepted (28 Oct 2026); limit=201 refused with 400 \"Invalid limit passed on query: 201. Limit maximum is 200\" (29 Oct 2026).",
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "publicId",
@@ -3121,7 +3121,7 @@
             "schema": {
               "type": "string"
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "orderId",
@@ -3131,7 +3131,7 @@
             "schema": {
               "type": "string"
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "sortBy",
@@ -3141,7 +3141,7 @@
             "schema": {
               "type": "string"
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           {
             "name": "sortOrder",
@@ -3151,7 +3151,7 @@
             "schema": {
               "type": "string"
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           }
         ],
         "responses": {
@@ -3178,7 +3178,7 @@
                           "$ref": "#/components/schemas/Pagination"
                         }
                       },
-                      "x-slant-studio-source": "live"
+                      "x-plinth-source": "live"
                     }
                   ]
                 }
@@ -3291,17 +3291,17 @@
                           "type": "string",
                           "format": "uri",
                           "description": "For STATIONERY items with custom image. Slant's docs name this field imageURL in their request table and examples, and mark it required for stationery; their draft-reply example echoes imageUrl. Which one live Slant reads is unverified.",
-                          "x-slant-studio-source": "docs"
+                          "x-plinth-source": "docs"
                         },
                         "name": {
                           "type": "string",
                           "description": "Optional item title",
-                          "x-slant-studio-source": "docs"
+                          "x-plinth-source": "docs"
                         },
                         "SKU": {
                           "type": "string",
                           "description": "Optional item SKU",
-                          "x-slant-studio-source": "docs"
+                          "x-plinth-source": "docs"
                         },
                         "options": {
                           "type": "object",
@@ -3311,7 +3311,7 @@
                               "description": "Slicer override container. No active individual overrides are currently documented; support_enable was removed. Support is determined internally at upload."
                             }
                           },
-                          "x-slant-studio-source": "docs"
+                          "x-plinth-source": "docs"
                         }
                       }
                     }
@@ -3321,12 +3321,12 @@
                     "additionalProperties": true,
                     "maxProperties": 10,
                     "description": "Optional order metadata. Docs: at most 10 fields and maximum depth 3. Do not store credentials. Prefer camelCase.",
-                    "x-slant-studio-source": "docs"
+                    "x-plinth-source": "docs"
                   },
                   "options": {
                     "type": "object",
                     "additionalProperties": true,
-                    "x-slant-studio-source": "docs",
+                    "x-plinth-source": "docs",
                     "properties": {
                       "shippingProvider": {
                         "type": "string",
@@ -3334,7 +3334,7 @@
                           "SHIPPO",
                           "SHIPSTATION"
                         ],
-                        "x-slant-studio-source": "docs"
+                        "x-plinth-source": "docs"
                       }
                     },
                     "description": "Optional order options. shippingProvider: SHIPPO or SHIPSTATION."
@@ -3361,7 +3361,7 @@
                           "$ref": "#/components/schemas/DraftOrderData"
                         }
                       },
-                      "x-slant-studio-source": "docs"
+                      "x-plinth-source": "docs"
                     }
                   ]
                 }
@@ -3431,7 +3431,7 @@
                 }
               }
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "401": {
             "description": "Order belongs to another creator",
@@ -3569,7 +3569,7 @@
                 }
               }
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           },
           "401": {
             "description": "Order belongs to another creator",
@@ -3592,7 +3592,7 @@
             }
           }
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       }
     },
     "/orders/batch": {
@@ -3623,10 +3623,10 @@
                       "type": "string"
                     },
                     "description": "Array of public order IDs. Live (23 Oct 2026): Slant accepts only publicIds and refuses public_ids (the original spec's name) with 400 \"No public IDs provided\".",
-                    "x-slant-studio-source": "live"
+                    "x-plinth-source": "live"
                   }
                 },
-                "x-slant-studio-source": "live"
+                "x-plinth-source": "live"
               }
             }
           }
@@ -3650,7 +3650,7 @@
                             "$ref": "#/components/schemas/Order"
                           },
                           "description": "Live (23 Oct 2026) and Slant's docs: the orders themselves; this spec said [{order}].",
-                          "x-slant-studio-source": "live"
+                          "x-plinth-source": "live"
                         }
                       }
                     }
@@ -3711,7 +3711,7 @@
             }
           }
         },
-        "x-slant-studio-source": "live"
+        "x-plinth-source": "live"
       }
     },
     "/components": {
@@ -4111,7 +4111,7 @@
                 }
               }
             },
-            "x-slant-studio-source": "live"
+            "x-plinth-source": "live"
           }
         }
       }
@@ -4230,7 +4230,7 @@
             }
           }
         },
-        "x-slant-studio-source": "docs"
+        "x-plinth-source": "docs"
       }
     },
     "/files/{publicFileId}/estimate": {

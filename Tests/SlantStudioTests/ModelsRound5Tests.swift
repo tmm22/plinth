@@ -185,10 +185,19 @@ final class ModelsRound5Tests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
         XCTAssertTrue(ModelDragExport.isDragCopy(copy, temporaryDirectory: temporary))
         XCTAssertFalse(ModelDragExport.isDragCopy(source, temporaryDirectory: temporary))
+        XCTAssertTrue(copy.deletingLastPathComponent().lastPathComponent.hasPrefix("Plinth-Drag-"))
+        XCTAssertFalse(ModelDragExport.isDragCopy(temporary.appendingPathComponent("Plinth-Drag-x"), temporaryDirectory: temporary),
+                       "the folder itself isn't a dropped model")
+        XCTAssertFalse(ModelDragExport.isDragCopy(temporary.appendingPathComponent("Other/Plinth-Drag-x/a.stl"),
+                                                  temporaryDirectory: temporary))
+        // A file in Slant Studio's drag folder is a drag copy too, so it is never imported.
+        XCTAssertTrue(ModelDragExport.isDragCopy(temporary.appendingPathComponent("SlantStudio-Drag-\(UUID().uuidString)/Hook.stl"),
+                                                 temporaryDirectory: temporary))
         XCTAssertFalse(ModelDragExport.isDragCopy(temporary.appendingPathComponent("SlantStudio-Drag-x"), temporaryDirectory: temporary),
                        "the folder itself isn't a dropped model")
         XCTAssertFalse(ModelDragExport.isDragCopy(temporary.appendingPathComponent("Other/SlantStudio-Drag-x/a.stl"),
                                                   temporaryDirectory: temporary))
+        XCTAssertFalse(ModelDragExport.isDragCopy(temporary.appendingPathComponent("PlinthListing-x/a.stl"), temporaryDirectory: temporary))
 
         // A missing library file gives no copy and leaves no folder behind.
         XCTAssertThrowsError(try ModelDragExport.makeCopy(of: library.appendingPathComponent("gone.stl"), name: "Gone", in: temporary))
@@ -211,9 +220,12 @@ final class ModelsRound5Tests: XCTestCase {
         let temporary = URL(fileURLWithPath: "/tmp/r5-temp", isDirectory: true)
         let outside = URL(fileURLWithPath: "/Users/someone/Downloads/hook.stl")
         let managed = support.appendingPathComponent("Models/ABC.stl")
-        let dragged = temporary.appendingPathComponent("SlantStudio-Drag-1/Hook.stl")
+        let dragged = temporary.appendingPathComponent("Plinth-Drag-1/Hook.stl")
+        let legacyDragged = temporary.appendingPathComponent("SlantStudio-Drag-1/Hook.stl")
         XCTAssertEqual(modelDropURLsToImport([outside, managed, dragged], supportDirectory: support, temporaryDirectory: temporary),
                        [outside])
+        XCTAssertEqual(modelDropURLsToImport([legacyDragged, outside], supportDirectory: support, temporaryDirectory: temporary),
+                       [outside], "Slant Studio's drag copies aren't imported either")
         XCTAssertEqual(modelDropURLsToImport([], supportDirectory: support, temporaryDirectory: temporary), [])
         // Dropped on the Dock icon: the drag copy is skipped too.
         XCTAssertEqual(queuedModelOpens([], adding: [dragged, outside], temporaryDirectory: temporary), [outside])

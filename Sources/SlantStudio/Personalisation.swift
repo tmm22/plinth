@@ -701,11 +701,25 @@ final class OpenSCADRunRegistry: @unchecked Sendable {
 /// (personalisation), a model downloaded from a 3D generation service (ImageTo3D.swift), Repair and simplify's,
 /// Size and base's and replicas' (ReplicaGenerator.swift) copies on their way in, and Design an Accessory's code,
 /// renders and saved copy. Each name is the prefix followed by a UUID. Append new prefixes: callers index the first two.
-let personalisationTempFolderPrefixes = [
-    "SlantStudio-OpenSCAD-", "SlantStudio-Personalised-", imageTo3DTempFolderPrefix, meshToolsTempFolderPrefix,
+/// The names the app used as Slant Studio (`legacyTempFolderPrefixes`) come last: nothing makes them any more, but
+/// launch clean-up still removes them, because they may hold buyer personalisation text.
+let personalisationTempFolderPrefixes = currentTempFolderPrefixes + legacyTempFolderPrefixes
+
+/// The prefixes new temporary folders are made with, in the order `personalisationTempFolderPrefixes` starts with.
+/// Append new prefixes here; `legacyTempFolderPrefixes` stays as Slant Studio left it.
+let currentTempFolderPrefixes = [
+    "Plinth-OpenSCAD-", "Plinth-Personalised-", imageTo3DTempFolderPrefix, meshToolsTempFolderPrefix,
     meshFitTempFolderPrefix, replicaTempFolderPrefix, accessoryTempFolderPrefix, printReadyTempFolderPrefix,
     autoImproveTempFolderPrefix, preparedCopyTempFolderPrefix, edgeEditTempFolderPrefix, reinforceTempFolderPrefix,
     stlCopyTempFolderPrefix, scaledCopyTempFolderPrefix, hiddenPocketsTempFolderPrefix,
+]
+
+/// Slant Studio's names for the same folders, recognised only for clean-up. Never make a folder with one.
+let legacyTempFolderPrefixes = [
+    "SlantStudio-OpenSCAD-", "SlantStudio-Personalised-", "SlantStudio-Generated3D-", "SlantStudio-MeshTools-",
+    "SlantStudio-MeshFit-", "SlantStudio-Replica-", "SlantStudio-Accessory-", "SlantStudio-PrintReady-",
+    "SlantStudio-AutoImprove-", "SlantStudio-Prepared-", "SlantStudio-EdgeEdit-", "SlantStudio-Reinforce-",
+    "SlantStudio-STLCopy-", "SlantStudio-ScaledCopy-", "SlantStudio-PocketsFilled-",
 ]
 
 /// A folder that this temporary-folder code made: a known prefix followed by exactly a UUID.
@@ -728,6 +742,17 @@ func stalePersonalisationTempFolderNames(_ entries: [(name: String, created: Dat
     }.map(\.name)
 }
 
+/// Whether another copy of the app may be running, so launch clean-up leaves its recent folders alone: a copy under
+/// this one's bundle ID, the packaged app's or Slant Studio's (an old copy still makes `SlantStudio-…` folders, which
+/// this app's clean-up also removes). Without a bundle ID (a development build) this copy can't tell, so true.
+func otherAppInstanceMayBeRunning(currentBundleID: String?, myProcessID: pid_t,
+                                  runningProcessIDs: (String) -> [pid_t]) -> Bool {
+    guard let currentBundleID else { return true }
+    var bundleIDs = [currentBundleID]
+    for bundleID in appBundleIdentifiersIncludingLegacy where !bundleIDs.contains(bundleID) { bundleIDs.append(bundleID) }
+    return bundleIDs.contains { runningProcessIDs($0).contains { $0 != myProcessID } }
+}
+
 /// Launch hook (StudioStore.init): deletes leftover personalisation and drag-out folders (ModelDragExport.swift) from
 /// Studio's temporary folder in the background, and stops local OpenSCAD runs and removes this session's drag folders
 /// when the app terminates. Runs once per process.
@@ -741,12 +766,9 @@ func stalePersonalisationTempFolderNames(_ entries: [(name: String, created: Dat
             OpenSCADRunRegistry.shared.stopAll()
             DragFolderRegistry.shared.removeAll()
         }
-        // Without a bundle ID (a development build) Studio can't tell whether another copy is running.
-        let otherInstance: Bool = {
-            guard let bundleID = Bundle.main.bundleIdentifier else { return true }
-            let me = ProcessInfo.processInfo.processIdentifier
-            return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).contains { $0.processIdentifier != me }
-        }()
+        let otherInstance = otherAppInstanceMayBeRunning(
+            currentBundleID: Bundle.main.bundleIdentifier, myProcessID: ProcessInfo.processInfo.processIdentifier,
+            runningProcessIDs: { NSRunningApplication.runningApplications(withBundleIdentifier: $0).map(\.processIdentifier) })
         let folder = FileManager.default.temporaryDirectory
         DispatchQueue.global(qos: .utility).async {
             let keys: [URLResourceKey] = [.creationDateKey, .contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
