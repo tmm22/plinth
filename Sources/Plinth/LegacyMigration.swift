@@ -582,12 +582,17 @@ enum AppSupportLocation {
         }
         while blocked() {
             let app = NSApplication.shared
+            // This runs before the app has finished launching, so macOS doesn't make it active yet and the alert
+            // would open behind other apps' windows. A regular Dock app, activated, with the alert floating above
+            // other windows, is seen at once (checked in the packaged app).
+            app.setActivationPolicy(.regular)
             app.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Quit Slant Studio first"
             alert.informativeText = "Plinth can bring over your library, keys and settings only after Slant Studio has quit. Quit it, then choose Try Again."
             alert.addButton(withTitle: "Try Again")
             alert.addButton(withTitle: "Quit Plinth")
+            alert.window.level = .floating
             if alert.runModal() == .alertSecondButtonReturn { exit(0) }
         }
     }
