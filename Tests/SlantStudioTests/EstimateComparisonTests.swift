@@ -235,16 +235,16 @@ final class EstimateComparisonTests: XCTestCase {
     func testRateLimitedUntilTakesTheLatestOfResetRetryAfterAndAMinute() {
         let now = Date(timeIntervalSince1970: 1_000)
         // Live Slant sends epoch milliseconds; epoch seconds are tolerated.
-        let live = Date(timeIntervalSince1970: 1_800_000_625.873)
-        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000685873", now: live).timeIntervalSince(live), 60, accuracy: 0.001)
+        let live = Date(timeIntervalSince1970: 1_800_000_000.873)
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000060873", now: live).timeIntervalSince(live), 60, accuracy: 0.001)
         // A reset only seconds away (as live sometimes sends) still waits the minute.
-        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000655", now: live).timeIntervalSince(live), 60, accuracy: 0.001)
-        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: nil, rateLimitReset: "1800000627873", now: live).timeIntervalSince(live), 60, accuracy: 0.001)
-        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000565873", now: live), live.addingTimeInterval(60), "past reset ignored")
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000030", now: live).timeIntervalSince(live), 60, accuracy: 0.001)
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: nil, rateLimitReset: "1800000002873", now: live).timeIntervalSince(live), 60, accuracy: 0.001)
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1799999940873", now: live), live.addingTimeInterval(60), "past reset ignored")
         XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "-30", now: live), live.addingTimeInterval(60), "negative reset ignored")
         // A later reset or Retry-After wins over the minute, whichever is later.
-        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000715873", now: live).timeIntervalSince(live), 90, accuracy: 0.001)
-        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "120", rateLimitReset: "1800000685873", now: live).timeIntervalSince(live), 120, accuracy: 0.001)
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "5", rateLimitReset: "1800000090873", now: live).timeIntervalSince(live), 90, accuracy: 0.001)
+        XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "120", rateLimitReset: "1800000060873", now: live).timeIntervalSince(live), 120, accuracy: 0.001)
         XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "120", rateLimitReset: nil, now: now), now.addingTimeInterval(120))
         XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "0", rateLimitReset: nil, now: now), now.addingTimeInterval(60))
         XCTAssertEqual(comparisonRateLimitedUntil(retryAfter: "Wed, 21 Oct 2026 07:28:00 GMT", rateLimitReset: nil, now: now), now.addingTimeInterval(60))

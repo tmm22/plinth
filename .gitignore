@@ -2,3 +2,9 @@
 dist/
 .DS_Store
 .swiftpm/
+.claude/
+.env*
+*.log
+xcuserdata/
+*.xcuserstate
+DerivedData/

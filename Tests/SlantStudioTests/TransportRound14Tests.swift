@@ -93,8 +93,8 @@ final class TransportRound14Tests: XCTestCase {
         XCTAssertEqual(rateLimitUserMessage(retryAfter: "0", rateLimitReset: nil), "Too many requests. Try again in about 1 second.")
         XCTAssertEqual(rateLimitUserMessage(retryAfter: "300", rateLimitReset: nil), "Too many requests. Try again in about 5 minutes.")
         // Not a number: the reset header, else the generic copy.
-        let now = Date(timeIntervalSince1970: 1_800_000_625)
-        XCTAssertEqual(rateLimitUserMessage(retryAfter: "Wed, 21 Oct 2026 07:28:00 GMT", rateLimitReset: "1800000665000", now: now),
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: "Wed, 21 Oct 2026 07:28:00 GMT", rateLimitReset: "1800000040000", now: now),
                        "Too many requests. Try again in about 40 seconds.")
         XCTAssertEqual(rateLimitUserMessage(retryAfter: "soon", rateLimitReset: nil, now: now),
                        "Too many requests. Wait a moment, then try again.")

@@ -177,9 +177,9 @@ final class MarginTests: XCTestCase {
     // MARK: Saved settings
 
     func testSettingsPersistOnlyPresetAndRates() throws {
-        let suite = "MarginTests.\(UUID().uuidString)"
+        let suite = testDefaultsSuiteName("MarginTests")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { removeTestDefaultsSuite(defaults, named: suite) }
         XCTAssertEqual(ProfitFeeSettings.loadPreset(defaults), .none)
         XCTAssertEqual(ProfitFeeSettings.loadRates(.etsyUS, defaults), ProfitFeePreset.etsyUS.defaultRates)
 

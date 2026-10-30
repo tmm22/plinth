@@ -50,7 +50,7 @@ func slantReplyRateLimitIsShared(path: String?) -> Bool {
 }
 
 /// When Slant's `X-RateLimit-Reset` says requests may resume. Live responses (observed 23 Oct 2026) send epoch
-/// **milliseconds** (`1800000685873` = 08:11:25 UTC, 60 s after a request that opened a quiet minute). At other times
+/// **milliseconds** (a 13-digit value 60 s after a request that opened a quiet minute). At other times
 /// it was only seconds ahead while Remaining stayed low, so it may mark when the oldest counted request leaves a sliding
 /// window rather than when the whole allowance returns; which reading is right is unresolved (docs/API_REFERENCE.md).
 /// Callers re-check the allowance after waiting, and a 429 waits at least a minute (`comparisonRateLimitedUntil`).
