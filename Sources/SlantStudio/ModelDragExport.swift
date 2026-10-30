@@ -8,7 +8,12 @@ import UniformTypeIdentifiers
 // runs, once they are a day old, so an app that reads a dropped file some time later still finds it.
 
 enum ModelDragExport {
-    static let folderPrefix = "SlantStudio-Drag-"
+    static let folderPrefix = "Plinth-Drag-"
+    /// Slant Studio's name for these folders: never made any more, but still a drag copy (never imported) and still
+    /// removed by the clean-up.
+    static let legacyFolderPrefix = "SlantStudio-Drag-"
+    /// Every prefix a drag folder may carry, the current one first.
+    static let recognisedFolderPrefixes = [folderPrefix, legacyFolderPrefix]
     /// Folders from earlier drags are removed once they are this old. Most receivers copy the file when it is dropped,
     /// but some (a mail draft, an upload form) read it later.
     static let staleAge: TimeInterval = 24 * 60 * 60
@@ -24,7 +29,7 @@ enum ModelDragExport {
         return provider
     }
 
-    /// Copies `source` to "<temporary>/SlantStudio-Drag-<UUID>/<model name>.<original extension>".
+    /// Copies `source` to "<temporary>/Plinth-Drag-<UUID>/<model name>.<original extension>".
     static func makeCopy(of source: URL, name: String, in temporaryDirectory: URL) throws -> URL {
         let folder = temporaryDirectory.appendingPathComponent(folderPrefix + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -45,12 +50,14 @@ enum ModelDragExport {
         let path = url.standardizedFileURL.resolvingSymlinksInPath().path
         guard path.hasPrefix(base + "/") else { return false }
         let relative = path.dropFirst(base.count + 1)
-        return relative.hasPrefix(folderPrefix) && relative.contains("/")
+        return recognisedFolderPrefixes.contains { relative.hasPrefix($0) } && relative.contains("/")
     }
 
-    /// A folder this code made: the prefix followed by exactly a UUID.
+    /// A folder this code made (or Slant Studio's did): a recognised prefix followed by exactly a UUID.
     static func isDragFolderName(_ name: String) -> Bool {
-        name.hasPrefix(folderPrefix) && UUID(uuidString: String(name.dropFirst(folderPrefix.count))) != nil
+        recognisedFolderPrefixes.contains { prefix in
+            name.hasPrefix(prefix) && UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
+        }
     }
 
     /// Drag folders to delete. With `minimumAge` nil every one goes (launch, when no other copy of Studio is running);

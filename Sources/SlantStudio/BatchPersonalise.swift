@@ -540,7 +540,7 @@ let batchPersonaliseStoppedMessage = "Stopped. The rest weren’t sent."
 /// Makes every model of the order with local OpenSCAD (no shell, timeout, stop, bounded output), checks each as an
 /// STL with a closed surface within Slant's size limit, then uploads them one at a time through `APIClient.upload`.
 /// All models are made before anything is uploaded, so a failure to make one never leaves an upload behind. Uploads
-/// are never retried. Each STL is written to a `SlantStudio-Personalised-` folder that is removed straight after its
+/// are never retried. Each STL is written to a `Plinth-Personalised-` folder that is removed straight after its
 /// upload; nothing is added to the library.
 @MainActor
 func batchPersonaliseMakeAndUpload(_ job: BatchPersonaliseJob, client: APIClient, platformID: String, ownerID: String,

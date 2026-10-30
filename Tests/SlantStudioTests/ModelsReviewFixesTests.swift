@@ -75,20 +75,28 @@ final class ModelsReviewFixesTests: XCTestCase {
 
     func testOnlyStudiosOwnTempFoldersAreRecognised() {
         let id = UUID().uuidString
+        XCTAssertTrue(isPersonalisationTempFolderName("Plinth-OpenSCAD-\(id)"))
+        XCTAssertTrue(isPersonalisationTempFolderName("Plinth-Personalised-\(id)"))
+        XCTAssertFalse(isPersonalisationTempFolderName("Plinth-OpenSCAD-"))
+        XCTAssertFalse(isPersonalisationTempFolderName("Plinth-OpenSCAD-\(id)-extra"))
+        XCTAssertFalse(isPersonalisationTempFolderName("Plinth-OpenSCAD-notauuid"))
+        XCTAssertFalse(isPersonalisationTempFolderName("Other-OpenSCAD-\(id)"))
+        XCTAssertFalse(isPersonalisationTempFolderName(id))
+        XCTAssertFalse(isPersonalisationTempFolderName("PlinthListing-\(id)"))
+        XCTAssertFalse(isPersonalisationTempFolderName("Plinth-\(id)"))
+        XCTAssertFalse(isPersonalisationTempFolderName("Plinth-Download-\(id)"), "a download is a file its caller removes")
+        // Slant Studio's names are still recognised (only for clean-up), as strictly.
         XCTAssertTrue(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-\(id)"))
         XCTAssertTrue(isPersonalisationTempFolderName("SlantStudio-Personalised-\(id)"))
         XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-"))
         XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-\(id)-extra"))
-        XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-notauuid"))
-        XCTAssertFalse(isPersonalisationTempFolderName("Other-OpenSCAD-\(id)"))
-        XCTAssertFalse(isPersonalisationTempFolderName(id))
         XCTAssertFalse(isPersonalisationTempFolderName("SlantStudioListing-\(id)"))
     }
 
     func testStaleFoldersRespectAnotherRunningCopy() {
         let now = Date(timeIntervalSince1970: 1_000_000)
-        let old = "SlantStudio-OpenSCAD-\(UUID().uuidString)"
-        let fresh = "SlantStudio-Personalised-\(UUID().uuidString)"
+        let old = "Plinth-OpenSCAD-\(UUID().uuidString)"
+        let fresh = "Plinth-Personalised-\(UUID().uuidString)"
         let undated = "SlantStudio-OpenSCAD-\(UUID().uuidString)"
         let entries: [(name: String, created: Date?)] = [
             (old, now.addingTimeInterval(-601)), (fresh, now.addingTimeInterval(-30)), (undated, nil), ("unrelated", nil)

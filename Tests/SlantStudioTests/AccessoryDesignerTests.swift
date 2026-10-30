@@ -266,9 +266,9 @@ final class AccessoryDesignerTests: XCTestCase {
     func testOpenSCADMessagesAreFilteredAndPathsRemoved() {
         let log = """
         Compiling design (CSG Tree generation)...
-        WARNING: Ignoring unknown variable 'wdth' in file /private/var/folders/ab/T/SlantStudio-Accessory-1234/design.scad, line 4
+        WARNING: Ignoring unknown variable 'wdth' in file /private/var/folders/ab/T/Plinth-Accessory-1234/design.scad, line 4
         ECHO: "angle", 60
-        ERROR: Parser error in file "/var/folders/ab/T/SlantStudio-Accessory-1234/design.scad", line 9: syntax error
+        ERROR: Parser error in file "/var/folders/ab/T/Plinth-Accessory-1234/design.scad", line 9: syntax error
         Rendering Polygon Mesh using CGAL...
         """
         let messages = accessoryOpenSCADMessages(log)

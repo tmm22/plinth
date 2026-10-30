@@ -17,7 +17,7 @@ extension StudioStore {
 extension Notification.Name {
     /// Posted with a library model's ID as the object: the inspector scrolls to that model's Reinforce card, which
     /// expands. Carries nothing else.
-    static let improveForPrintingOpenReinforce = Notification.Name("SlantStudio.improveForPrintingOpenReinforce")
+    static let improveForPrintingOpenReinforce = Notification.Name("Plinth.improveForPrintingOpenReinforce")
 }
 
 /// The first row of Improve for printing (STL models): it only opens the review sheet; nothing is sent from here.

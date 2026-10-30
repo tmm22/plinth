@@ -17,7 +17,7 @@ import simd
 //     (`ReplicaRunControl`). An unknown create outcome sends the seller to the service's dashboard, with no resume.
 //   - Generating again after anything that may have spent credits needs an explicit confirmation.
 //   - Photos, names, sizes and the downloaded model stay in memory with the sheet; temporary files live in
-//     `SlantStudio-Replica-…` folders (removed after the import, and at launch). Activity gets service, status,
+//     `Plinth-Replica-…` folders (removed after the import, and at launch). Activity gets service, status,
 //     counts (photos and triangles) and credits only.
 //   - Higher detail costs more every time, so it is chosen per replica and never remembered, and only for a display
 //     piece (a functional part is simplified to 20,000 triangles, which would throw the detail away).
@@ -25,7 +25,7 @@ import simd
 //   - Everything geometric is deterministic: the wave-1 mesh tools walk index order, and so does this file.
 
 /// Temporary folders for the replica on its way into the library; listed in `personalisationTempFolderPrefixes`.
-let replicaTempFolderPrefix = "SlantStudio-Replica-"
+let replicaTempFolderPrefix = "Plinth-Replica-"
 /// The smallest real size accepted: smaller replicas lose almost all detail on an FDM printer.
 let replicaMinimumSizeMM = 5.0
 /// The triangles kept for a functional part after simplifying (Reinforce and Auto-improve's limit).

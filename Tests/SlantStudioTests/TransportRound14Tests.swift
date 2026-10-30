@@ -134,15 +134,15 @@ final class TransportRound14Tests: XCTestCase {
 
     func testUserAgentNamesTheAppAndMacOS() {
         let sonoma = OperatingSystemVersion(majorVersion: 14, minorVersion: 5, patchVersion: 0)
-        XCTAssertEqual(slantUserAgent(appVersion: "1.4.0", os: sonoma), "SlantStudio/1.4.0 (macOS 14.5)")
+        XCTAssertEqual(slantUserAgent(appVersion: "1.4.0", os: sonoma), "Plinth/1.4.0 (macOS 14.5)")
         XCTAssertEqual(slantUserAgent(appVersion: " 2.0 ", os: OperatingSystemVersion(majorVersion: 15, minorVersion: 1, patchVersion: 2)),
-                       "SlantStudio/2.0 (macOS 15.1.2)")
-        XCTAssertEqual(slantUserAgent(appVersion: nil, os: sonoma), "SlantStudio/dev (macOS 14.5)")
-        XCTAssertEqual(slantUserAgent(appVersion: "", os: sonoma), "SlantStudio/dev (macOS 14.5)")
-        XCTAssertEqual(slantUserAgent(appVersion: "1.0\r\nX-Evil: 1", os: sonoma), "SlantStudio/dev (macOS 14.5)")
-        XCTAssertEqual(slantUserAgent(appVersion: "1.0 (beta)", os: sonoma), "SlantStudio/dev (macOS 14.5)")
-        XCTAssertEqual(slantUserAgent(appVersion: String(repeating: "9", count: 40), os: sonoma), "SlantStudio/dev (macOS 14.5)")
-        XCTAssertTrue(slantStudioUserAgent.hasPrefix("SlantStudio/"))
+                       "Plinth/2.0 (macOS 15.1.2)")
+        XCTAssertEqual(slantUserAgent(appVersion: nil, os: sonoma), "Plinth/dev (macOS 14.5)")
+        XCTAssertEqual(slantUserAgent(appVersion: "", os: sonoma), "Plinth/dev (macOS 14.5)")
+        XCTAssertEqual(slantUserAgent(appVersion: "1.0\r\nX-Evil: 1", os: sonoma), "Plinth/dev (macOS 14.5)")
+        XCTAssertEqual(slantUserAgent(appVersion: "1.0 (beta)", os: sonoma), "Plinth/dev (macOS 14.5)")
+        XCTAssertEqual(slantUserAgent(appVersion: String(repeating: "9", count: 40), os: sonoma), "Plinth/dev (macOS 14.5)")
+        XCTAssertTrue(slantStudioUserAgent.hasPrefix("Plinth/"))
         XCTAssertTrue(slantStudioUserAgent.contains("(macOS "))
     }
 

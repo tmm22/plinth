@@ -238,7 +238,7 @@ struct TripoClient: ImageTo3DProvider {
             guard !Task.isCancelled, proceed() else { return .notSent(.invalidInput(imageTo3DStoppedBeforeSendingMessage)) }
             let which = ordered.count == 1 ? "the photo" : "the \(view.view.title.lowercased()) photo"
             do {
-                let boundary = "SlantStudio-\(UUID().uuidString)"
+                let boundary = "Plinth-\(UUID().uuidString)"
                 let reply = try await send("POST", "/v3/files", body: tripoUploadBody(image: view.image, boundary: boundary),
                                            contentType: "multipart/form-data; boundary=\(boundary)")
                 guard let value = tripoEnvelopeData(reply.json)?["file_token"] as? String, !value.isEmpty, value.count <= 512 else {

@@ -352,8 +352,8 @@ final class PrintPreparationRound11Tests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode([LocalModel].self, from: Data(old.utf8))[0].filledPockets)
         // Its temporary folders are cleaned at launch.
         XCTAssertTrue(isPersonalisationTempFolderName("\(hiddenPocketsTempFolderPrefix)\(UUID().uuidString)"))
-        XCTAssertEqual(personalisationTempFolderPrefixes[0], "SlantStudio-OpenSCAD-")
-        XCTAssertEqual(personalisationTempFolderPrefixes[1], "SlantStudio-Personalised-")
+        XCTAssertEqual(personalisationTempFolderPrefixes[0], "Plinth-OpenSCAD-")
+        XCTAssertEqual(personalisationTempFolderPrefixes[1], "Plinth-Personalised-")
     }
 
     @MainActor func testPocketCheckAndFillOfferRules() {

@@ -99,24 +99,37 @@ final class ModelsRound5FixesTests: XCTestCase {
     }
 
     func testDragFolderNamesAreStrict() {
+        XCTAssertTrue(ModelDragExport.isDragFolderName("Plinth-Drag-\(UUID().uuidString)"))
+        XCTAssertFalse(ModelDragExport.isDragFolderName("Plinth-Drag-1"))
+        XCTAssertFalse(ModelDragExport.isDragFolderName("Plinth-Drag-"))
+        XCTAssertFalse(ModelDragExport.isDragFolderName("Plinth-OpenSCAD-\(UUID().uuidString)"))
+        XCTAssertFalse(ModelDragExport.isDragFolderName("PlinthListing-\(UUID().uuidString)"))
+        XCTAssertFalse(isPersonalisationTempFolderName("Plinth-Drag-\(UUID().uuidString)"))
+        // Slant Studio's drag folders are still drag folders, as strictly.
         XCTAssertTrue(ModelDragExport.isDragFolderName("SlantStudio-Drag-\(UUID().uuidString)"))
         XCTAssertFalse(ModelDragExport.isDragFolderName("SlantStudio-Drag-1"))
         XCTAssertFalse(ModelDragExport.isDragFolderName("SlantStudio-Drag-"))
         XCTAssertFalse(ModelDragExport.isDragFolderName("SlantStudio-OpenSCAD-\(UUID().uuidString)"))
         XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-Drag-\(UUID().uuidString)"))
+        XCTAssertEqual(ModelDragExport.folderPrefix, "Plinth-Drag-")
+        XCTAssertEqual(ModelDragExport.recognisedFolderPrefixes, ["Plinth-Drag-", "SlantStudio-Drag-"])
     }
 
     func testStaleDragFolderSelection() {
         let now = Date()
-        let fresh = "SlantStudio-Drag-\(UUID().uuidString)"
-        let old = "SlantStudio-Drag-\(UUID().uuidString)"
-        let undated = "SlantStudio-Drag-\(UUID().uuidString)"
+        let fresh = "Plinth-Drag-\(UUID().uuidString)"
+        let old = "Plinth-Drag-\(UUID().uuidString)"
+        let undated = "Plinth-Drag-\(UUID().uuidString)"
+        let legacyOld = "SlantStudio-Drag-\(UUID().uuidString)"
+        let legacyFresh = "SlantStudio-Drag-\(UUID().uuidString)"
         let entries: [(name: String, created: Date?)] = [
             (fresh, now.addingTimeInterval(-60)), (old, now.addingTimeInterval(-25 * 60 * 60)), (undated, nil),
-            ("SlantStudio-Drag-x", now.addingTimeInterval(-99 * 60 * 60)), ("Other", nil)
+            ("Plinth-Drag-x", now.addingTimeInterval(-99 * 60 * 60)), ("SlantStudio-Drag-x", now.addingTimeInterval(-99 * 60 * 60)),
+            (legacyOld, now.addingTimeInterval(-25 * 60 * 60)), (legacyFresh, now.addingTimeInterval(-60)), ("Other", nil)
         ]
-        XCTAssertEqual(Set(ModelDragExport.staleFolderNames(entries, now: now, minimumAge: nil)), [fresh, old, undated])
-        XCTAssertEqual(ModelDragExport.staleFolderNames(entries, now: now, minimumAge: ModelDragExport.staleAge), [old])
+        XCTAssertEqual(Set(ModelDragExport.staleFolderNames(entries, now: now, minimumAge: nil)),
+                       [fresh, old, undated, legacyOld, legacyFresh])
+        XCTAssertEqual(ModelDragExport.staleFolderNames(entries, now: now, minimumAge: ModelDragExport.staleAge), [old, legacyOld])
     }
 
     func testLaunchCleanUpRemovesOnlyDragFolders() throws {
@@ -126,15 +139,20 @@ final class ModelsRound5FixesTests: XCTestCase {
         let library = temporary.appendingPathComponent("lib.stl")
         try Data("solid".utf8).write(to: library)
         let copy = try ModelDragExport.makeCopy(of: library, name: "Hook", in: temporary)
-        let keep = temporary.appendingPathComponent("SlantStudio-Drag-keep", isDirectory: true)
+        let keep = temporary.appendingPathComponent("Plinth-Drag-keep", isDirectory: true)
         try FileManager.default.createDirectory(at: keep, withIntermediateDirectories: true)
-        let stray = temporary.appendingPathComponent("SlantStudio-Drag-\(UUID().uuidString)")
+        let stray = temporary.appendingPathComponent("Plinth-Drag-\(UUID().uuidString)")
         try Data("file".utf8).write(to: stray)
+        let legacy = temporary.appendingPathComponent("SlantStudio-Drag-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try Data("solid".utf8).write(to: legacy.appendingPathComponent("Hook.stl"))
 
         ModelDragExport.removeLeftoverFolders(in: temporary, otherInstanceMayBeRunning: true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path), "another copy of Studio's recent drag stays")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path), "a running Slant Studio's recent drag stays")
         ModelDragExport.removeLeftoverFolders(in: temporary, otherInstanceMayBeRunning: false)
         XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path), "Slant Studio's leftover drag folders go too")
         XCTAssertTrue(FileManager.default.fileExists(atPath: keep.path), "names that aren't prefix + UUID stay")
         XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path), "plain files stay")
         XCTAssertTrue(FileManager.default.fileExists(atPath: library.path))

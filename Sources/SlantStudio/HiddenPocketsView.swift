@@ -6,7 +6,7 @@ import SwiftUI
 
 /// Folders the filled copy is written through on its way into the library; listed in
 /// `personalisationTempFolderPrefixes`, so the launch clean-up removes any a crash leaves behind.
-let hiddenPocketsTempFolderPrefix = "SlantStudio-PocketsFilled-"
+let hiddenPocketsTempFolderPrefix = "Plinth-PocketsFilled-"
 
 /// "Owl (pockets filled)".
 func pocketsFilledCopyName(_ name: String) -> String {

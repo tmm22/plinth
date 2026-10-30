@@ -162,7 +162,7 @@ private struct ExternalModelOpenAttachment: ViewModifier {
 let slantAPIDocumentationURL = URL(string: "https://slant3dapi.com/documentation/introduction")!
 
 /// Identifies the Help window, so it is never mistaken for the main window.
-let helpWindowIdentifier = "SlantStudioHelp"
+let helpWindowIdentifier = "PlinthHelp"
 
 struct StudioHelpSection: Identifiable, Equatable {
     var id: String { title }

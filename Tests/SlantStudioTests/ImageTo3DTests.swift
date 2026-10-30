@@ -407,8 +407,8 @@ final class ImageTo3DTests: XCTestCase {
     func testTempFolderIsCleanedAtLaunch() {
         XCTAssertTrue(isPersonalisationTempFolderName("\(imageTo3DTempFolderPrefix)\(UUID().uuidString)"))
         XCTAssertFalse(isPersonalisationTempFolderName("\(imageTo3DTempFolderPrefix)not-a-uuid"))
-        XCTAssertEqual(personalisationTempFolderPrefixes[0], "SlantStudio-OpenSCAD-")
-        XCTAssertEqual(personalisationTempFolderPrefixes[1], "SlantStudio-Personalised-")
+        XCTAssertEqual(personalisationTempFolderPrefixes[0], "Plinth-OpenSCAD-")
+        XCTAssertEqual(personalisationTempFolderPrefixes[1], "Plinth-Personalised-")
     }
 
     // MARK: Retry-After and backoff
