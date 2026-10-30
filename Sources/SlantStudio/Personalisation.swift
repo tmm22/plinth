@@ -510,7 +510,7 @@ struct OpenSCADQuota: Equatable {
         if let limitedUntil, limitedUntil > now {
             return "Slant’s OpenSCAD limit was reached. Try again after \(time)."
         }
-        return "Studio has sent \(Self.generationsPerHour) generations to Slant in the last hour. The next is available after \(time)."
+        return "Plinth has sent \(Self.generationsPerHour) generations to Slant in the last hour. The next is available after \(time)."
     }
 
     /// Records a send and marks it in flight; false (nothing recorded) when no generation is available.
@@ -598,7 +598,7 @@ func personalisationEngineBlockedReason(_ engine: PersonalisationEngine, localAv
             return "This template uses other files (include or use), which Slant can’t read. Generate it with OpenSCAD on this Mac."
         }
         if !template.endsCleanly {
-            return "This template ends inside a comment, text or bracket, so Studio can’t add your values to it for Slant."
+            return "This template ends inside a comment, text or bracket, so Plinth can’t add your values to it for Slant."
         }
         if sourceBytes > scadMaximumTemplateBytes { return "This template is too large to send to Slant." }
         return quota.blockedReason(now: now)
@@ -630,11 +630,11 @@ enum OpenSCADRunError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .timedOut(let seconds):
-            return "OpenSCAD didn’t finish within \(Int(seconds / 60)) minutes, so Studio stopped it."
+            return "OpenSCAD didn’t finish within \(Int(seconds / 60)) minutes, so Plinth stopped it."
         case .outputTooLarge:
-            return "OpenSCAD’s output grew past Studio’s 128 MB limit, so Studio stopped it."
+            return "OpenSCAD’s output grew past Plinth’s 128 MB limit, so Plinth stopped it."
         case .tooMuchMemory:
-            return "OpenSCAD used too much memory, so Studio stopped it before it slowed down your Mac."
+            return "OpenSCAD used too much memory, so Plinth stopped it before it slowed down your Mac."
         case .failed(let status, let summary):
             return "OpenSCAD couldn’t generate the model (exit code \(status))." + (summary.map { " \($0)" } ?? "")
         case .noOutput(let summary):
@@ -952,11 +952,11 @@ func loadPersonalisationTemplate(_ url: URL) throws -> PersonalisationTemplateFi
     let access = url.startAccessingSecurityScopedResource()
     defer { if access { url.stopAccessingSecurityScopedResource() } }
     let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-    guard size <= scadMaximumTemplateBytes else { throw StudioError("This template is larger than 1 MB, so Studio can’t read it.") }
+    guard size <= scadMaximumTemplateBytes else { throw StudioError("This template is larger than 1 MB, so Plinth can’t read it.") }
     let data = try Data(contentsOf: url)
-    guard data.count <= scadMaximumTemplateBytes else { throw StudioError("This template is larger than 1 MB, so Studio can’t read it.") }
+    guard data.count <= scadMaximumTemplateBytes else { throw StudioError("This template is larger than 1 MB, so Plinth can’t read it.") }
     guard var source = String(data: data, encoding: .utf8) else {
-        throw StudioError("Studio couldn’t read this template. Save it as UTF-8 text and try again.")
+        throw StudioError("Plinth couldn’t read this template. Save it as UTF-8 text and try again.")
     }
     if source.hasPrefix("\u{FEFF}") { source.removeFirst() }
     return PersonalisationTemplateFile(url: url, source: source, template: scadTemplateParameters(source))

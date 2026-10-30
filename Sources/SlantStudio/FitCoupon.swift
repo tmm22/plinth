@@ -474,7 +474,7 @@ func fitCouponFeatureNote(_ feature: FitCouponFeature) -> String {
 func fitCouponCopyName(_ name: String) -> String { "\(meshFitCopyBaseName(name)) (fit coupon)" }
 
 /// The sheet's caption. It promises nothing about fit.
-let fitCouponCaption = "Saves a small piece cut from this model, with its bed face and the same way up, so you can order it (for example with Order a Sample to Me…) and check how it fits before ordering the full part. Studio checks only that the piece is one closed solid; it checks nothing about fit."
+let fitCouponCaption = "Saves a small piece cut from this model, with its bed face and the same way up, so you can order it (for example with Order a Sample to Me…) and check how it fits before ordering the full part. Plinth checks only that the piece is one closed solid; it checks nothing about fit."
 /// Shown when the model isn't a print-ready copy or one of its copies.
 let fitCouponPrintReadyHint = "This model has a print-ready copy. If you’ll order that copy, make the coupon from it, so the piece has the same placement and changes: holes print differently standing up and lying down."
 

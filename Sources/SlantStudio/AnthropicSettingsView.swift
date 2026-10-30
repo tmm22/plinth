@@ -62,7 +62,7 @@ struct AnthropicSettingsSection: View {
         } header: {
             Text("Claude (Anthropic)")
         } footer: {
-            Text("Claude designs accessories from your photos and reviews generated models. Anthropic bills your own account for each request (Claude Opus 5.5: $4 per million tokens sent, $20 per million written); Studio shows an estimate of each request’s cost. Testing a key costs well under a cent. The key is kept in the macOS Keychain on this Mac and sent only to Anthropic.")
+            Text("Claude designs accessories from your photos and reviews generated models. Anthropic bills your own account for each request (Claude Opus 5.5: $4 per million tokens sent, $20 per million written); Plinth shows an estimate of each request’s cost. Testing a key costs well under a cent. The key is kept in the macOS Keychain on this Mac and sent only to Anthropic.")
                 .settingsFooterLayout()
         }
         .confirmationDialog("Remove the Anthropic key?", isPresented: $confirmRemove, titleVisibility: .visible) {

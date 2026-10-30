@@ -44,8 +44,8 @@ enum TeardropSkipReason: String, Codable, Sendable, CaseIterable {
         case .thinRoof: return "Less than \(Int(teardropMinimumWallMM)) mm of material would be left above its new top."
         case .thinWall: return "Less than \(Int(teardropMinimumWallMM)) mm of material would be left beside the new 45° upper sides of the hole."
         case .crowded: return "Another feature meets the hole or sits too close to its top."
-        case .couldNotRebuild: return "Studio couldn’t rebuild the faces round it cleanly."
-        case .notChecked: return "Not checked: Studio checks up to \(teardropMaximumHoles) holes in one model."
+        case .couldNotRebuild: return "Plinth couldn’t rebuild the faces round it cleanly."
+        case .notChecked: return "Not checked: Plinth checks up to \(teardropMaximumHoles) holes in one model."
         }
     }
 }
@@ -56,10 +56,10 @@ enum TeardropCopyProblem: String, Equatable, Sendable, CaseIterable {
     var message: String {
         switch self {
         case .notClosedSolid: return "Teardrop holes need a closed, consistently oriented mesh. Use Repair and simplify first."
-        case .tooManyTriangles: return "This model has more than \(teardropMaximumTriangleText) triangles, the most Studio reshapes holes in."
+        case .tooManyTriangles: return "This model has more than \(teardropMaximumTriangleText) triangles, the most Plinth reshapes holes in."
         case .noHolesChosen: return "None of the chosen holes could take a teardrop roof."
-        case .resultFailedChecks: return "The copy didn’t pass Studio’s mesh check, so no copy was made."
-        case .volumeMismatch: return "The reshaped holes didn’t remove the material Studio expected, so no copy was made."
+        case .resultFailedChecks: return "The copy didn’t pass Plinth’s mesh check, so no copy was made."
+        case .volumeMismatch: return "The reshaped holes didn’t remove the material Plinth expected, so no copy was made."
         }
     }
 }

@@ -327,7 +327,7 @@ func spendReportProductSKUs(_ products: [SavedProduct], localModels: [LocalModel
 // MARK: - Wording and output
 
 /// Added to the scope note when the Orders list is filtered to Shipped.
-let spendReportShippedFilterLagNote = "Orders Slant still lists as Printing or Submitted aren’t included, even if Studio shows them as Shipped."
+let spendReportShippedFilterLagNote = "Orders Slant still lists as Printing or Submitted aren’t included, even if Plinth shows them as Shipped."
 
 /// Orders left out because they name another platform (Slant's list may hold other platforms' orders; `ordersShownOnPlatform`).
 func spendReportOtherPlatformsNote(_ count: Int) -> String? {
@@ -362,7 +362,7 @@ func spendReportExclusionLine(_ report: SpendReport) -> String? {
         count(report.excludedDrafts, "draft", "drafts"),
         count(report.excludedCancelled, "cancelled order", "cancelled orders"),
         count(report.excludedPaymentProblems, "order with a payment problem", "orders with a payment problem"),
-        count(report.excludedUnrecognised, "order with a status Studio doesn’t recognise", "orders with a status Studio doesn’t recognise")
+        count(report.excludedUnrecognised, "order with a status Plinth doesn’t recognise", "orders with a status Plinth doesn’t recognise")
             .map { $0 + spendReportUnrecognisedStatusNames(report.unrecognisedStatuses) },
         count(report.undated, "order without a date", "orders without a date"),
     ].compactMap { $0 }
@@ -732,7 +732,7 @@ func spendReportPeriodNotes(platformName: String?, complete: Bool, capReached: B
             return " It covers orders created up to \(formatter.string(from: date))."
         } ?? ""
         if capReached {
-            notes.append("Not the whole period: Studio loads at most \(spendReportPeriodMaxPages) pages (\((spendReportPeriodMaxPages * spendReportPeriodPageSize).formatted()) orders) for one report.\(reach) Choose a shorter period to see the rest.")
+            notes.append("Not the whole period: Plinth loads at most \(spendReportPeriodMaxPages) pages (\((spendReportPeriodMaxPages * spendReportPeriodPageSize).formatted()) orders) for one report.\(reach) Choose a shorter period to see the rest.")
         } else {
             notes.append("Not the whole period yet: \(spendReportLoadedCountText(loadedCount)) loaded.\(reach) Choose Continue Loading for the rest.")
         }

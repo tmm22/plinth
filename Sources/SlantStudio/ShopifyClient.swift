@@ -187,12 +187,12 @@ enum ShopifyError: LocalizedError, Equatable {
             return "Connect your Shopify store in Settings › Account first."
         case .http(let status, let message):
             switch status {
-            case 401: return "Shopify rejected Studio’s access. Check the app is still installed, then connect again in Settings."
+            case 401: return "Shopify rejected Plinth’s access. Check the app is still installed, then connect again in Settings."
             case 402: return "Shopify says this store is frozen or unpaid."
-            case 403: return "Shopify refused this request. Check the app has the access scopes in Studio’s Shopify setup steps (Settings › Account, shown while disconnected). \(message)".trimmingCharacters(in: .whitespaces)
+            case 403: return "Shopify refused this request. Check the app has the access scopes in Plinth’s Shopify setup steps (Settings › Account, shown while disconnected). \(message)".trimmingCharacters(in: .whitespaces)
             case 404: return "Shopify couldn’t find that store. Check the store address in Settings."
             case 423: return "Shopify says this store is locked."
-            case 300...399: return "Shopify redirected the request, so Studio stopped. Check the store address in Settings."
+            case 300...399: return "Shopify redirected the request, so Plinth stopped. Check the store address in Settings."
             case 500...599: return "Shopify is having trouble right now (HTTP \(status)). Try again in a moment."
             default: return message.isEmpty ? "Shopify couldn’t complete that request (HTTP \(status))." : "Shopify couldn’t complete that request (HTTP \(status)): \(message)"
             }
@@ -200,23 +200,23 @@ enum ShopifyError: LocalizedError, Equatable {
             return "Shopify is limiting requests right now. Wait a minute, then try again."
         case .graphQL(let messages, let codes):
             if codes.contains("ACCESS_DENIED") {
-                return "Shopify refused access. Check the app has the access scopes in Studio’s Shopify setup steps (Settings › Account, shown while disconnected). \(messages.first ?? "")".trimmingCharacters(in: .whitespaces)
+                return "Shopify refused access. Check the app has the access scopes in Plinth’s Shopify setup steps (Settings › Account, shown while disconnected). \(messages.first ?? "")".trimmingCharacters(in: .whitespaces)
             }
             return "Shopify couldn’t complete that request: \(messages.first ?? "unknown error")"
         case .protectedCustomerData:
-            return "Shopify didn’t share customers’ names and addresses with Studio’s app. Shopify gives them to custom apps on its Grow plan or higher; check the app’s protected customer data access in the Dev Dashboard."
+            return "Shopify didn’t share customers’ names and addresses with the app you connected. Shopify gives them to custom apps on its Grow plan or higher; check the app’s protected customer data access in the Dev Dashboard."
         case .tokenRefused(let message):
             return message
         case .invalidResponse(let message):
             return message
         case .responseTooLarge:
-            return "Shopify’s reply was larger than Studio reads, so it was ignored."
+            return "Shopify’s reply was larger than Plinth reads, so it was ignored."
         case .transport(let message):
-            return "Studio couldn’t reach Shopify: \(message)"
+            return "Plinth couldn’t reach Shopify: \(message)"
         case .notSent(let message):
             return message
         case .shopChanged:
-            return "The Shopify connection changed in Settings, so Studio stopped. Nothing more was sent."
+            return "The Shopify connection changed in Settings, so Plinth stopped. Nothing more was sent."
         }
     }
 }
@@ -289,7 +289,7 @@ func shopifyGraphQLError(fromResponse root: [String: Any], secrets: [String] = [
     let list: [[String: Any]]
     if let array = errors as? [[String: Any]] { list = array }
     else if let text = errors as? String { list = [["message": text]] }
-    else { return .invalidResponse("Shopify sent an error Studio couldn’t read.") }
+    else { return .invalidResponse("Shopify sent an error Plinth couldn’t read.") }
     guard !list.isEmpty else { return nil }
     let messages = list.map { shopifyRedacted(($0["message"] as? String) ?? "Unknown error", secrets: secrets) }
     let codes = list.compactMap { ($0["extensions"] as? [String: Any])?["code"] as? String }
@@ -449,7 +449,7 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
         } catch is CancellationError {
             throw ShopifyError.notSent("Stopped before anything was sent to Shopify.")
         } catch {
-            throw ShopifyError.notSent("Not sent: Studio couldn’t get access to Shopify. \(shopifyRedacted(error.localizedDescription, secrets: secrets))")
+            throw ShopifyError.notSent("Not sent: Plinth couldn’t get access to Shopify. \(shopifyRedacted(error.localizedDescription, secrets: secrets))")
         }
         do {
             return try await send(mutation, variables: variables, token: tokenValue)
@@ -503,7 +503,7 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(tokenValue, forHTTPHeaderField: "X-Shopify-Access-Token")
         let body: [String: Any] = variables.isEmpty ? ["query": document] : ["query": document, "variables": variables]
-        guard JSONSerialization.isValidJSONObject(body) else { throw ShopifyError.invalidResponse("Studio couldn’t build that request.") }
+        guard JSONSerialization.isValidJSONObject(body) else { throw ShopifyError.invalidResponse("Plinth couldn’t build that request.") }
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         let (data, response) = try await Self.read(request, session: session, secrets: secrets)
         let status = response.statusCode

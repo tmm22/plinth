@@ -154,7 +154,7 @@ final class ModelsReviewFixesTests: XCTestCase {
 
     func testPrivacyNoteSaysWhatLeavesTheSheet() {
         XCTAssertEqual(personalisationPrivacyNote,
-                       "Values aren’t kept in Studio, but the new model’s name and STL include them. With Slant’s generator, the template and values are sent to Slant.")
+                       "Values aren’t kept in Plinth, but the new model’s name and STL include them. With Slant’s generator, the template and values are sent to Slant.")
     }
 
     func testQuotaRefreshWakesJustAfterTheNextGeneration() {

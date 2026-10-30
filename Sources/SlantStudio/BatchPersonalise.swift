@@ -228,7 +228,7 @@ func batchPersonaliseEligibility(_ order: OrderImportOrder, check: OrderImportCh
         switch inputs.templates[link.templatePath] {
         case .loaded(let loaded)?: file = loaded
         case .failed(let reason)?: problem(reason); continue
-        case nil: problem("Studio hasn’t read the template \(link.templateName) yet."); continue
+        case nil: problem("Plinth hasn’t read the template \(link.templateName) yet."); continue
         }
         guard let parameter = file.template.parameters.first(where: { $0.name == link.valueName }) else {
             problem("\(file.url.lastPathComponent) has no value named “\(link.valueName)”. Edit “\(name)” in Saved Products.")
@@ -246,7 +246,7 @@ func batchPersonaliseEligibility(_ order: OrderImportOrder, check: OrderImportCh
         if let invalid = scadValueProblem(value, for: parameter) { problem(invalid); continue }
         guard let units = orderImportQuantity(item.quantityText) else { continue }
         guard let lineIndex = check.lineSources.firstIndex(where: { $0?.productID == productID && $0?.savedLineID == line.id }) else {
-            problem("Studio couldn’t find the item to personalise in this draft.")
+            problem("Plinth couldn’t find the item to personalise in this draft.")
             continue
         }
         let (quantity, overflow) = units.multipliedReportingOverflow(by: line.quantity)
@@ -268,7 +268,7 @@ func batchPersonaliseEligibility(_ order: OrderImportOrder, check: OrderImportCh
     for lineIndex in Set(models.map(\.lineIndex)) {
         let used = models.filter { $0.lineIndex == lineIndex }.reduce(0) { $0 + $1.quantity }
         if lineIndex >= check.lines.count || used > check.lines[lineIndex].quantity {
-            problem("Studio couldn’t match the personalised items to this draft’s quantities.")
+            problem("Plinth couldn’t match the personalised items to this draft’s quantities.")
         }
     }
     guard problems.isEmpty else { return .unavailable(problems) }
@@ -496,7 +496,7 @@ func batchPersonaliseNextStep(after outcome: BatchPersonaliseStepOutcome, consec
 func batchPersonaliseConfirmText(_ count: Int) -> String? {
     guard count > 0 else { return nil }
     let lead = count == 1 ? "1 draft uses a personalised model" : "\(count) drafts use personalised models"
-    return " \(lead): Studio makes each with OpenSCAD on this Mac, checks it and uploads it to your Slant files (named by order number) before creating its draft. An order whose model can’t be made is skipped."
+    return " \(lead): Plinth makes each with OpenSCAD on this Mac, checks it and uploads it to your Slant files (named by order number) before creating its draft. An order whose model can’t be made is skipped."
 }
 
 // MARK: Making and uploading
@@ -604,7 +604,7 @@ func batchPersonaliseMakeAndUpload(_ job: BatchPersonaliseJob, client: APIClient
             try data.write(to: file, options: .atomic)
         } catch {
             try? FileManager.default.removeItem(at: folder)
-            return .notMade("Studio couldn’t write the personalised model to a temporary file. \(error.localizedDescription)")
+            return .notMade("Plinth couldn’t write the personalised model to a temporary file. \(error.localizedDescription)")
         }
         let outcome: BatchPersonaliseUploadOutcome
         var failure: Error?

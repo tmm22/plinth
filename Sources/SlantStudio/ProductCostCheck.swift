@@ -104,7 +104,7 @@ func productCostParts(
                 }
             }
             guard estimates < productCostMaxEstimates else {
-                parts.append(part(.unavailable("Studio estimates up to \(productCostMaxEstimates) prints in one check.")))
+                parts.append(part(.unavailable("Plinth estimates up to \(productCostMaxEstimates) prints in one check.")))
                 continue
             }
             estimates += 1

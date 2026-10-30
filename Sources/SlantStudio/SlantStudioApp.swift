@@ -108,7 +108,7 @@ struct SlantStudioApp: App {
     }
 }
 
-/// Window › Slant Studio (⌘0) brings the main window back after it was closed, and the Help menu opens Studio's own
+/// Window › Plinth (⌘0) brings the main window back after it was closed, and the Help menu opens Plinth's own
 /// help window and, with developer tools on, Slant's API documentation. None of these sends anything; like every menu command they do nothing
 /// while a sheet, alert or dialog is shown.
 private struct MainWindowAndHelpCommands: Commands {
@@ -120,7 +120,7 @@ private struct MainWindowAndHelpCommands: Commands {
         // The window's own content also sets this; the app-level action covers a launch that restored no window.
         let _ = ExternalModelOpenQueue.shared.provideOpenMainWindowIfMissing { openWindow(id: mainWindowID) }
         CommandGroup(before: .windowList) {
-            Button("Slant Studio") {
+            Button("Plinth") {
                 guard !appIsPresentingModalUI() else { return }
                 ExternalModelOpenQueue.shared.revealMainWindow()
             }
@@ -129,7 +129,7 @@ private struct MainWindowAndHelpCommands: Commands {
             Divider()
         }
         CommandGroup(replacing: .help) {
-            Button("Slant Studio Help") {
+            Button("Plinth Help") {
                 guard !appIsPresentingModalUI() else { return }
                 StudioHelpWindow.show()
             }
@@ -176,7 +176,7 @@ struct StudioHelpSection: Identifiable, Equatable {
     let body: String
 }
 
-/// Help › Slant Studio Help: a short guide to the app, shipped with it (no network).
+/// Help › Plinth Help: a short guide to the app, shipped with it (no network).
 let studioHelpSections: [StudioHelpSection] = [
     StudioHelpSection(title: "Getting started", body: """
         Open **Settings** (⌘,), paste your Slant 3D API key under **Account** and choose **Save & Test**. Then create or \
@@ -190,10 +190,10 @@ let studioHelpSections: [StudioHelpSection] = [
         """),
     StudioHelpSection(title: "Orders", body: """
         **New Order Draft…** (⌘N) creates a draft on Slant. A draft isn’t charged until you choose **Review & Place \
-        Order…** and confirm **Pay & Send to Production**. Slant can’t delete drafts, so if Studio can’t tell whether \
+        Order…** and confirm **Pay & Send to Production**. Slant can’t delete drafts, so if Plinth can’t tell whether \
         a draft was created, it asks before you create another. **File › Import Orders…** creates drafts from an Etsy \
-        or Shopify export after you confirm them. If Slant changes its API after this version of Studio was made, a \
-        notice at the top of Orders says so; Studio keeps working as before and only tells you.
+        or Shopify export after you confirm them. If Slant changes its API after this version of Plinth was made, a \
+        notice at the top of Orders says so; Plinth keeps working as before and only tells you.
         """),
     StudioHelpSection(title: "Catalog", body: """
         Browse Slant’s materials, components and stationery.
@@ -201,11 +201,11 @@ let studioHelpSections: [StudioHelpSection] = [
     StudioHelpSection(title: "Design tools (optional)", body: """
         **Review for Printing with Claude…**, **Design an Accessory from a Photo…** and **Generate a Replica from an \
         Image…** use your own Claude (Anthropic), Meshy or Tripo account, set up in **Settings › Design Tools**. Each \
-        request that costs money is a button you press, with an estimate shown first, and Studio never resends one by \
+        request that costs money is a button you press, with an estimate shown first, and Plinth never resends one by \
         itself.
         """),
-    StudioHelpSection(title: "What Studio never does by itself", body: """
-        No menu item or keyboard shortcut uploads, pays, cancels or sends anything. When Studio can’t tell whether a \
+    StudioHelpSection(title: "What Plinth never does by itself", body: """
+        No menu item or keyboard shortcut uploads, pays, cancels or sends anything. When Plinth can’t tell whether a \
         payment or cancellation went through, it holds that order until a reload shows what happened.
         """),
     StudioHelpSection(title: "Privacy", body: """
@@ -213,11 +213,11 @@ let studioHelpSections: [StudioHelpSection] = [
         address is saved only if you choose to save it.
         """),
     StudioHelpSection(title: "If the window is closed", body: """
-        Click Slant Studio in the Dock, or choose **Window › Slant Studio** (⌘0).
+        Click Plinth in the Dock, or choose **Window › Plinth** (⌘0).
         """),
     StudioHelpSection(title: "Keyboard shortcuts", body: """
         ⌘N New Order Draft… · ⌘O Import Model… · ⇧⌘E Export Model… · ⌘R Refresh · ⌘1 Models · ⌘2 Orders · \
-        ⌘3 Catalog · ⌘0 Slant Studio window · ⌘, Settings
+        ⌘3 Catalog · ⌘0 Plinth window · ⌘, Settings
         """)
 ]
 
@@ -225,7 +225,7 @@ struct StudioHelpView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Slant Studio Help").font(.title2.weight(.bold))
+                Text("Plinth Help").font(.title2.weight(.bold))
                 ForEach(studioHelpSections) { section in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(section.title).font(.headline).accessibilityAddTraits(.isHeader)
@@ -252,7 +252,7 @@ struct StudioHelpView: View {
             return
         }
         let window = NSWindow(contentViewController: NSHostingController(rootView: StudioHelpView()))
-        window.title = "Slant Studio Help"
+        window.title = "Plinth Help"
         window.identifier = NSUserInterfaceItemIdentifier(helpWindowIdentifier)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
@@ -300,7 +300,7 @@ func slantWritesQuitQuestion(_ kinds: [SlantWriteKind]) -> (title: String, messa
     guard let last = named.last else { return nil }
     let list = named.count == 1 ? last : named.dropLast().joined(separator: ", ") + " and " + last
     return ("Quit while Slant is still answering?",
-            "Slant Studio is still waiting for Slant to answer \(list). If you quit now, Studio can’t record whether it "
+            "Plinth is still waiting for Slant to answer \(list). If you quit now, Plinth can’t record whether it "
             + "went through, so it can’t warn you before you send it again. Wait for it to finish, then quit.")
 }
 

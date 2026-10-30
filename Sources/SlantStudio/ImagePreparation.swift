@@ -53,10 +53,10 @@ enum ImagePreparationError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .tooLarge: return "That photo is larger than 30 MB. Choose a smaller one or export it at a lower size."
-        case .tooManyPixels: return "That image has too many pixels for Studio to open. Export it at a smaller size first."
+        case .tooManyPixels: return "That image has too many pixels for Plinth to open. Export it at a smaller size first."
         case .unsupportedType: return "Choose a JPEG, PNG or HEIC photo."
         case .unreadable: return "That photo couldn’t be read. It may be damaged or still downloading."
-        case .encodingFailed: return "Studio couldn’t prepare that photo to send."
+        case .encodingFailed: return "Plinth couldn’t prepare that photo to send."
         }
     }
 }

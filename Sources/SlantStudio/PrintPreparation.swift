@@ -48,8 +48,8 @@ let printPreparationAlsoManualNote = "Also used by Make Print-Ready Copy."
 let printPreparationInternalWallsCaption = "Rings round holes and slots through pins and thin sections, open through the base, make Slant’s printer add walls there. Slots through thick regions are added for any saved purpose except Decorative (including Enclosure and Custom): in one Slant estimate for a 40 × 40 × 20 mm block (25 Oct 2026), they added about 27% to the price. \(printPreparationAlsoManualNote)"
 let printPreparationBottomChamferCaption = "Keeps the first layer’s spread inside the part’s outline. Hole entries keep their size. With this on, almost every new STL gets a print-ready copy, because most parts have a flat bottom edge. \(printPreparationAlsoManualNote)"
 let printPreparationChamferCaution = "Chamfers fill the space under overhanging ledges: check any ledge something hooks or slides under."
-let printPreparationSettingsFooter = "When you import an STL, open one from Finder, save an STL copy of an OBJ or 3MF, or save a replica, Studio makes a separate “(print-ready)” copy. In order, it repairs the mesh if needed; places the part on the bed with the fewest overhangs, turned square to the printer’s axes; adds bridging layers over counterbores and chamfers under free ledges; adds a 0.4 mm chamfer round the bottom edge, if chosen; and adds internal walls, if chosen: rings round holes and slots through pins and thin sections, plus slots through thick regions for any saved purpose except Decorative (including Enclosure and Custom). It then lists overhangs, thin walls and other print risks on the copy. It never changes the original, never uploads or sends anything, never fills hidden pockets (the copy offers Fill Hidden Pockets), and never adds fillets, thickens walls or gives holes teardrop roofs, which can change how parts fit; the copy offers those separately. \(printPreparationChamferCaution) Personalised models, designed accessories and copies made by Studio’s tools are left alone; use Make Print-Ready Copy in a model’s More menu for any of them."
-let printPreparationNoticeText = "Studio now makes a print-ready copy of each new STL, with a 0.4 mm chamfer round its bottom edge, so almost every new STL gets one. Change this in Settings › Design Tools."
+let printPreparationSettingsFooter = "When you import an STL, open one from Finder, save an STL copy of an OBJ or 3MF, or save a replica, Plinth makes a separate “(print-ready)” copy. In order, it repairs the mesh if needed; places the part on the bed with the fewest overhangs, turned square to the printer’s axes; adds bridging layers over counterbores and chamfers under free ledges; adds a 0.4 mm chamfer round the bottom edge, if chosen; and adds internal walls, if chosen: rings round holes and slots through pins and thin sections, plus slots through thick regions for any saved purpose except Decorative (including Enclosure and Custom). It then lists overhangs, thin walls and other print risks on the copy. It never changes the original, never uploads or sends anything, never fills hidden pockets (the copy offers Fill Hidden Pockets), and never adds fillets, thickens walls or gives holes teardrop roofs, which can change how parts fit; the copy offers those separately. \(printPreparationChamferCaution) Personalised models, designed accessories and copies made by Plinth’s tools are left alone; use Make Print-Ready Copy in a model’s More menu for any of them."
+let printPreparationNoticeText = "Plinth now makes a print-ready copy of each new STL, with a 0.4 mm chamfer round its bottom edge, so almost every new STL gets one. Change this in Settings › Design Tools."
 
 /// The no-status caption on an STL's panel: the steps Make Print-Ready Copy would run with the current settings.
 func printPreparationOfferCaption(_ settings: PrintPreparationSettings) -> String {
@@ -276,7 +276,7 @@ func printPreparationPlacementIntent(saved: PartIntent?) -> (intent: PartIntent,
         return (neutral, "\(neutralNote) The part’s purpose isn’t known, so no load direction was assumed. \(printPreparationSetPurposeNote)")
     }
     guard saved.isReady else {
-        return (neutral, "\(neutralNote) The saved purpose (\(saved.purpose.rawValue.lowercased())) has no stress direction, and Studio never guesses one. Set it in Optimise for purpose, then use Make Print-Ready Copy.")
+        return (neutral, "\(neutralNote) The saved purpose (\(saved.purpose.rawValue.lowercased())) has no stress direction, and Plinth never guesses one. Set it in Optimise for purpose, then use Make Print-Ready Copy.")
     }
     if saved.effectiveLoad != .unknown {
         return (saved, "Placed for its saved purpose (\(saved.purpose.rawValue.lowercased()), main stress along \(saved.effectiveLoad.rawValue.lowercased())).")
@@ -559,7 +559,7 @@ func printPreparationPriceLine(_ record: PrintPreparationRecord) -> String {
     guard let fraction = walls.estimatedExtraMaterialFraction, fraction > 0 else {
         return "Internal walls use more filament, so Slant’s price is likely higher. Get an estimate for both before choosing."
     }
-    return "Studio estimates \(printPreparationPercentText(fraction)) more filament for the internal walls, so Slant’s price is likely higher. Get an estimate for both before choosing."
+    return "Plinth estimates \(printPreparationPercentText(fraction)) more filament for the internal walls, so Slant’s price is likely higher. Get an estimate for both before choosing."
 }
 
 /// The copy's "steeper than 45°" share leaves out faces at 45° itself: the bottom-edge chamfer and the chamfers under
@@ -857,10 +857,10 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
         catch MeshToolError.cancelled { throw PrintPreparationError.stopped }
         catch {
             try check()
-            return blocked("The mesh check found problems and Studio couldn’t repair them (\(error.localizedDescription)) Use Repair and simplify below, or fix the model in your CAD tool.")
+            return blocked("The mesh check found problems and Plinth couldn’t repair them (\(error.localizedDescription)) Use Repair and simplify below, or fix the model in your CAD tool.")
         }
         guard repaired.summary.isSound else {
-            return blocked("The mesh check found problems that Studio’s repair couldn’t fix. \(meshRepairOutcomeLine(repaired.summary.after)) Use Repair and simplify below to see what’s left.")
+            return blocked("The mesh check found problems that Plinth’s repair couldn’t fix. \(meshRepairOutcomeLine(repaired.summary.after)) Use Repair and simplify below to see what’s left.")
         }
         mesh = repaired.mesh
         health = repaired.summary.after
@@ -1054,7 +1054,7 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     progress("Checking the copy…")
     guard let after = analyzeMeshHealth(mesh, isCancelled: isCancelled) else { throw PrintPreparationError.stopped }
     guard meshHealthIsSound(after), !meshToolMadeWorse(before: before, after: after) else {
-        return blocked("The prepared copy didn’t pass Studio’s mesh check, so no copy was made.")
+        return blocked("The prepared copy didn’t pass Plinth’s mesh check, so no copy was made.")
     }
     guard after.shells == health.shells else {
         return blocked("The prepared copy would have a different number of separate parts, so no copy was made.")
@@ -1095,7 +1095,7 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
     return PrintPreparationResult(record: record(), mesh: mesh, data: data, blocked: nil)
 }
 
-let printPreparationTreatmentsDropped = "Dropped: the result didn’t pass Studio’s mesh check, even after repair, so the part was kept without them."
+let printPreparationTreatmentsDropped = "Dropped: the result didn’t pass Plinth’s mesh check, even after repair, so the part was kept without them."
 
 /// The treated mesh, repaired if a treatment left it unsound (with the repair's lines), or nil when even repair can't
 /// make it sound with `shells` separate parts (a repair that drops a loose piece drops the treatments instead).
@@ -1247,7 +1247,7 @@ func printPreparationTeardropConfirmText(_ settings: PrintPreparationSettings, d
     let steps = later.isEmpty
         ? "repeats the earlier copy’s other steps\(why)"
         : "repeats the earlier copy’s other steps, and adds \(later.joined(separator: " and ")) round the new shapes\(why)"
-    return "The upper sides of the ticked holes rise at 45° to a flat top at the hole’s own top, so each hole’s bottom and height are unchanged, but anything that fits against the upper sides of a hole will be looser. Studio makes a new print-ready copy from the original, placed as this one, \(steps). This copy stays as it is. Slant decides supports, so a hole may still get support inside it."
+    return "The upper sides of the ticked holes rise at 45° to a flat top at the hole’s own top, so each hole’s bottom and height are unchanged, but anything that fits against the upper sides of a hole will be looser. Plinth makes a new print-ready copy from the original, placed as this one, \(steps). This copy stays as it is. Slant decides supports, so a hole may still get support inside it."
 }
 
 /// The caption over the copy's fit-changing follow-ups (Add Fillets and Thicken Walls…, Add Teardrop Holes…).
@@ -1471,7 +1471,7 @@ struct PrintPreparationJob: Equatable, Sendable {
                                          counts: (0, 0))
         case .failure(let error):
             store.finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .noCopy, lines: [
-                "Studio couldn’t prepare this model: \(error.localizedDescription)",
+                "Plinth couldn’t prepare this model: \(error.localizedDescription)",
             ], date: Date()), counts: (0, 0))
         case .success((let result, let file)):
             if let reason = result.blocked {

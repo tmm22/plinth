@@ -51,7 +51,7 @@ func missingLibraryFileMessage(name: String) -> String {
     "The library file for “\(name)” is missing. Remove it from the library and import the model again."
 }
 
-/// Refuses destinations that would overwrite the library copy or any file in Slant Studio's support folder, or in
+/// Refuses destinations that would overwrite the library copy or any file in Plinth's support folder, or in
 /// `otherSupportDirectories` (the other app's folder, which the move from Slant Studio keeps; LegacyMigration.swift).
 func exportDestinationProblem(source: URL, destination: URL, supportDirectory: URL,
                               otherSupportDirectories: [URL] = []) -> String? {
@@ -59,7 +59,7 @@ func exportDestinationProblem(source: URL, destination: URL, supportDirectory: U
     let to = destination.standardizedFileURL.resolvingSymlinksInPath().path
     let supports = ([supportDirectory] + otherSupportDirectories).map { $0.standardizedFileURL.resolvingSymlinksInPath().path }
     if from == to || supports.contains(where: { to == $0 || to.hasPrefix($0 + "/") }) {
-        return "Choose a folder outside Slant Studio’s library, such as Documents or Desktop."
+        return "Choose a folder outside Plinth’s library, such as Documents or Desktop."
     }
     return nil
 }

@@ -150,7 +150,7 @@ func draftCheckNotFoundText(plural: Bool, subject: String = "", result: DraftMar
     case 1: text = "Slant has no matching \(draft)\(subject) in your newest order."
     default: text = "Slant has no matching \(draft)\(subject) among your \(result.ordersRead) newest orders."
     }
-    if result.stoppedForRateLimit { text += " Studio stopped early to stay within Slant’s rate limit." }
+    if result.stoppedForRateLimit { text += " Plinth stopped early to stay within Slant’s rate limit." }
     return text
 }
 
@@ -184,7 +184,7 @@ func draftCreateCheckOutcome(attempts: [UnconfirmedDraftAttempt], result: DraftM
     let unmarked = attempts.filter { $0.marker == nil }
     if !unmarked.isEmpty {
         let list = unmarked.map(who).joined(separator: "; ")
-        parts.append("The attempt\(unmarked.count == 1 ? "" : "s") \(list) went without Studio’s reference (all 10 reference fields were in use, or one was named studioDraftId), so Studio can’t look for \(unmarked.count == 1 ? "it" : "them"). Check your drafts (\(draftCreateCheckDraftsPath)).")
+        parts.append("The attempt\(unmarked.count == 1 ? "" : "s") \(list) went without Plinth’s reference (all 10 reference fields were in use, or one was named studioDraftId), so Plinth can’t look for \(unmarked.count == 1 ? "it" : "them"). Check your drafts (\(draftCreateCheckDraftsPath)).")
     }
     if earlierUnlisted {
         parts.append("Earlier attempts that are no longer listed can’t be looked for. Check your drafts (\(draftCreateCheckDraftsPath)).")

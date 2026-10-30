@@ -205,7 +205,7 @@ func shopifyImportParse(_ nodes: [[String: Any]], shop: String, truncated: Bool)
     notices.insert("Fetched from \(shop): paid, unfulfilled orders from the last \(shopifyImportDays) days, oldest first.", at: 0)
     if let missing = shopifyMissingCustomerDataNotice(orders) { notices.insert(missing, at: 1) }
     if truncated {
-        notices.append("Shopify has more matching orders than the \(shopifyImportMaxOrders) Studio fetches at once. Import these, or use a CSV export for the rest.")
+        notices.append("Shopify has more matching orders than the \(shopifyImportMaxOrders) Plinth fetches at once. Import these, or use a CSV export for the rest.")
     }
     return OrderImportParse(format: .shopify, orders: orders, notices: notices)
 }

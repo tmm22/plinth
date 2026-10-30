@@ -524,7 +524,7 @@ func printPlacementBaseAdvice(onCopy: Bool) -> String {
 /// The small-contact line from its figures; a nil contact means no flat face touches the bed.
 func printPlacementSmallContactText(contactMM2: Float?, minimumMM2: Float, onCopy: Bool = false) -> String {
     guard let contactMM2 else { return "No flat face touches the bed. \(printPlacementBaseAdvice(onCopy: onCopy))" }
-    return String(format: "Small bed contact: about %.0f mm² touches the bed, under the %.0f mm² Studio looks for. ", contactMM2, minimumMM2)
+    return String(format: "Small bed contact: about %.0f mm² touches the bed, under the %.0f mm² Plinth looks for. ", contactMM2, minimumMM2)
         + printPlacementBaseAdvice(onCopy: onCopy)
 }
 
@@ -622,7 +622,7 @@ enum LayFlatUnavailable: Equatable, Sendable {
         case .fitCoupon:
             return "A fit coupon keeps the way up the full part prints. Use Lay It Flat on the original, then make a new coupon."
         case .keptPlacement:
-            return "Its way up was chosen in Which way is up?, so Studio keeps that placement."
+            return "Its way up was chosen in Which way is up?, so Plinth keeps that placement."
         case .fromPrintReadyCopy:
             return "This is a copy of a print-ready copy, and its directions describe the original. Use Lay It Flat on the original instead."
         case .decorative:

@@ -738,7 +738,7 @@ func displayedWebhookSecret(rotatedSecret: String?, currentSecret: String, uncer
 }
 
 /// The details sheet's line while a platform's secret may have changed without Studio seeing the new one.
-let webhookSecretUncertainNote = "Slant may already have changed this secret, so Studio doesn’t show the one it had. Reload the platform to see the current secret."
+let webhookSecretUncertainNote = "Slant may already have changed this secret, so Plinth doesn’t show the one it had. Reload the platform to see the current secret."
 
 /// The in-app recipe, as Slant's docs verify a delivery: `timestamp` is the `X-Webhook-Timestamp` header in Unix
 /// milliseconds, and the body is the exact bytes received.

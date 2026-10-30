@@ -188,7 +188,7 @@ final class PrintPreparationFixesTests: XCTestCase {
         var targeted = record
         targeted.internalWalls?.bulkSlots = 0
         let price = printPreparationPriceLine(targeted)
-        XCTAssertTrue(price.hasPrefix("Studio estimates \(printPreparationPercentText(fraction)) more filament"), price)
+        XCTAssertTrue(price.hasPrefix("Plinth estimates \(printPreparationPercentText(fraction)) more filament"), price)
         XCTAssertTrue(price.contains("Slant’s price is likely higher"), price)
         XCTAssertFalse(price.contains("27%"), price)
         XCTAssertTrue(printPreparationWallsPriceNote.contains("(25 Oct 2026)"))

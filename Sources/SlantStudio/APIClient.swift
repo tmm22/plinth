@@ -145,7 +145,7 @@ enum APIError: LocalizedError {
                 return slantRequestFailedSeeActivityMessage
             }
         case .keychain:
-            return "Slant Studio couldn’t read the saved key. Enter it again."
+            return "Plinth couldn’t read your saved Slant API key. Enter it again."
         }
     }
 
@@ -492,7 +492,7 @@ func uploadFailureMessage(stage: UploadStage?, error: Error) -> String {
 
 /// Slant documents uploads up to 250 MB; downloads of a Slant file allow a margin above that.
 let slantDownloadMaxBytes: Int64 = 300 * 1024 * 1024
-let slantDownloadTooLargeMessage = "This model is larger than 300 MB, so Studio didn’t download it."
+let slantDownloadTooLargeMessage = "This model is larger than 300 MB, so Plinth didn’t download it."
 
 /// False when `Content-Length` already says the download is over the cap; an unknown length (-1) is checked while reading.
 func slantDownloadLengthAllowed(_ expected: Int64, maxBytes: Int64 = slantDownloadMaxBytes) -> Bool {
@@ -580,7 +580,7 @@ private final class CappedFileDownload: NSObject, URLSessionDataDelegate, @unche
             return
         }
         do { try handle.write(contentsOf: data) } catch {
-            fail(StudioError("Studio couldn’t save the download to a temporary file."), task: dataTask)
+            fail(StudioError("Plinth couldn’t save the download to a temporary file."), task: dataTask)
         }
     }
 
@@ -721,7 +721,7 @@ struct APIClient {
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Plinth-Download-\(UUID().uuidString)")
         guard FileManager.default.createFile(atPath: destination.path, contents: nil),
               let handle = try? FileHandle(forWritingTo: destination) else {
-            throw StudioError("Studio couldn’t save the download to a temporary file.")
+            throw StudioError("Plinth couldn’t save the download to a temporary file.")
         }
         var finished = false
         defer {

@@ -136,7 +136,7 @@ struct HiddenPocketsFillOutcome: Equatable, Sendable {
             case .failure(HiddenPocketsError.stopped):
                 return
             case .failure(let error):
-                self.outcome = HiddenPocketsFillOutcome(modelID: modelID, message: "Studio couldn’t fill the hidden pockets: \(error.localizedDescription)")
+                self.outcome = HiddenPocketsFillOutcome(modelID: modelID, message: "Plinth couldn’t fill the hidden pockets: \(error.localizedDescription)")
                 store.activities.insert(Activity(title: hiddenPocketsActivityTitle, detail: "No copy saved", success: false), at: 0)
             case .success((let fill, nil)):
                 let reason = fill.skipped ?? .resultFailedChecks

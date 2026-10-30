@@ -184,7 +184,7 @@ private func accessoryStringArraySchema(_ description: String) -> AnthropicJSON 
 /// count limits in the schema (strict tools don't support them); Studio clips and validates instead.
 let accessorySuggestTool = AnthropicTool(
     name: accessorySuggestToolName,
-    description: "Say what the object in the seller's photos is and suggest 3D-printable accessories the seller could make and sell for it, best first. Studio shows the ideas to the seller, who may pick one to design.",
+    description: "Say what the object in the seller's photos is and suggest 3D-printable accessories the seller could make and sell for it, best first. The app shows the ideas to the seller, who may pick one to design.",
     inputSchema: [
         "type": "object",
         "properties": [
@@ -478,7 +478,7 @@ func accessoryObjectIsRefused(_ text: String) -> Bool {
 }
 
 /// What Studio says when the object (or the seller's hint) is one it doesn't suggest accessories for.
-let accessoryObjectDeniedText = "Studio doesn’t suggest accessories for this kind of object."
+let accessoryObjectDeniedText = "Plinth doesn’t suggest accessories for this kind of object."
 
 // MARK: The claim check
 
@@ -641,7 +641,7 @@ func accessorySuggestionOutcome(_ reply: AnthropicMessage, existingTitles: [Stri
     if reply.isRefusal { return .declined(anthropicRefusalMessage(reply.stopDetails)) }
     guard reply.canJoinHistory else { return .setAside(accessorySuggestionSetAsideText(reply.stopReason)) }
     guard let use = reply.toolUsesToRun.first(where: { $0.name == accessorySuggestToolName }) else {
-        return .unusable("Claude answered without suggesting ideas in the form Studio reads, so nothing was kept. Suggest Again sends a new request, which is billed again.")
+        return .unusable("Claude answered without suggesting ideas in the form Plinth reads, so nothing was kept. Suggest Again sends a new request, which is billed again.")
     }
     guard use.inputProblem == nil else {
         return .unusable("Claude’s suggestions couldn’t be read, so nothing was kept. Suggest Again sends a new request, which is billed again.")
@@ -649,7 +649,7 @@ func accessorySuggestionOutcome(_ reply: AnthropicMessage, existingTitles: [Stri
     let set = accessorySuggestionsParse(use.input, existingTitles: existingTitles, hint: hint)
     if set.objectDenied { return .objectDenied }
     guard !set.ideas.isEmpty else {
-        var text = existingTitles.isEmpty ? "Claude didn’t suggest any ideas Studio could use." : "Claude didn’t suggest any new ideas."
+        var text = existingTitles.isEmpty ? "Claude didn’t suggest any ideas Plinth could use." : "Claude didn’t suggest any new ideas."
         if set.leftOut > 0 { text += " " + accessorySuggestionLeftOutText(set.leftOut) }
         return .unusable(text)
     }
@@ -661,17 +661,17 @@ func accessorySuggestionOutcome(_ reply: AnthropicMessage, existingTitles: [Stri
 func accessorySuggestionSetAsideText(_ stopReason: AnthropicStopReason?) -> String {
     switch stopReason {
     case .maxTokens?:
-        return "Claude’s reply was cut off before it finished, so Studio set it aside. Suggest Again sends a new request, which is billed again."
+        return "Claude’s reply was cut off before it finished, so Plinth set it aside. Suggest Again sends a new request, which is billed again."
     case .other("model_context_window_exceeded")?:
-        return "Claude’s reply was cut off because the request reached the model’s length limit, so Studio set it aside. Use fewer or smaller photos."
+        return "Claude’s reply was cut off because the request reached the model’s length limit, so Plinth set it aside. Use fewer or smaller photos."
     default:
-        return "Claude’s reply ended before it finished, so Studio set it aside. Suggest Again sends a new request, which is billed again."
+        return "Claude’s reply ended before it finished, so Plinth set it aside. Suggest Again sends a new request, which is billed again."
     }
 }
 
 /// "Studio left out 2 ideas it doesn't suggest." Never their text.
 func accessorySuggestionLeftOutText(_ count: Int) -> String {
-    count == 1 ? "Studio left out 1 idea it doesn’t suggest." : "Studio left out \(count) ideas it doesn’t suggest."
+    count == 1 ? "Plinth left out 1 idea it doesn’t suggest." : "Plinth left out \(count) ideas it doesn’t suggest."
 }
 
 // MARK: Showing ideas
@@ -934,7 +934,7 @@ func accessoryShouldExpandIdeas(old: [UUID], new: [UUID]) -> Bool {
     !old.isEmpty && new.count > old.count && old.allSatisfy(new.contains)
 }
 
-let accessoryIdeasFullText = "\(accessorySuggestionMaximumIdeas) ideas is the most Studio keeps."
+let accessoryIdeasFullText = "\(accessorySuggestionMaximumIdeas) ideas is the most Plinth keeps."
 
 /// Why the suggest button is disabled, or nil. OpenSCAD isn't needed for suggestions.
 func accessorySuggestBlockedReason(photoCount: Int, preparingPhotos: Int, claudeConfigured: Bool, suggesting: Bool,
@@ -955,10 +955,10 @@ func accessorySuggestBlockedReason(photoCount: Int, preparingPhotos: Int, claude
 func accessoryCloseConfirmation(designStarted: Bool, ideasHeld: Bool, suggesting: Bool) -> (title: String, message: String)? {
     if designStarted {
         let ideas = ideasHeld ? ", the suggested ideas" : ""
-        return ("Close and discard this design?", "Studio doesn’t keep the photos, the conversation\(ideas) or designs you haven’t saved.")
+        return ("Close and discard this design?", "Plinth doesn’t keep the photos, the conversation\(ideas) or designs you haven’t saved.")
     }
     if ideasHeld || suggesting {
-        return ("Close and discard these ideas?", "Studio doesn’t keep the photos or Claude’s ideas. Suggesting them again is billed again.")
+        return ("Close and discard these ideas?", "Plinth doesn’t keep the photos or Claude’s ideas. Suggesting them again is billed again.")
     }
     return nil
 }
@@ -1184,7 +1184,7 @@ struct AccessoryDesignIdeaContext: Equatable, Sendable {
 
 /// The context lines added to the first design turn (before its last instruction).
 func accessoryDesignIdeaContextLines(_ context: AccessoryDesignIdeaContext, measurements: [AccessoryMeasurement]) -> [String] {
-    var lines = ["About the object and the chosen idea (from Studio’s Suggest Accessories step; the photos and typed measurements outrank it):"]
+    var lines = ["About the object and the chosen idea (from the app’s Suggest Accessories step; the photos and typed measurements outrank it):"]
     let hint = accessorySuggestionLine(context.objectHint, limit: accessoryObjectHintMaximumLength)
     if !hint.isEmpty { lines.append("- The seller says the object is: \(hint)") }
     if let identification = context.identification, !identification.name.isEmpty {

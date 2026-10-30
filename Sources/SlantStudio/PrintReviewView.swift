@@ -31,7 +31,7 @@ struct PrintReviewCard: View {
                 Image(systemName: "sparkle.magnifyingglass").font(.title2).foregroundStyle(.tint)
                     .accessibilityHidden(true)
                 SectionHeading(title: "Review for printing",
-                               caption: "Claude looks at pictures and Studio’s measurements of this model and suggests steps from these tools. Nothing is sent until you ask, and nothing runs until you tick it.")
+                               caption: "Claude looks at pictures and Plinth’s measurements of this model and suggests steps from these tools. Nothing is sent until you ask, and nothing runs until you tick it.")
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 Button("Review for Printing with Claude…") { store.beginPrintReview(model: model) }
@@ -134,7 +134,7 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
             case .success(nil):
                 self.measuring = .failed("Stopped.")
             case .failure(let error):
-                self.measuring = .failed("Studio couldn’t read this model: \(error.localizedDescription)")
+                self.measuring = .failed("Plinth couldn’t read this model: \(error.localizedDescription)")
             }
         }
     }
@@ -199,10 +199,10 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
                         if !followedUp, let next = printReviewFollowUpRequest(current, reply: reply) {
                             followedUp = true
                             current = next
-                            self?.claude = .asking("Claude didn’t give a plan, so Studio is asking once more…")
+                            self?.claude = .asking("Claude didn’t give a plan, so Plinth is asking once more…")
                             continue
                         }
-                        finish(.failed("Claude didn’t answer with a plan, so Studio stopped. Nothing was changed."),
+                        finish(.failed("Claude didn’t answer with a plan, so Plinth stopped. Nothing was changed."),
                                steps: nil, status: "No plan", success: false)
                         return
                     }
@@ -410,7 +410,7 @@ struct PrintReviewSheet: View {
                 Text("Review for printing with Claude").font(.title2.weight(.bold))
                 Text(model?.name ?? "This model is no longer in your library.")
                     .font(.callout).foregroundStyle(.secondary)
-                Text("Studio measures the model on this Mac first. Nothing is sent until you press Ask Claude, and nothing changes until you run the steps you tick.")
+                Text("Plinth measures the model on this Mac first. Nothing is sent until you press Ask Claude, and nothing changes until you run the steps you tick.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -440,7 +440,7 @@ struct PrintReviewSheet: View {
             }
             Divider()
             HStack {
-                Text("Claude’s plan is advice. Studio’s own measurements are shown beside it.")
+                Text("Claude’s plan is advice. Plinth’s own measurements are shown beside it.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 // Escape too. Closing would lose a plan Anthropic billed for (or stop a reply part-way), so it asks
@@ -498,7 +498,7 @@ struct PrintReviewSheet: View {
 
     @ViewBuilder private var measurementsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Studio’s measurements").font(.headline)
+            Text("Measured by Plinth").font(.headline)
             switch session.measuring {
             case .working(let fraction, let stage):
                 HStack(spacing: 10) {
@@ -525,13 +525,13 @@ struct PrintReviewSheet: View {
                     origin: request.context.origin, intendedSizeNote: printReviewSizeFromNote(note) == nil ? note : nil,
                     findings: request.context.findings))
                 if !contextLines.isEmpty {
-                    Text("What Studio knows about it").font(.subheadline.weight(.semibold)).padding(.top, 4)
+                    Text("What Plinth knows about it").font(.subheadline.weight(.semibold)).padding(.top, 4)
                     ForEach(Array(contextLines.enumerated()), id: \.offset) { _, line in
                         Text(line).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 if session.renderImages.isEmpty {
-                    Text("Studio couldn’t draw this model, so Claude would get the measurements only.")
+                    Text("Plinth couldn’t draw this model, so Claude would get the measurements only.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     HStack(alignment: .top, spacing: 10) {
@@ -618,7 +618,7 @@ struct PrintReviewSheet: View {
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 if let estimate = session.estimatedCostText(context: context) {
-                    Text("Estimated cost: \(estimate), billed to your Anthropic account. The higher figure allows for the one follow-up Studio sends if Claude doesn’t answer with a plan.")
+                    Text("Estimated cost: \(estimate), billed to your Anthropic account. The higher figure allows for the one follow-up Plinth sends if Claude doesn’t answer with a plan.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 10) {
@@ -698,7 +698,7 @@ struct PrintReviewSheet: View {
             if plan.steps.isEmpty {
                 Text("Claude didn’t suggest any steps.").font(.callout).foregroundStyle(.secondary)
             } else {
-                Text("Nothing is ticked. Tick the steps you want: Studio runs them in this order on a copy and keeps your original.")
+                Text("Nothing is ticked. Tick the steps you want: Plinth runs them in this order on a copy and keeps your original.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 ForEach(plan.steps) { step in stepRow(step, before: before, model: model) }
                 let selected = plan.steps.filter { session.ticked.contains($0.id) && $0.isRunnable }.compactMap(\.action)
@@ -742,7 +742,7 @@ struct PrintReviewSheet: View {
                         .help("Closes this review and opens Reinforce this part for this model")
                 }
                 if let problem = step.problem {
-                    Label("Studio won’t run this: \(problem)", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label("Plinth won’t run this: \(problem)", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 }
             }
             .font(.callout)

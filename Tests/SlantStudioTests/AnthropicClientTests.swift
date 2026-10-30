@@ -319,7 +319,7 @@ final class AnthropicStreamTests: XCTestCase {
         XCTAssertEqual(thinDetail, #"{"error":"input.wall is below 1."}"#)
 
         let unknown = try XCTUnwrap(try accumulate(anthropicToolStreamFixture, tools: []).0.toolUses.first)
-        XCTAssertEqual(unknown.inputProblem, "Claude asked for a tool Studio didn’t offer (write_scad).")
+        XCTAssertEqual(unknown.inputProblem, "Claude asked for a tool the app didn’t offer (write_scad).")
     }
 
     func testCutOffReplyHasNoToolsToRun() throws {

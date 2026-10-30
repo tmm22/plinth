@@ -108,7 +108,7 @@ final class ProductCostCheckTests: XCTestCase {
         let product = SavedProduct(name: "Many", lines: (0..<(productCostMaxEstimates + 2)).map { printLine(reference: "f\($0)") })
         let parts = productCostParts(product, units: 1, localModels: [], filaments: [pla], components: [], stationery: [], loadedCatalogs: [])
         XCTAssertEqual(parts.filter { $0.state == .waiting }.count, productCostMaxEstimates)
-        XCTAssertEqual(parts.last?.state, .unavailable("Studio estimates up to 20 prints in one check."))
+        XCTAssertEqual(parts.last?.state, .unavailable("Plinth estimates up to 20 prints in one check."))
     }
 
     func testCatalogPriceNeedsUSD() {

@@ -152,13 +152,13 @@ final class ImagePreparationTests: XCTestCase {
     func testConsentTextNamesServiceAndWhatIsSent() {
         let claude = imageSharingConsentText(.anthropic)
         XCTAssertEqual(claude.title, "Send photos to Claude (Anthropic)?")
-        XCTAssertTrue(claude.message.contains("Studio sends Claude (Anthropic) the photo you choose, the details you type"))
+        XCTAssertTrue(claude.message.contains("Plinth sends Claude (Anthropic) the photo you choose, the details you type"))
         XCTAssertTrue(claude.message.contains("location"))
         XCTAssertEqual(claude.allowButton, "Allow and Send")
         XCTAssertEqual(claude.cancelButton, "Don’t Send")
         for service in [ImageSharingService.meshy, .tripo] {
             let text = imageSharingConsentText(service)
-            XCTAssertTrue(text.message.contains("Studio sends \(service.displayName) the photos you choose"), "one consent covers every photo")
+            XCTAssertTrue(text.message.contains("Plinth sends \(service.displayName) the photos you choose"), "one consent covers every photo")
             XCTAssertFalse(text.message.contains("details you type"))
             XCTAssertFalse(text.message.contains("renders"))
         }

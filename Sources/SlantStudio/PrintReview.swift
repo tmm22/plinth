@@ -111,7 +111,7 @@ struct PrintReviewMeasurements: Equatable, Sendable {
 }
 
 /// What "Studio's checks found no problems" covers, said with it.
-let printReviewNoProblemsLine = "Studio’s checks found no problems: a closed mesh in one part, no walls under 2 mm found, a flat base, overhangs on under \(Int(printReviewOverhangLimit * 100))% of the surface, and it fits Slant’s 220 mm build volume."
+let printReviewNoProblemsLine = "Plinth’s checks found no problems: a closed mesh in one part, no walls under 2 mm found, a flat base, overhangs on under \(Int(printReviewOverhangLimit * 100))% of the surface, and it fits Slant’s 220 mm build volume."
 
 /// Review for Printing's overhang share: faces steeper than `printPreparationOverhangReportDegrees` (45.1°), so
 /// Studio's own 45° chamfers never count. On a print-ready copy (`record`) it also leaves out downward faces wholly
@@ -564,7 +564,7 @@ private func printReviewToolTitle(_ tool: String) -> String {
     case "orient": return "Turn the model"
     case "scale_to_size": return "Scale to size"
     case "flat_base": return "Flat base"
-    case "plinth": return "Plinth"
+    case "plinth": return "Add a plinth"
     case "auto_improve": return "Auto-improve"
     default: return "Do this yourself"
     }
@@ -617,7 +617,7 @@ func decodePrintReviewPlan(_ input: AnthropicJSON, context: PrintReviewPlanConte
             let name = aiServiceRedacted(tool, limit: 40)
             notes.append(name.isEmpty
                          ? "Claude suggested a step without a tool, so it was left out."
-                         : "Claude suggested a tool Studio doesn’t have (“\(name)”), so it was left out.")
+                         : "Claude suggested a tool Plinth doesn’t have (“\(name)”), so it was left out.")
             continue
         }
         guard steps.count < printReviewMaximumSteps else {
@@ -743,10 +743,10 @@ func printReviewStudioNote(_ action: PrintReviewAction, measurements m: PrintRev
                            context: PrintReviewContext) -> String {
     switch action {
     case .repair:
-        return m.isSound ? "Studio: the mesh is already closed and consistent, so this may change nothing."
-            : "Studio: \(printReviewMeshCheckLine(m.health))"
+        return m.isSound ? "Plinth: the mesh is already closed and consistent, so this may change nothing."
+            : "Plinth: \(printReviewMeshCheckLine(m.health))"
     case .simplify:
-        return "Studio: now \(counted(m.triangles, "triangle", "triangles")). Reinforce and Auto-improve accept up to \(meshToolsReinforceTriangleLimit.formatted())."
+        return "Plinth: now \(counted(m.triangles, "triangle", "triangles")). Reinforce and Auto-improve accept up to \(meshToolsReinforceTriangleLimit.formatted())."
     case .scaleToSize(let axis, let value):
         let current: Float
         switch axis {
@@ -755,7 +755,7 @@ func printReviewStudioNote(_ action: PrintReviewAction, measurements m: PrintRev
         case .y: current = m.sizeMM.y
         case .z: current = m.sizeMM.z
         }
-        var note = "Studio: the \(printReviewAxisName(axis)) is now \(mm(current))"
+        var note = "Plinth: the \(printReviewAxisName(axis)) is now \(mm(current))"
         if let result = try? scaleToSizePlan(extentMM: m.sizeMM, axis: axis, targetMM: value) {
             note += "; result \(meshFitSizeLabel(result.resultSizeMM))"
         }
@@ -767,24 +767,24 @@ func printReviewStudioNote(_ action: PrintReviewAction, measurements m: PrintRev
         }
         return note
     case .flatBase:
-        var note = "Studio: \(Int(m.bottomContactMM2.rounded()).formatted()) mm² flat on the bed now"
+        var note = "Plinth: \(Int(m.bottomContactMM2.rounded()).formatted()) mm² flat on the bed now"
         if m.flatBase.alreadyFlat { note += ", which is enough to stand on" }
-        else if let cut = m.flatBase.cutHeightMM { note += "; Studio would remove \(mmValue(Double(cut))) mm" }
+        else if let cut = m.flatBase.cutHeightMM { note += "; Plinth would remove \(mmValue(Double(cut))) mm" }
         return note + "."
     case .plinth:
-        return "Studio: \(Int(m.bottomContactMM2.rounded()).formatted()) mm² flat on the bed now; the model is \(mm(m.sizeMM.z)) tall."
+        return "Plinth: \(Int(m.bottomContactMM2.rounded()).formatted()) mm² flat on the bed now, without a plinth; the model is \(mm(m.sizeMM.z)) tall."
     case .orient(let orientation):
         guard let turned = m.turns.first(where: { $0.orientation == orientation }) else {
-            return "Studio: overhangs on \(percentLabel(m.overhang.fraction)) of the surface as placed."
+            return "Plinth: overhangs on \(percentLabel(m.overhang.fraction)) of the surface as placed."
         }
-        return "Studio: overhangs on \(percentLabel(m.overhang.fraction)) of the surface as placed, \(percentLabel(turned.overhang.fraction)) turned this way. Check the flat base again after turning."
+        return "Plinth: overhangs on \(percentLabel(m.overhang.fraction)) of the surface as placed, \(percentLabel(turned.overhang.fraction)) turned this way. Check the flat base again after turning."
     case .autoImprove(let settings):
         var purpose = settings.intent.purpose.rawValue
         if settings.intent.effectiveLoad != .unknown { purpose += ", main stress along \(settings.intent.effectiveLoad.rawValue.lowercased())" }
         let placement = settings.keepPlacement ? "keeps the model’s current placement" : "places the part for that purpose"
-        return "Studio: uses the part’s purpose (\(purpose)); change it in Optimise for purpose. It \(placement), then adds only treatments that pass its checks, such as chamfers under ledges and fillets in inside corners."
+        return "Plinth: uses the part’s purpose (\(purpose)); change it in Optimise for purpose. It \(placement), then adds only treatments that pass its checks, such as chamfers under ledges and fillets in inside corners."
     case .manual:
-        return "Studio doesn’t run this. Do it yourself, then review the result again."
+        return "Plinth doesn’t run this. Do it yourself, then review the result again."
     }
 }
 
@@ -856,7 +856,7 @@ enum PrintReviewRunError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .cancelled: return "Stopped. Nothing was saved."
-        case .nothingToRun: return "Tick at least one step that Studio can run."
+        case .nothingToRun: return "Tick at least one step that Plinth can run."
         case .step(let number, let title, let message):
             return "Step \(number) (\(title)) couldn’t be done, so the run stopped and nothing was saved. \(message)"
         case .madeWorse:
@@ -1040,7 +1040,8 @@ let printReviewRenderPixelSize = 768
 let printReviewRenderRasterBudget = 120_000_000
 
 let printReviewSystemPrompt = """
-You review 3D models for FDM printing for a small online seller who uses Slant Studio. Slant 3D prints them on \
+You review 3D models for FDM printing for a small online seller who uses a Mac app called Plinth (when a message says \
+Plinth, it means the app; the plinth tool below is a base under a model). Slant 3D prints them on \
 demand with fixed settings it publishes, which can't be changed for an order or a part: 0.2 mm layers (0.3 mm first \
 layer), a 0.4 mm nozzle, 1 mm walls (about 2 lines), 25% grid-like infill, overhangs up to 50° from vertical, no \
 brims, a textured bed and a 220 mm cube build volume. Slant prints the model in the orientation it is uploaded in, \
@@ -1049,8 +1050,8 @@ upload whether supports are needed, prices supports, surface area and failure ri
 separate body. Not published: the line width, the tolerances Slant holds and which slicer it uses.
 
 You get four orthographic renders of the model as it is placed in its file (Z up; Front looks at the −Y side, Side \
-looks at the +X side, Top looks straight down, Three-quarter is from the front right, above) and Studio's own \
-measurements. Studio measured the mesh itself: trust its numbers over what the pictures suggest. Units are millimetres. \
+looks at the +X side, Top looks straight down, Three-quarter is from the front right, above) and the app's own \
+measurements. The app measured the mesh itself: trust its numbers over what the pictures suggest. Units are millimetres. \
 Thin-spot positions are measured from the model's lowest corner.
 
 Guidelines for parts that print well:
@@ -1069,28 +1070,28 @@ bridges under 5 mm. Fewer supports cost less.
 - Thin protrusions (tails, horns, blades, antennae, fingers) under about 3 mm across are likely to snap in printing, \
 when supports come off, or in the post. Flag them.
 
-Answer only by calling propose_plan, once. Studio runs a step only if the seller ticks it, on a copy, on this Mac. \
+Answer only by calling propose_plan, once. The app runs a step only if the seller ticks it, on a copy, on this Mac. \
 Steps may use only these tools; set every field a step doesn't use to null:
 - repair: joins nearby vertices, removes zero-area, repeated and loose triangles, turns faces the right way and \
-closes small holes. Suggest it when Studio's mesh check needs repair.
+closes small holes. Suggest it when the app's mesh check needs repair.
 - simplify (target_triangles, 2000–20000): fewer triangles. Suggest it only when the model has more than 20,000 \
 triangles and you also suggest auto_improve or advise Reinforce (both accept up to 20,000); otherwise detail is worth \
 keeping.
 - orient (turn: upside_down, x_up, x_down, y_up or y_down): turns the model onto another side (x_up puts the side \
-shown in the Side view on top; y_up puts the side facing away from the Front view on top). Studio lists the overhang \
+shown in the Side view on top; y_up puts the side facing away from the Front view on top). The app lists the overhang \
 share for each turn: suggest the one that clearly reduces overhangs, if it still leaves a stable, flat base.
 - scale_to_size (axis: longest, x, y or z; mm): scales evenly so that side measures mm, as the model is at that point \
 in the plan. Only when the seller's intended size is given, and then use exactly that size. Never guess a real-world size.
 - flat_base (cut_mm, more than 0 and at most 5): cuts the bottom level and fills it so the model stands on a flat face. \
-Studio's suggested cut is in the measurements.
+The app's suggested cut is in the measurements.
 - plinth (shape: round or rectangular; margin_mm 1–30; thickness_mm 1–20): a base with a chamfered bottom edge under \
 the whole model, for tall or top-heavy figures. Choose a flat base or a plinth, not both.
-- auto_improve: Studio's Auto-improve places the part for its purpose (unless its placement is fixed) and adds only \
+- auto_improve: the app's Auto-improve places the part for its purpose (unless its placement is fixed) and adds only \
 treatments that pass its checks: bridging for counterbores, chamfers under ledges, thin walls thickened on the \
 inside to a whole number of 0.5 mm lines (Slant's 1 mm walls are about 2 lines), and fillets in inside corners. Accepts up to 20,000 triangles. It must be the last step that changes the model, and \
 it doesn't go with orient. Suggest it for functional parts.
-- manual (text): anything the tools above can't do, which the seller does elsewhere. Prefer Studio's own tools: \
-"Use Reinforce in Studio to add a gusset under the arm" or "Use Reinforce to add a rib along the handle" before \
+- manual (text): anything the tools above can't do, which the seller does elsewhere. Prefer the app's own tools: \
+"Use Reinforce in the app to add a gusset under the arm" or "Use Reinforce to add a rib along the handle" before \
 "Thicken the sword blade to 3 mm in your CAD app".
 Put steps in the order they should run: repair, simplify, orient, scale, the base, auto_improve, then manual advice. \
 Leave out steps that aren't needed; an empty list is fine.
@@ -1099,8 +1100,8 @@ How to write:
 - You advise; you never change the model.
 - Never say a part is strong, approved, safe, guaranteed or won't break, and never give a strength percentage. Say \
 "likely weak point", "below the 2 mm guideline" and so on.
-- Quote Studio's numbers and positions when you use them, such as "walls of 0.8 mm about 40 mm up".
-- Say Studio's checks found no problems only when its measurements say so.
+- Quote the app's numbers and positions when you use them, such as "walls of 0.8 mm about 40 mm up".
+- Say the app's checks found no problems only when its measurements say so.
 - risks: specific parts you can see (such as "sword blade" or "left ear"), what may go wrong, and a severity: high when \
 the print is likely to fail or the part to break in printing, shipping or normal use; medium for a likely weak point \
 or a visible flaw worth fixing first; low for something worth knowing that most prints survive.
@@ -1118,7 +1119,7 @@ private let printReviewNullableNumber: AnthropicJSON = ["anyOf": [["type": "numb
 /// schemas don't support them); Studio checks ranges itself in `decodePrintReviewPlan`.
 let printReviewPlanTool = AnthropicTool(
     name: printReviewToolName,
-    description: "Give your review of the model for FDM printing and a plan made only of Studio's tools. Call this once with your whole answer.",
+    description: "Give your review of the model for FDM printing and a plan made only of the app's tools. Call this once with your whole answer.",
     inputSchema: [
         "type": "object",
         "properties": [
@@ -1202,15 +1203,15 @@ func renderPrintReviewViews(_ mesh: STLMesh, size: Int = printReviewRenderPixelS
 /// The user turn's text: the view order, Studio's facts and the context.
 func printReviewUserText(viewTitles: [String], factLines: [String], contextLines: [String]) -> String {
     var text = "Review this model for printing.\n\n"
-    text += viewTitles.isEmpty ? "Studio couldn’t render pictures of this model.\n\n"
+    text += viewTitles.isEmpty ? "The app couldn’t render pictures of this model.\n\n"
         : "Pictures above, in order: \(viewTitles.joined(separator: ", ")).\n\n"
-    text += "Studio’s measurements:\n" + factLines.map { "- \($0)" }.joined(separator: "\n") + "\n\n"
+    text += "The app’s measurements:\n" + factLines.map { "- \($0)" }.joined(separator: "\n") + "\n\n"
     if contextLines.isEmpty {
         text += "Nothing else is known about the model: the seller hasn’t said its real size or purpose.\n\n"
     } else {
-        text += "What Studio knows about the model:\n" + contextLines.map { "- \($0)" }.joined(separator: "\n") + "\n\n"
+        text += "What the app knows about the model:\n" + contextLines.map { "- \($0)" }.joined(separator: "\n") + "\n\n"
     }
-    text += "Quote Studio’s numbers where you rely on them. Call propose_plan with your review."
+    text += "Quote the app’s numbers where you rely on them. Call propose_plan with your review."
     return text
 }
 
@@ -1346,8 +1347,8 @@ func printReviewCostSoFar(_ replies: [AnthropicMessage]) -> AnthropicCostEstimat
 /// What Ask Claude sends, said before it is pressed.
 func printReviewSendSummary(pictures: Int, hasContext: Bool) -> String {
     let what = pictures > 0 ? "\(pictures == 1 ? "1 picture" : "\(pictures) pictures") of the model and the measurements above" : "the measurements above"
-    return "Studio sends Anthropic \(what)\(hasContext ? ", with what Studio knows about it" : ""). It doesn’t send the model file or its name. "
-        + "Claude Opus 5.5 suggests a plan made of Studio’s tools; nothing runs until you tick it."
+    return "Plinth sends Anthropic \(what)\(hasContext ? ", with what Plinth knows about it" : ""). It doesn’t send the model file or its name. "
+        + "Claude Opus 5.5 suggests a plan made of Plinth’s tools; nothing runs until you tick it."
 }
 
 /// Activity's detail: counts, cost and status only.

@@ -98,7 +98,7 @@ func batchPayLockNotice(lockedOrderNumbers: [String]) -> String? {
     case 2, 3: named = "orders " + numbers.joined(separator: ", ")
     default: named = "orders " + numbers.prefix(3).joined(separator: ", ") + " and \(numbers.count - 3) more"
     }
-    return "A payment or cancel request for \(named) didn’t confirm this session, so Studio won’t pay several drafts at once. Press Reload Order on it (below, or in its own review in Orders); until its result is clear, pay drafts one at a time."
+    return "A payment or cancel request for \(named) didn’t confirm this session, so Plinth won’t pay several drafts at once. Press Reload Order on it (below, or in its own review in Orders); until its result is clear, pay drafts one at a time."
 }
 
 // MARK: Review
@@ -250,7 +250,7 @@ func orderPayAcceptedMessage(_ outcome: BatchPayOutcome) -> String? {
     case .placed: return "Order placed."
     case .notPlaced(let reason): return "Slant accepted the payment request, but the order wasn’t placed. " + reason
     case .unrecognised(let status):
-        return "Slant accepted the payment request and now shows the order as “\(status)”, a status Studio doesn’t recognise. Check it in your Slant dashboard before doing anything else with it."
+        return "Slant accepted the payment request and now shows the order as “\(status)”, a status Plinth doesn’t recognise. Check it in your Slant dashboard before doing anything else with it."
     case .changed, .refused, .unknown, .notSent, .unclear: return nil
     }
 }
@@ -275,7 +275,7 @@ func batchPayConfirmTitle(count: Int, total: Decimal) -> String {
     "Pay \(count) \(count == 1 ? "order" : "orders") for \(batchPayMoneyText(total)) USD?"
 }
 
-let batchPayConfirmMessage = "Each order is charged to the payment method on your Slant account and sent to production, one at a time. Studio checks each one again just before paying it, and stops at the first that changed or wasn’t placed."
+let batchPayConfirmMessage = "Each order is charged to the payment method on your Slant account and sent to production, one at a time. Plinth checks each one again just before paying it, and stops at the first that changed or wasn’t placed."
 
 /// Why Pay Several Drafts loads nothing while an order's pay/cancel outcome is unknown, naming the order (or how many)
 /// and the way out: a reload that shows the outcome, else the lock lasts the session.
@@ -287,7 +287,7 @@ func batchPayLockedOrderLabel(_ ids: Set<String>) -> String? {
 func batchPayLockedMessage(lockedOrderIDs: [String]) -> String {
     let ids = lockedOrderIDs.sorted()
     let which = ids.count == 1 ? "Order \(ids[0])’s" : ids.isEmpty ? "An order’s" : "\(ids.count) orders’"
-    return "\(which) payment or cancel result is unknown, so nothing is loaded for a batch. Reload it in Orders; if Slant can’t show the result, Studio keeps this lock until it does or you quit."
+    return "\(which) payment or cancel result is unknown, so nothing is loaded for a batch. Reload it in Orders; if Slant can’t show the result, Plinth keeps this lock until it does or you quit."
 }
 
 /// Why the Pay button is unavailable, or nil.
@@ -365,7 +365,7 @@ func batchPayNextStep(after outcome: BatchPayOutcome) -> BatchPayNextStep {
     case .unclear:
         return .stop("Stopped: Slant’s reply didn’t show whether an order was placed. Reload Orders and check it before paying anything else.")
     case .unrecognised:
-        return .stop("Stopped: after paying, Slant showed an order with a status Studio doesn’t recognise, so nothing after it was paid. Check that order in your Slant dashboard.")
+        return .stop("Stopped: after paying, Slant showed an order with a status Plinth doesn’t recognise, so nothing after it was paid. Check that order in your Slant dashboard.")
     }
 }
 
@@ -408,7 +408,7 @@ func batchPayStateText(_ state: BatchPayRowState) -> String {
     case .unclear: return "Sent, but Slant’s reply didn’t show whether it was placed. Reload Orders and check it before paying anything else."
     case .reloaded(let status): return "Reloaded: now \(orderStatusTitle(status))."
     case .unrecognised(let status):
-        return "Sent. Slant now shows it as “\(status)”, a status Studio doesn’t recognise. Check it in your Slant dashboard."
+        return "Sent. Slant now shows it as “\(status)”, a status Plinth doesn’t recognise. Check it in your Slant dashboard."
     }
 }
 
@@ -899,7 +899,7 @@ struct BatchPaySheet: View {
     private var subheading: String {
         switch runner.phase {
         case .choose, .loading:
-            return "Choose up to \(batchPayMaxDrafts) drafts. Studio loads each one fresh from Slant for you to review; nothing is paid until you confirm the total."
+            return "Choose up to \(batchPayMaxDrafts) drafts. Plinth loads each one fresh from Slant for you to review; nothing is paid until you confirm the total."
         case .review, .paying, .done:
             return "Paying charges the payment method associated with your Slant account and sends each order to production, one at a time. Costs below were loaded fresh from Slant."
         }

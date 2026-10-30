@@ -22,7 +22,7 @@ func personalisationValuesProblem(_ parameters: [ScadParameter], values: [String
     return nil
 }
 
-let personalisationPrivacyNote = "Values aren’t kept in Studio, but the new model’s name and STL include them. With Slant’s generator, the template and values are sent to Slant."
+let personalisationPrivacyNote = "Values aren’t kept in Plinth, but the new model’s name and STL include them. With Slant’s generator, the template and values are sent to Slant."
 
 /// How long the Personalise sheet waits before checking the Slant quota again: just after the next generation becomes
 /// available, but at least a second and at most 30 seconds, so the button and captions catch up on their own.
@@ -50,7 +50,7 @@ struct OrderImportPersonalisationRow: View {
                     copied = true
                 }
                 .buttonStyle(.link).font(.caption)
-                .help("Copies the buyer’s personalisation to paste into Personalise from Template. Studio doesn’t save it.")
+                .help("Copies the buyer’s personalisation to paste into Personalise from Template. Plinth doesn’t save it.")
                 .accessibilityLabel("Copy personalisation")
             }
             if orderImportPersonalisationShowsOptions(item) {
@@ -172,7 +172,7 @@ private struct PersonalisationForm: View {
         Section {
             LabeledContent("Template", value: file.url.lastPathComponent)
             if parameters.isEmpty {
-                Label("Studio found no values to fill in. It reads top-level text, number and on/off values set before the first module, as OpenSCAD’s Customizer does, and skips any in a /* [Hidden] */ section.",
+                Label("Plinth found no values to fill in. It reads top-level text, number and on/off values set before the first module, as OpenSCAD’s Customizer does, and skips any in a /* [Hidden] */ section.",
                       systemImage: "info.circle")
                     .foregroundStyle(.secondary)
             }
@@ -247,7 +247,7 @@ private struct PersonalisationForm: View {
             return "Runs OpenSCAD on this Mac. Nothing is sent to Slant, and there’s no hourly limit."
         case .slant:
             let remaining = session.quota.remaining(now: now)
-            return "Sends the template and these values to Slant, which returns the STL. Slant allows \(OpenSCADQuota.generationsPerHour) generations an hour, one at a time: \(remaining) left by Studio’s count this session (it can’t see generations made elsewhere with your key). Every request counts, and Studio never retries one."
+            return "Sends the template and these values to Slant, which returns the STL. Slant allows \(OpenSCADQuota.generationsPerHour) generations an hour, one at a time: \(remaining) left by Plinth’s count this session (it can’t see generations made elsewhere with your key). Every request counts, and Plinth never retries one."
         }
     }
 

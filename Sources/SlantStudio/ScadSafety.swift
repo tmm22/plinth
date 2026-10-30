@@ -25,7 +25,7 @@ func scadSafetyProblem(_ code: String) -> String? {
     let bytes = code.utf8.count
     if code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "The code is empty." }
     if bytes > scadSafetyMaximumBytes {
-        return "The code is \(bytes.formatted()) bytes; Studio runs at most \(scadSafetyMaximumBytes.formatted()) bytes. Make it shorter."
+        return "The code is \(bytes.formatted()) bytes; Plinth runs at most \(scadSafetyMaximumBytes.formatted()) bytes. Make it shorter."
     }
     if code.unicodeScalars.contains(where: { $0.value < 0x20 && $0 != "\n" && $0 != "\r" && $0 != "\t" }) {
         return "The code contains control characters. Use plain text only."
@@ -35,19 +35,19 @@ func scadSafetyProblem(_ code: String) -> String? {
     for word in scadSafetyFileReadingWords where scan.identifiers.contains(word) {
         switch word {
         case "include", "use":
-            return "Studio doesn’t run code that uses `\(word)`: everything must be in this one file. Write any library modules you need inline."
+            return "Plinth doesn’t run code that uses `\(word)`: everything must be in this one file. Write any library modules you need inline."
         case _ where word.hasPrefix("dxf_"):
-            return "Studio doesn’t run code that uses `\(word)`, because it reads DXF files. Build the shape from OpenSCAD primitives instead."
+            return "Plinth doesn’t run code that uses `\(word)`, because it reads DXF files. Build the shape from OpenSCAD primitives instead."
         default:
-            return "Studio doesn’t run code that calls `\(word)()`, because it reads files. Build the shape from OpenSCAD primitives instead."
+            return "Plinth doesn’t run code that calls `\(word)()`, because it reads files. Build the shape from OpenSCAD primitives instead."
         }
     }
     if scan.usesFileArgument {
-        return "Studio doesn’t run code with a `file =` argument or variable, because OpenSCAD reads files through it. Build the shape from OpenSCAD primitives, and give variables other names."
+        return "Plinth doesn’t run code with a `file =` argument or variable, because OpenSCAD reads files through it. Build the shape from OpenSCAD primitives, and give variables other names."
     }
     if let path = scan.strings.first(where: scadSafetyLooksLikePath) {
         let shown = path.count > 40 ? String(path.prefix(40)) + "…" : path
-        return "Studio doesn’t run code with text that looks like a file path (\"\(shown)\"). Remove it."
+        return "Plinth doesn’t run code with text that looks like a file path (\"\(shown)\"). Remove it."
     }
     return nil
 }

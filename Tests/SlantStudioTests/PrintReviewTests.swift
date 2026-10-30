@@ -251,7 +251,7 @@ final class PrintReviewTests: XCTestCase {
             step("manual", text: "One."),
             step("manual", text: "Two.")
         ]), context: context(mesh))
-        XCTAssertEqual(plan.notes, ["Claude suggested a tool Studio doesn’t have (“hollow_out”), so it was left out."])
+        XCTAssertEqual(plan.notes, ["Claude suggested a tool Plinth doesn’t have (“hollow_out”), so it was left out."])
         XCTAssertEqual(plan.steps.map(\.id), Array(1...8))
         XCTAssertEqual(plan.steps[1].problem, "Already in the plan as step 1.")
         // An invalid first simplify doesn't block a valid second one.
@@ -451,8 +451,8 @@ final class PrintReviewTests: XCTestCase {
 
     func testSendSummaryNamesWhatIsSent() {
         XCTAssertEqual(printReviewSendSummary(pictures: 4, hasContext: true),
-                       "Studio sends Anthropic 4 pictures of the model and the measurements above, with what Studio knows about it. It doesn’t send the model file or its name. Claude Opus 5.5 suggests a plan made of Studio’s tools; nothing runs until you tick it.")
-        XCTAssertTrue(printReviewSendSummary(pictures: 0, hasContext: false).hasPrefix("Studio sends Anthropic the measurements above. "))
+                       "Plinth sends Anthropic 4 pictures of the model and the measurements above, with what Plinth knows about it. It doesn’t send the model file or its name. Claude Opus 5.5 suggests a plan made of Plinth’s tools; nothing runs until you tick it.")
+        XCTAssertTrue(printReviewSendSummary(pictures: 0, hasContext: false).hasPrefix("Plinth sends Anthropic the measurements above. "))
     }
 
     func testCopyNamesAndRecordRules() {
@@ -485,11 +485,11 @@ final class PrintReviewTests: XCTestCase {
         let measured = try measure(try box(.zero, SIMD3(20, 30, 40)))
         let scale = printReviewStudioNote(.scaleToSize(axis: .z, mm: 80), measurements: measured,
                                           context: PrintReviewContext(intendedSizeNote: "Height 80 mm"))
-        XCTAssertEqual(scale, "Studio: the height (Z) is now 40.0 mm; result 40.0 × 60.0 × 80.0 mm. You said: Height 80 mm")
+        XCTAssertEqual(scale, "Plinth: the height (Z) is now 40.0 mm; result 40.0 × 60.0 × 80.0 mm. You said: Height 80 mm")
         XCTAssertTrue(printReviewStudioNote(.scaleToSize(axis: .z, mm: 80), measurements: measured, context: PrintReviewContext())
             .hasSuffix("Claude can’t measure it."))
         XCTAssertEqual(printReviewStudioNote(.repair, measurements: measured, context: PrintReviewContext()),
-                       "Studio: the mesh is already closed and consistent, so this may change nothing.")
+                       "Plinth: the mesh is already closed and consistent, so this may change nothing.")
     }
 
     func testRenderedViewsAreFourDeterministicJPEGs() throws {

@@ -91,7 +91,7 @@ func accessoryFitTestCheckLines(_ piece: AccessoryFitTestPiece) -> [String] {
 }
 
 /// Under the piece's checks: what Studio does and doesn't check.
-let accessoryFitTestChecksCaption = "Studio checks only the piece’s size, volume and the fit sizes its code reports, not that its shape matches the part’s fit region."
+let accessoryFitTestChecksCaption = "Plinth checks only the piece’s size, volume and the fit sizes its code reports, not that its shape matches the part’s fit region."
 
 /// Shown with a passing fit-test piece. It never promises a fit.
 /// It names the design's own clearance values (`accessoryClearanceValueNames`, by their Customizer description where
@@ -128,7 +128,7 @@ func accessoryNoFitTestLines(_ render: AccessoryRender) -> [String]? {
     var lines = ["No fit-test piece: print the whole part to check the fit."]
     switch render.fitTest {
     case .made(let piece)?:
-        lines.append("Studio’s fit-test piece didn’t pass its checks: " + piece.check.problems.joined(separator: " "))
+        lines.append("Plinth’s fit-test piece didn’t pass its checks: " + piece.check.problems.joined(separator: " "))
     case .failed?:
         lines.append("OpenSCAD couldn’t make the fit-test piece.")
     case .stopped?:
@@ -198,7 +198,7 @@ struct AccessoryDesignerSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Design an accessory from a photo").font(.title2.weight(.bold))
-                Text("Claude writes an OpenSCAD design from your photos and measurements. Studio renders and checks each version on this Mac, and you decide what to save.")
+                Text("Claude writes an OpenSCAD design from your photos and measurements. Plinth renders and checks each version on this Mac, and you decide what to save.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -235,7 +235,7 @@ struct AccessoryDesignerSheet: View {
             Button("Keep Working", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text(closeConfirmation?.message ?? "Studio doesn’t keep the photos or anything you haven’t saved.")
+            Text(closeConfirmation?.message ?? "Plinth doesn’t keep the photos or anything you haven’t saved.")
         }
     }
 
@@ -496,7 +496,7 @@ struct AccessoryDesignerSheet: View {
                         Button(AccessorySuggestMode.again.buttonTitle) { suggestTapped(mode: .again) }
                             .buttonStyle(.bordered)
                             .disabled(separateSuggestAgainBlockedReason != nil)
-                            .help("Replaces these ideas with a new set. One request, billed again; Studio asks first.")
+                            .help("Replaces these ideas with a new set. One request, billed again; Plinth asks first.")
                     }
                     // A missing key is explained once, at the top of the form.
                     if let reason = suggestBlockedReason, anthropic.isConfigured {
@@ -716,11 +716,11 @@ struct AccessoryDesignerSheet: View {
                 Label("Claude (Anthropic) is set up.", systemImage: "checkmark.circle").foregroundStyle(.secondary)
             }
             if openSCAD != nil {
-                Label("OpenSCAD is installed; Studio renders each design with it on this Mac.", systemImage: "checkmark.circle")
+                Label("OpenSCAD is installed; Plinth renders each design with it on this Mac.", systemImage: "checkmark.circle")
                     .foregroundStyle(.secondary)
             } else if lookedForOpenSCAD {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("OpenSCAD isn’t installed in Applications. Studio needs it to render each design on this Mac.", systemImage: "exclamationmark.triangle")
+                    Label("OpenSCAD isn’t installed in Applications. Plinth needs it to render each design on this Mac.", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                     HStack {
                         Link("Install OpenSCAD", destination: accessoryInstallOpenSCADURL)
@@ -740,7 +740,7 @@ struct AccessoryDesignerSheet: View {
         let forecast = accessoryCostForecast(photoSizes: photos.map { ($0.image.pixelWidth, $0.image.pixelHeight) },
                                              textCharacters: accessoryFirstTurnText(brief, photoCount: max(1, photos.count)).count)
         return accessoryCostForecastText(forecast)
-            + " Each round allows \(AccessoryDesignLimits().maxReplies) replies and \(AccessoryDesignLimits().maxRenders) renders; Studio never resends a request by itself."
+            + " Each round allows \(AccessoryDesignLimits().maxReplies) replies and \(AccessoryDesignLimits().maxRenders) renders; Plinth never resends a request by itself."
     }
 
     private var blockedReason: String? {
@@ -914,7 +914,7 @@ private struct AccessoryDesignRunView: View {
                 .foregroundStyle(passed ? Color.secondary : Color.orange).font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
         case .refusedCode(let text):
-            Label("Studio didn’t run Claude’s code: \(text)", systemImage: "hand.raised")
+            Label("Plinth didn’t run Claude’s code: \(text)", systemImage: "hand.raised")
                 .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
         case .question(let text):
             Label { Text(text).bold().fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: "questionmark.bubble") }
@@ -1069,7 +1069,7 @@ private struct AccessoryDesignRunView: View {
 
     private func checksSection(_ render: AccessoryRender) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Studio’s checks").font(.headline)
+            Text("Checked by Plinth").font(.headline)
             ForEach(Array(accessoryStudioCheckLines(render.facts).enumerated()), id: \.offset) { _, line in
                 Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
             }

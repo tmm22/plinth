@@ -5,7 +5,7 @@ import UserNotifications
 
 // MARK: - Order watch: settings and limits
 
-/// Settings › Advanced › Check orders while Slant Studio is open (on unless turned off).
+/// Settings › Advanced › Check orders while Plinth is open (on unless turned off).
 let orderWatchEnabledDefaultsKey = "orderWatchEnabled"
 /// Settings › Advanced › Notify me about order changes (off until turned on, which asks macOS for permission).
 let orderWatchNotifyDefaultsKey = "orderWatchNotify"
@@ -647,7 +647,7 @@ private struct PendingNotificationOpen {
     @Published private(set) var notify: Bool = UserDefaults.standard.bool(forKey: orderWatchNotifyDefaultsKey) {
         didSet { UserDefaults.standard.set(notify, forKey: orderWatchNotifyDefaultsKey) }
     }
-    /// macOS has notifications for Slant Studio turned off (or permission was refused).
+    /// macOS has notifications for Plinth turned off (or permission was refused).
     @Published private(set) var notificationsDenied = false
     @Published private(set) var requestingPermission = false
     /// Shown in Settings › Advanced while checks are paused (401/403) or waiting after a 429; memory only.

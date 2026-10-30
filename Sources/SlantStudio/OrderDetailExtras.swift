@@ -270,7 +270,7 @@ enum OrderProblemKind: String, CaseIterable, Identifiable {
 /// Slant's docs name support@slant3d.com (its Technical Support section). The caption names it as text only: the
 /// sheet offers Copy and never opens a mail link or sends anything.
 let orderProblemSupportAddress = "support@slant3d.com"
-let orderProblemReportCaption = "Studio puts together a message with this order’s details for you to send to Slant support (\(orderProblemSupportAddress)). It doesn’t send anything itself: copy the message and paste it into your email or support request. Names and addresses aren’t included."
+let orderProblemReportCaption = "Plinth puts together a message with this order’s details for you to send to Slant support (\(orderProblemSupportAddress)). It doesn’t send anything itself: copy the message and paste it into your email or support request. Names and addresses aren’t included."
 
 /// The support message: order number, status, created date, tracking numbers, items with quantities and materials,
 /// the problem and the seller's description. No recipient name, email or address.
