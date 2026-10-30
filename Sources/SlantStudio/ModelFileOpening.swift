@@ -175,6 +175,8 @@ final class SlantStudioAppDelegate: NSObject, NSApplicationDelegate {
     /// The notification delegate must be set before launch finishes, so a click on an order notification that launched
     /// the app is delivered (OrderWatch.swift holds it until the window and store exist).
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Normally done already by the App's init(); this only guards a different start-up order.
+        MainActor.assumeIsolated { LegacyMigration.runAtLaunch() }
         if orderWatchNotificationsAvailable() { UNUserNotificationCenter.current().delegate = OrderWatchNotificationDelegate.shared }
         // One main window only (the store is shared): no window tabs, whose + button would open a second one. Set
         // before the first window, so the tab menu items never appear.

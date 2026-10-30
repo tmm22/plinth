@@ -950,16 +950,29 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         case loadPlatform(String)
         case loadComponentCategories
     }
-    static var supportDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SlantStudio")
-    }
+    /// Application Support/Plinth, or Slant Studio's folder for a launch whose move from it failed. Decided once per
+    /// launch (`AppSupportLocation`, LegacyMigration.swift).
+    static var supportDirectory: URL { AppSupportLocation.directory }
     init() {
+        // Done already by the App's init(), which must run first: the stored properties above read preferences before
+        // this body runs. This call only guards a different start-up order.
+        LegacyMigration.runAtLaunch()
         do { apiKey = try KeychainStore.load() } catch {
             // With no key loaded, the main window shows its Connect Slant Account prompt.
             showError("Slant Studio couldn’t read the saved key. Enter it again in Settings.")
         }
         let path = Self.supportDirectory.appendingPathComponent("models.json")
         if let data = try? Data(contentsOf: path), let saved = try? JSONDecoder().decode([LocalModel].self, from: data) { localModels = saved }
+        // A model still pointing into Slant Studio's Models folder uses its copy in this folder when there is one.
+        if let remapped = libraryRemappingLegacyModelPaths(localModels, legacy: AppSupportLocation.otherDirectory,
+                                                           current: Self.supportDirectory,
+                                                           fileExists: { FileManager.default.fileExists(atPath: $0) }) {
+            localModels = remapped
+            saveModels()
+        }
+        if let detail = legacyMigrationActivityDetail(LegacyMigrationLaunch.outcome) {
+            activities.insert(Activity(title: "Moved from Slant Studio", detail: detail, success: true), at: 0)
+        }
         savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
         sellerAddress = loadSellerAddress(from: Self.sellerAddressURL)
         // Personalisation hook (Personalisation.swift): remove leftover OpenSCAD temp folders; stop local runs on quit.

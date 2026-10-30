@@ -11,7 +11,7 @@ let orderWatchEnabledDefaultsKey = "orderWatchEnabled"
 let orderWatchNotifyDefaultsKey = "orderWatchNotify"
 /// Settings › Advanced › Show count on Dock icon (on unless turned off): the sidebar's Orders badge, on the Dock tile.
 let orderWatchDockBadgeDefaultsKey = "orderWatchDockBadge"
-/// Order IDs, statuses and times only, in Application Support/SlantStudio.
+/// Order IDs, statuses and times only, in the app's support folder (`AppSupportLocation`).
 let orderWatchFileName = "order-watch.json"
 /// Time between checks. Each check makes at most two reads (newest created, then most recently updated), so 30 reads
 /// an hour: well inside Slant's 100 a minute, and each read first leaves `orderWatchRateLimitReserve` to the seller.
