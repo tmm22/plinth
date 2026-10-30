@@ -14,12 +14,26 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
     private var _createNames: [String] = []
     private var _shippingRequests: [DapiShippingKey] = []
     var listResult: Result<[DapiQuote], DapiError> = .success([])
-    var uploadResult: Result<String, DapiError> = .success("upl_1")
+    var uploadResult: Result<DapiUploadTarget, DapiError> = .success(DapiUploadTarget(
+        uploadID: "upl_1", uploadURL: URL(string: "https://files.example.com/temp/a.stl?sig=1")!, headers: [:],
+        contentType: "model/stl", sizeBytes: 1))
+    var putResult: Result<Void, DapiError> = .success(())
     var createResult: Result<DapiQuote, DapiError> = .success(DapiQuoteTests.quote("qte_new", status: "processing"))
     var shippingResult: Result<DapiShippingEstimate, DapiError> = .success(
         DapiShippingEstimate(countryCode: "GB", zoneName: "UK", tier: "small", total: DapiMoney(amountMinor: 699, currency: "usd")))
-    /// Called from inside `uploadQuoteFile`, before it returns (to press Stop or close mid-upload).
+    /// Called from inside `createUpload` (the POST), before it returns (to press Stop or close mid-request).
     var duringUpload: (@Sendable () async -> Void)?
+    /// Called from inside `sendUploadBytes` (the PUT); it may throw `CancellationError` to model a cancelled transfer.
+    var duringPut: (@Sendable () async throws -> Void)?
+    /// Called from inside `createQuote`, before it returns.
+    var duringCreate: (@Sendable () async -> Void)?
+    /// Whether the task was cancelled when each `createUpload` and `createQuote` returned (writes are never cancelled).
+    private var _writeCancelled: [Bool] = []
+    var writeCancelled: [Bool] { lock.withLock { _writeCancelled } }
+    private var _uploadSizes: [Int64] = []
+    var uploadSizes: [Int64] { lock.withLock { _uploadSizes } }
+    private var _uploadTypes: [String] = []
+    var uploadTypes: [String] { lock.withLock { _uploadTypes } }
 
     var calls: [String] { lock.withLock { _calls } }
     var uploadKeys: [String] { lock.withLock { _uploadKeys } }
@@ -38,15 +52,28 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         record("list")
         return try listResult.get()
     }
-    func uploadQuoteFile(at fileURL: URL, fileName: String, contentType: String, idempotencyKey: String) async throws -> String {
+    func createUpload(fileName: String, contentType: String, sizeBytes: Int64, idempotencyKey: String) async throws -> DapiUploadTarget {
         record("upload")
-        lock.withLock { _uploadKeys.append(idempotencyKey); _uploadNames.append(fileName) }
+        lock.withLock {
+            _uploadKeys.append(idempotencyKey); _uploadNames.append(fileName)
+            _uploadSizes.append(sizeBytes); _uploadTypes.append(contentType)
+        }
         if let duringUpload { await duringUpload() }
+        let cancelled = Task.isCancelled
+        lock.withLock { _writeCancelled.append(cancelled) }
         return try uploadResult.get()
+    }
+    func sendUploadBytes(_ target: DapiUploadTarget, fileURL: URL) async throws {
+        record("put")
+        if let duringPut { try await duringPut() }
+        try putResult.get()
     }
     func createQuote(uploadID: String, name: String, idempotencyKey: String) async throws -> DapiQuote {
         record("create")
         lock.withLock { _createNames.append(name) }
+        if let duringCreate { await duringCreate() }
+        let cancelled = Task.isCancelled
+        lock.withLock { _writeCancelled.append(cancelled) }
         return try createResult.get()
     }
     func quote(id: String) async throws -> DapiQuote {
@@ -74,6 +101,13 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
     var activity: [(title: String, detail: String, success: Bool)] = []
     var keyCounter = 0
     var hasKey = true
+    /// What `client()` throws when `hasKey` is false.
+    var keyError: DapiError = .missingKey
+    var inFlight: Set<String> = []
+    var unknown: Set<String> = []
+    /// What the allowance read returns (nil: the read failed), and how often it ran.
+    var allowance: DapiOnboarding?
+    var allowanceReads = 0
     /// Called before each sleep returns, with the sleep's number (1-based).
     var onSleep: ((Int) -> Void)?
     weak var runner: DapiQuoteRunner?
@@ -81,13 +115,19 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
     func environment(_ stub: ScriptedDapi) -> DapiQuoteEnvironment {
         DapiQuoteEnvironment(
             client: { [unowned self] in
-                guard self.hasKey else { throw DapiError.missingKey }
+                guard self.hasKey else { throw self.keyError }
                 return stub
             },
             readyQuoteID: { [unowned self] in self.cache[$0] },
-            rememberReadyQuote: { [unowned self] id, hash in self.cache[hash] = id },
+            rememberReadyQuote: { [unowned self] id, hash in self.cache[hash] = id; self.unknown.remove(hash) },
             beginRequest: { [unowned self] in self.begun += 1 },
             endRequest: { [unowned self] in self.ended += 1 },
+            quoteWriteInFlight: { [unowned self] in self.inFlight.contains($0) },
+            quoteWriteOutcomeUnknown: { [unowned self] in self.unknown.contains($0) },
+            beginQuoteWrite: { [unowned self] in self.inFlight.insert($0) },
+            endQuoteWrite: { [unowned self] in self.inFlight.remove($0) },
+            noteQuoteWriteUnknown: { [unowned self] in self.unknown.insert($0) },
+            readAllowance: { [unowned self] in self.allowanceReads += 1; return self.allowance },
             refreshAllowance: {},
             sleep: { [weak self] seconds in
                 await self?.recordSleep(seconds)
@@ -116,9 +156,9 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
 
 @MainActor final class DapiQuoteTests: XCTestCase {
     nonisolated static func quote(_ id: String, status: String, cents: Int? = nil, name: String? = nil, createdAt: Date? = nil,
-                                  failure: String? = nil, materials: [DapiSuggestedMaterial] = []) -> DapiQuote {
+                                  failure: String? = nil, materials: [DapiSuggestedMaterial] = [], approval: String? = nil) -> DapiQuote {
         DapiQuote(id: id, name: name, status: status, price: cents.map { DapiMoney(amountMinor: $0, currency: "usd") },
-                  failureReason: failure, suggestedMaterials: materials, createdAt: createdAt)
+                  failureReason: failure, suggestedMaterials: materials, createdAt: createdAt, approvalStatus: approval)
     }
 
     private var tempDirectory: URL!
@@ -158,10 +198,12 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         XCTAssertFalse(dapiUploadFileName(fileHash: real, format: .stl).contains("Customer"))
     }
 
-    func testContentTypes() {
-        XCTAssertEqual(dapiContentType(.stl), "model/stl")
-        XCTAssertEqual(dapiContentType(.obj), "model/obj")
-        XCTAssertEqual(dapiContentType(.threeMF), "model/3mf")
+    func testContentTypesComeFromTheClientsExtensionTable() {
+        // The runner names the upload `plinth-….<format.rawValue>` and declares the client's type for that extension.
+        XCTAssertEqual(dapiQuoteFileContentType(forExtension: ModelFileFormat.stl.rawValue), "model/stl")
+        XCTAssertEqual(dapiQuoteFileContentType(forExtension: ModelFileFormat.obj.rawValue), "model/obj")
+        XCTAssertEqual(dapiQuoteFileContentType(forExtension: ModelFileFormat.threeMF.rawValue), "model/3mf")
+        XCTAssertNil(dapiQuoteFileContentType(forExtension: "step"), "Plinth quotes STL, OBJ and 3MF only")
     }
 
     func testHashIsStreamedSHA256InLowerCaseHex() throws {
@@ -183,7 +225,7 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         XCTAssertEqual(dapiQuoteFileProblem(size: 0, format: .stl), "The model’s file is empty.")
         XCTAssertNil(dapiQuoteFileProblem(size: dapiMaxQuoteFileBytes, format: .threeMF))
         XCTAssertNotNil(dapiQuoteFileProblem(size: dapiMaxQuoteFileBytes + 1, format: .threeMF))
-        XCTAssertNotNil(dapiQuoteFileProblem(size: 10, format: nil))
+        XCTAssertEqual(dapiQuoteFileProblem(size: 10, format: nil), "Plinth can quote STL, OBJ and 3MF models.")
         XCTAssertNil(dapiRegularFileSize(at: tempDirectory), "a folder isn't a file")
         XCTAssertEqual(dapiRegularFileSize(at: fileURL), Int64(fileBytes.count))
     }
@@ -206,6 +248,46 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         // Without dates, 3DAPI's newest-first order decides.
         let undated = [Self.quote("q1", status: "processing", name: "n"), Self.quote("q2", status: "processing", name: "n")]
         XCTAssertEqual(dapiPickExistingQuote(undated, name: "n"), .processing(undated[0]))
+    }
+
+    func testPickSkipsRejectedAndPricelessQuotes() {
+        let rejected = Self.quote("qte_rej", status: "ready", cents: 100, name: "n", createdAt: Date(timeIntervalSince1970: 3_000), approval: "rejected")
+        let priceless = Self.quote("qte_free", status: "ready", name: "n", createdAt: Date(timeIntervalSince1970: 2_000))
+        let older = Self.quote("qte_ok", status: "ready", cents: 120, name: "n", createdAt: Date(timeIntervalSince1970: 1_000), approval: "approved")
+        XCTAssertEqual(dapiPickExistingQuote([rejected, priceless, older], name: "n"), .ready(older))
+        XCTAssertEqual(dapiPickExistingQuote([rejected, priceless], name: "n"), .none)
+        let rejectedProcessing = Self.quote("qte_rp", status: "processing", name: "n", approval: "rejected")
+        XCTAssertEqual(dapiPickExistingQuote([rejectedProcessing], name: "n"), .none)
+        XCTAssertFalse(rejected.isUsable)
+        XCTAssertFalse(priceless.isUsable)
+        XCTAssertTrue(older.isUsable)
+        XCTAssertTrue(Self.quote("q", status: "ready", cents: 1, approval: "in_review").isUsable)
+        XCTAssertNotNil(dapiUnusableQuoteMessage(rejected))
+        XCTAssertNotNil(dapiUnusableQuoteMessage(priceless))
+        XCTAssertNil(dapiUnusableQuoteMessage(older))
+    }
+
+    // MARK: Earlier writes
+
+    func testNewQuoteGate() {
+        XCTAssertEqual(dapiNewQuoteGate(writeInFlight: false, outcomeUnknown: false, confirmedAnother: false), .proceed)
+        XCTAssertEqual(dapiNewQuoteGate(writeInFlight: false, outcomeUnknown: true, confirmedAnother: false), .confirm)
+        XCTAssertEqual(dapiNewQuoteGate(writeInFlight: false, outcomeUnknown: true, confirmedAnother: true), .proceed)
+        XCTAssertEqual(dapiNewQuoteGate(writeInFlight: true, outcomeUnknown: true, confirmedAnother: true), .wait,
+                       "a write in flight blocks even after the seller confirmed")
+        XCTAssertEqual(dapiNewQuoteGate(writeInFlight: true, outcomeUnknown: false, confirmedAnother: false), .wait)
+    }
+
+    func testAllowanceProblem() {
+        func onboarding(_ status: String, used: Int, limit: Int?) -> DapiOnboarding {
+            DapiOnboarding(status: status, approvedFiles: 0, requiredFiles: 10, uploadsUsed: used, uploadsLimit: limit)
+        }
+        XCTAssertNil(dapiAllowanceProblem(nil), "a failed read never blocks")
+        XCTAssertNil(dapiAllowanceProblem(onboarding("collecting", used: 24, limit: 25)))
+        XCTAssertNil(dapiAllowanceProblem(onboarding("approved", used: 400, limit: nil)))
+        XCTAssertTrue(dapiAllowanceProblem(onboarding("in_review", used: 3, limit: 25))?.contains("reviews") == true)
+        XCTAssertTrue(dapiAllowanceProblem(onboarding("collecting", used: 25, limit: 25))?.contains("all 25 quotes") == true)
+        XCTAssertNotNil(dapiAllowanceProblem(onboarding("changes_requested", used: 30, limit: 25)))
     }
 
     // MARK: Polling schedule
@@ -252,20 +334,36 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         XCTAssertNil(total(estimate: ["total": NSNull()]))
     }
 
-    private func order(_ id: String, status: String = "SHIPPED", country: String, delivery: String) -> Record {
-        Record(values: ["publicId": id, "status": status, "createdAt": "2026-10-01T00:00:00Z", "deliveryCost": delivery,
-                        "items": [["type": "PRINT", "publicFileServiceId": "f1", "quantity": 1]],
-                        "customer": ["details": ["address": ["country": country]]]])
+    private func order(_ id: String, status: String = "SHIPPED", country: String, delivery: String, platform: String? = nil) -> Record {
+        var customer: [String: Any] = ["details": ["address": ["country": country]]]
+        if let platform { customer["platformId"] = platform }
+        return Record(values: ["publicId": id, "status": status, "createdAt": "2026-10-01T00:00:00Z", "deliveryCost": delivery,
+                               "items": [["type": "PRINT", "publicFileServiceId": "f1", "quantity": 1]], "customer": customer])
     }
 
     func testSlantDeliveryFromLoadedOrders() {
         let orders = [order("A", country: "GB", delivery: "12.00"), order("B", country: "GB", delivery: "16.00"),
                       order("C", status: "DRAFT", country: "GB", delivery: "40.00"), order("D", country: "US", delivery: "5.00")]
-        let gb = dapiSlantDelivery(orders: orders, countryCode: "gb")
+        let gb = dapiSlantDelivery(orders: orders, platformID: "", countryCode: "gb")
         XCTAssertEqual(gb?.orders, 2)
         XCTAssertEqual(gb?.average, 14)
-        XCTAssertNil(dapiSlantDelivery(orders: orders, countryCode: "AU"))
-        XCTAssertNil(dapiSlantDelivery(orders: orders, countryCode: ""))
+        XCTAssertNil(dapiSlantDelivery(orders: orders, platformID: "", countryCode: "AU"))
+        XCTAssertNil(dapiSlantDelivery(orders: orders, platformID: "", countryCode: ""))
+    }
+
+    func testSlantDeliveryCountsOnlyTheDefaultPlatformsOrdersLikeTheSpendingReport() {
+        let orders = [order("A", country: "GB", delivery: "12.00", platform: "plat_mine"),
+                      order("B", country: "GB", delivery: "40.00", platform: "plat_other"),
+                      order("C", country: "GB", delivery: "16.00")] // names no platform: kept
+        let gb = dapiSlantDelivery(orders: orders, platformID: "plat_mine", countryCode: "GB")
+        XCTAssertEqual(gb?.orders, 2)
+        XCTAssertEqual(gb?.average, 14)
+        XCTAssertEqual(gb?.highest, 16)
+        // The same figure the Spending Report sums for that platform.
+        let report = spendReport(orders: ordersShownOnPlatform(orders, platformID: "plat_mine"))
+        XCTAssertEqual(report.deliveryCosts.first { $0.countryCode == "GB" }, gb)
+        XCTAssertEqual(dapiSlantDelivery(orders: orders, platformID: "", countryCode: "GB")?.orders, 3, "no default platform: all")
+        XCTAssertNil(dapiSlantDelivery(orders: [orders[1]], platformID: "plat_mine", countryCode: "GB"))
     }
 
     // MARK: Comparison rows
@@ -289,18 +387,43 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         XCTAssertEqual(row(rows, "print").dapi.value, "$12.45")
         XCTAssertEqual(row(rows, "print").slant.value, "$9.50")
         XCTAssertEqual(row(rows, "shipping").dapi.value, "$6.99")
-        XCTAssertEqual(row(rows, "shipping").dapi.note, "Zone UK · small parcel · excl. VAT")
-        XCTAssertEqual(row(rows, "shipping").slant.value, "$14.00 average")
-        XCTAssertTrue(row(rows, "shipping").slant.note?.contains("2 loaded orders, $12.00–$16.00") == true)
+        XCTAssertEqual(row(rows, "shipping").dapi.note, "Small parcel", "the parcel size only: no zone, no VAT")
+        XCTAssertEqual(row(rows, "shipping").label, "Shipping (\(dapiCountryName("GB")))")
+        XCTAssertEqual(row(rows, "shipping").slant.value, "$14.00")
+        XCTAssertEqual(row(rows, "shipping").slant.note,
+                       "Average of 2 past orders to \(dapiCountryPhrase("GB")) ($12.00–$16.00), whatever they held")
         XCTAssertEqual(row(rows, "total").dapi.value, "$19.44", "one unit: not an upper bound")
+        XCTAssertNil(row(rows, "total").dapi.note)
         XCTAssertEqual(row(rows, "total").slant.value, "About $23.50")
+        for cell in rows.flatMap({ [$0.dapi, $0.slant] }) {
+            XCTAssertFalse((cell.value + (cell.note ?? "")).contains("VAT"), "VAT is one note under the table")
+            XCTAssertFalse((cell.value + (cell.note ?? "")).contains("Zone"))
+        }
+        var one = SpendReportDeliveryCost(countryCode: "GB")
+        one.orders = 1; one.total = 12; one.lowest = 12; one.highest = 12
+        XCTAssertEqual(dapiSlantDeliveryNote(one, countryCode: "DE"), "From 1 past order to \(dapiCountryPhrase("DE")), whatever it held")
+        XCTAssertEqual(dapiShippingNote(DapiShippingEstimate(countryCode: "GB", zoneName: nil, tier: nil,
+                                                             total: DapiMoney(amountMinor: 1, currency: "usd"))), "Flat rate")
+        XCTAssertEqual(dapiShippingNote(DapiShippingEstimate(countryCode: "GB", zoneName: "EU-Core", tier: "LARGE",
+                                                             total: DapiMoney(amountMinor: 1, currency: "usd"))), "Large parcel")
+    }
+
+    func testSlantTotalOnlyForOneUnit() {
+        var delivery = SpendReportDeliveryCost(countryCode: "GB")
+        delivery.orders = 2; delivery.total = 28; delivery.lowest = 12; delivery.highest = 16
+        let one = dapiComparisonRows(inputs(quantity: 1, slant: 9, delivery: delivery))
+        XCTAssertEqual(row(one, "total").slant.value, "About $23.00")
+        let several = dapiComparisonRows(inputs(quantity: 3, slant: 27, delivery: delivery))
+        XCTAssertEqual(row(several, "total").slant.value, "—")
+        XCTAssertEqual(row(several, "total").slant.note, dapiSlantTotalOtherParcelsText)
+        XCTAssertEqual(row(several, "print").slant.value, "$27.00", "the print estimate itself is still shown")
     }
 
     func testComparisonWithoutSlantEstimateOrDeliveryHistory() {
         let rows = dapiComparisonRows(inputs())
         XCTAssertEqual(row(rows, "print").slant.note, dapiNoSlantEstimateText)
         XCTAssertTrue(row(rows, "print").slant.isWarning)
-        XCTAssertTrue(row(rows, "shipping").slant.note?.contains("none of your loaded orders went to") == true)
+        XCTAssertEqual(row(rows, "shipping").slant.note, "None of your loaded orders went there. Slant prices delivery only in a draft.")
         XCTAssertEqual(row(rows, "total").slant.value, "—")
     }
 
@@ -316,9 +439,9 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
 
     func testStaleShippingIsNotShownOrAdded() {
         let rows = dapiComparisonRows(inputs(stale: true))
-        XCTAssertEqual(row(rows, "shipping").dapi.value, "Out of date")
-        XCTAssertTrue(row(rows, "shipping").dapi.isWarning)
-        XCTAssertEqual(row(rows, "total").dapi.value, "—")
+        // Explained once by the sheet's orange line with Update Shipping; the cells only say "—".
+        XCTAssertEqual(row(rows, "shipping").dapi, DapiComparisonCell(value: "—"))
+        XCTAssertEqual(row(rows, "total").dapi, DapiComparisonCell(value: "—"))
         XCTAssertTrue(dapiShippingIsStale(shippingFor: DapiShippingKey(countryCode: "GB", quantity: 1),
                                           destination: DapiShippingKey(countryCode: "DE", quantity: 1)))
         XCTAssertTrue(dapiShippingIsStale(shippingFor: DapiShippingKey(countryCode: "GB", quantity: 1),
@@ -340,16 +463,29 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         let materials = [DapiSuggestedMaterial(slot: 1, materialName: "PLA Red", fileFilamentType: "PLA", match: "exact")]
         let uk = dapiComparisonNotes(countryCode: "GB", shipping: ukShipping, suggestedMaterials: materials, slantMaterialName: "PETG Black")
         XCTAssertTrue(uk.contains { $0.contains("PLA Red") && $0.contains("PETG Black") })
-        XCTAssertTrue(uk.contains { $0.contains("import VAT or duty") && $0.contains("zone UK") })
-        XCTAssertTrue(uk.contains { $0.contains("3–5 business days") && $0.contains("Oct 2026") })
+        XCTAssertTrue(uk.contains(dapiVATNote))
+        XCTAssertTrue(uk.contains("Slant ships from the US, so a parcel to \(dapiCountryPhrase("GB")) goes through customs: it can take longer, and the buyer may pay duty or courier fees unless the marketplace collected VAT at checkout. 3DAPI prints in or near the buyer’s region where it can."))
+        XCTAssertFalse(uk.contains { $0.contains("zone") || $0.contains("Zone") })
+        XCTAssertTrue(uk.contains { $0.contains("1–3 business days locally or 5–10 internationally") && $0.contains("Oct 2026") })
+        XCTAssertEqual(uk.last, dapiComparisonOnlyNote)
         let us = dapiComparisonNotes(countryCode: "US", shipping: nil, suggestedMaterials: [], slantMaterialName: nil)
-        XCTAssertFalse(us.contains { $0.contains("import VAT") })
+        XCTAssertFalse(us.contains { $0.contains("customs") })
         XCTAssertFalse(us.contains { $0.contains("suggested") })
+        XCTAssertTrue(us.contains(dapiVATNote))
+    }
+
+    func testCountryPhraseAddsTheOnlyInEnglish() {
+        let english = Locale(identifier: "en_GB")
+        XCTAssertEqual(dapiCountryPhrase("GB", locale: english), "the United Kingdom")
+        XCTAssertEqual(dapiCountryPhrase("nl", locale: english), "the Netherlands")
+        XCTAssertEqual(dapiCountryPhrase("DE", locale: english), "Germany")
+        XCTAssertEqual(dapiCountryPhrase("GB", locale: Locale(identifier: "de_DE")), dapiCountryName("GB", locale: Locale(identifier: "de_DE")))
     }
 
     func testAllowanceText() {
         XCTAssertEqual(dapiOnboardingAllowanceText(DapiOnboarding(status: "collecting", approvedFiles: 0, requiredFiles: 10,
-                                                                  uploadsUsed: 7, uploadsLimit: 25)), "7 of 25 quotes used this round")
+                                                                  uploadsUsed: 7, uploadsLimit: 25)),
+                       "7 of 25 quotes used (3DAPI’s limit until it approves your account).")
         XCTAssertNil(dapiOnboardingAllowanceText(DapiOnboarding(status: "approved", approvedFiles: 10, requiredFiles: 10,
                                                                 uploadsUsed: 40, uploadsLimit: nil)))
         XCTAssertNil(dapiOnboardingAllowanceText(nil))
@@ -364,8 +500,27 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         let rate = dapiQuoteErrorMessage(.rateLimited(code: "rate_limited", retryAt: now.addingTimeInterval(30)), step: .poll, now: now)
         XCTAssertTrue(rate.contains("about 30 seconds"), rate)
         XCTAssertTrue(dapiQuoteErrorMessage(.outcomeUnknown("x"), step: .create, now: now).contains("looks for this quote first"))
-        XCTAssertTrue(dapiQuoteErrorMessage(.outcomeUnknown("x"), step: .upload, now: now).contains("may have received the file"))
+        XCTAssertTrue(dapiQuoteErrorMessage(.outcomeUnknown("x"), step: .upload, now: now).contains("may have received the upload request"))
+        XCTAssertTrue(dapiQuoteErrorMessage(.outcomeUnknown("x"), step: .transfer, now: now).contains("may not have reached 3DAPI in full"))
         XCTAssertTrue(dapiQuoteErrorMessage(.missingKey, step: .lookup, now: now).contains("Settings"))
+        // No "3DAPI refused the file." before a message that already starts with 3DAPI.
+        let expired = dapiQuoteErrorMessage(.refused(status: 422, code: "upload_expired", message: nil), step: .create, now: now)
+        XCTAssertEqual(expired, "3DAPI refused the quote. The upload expired before the quote was requested (3DAPI keeps uploads for 24 hours). Press Get Quote to upload it again.")
+        let missing = dapiQuoteErrorMessage(.refused(status: 422, code: "unknown_upload", message: nil), step: .create, now: now)
+        XCTAssertEqual(missing, "3DAPI couldn’t find the uploaded model. Press Get Quote to upload it again.")
+        let type = dapiQuoteErrorMessage(.refused(status: 422, code: "file_type_not_allowed", message: nil), step: .upload, now: now)
+        XCTAssertEqual(type, "3DAPI didn’t accept this file type. Plinth can quote STL, OBJ and 3MF models.")
+        let tooLarge = dapiQuoteErrorMessage(.refused(status: 413, code: "file_too_large", message: nil), step: .upload, now: now)
+        XCTAssertEqual(tooLarge, "3DAPI refused the file. This model is larger than 3DAPI’s 250 MB limit for quotes.")
+        let storage = dapiQuoteErrorMessage(.refused(status: 403, code: nil, message: nil), step: .transfer, now: now)
+        XCTAssertEqual(storage, "3DAPI refused the file. Press Get Quote to upload it again.")
+        for code in ["unknown_upload", "upload_missing", "upload_purpose_mismatch", "upload_expired", "upload_already_used"] {
+            let text = DapiError.refused(status: 422, code: code, message: nil).userMessage
+            XCTAssertTrue(text.hasSuffix("Press Get Quote to upload it again."), text)
+            XCTAssertFalse(text.contains("afresh"), text)
+        }
+        XCTAssertFalse(dapiStoppedPausedText.contains("carries on"))
+        XCTAssertTrue(dapiGaveUpPausedText.contains("15 minutes"))
     }
 
     // MARK: Runner
@@ -411,8 +566,13 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         runner.destination = DapiShippingKey(countryCode: "GB", quantity: 2)
         await run(runner)
         XCTAssertEqual(runner.phase, .ready)
-        XCTAssertEqual(stub.count("upload"), 1)
-        XCTAssertEqual(stub.count("create"), 1)
+        XCTAssertEqual(stub.calls, ["list", "upload", "put", "create", "read", "shipping"])
+        XCTAssertEqual(harness.allowanceReads, 1, "the allowance is read once, before the upload")
+        XCTAssertEqual(stub.uploadSizes, [Int64(fileBytes.count)])
+        XCTAssertEqual(stub.uploadTypes, ["model/stl"])
+        XCTAssertEqual(stub.writeCancelled, [false, false])
+        XCTAssertTrue(harness.inFlight.isEmpty, "the in-flight record ends with the create")
+        XCTAssertTrue(harness.unknown.isEmpty)
         XCTAssertEqual(stub.uploadNames, [dapiUploadFileName(fileHash: fileHash, format: .stl)])
         XCTAssertEqual(stub.createNames, [quoteName])
         XCTAssertEqual(stub.uploadKeys, ["key-1"])
@@ -439,12 +599,191 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         XCTAssertEqual(stub.count("create"), 1)
         XCTAssertEqual(stub.count("read"), 0)
         XCTAssertEqual(harness.activity.map(\.detail), ["Outcome unknown"])
-        // The next press looks first, and finds the quote the unknown create made.
+        XCTAssertEqual(harness.unknown, [fileHash], "remembered for the session")
+        XCTAssertTrue(harness.inFlight.isEmpty)
+        // The next press looks first, and finds the quote the unknown create made, which settles the record.
         stub.listResult = .success([Self.quote("qte_late", status: "ready", cents: 100, name: quoteName)])
         await run(runner)
         XCTAssertEqual(runner.phase, .ready)
         XCTAssertEqual(stub.count("upload"), 1)
         XCTAssertEqual(stub.count("create"), 1)
+        XCTAssertTrue(harness.unknown.isEmpty)
+    }
+
+    func testAfterAnUnknownOutcomeANotFoundLookupAsksBeforeCreatingAnother() async {
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        harness.unknown = [fileHash]
+        stub.scriptQuoteReads([.success(Self.quote("qte_new", status: "ready", cents: 900, name: quoteName))])
+        let runner = harness.makeRunner(stub)
+        await run(runner)
+        XCTAssertEqual(runner.phase, .confirmAnother)
+        XCTAssertEqual(stub.calls, ["list"], "the lookup runs; nothing is uploaded before the seller answers")
+        XCTAssertEqual(harness.allowanceReads, 0)
+        // Don't Quote sends nothing.
+        runner.declineAnother()
+        XCTAssertEqual(runner.phase, .idle)
+        XCTAssertEqual(stub.calls, ["list"])
+        // A plain Get Quote asks again; Get Another Quote looks once more, then sends one upload and one create.
+        await run(runner)
+        XCTAssertEqual(runner.phase, .confirmAnother)
+        runner.getQuote(fileURL: fileURL, format: .stl, confirmedAnother: true)
+        await runner.runTask?.value
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(stub.calls, ["list", "list", "list", "upload", "put", "create", "read"])
+        XCTAssertTrue(harness.unknown.isEmpty, "a confirmed ready quote clears the record")
+    }
+
+    func testUnknownUploadRequestIsRecordedAndNothingMoreIsSent() async {
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        stub.uploadResult = .failure(.outcomeUnknown("timed out"))
+        let runner = harness.makeRunner(stub)
+        await run(runner)
+        guard case .problem = runner.phase else { return XCTFail("\(runner.phase)") }
+        XCTAssertEqual(stub.calls, ["list", "upload"])
+        XCTAssertEqual(harness.unknown, [fileHash])
+        // A storage-side failure (the PUT) uses no quote, so it isn't recorded.
+        let putStub = ScriptedDapi(), putHarness = DapiTestHarness()
+        putStub.putResult = .failure(.outcomeUnknown("timed out"))
+        let putRunner = putHarness.makeRunner(putStub)
+        await run(putRunner)
+        XCTAssertEqual(putStub.calls, ["list", "upload", "put"])
+        XCTAssertTrue(putHarness.unknown.isEmpty)
+        XCTAssertEqual(putHarness.activity.map(\.detail), ["Outcome unknown"])
+    }
+
+    func testReopenedSheetWaitsWhileAnEarlierCreateIsInFlight() async {
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        stub.scriptQuoteReads([.success(Self.quote("qte_new", status: "processing", name: quoteName))])
+        let first = harness.makeRunner(stub)
+        let second = DapiQuoteRunner(environment: harness.environment(stub))
+        let fileURL = self.fileURL!
+        // The sheet closes mid-create, then reopens (a new runner) and Get Quote is pressed while the create waits.
+        stub.duringCreate = {
+            await MainActor.run {
+                first.close()
+                second.getQuote(fileURL: fileURL, format: .stl)
+            }
+            await second.runTask?.value
+        }
+        await run(first)
+        XCTAssertEqual(second.phase, .problem(dapiWriteInFlightText))
+        XCTAssertEqual(stub.count("upload"), 1)
+        XCTAssertEqual(stub.count("create"), 1)
+        XCTAssertEqual(stub.writeCancelled, [false, false], "closing never cancels a write")
+        guard case .paused = first.phase else { return XCTFail("\(first.phase)") }
+        XCTAssertTrue(harness.inFlight.isEmpty)
+    }
+
+    func testStopAfterTheUploadRequestSendsNoBytes() async {
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        let runner = harness.makeRunner(stub)
+        stub.duringUpload = { await MainActor.run { harness.runner?.stop() } }
+        await run(runner)
+        XCTAssertEqual(stub.calls, ["list", "upload"], "no PUT and no create")
+        XCTAssertEqual(stub.writeCancelled, [false], "the POST itself is never cancelled")
+        XCTAssertEqual(runner.phase, .problem(dapiStoppedBeforeBytesText))
+        XCTAssertEqual(harness.begun, harness.ended)
+        XCTAssertTrue(harness.inFlight.isEmpty)
+    }
+
+    func testStopDuringTheBytesCancelsThem() async {
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        let runner = harness.makeRunner(stub)
+        stub.duringPut = {
+            await MainActor.run { harness.runner?.stop() }
+            // A transfer that only ends when cancelled.
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+        }
+        let started = Date()
+        await run(runner)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "Stop ended the transfer at once")
+        XCTAssertEqual(stub.calls, ["list", "upload", "put"], "no create")
+        XCTAssertEqual(runner.phase, .problem(dapiStoppedDuringBytesText))
+        XCTAssertEqual(harness.activity.last?.detail, "Stopped")
+        XCTAssertEqual(harness.begun, harness.ended)
+        XCTAssertTrue(harness.unknown.isEmpty)
+    }
+
+    func testAllowanceInReviewOrUsedUpUploadsNothing() async {
+        for onboarding in [DapiOnboarding(status: "in_review", approvedFiles: 0, requiredFiles: 10, uploadsUsed: 3, uploadsLimit: 25),
+                           DapiOnboarding(status: "collecting", approvedFiles: 0, requiredFiles: 10, uploadsUsed: 25, uploadsLimit: 25)] {
+            let stub = ScriptedDapi(), harness = DapiTestHarness()
+            harness.allowance = onboarding
+            let runner = harness.makeRunner(stub)
+            await run(runner)
+            XCTAssertEqual(stub.calls, ["list"], onboarding.status)
+            XCTAssertEqual(runner.phase, .problem(dapiAllowanceProblem(onboarding)!))
+            XCTAssertEqual(harness.allowanceReads, 1)
+        }
+        // A failed read (nil) doesn't block.
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        harness.allowance = nil
+        stub.scriptQuoteReads([.success(Self.quote("qte_new", status: "ready", cents: 900, name: quoteName))])
+        let runner = harness.makeRunner(stub)
+        await run(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(stub.count("upload"), 1)
+    }
+
+    func testRejectedOrPricelessQuotesAreNeverCachedAndGetQuoteIsOfferedAgain() async {
+        // A cached ID that has since been rejected falls through to the lookup.
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        harness.cache[fileHash] = "qte_cached"
+        stub.scriptQuoteReads([.success(Self.quote("qte_cached", status: "ready", cents: 500, name: quoteName, approval: "rejected"))])
+        stub.listResult = .success([Self.quote("qte_cached", status: "ready", cents: 500, name: quoteName, approval: "rejected"),
+                                    Self.quote("qte_ok", status: "ready", cents: 600, name: quoteName)])
+        let runner = harness.makeRunner(stub)
+        await run(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(runner.quote?.id, "qte_ok")
+        XCTAssertEqual(stub.calls, ["read", "list"])
+        XCTAssertEqual(harness.cache[fileHash], "qte_ok")
+
+        // A create that comes back ready without a price is shown as a problem, not remembered, and Get Quote works.
+        let priceless = ScriptedDapi(), pricelessHarness = DapiTestHarness()
+        priceless.createResult = .success(Self.quote("qte_free", status: "ready", name: quoteName))
+        let pricelessRunner = pricelessHarness.makeRunner(priceless)
+        await run(pricelessRunner)
+        guard case .problem(let message) = pricelessRunner.phase else { return XCTFail("\(pricelessRunner.phase)") }
+        XCTAssertTrue(message.contains("Press Get Quote"), message)
+        XCTAssertNil(pricelessHarness.cache[fileHash])
+        XCTAssertEqual(pricelessHarness.activity.last?.detail, "Not usable")
+        XCTAssertEqual(priceless.count("shipping"), 0)
+        priceless.createResult = .success(Self.quote("qte_paid", status: "ready", cents: 700, name: quoteName))
+        await run(pricelessRunner)
+        XCTAssertEqual(pricelessRunner.phase, .ready)
+
+        // Polling that ends on a rejected quote does the same.
+        let polled = ScriptedDapi(), polledHarness = DapiTestHarness()
+        polled.scriptQuoteReads([.success(Self.quote("qte_new", status: "ready", cents: 500, name: quoteName, approval: "rejected"))])
+        let polledRunner = polledHarness.makeRunner(polled)
+        await run(polledRunner)
+        guard case .problem = polledRunner.phase else { return XCTFail("\(polledRunner.phase)") }
+        XCTAssertNil(polledHarness.cache[fileHash])
+    }
+
+    func testKeychainErrorIsReportedAsItIs() async {
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        harness.hasKey = false
+        harness.keyError = .notSent("Plinth couldn’t read the 3DAPI key from the Keychain: locked")
+        let runner = harness.makeRunner(stub)
+        await run(runner)
+        guard case .problem(let message) = runner.phase else { return XCTFail("\(runner.phase)") }
+        XCTAssertTrue(message.contains("Keychain"), message)
+        XCTAssertFalse(message.contains("No 3DAPI key"), message)
+        XCTAssertTrue(stub.calls.isEmpty)
+    }
+
+    func testReopenAcceptsPressesAgain() async {
+        let stub = ScriptedDapi(), harness = DapiTestHarness()
+        stub.listResult = .success([Self.quote("qte_r", status: "ready", cents: 500, name: quoteName)])
+        let runner = harness.makeRunner(stub)
+        runner.close()
+        runner.getQuote(fileURL: fileURL, format: .stl)
+        XCTAssertFalse(runner.isWorking, "a closed runner starts nothing")
+        runner.reopen()
+        await run(runner)
+        XCTAssertEqual(runner.phase, .ready)
     }
 
     func testRateLimitIsNotRetried() async {
@@ -488,7 +827,7 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         let runner = harness.makeRunner(stub)
         await run(runner)
         guard case .paused(let message) = runner.phase else { return XCTFail("\(runner.phase)") }
-        XCTAssertTrue(message.contains("Still processing on 3DAPI"))
+        XCTAssertEqual(message, dapiGaveUpPausedText)
         XCTAssertEqual(harness.sleeps.filter { $0 == 5 }.count, 24)
         XCTAssertTrue(harness.sleeps.allSatisfy { $0 == 5 || $0 == 15 })
         XCTAssertEqual(harness.sleeps.reduce(0, +), 900)
@@ -543,9 +882,9 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         stub.duringUpload = { await MainActor.run { harness.runner?.close() } }
         await run(runner)
         XCTAssertEqual(stub.count("upload"), 1)
+        XCTAssertEqual(stub.count("put"), 0, "no bytes after closing")
         XCTAssertEqual(stub.count("create"), 0, "no create after closing")
-        guard case .problem(let message) = runner.phase else { return XCTFail("\(runner.phase)") }
-        XCTAssertTrue(message.contains("Stopped after the upload"))
+        XCTAssertEqual(runner.phase, .problem(dapiStoppedBeforeBytesText))
         XCTAssertEqual(harness.begun, harness.ended)
         // A closed sheet starts nothing new.
         runner.getQuote(fileURL: fileURL, format: .stl)

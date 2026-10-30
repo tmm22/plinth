@@ -85,6 +85,15 @@ private func uploadReply(url: String = "https://files.example.com/temp/7f3a.stl?
     #"{"id":"upl_abc123","object":"upload","purpose":"quote_file","upload_url":"\#(url)","method":"\#(method)","headers":\#(headers),"expires_at":"2026-10-15T10:00:00Z"}"#
 }
 
+/// `createUpload` for the file's current size, then `sendUploadBytes`: what the quote runner does, minus its stops.
+@discardableResult
+private func uploadBoth(_ client: DapiClient, file: URL, name: String, type: String, key: String) async throws -> String {
+    let size = ((try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? NSNumber)?.int64Value ?? 1
+    let target = try await client.createUpload(fileName: name, contentType: type, sizeBytes: size, idempotencyKey: key)
+    try await client.sendUploadBytes(target, fileURL: file)
+    return target.uploadID
+}
+
 final class DapiClientTests: XCTestCase {
     private var folder: URL!
 
@@ -211,7 +220,18 @@ final class DapiClientTests: XCTestCase {
         let text = quote?.failureReason ?? ""
         XCTAssertFalse(text.contains("X-Amz-Signature=abc"))
         XCTAssertFalse(text.contains("sk_3f9a"))
-        XCTAssertLessThanOrEqual(text.count, dapiMaxMessageLength + 1)
+        XCTAssertLessThanOrEqual(text.count, dapiMaxFailureReasonLength + 1)
+        XCTAssertGreaterThan(text.count, dapiMaxMessageLength, "failure reasons get more room than other messages")
+    }
+
+    func testApprovalStatusIsParsed() {
+        XCTAssertEqual(dapiParseQuote(["id": "qte_a", "status": "ready", "approval": ["status": "REJECTED", "reason": "x"]])?.approvalStatus, "rejected")
+        XCTAssertTrue(dapiParseQuote(["id": "qte_a", "status": "ready", "approval": ["status": "rejected"]])?.isRejected ?? false)
+        XCTAssertNil(dapiParseQuote(["id": "qte_a", "status": "ready", "approval": NSNull()])?.approvalStatus)
+        XCTAssertNil(dapiParseQuote(["id": "qte_a", "status": "ready"])?.approvalStatus)
+        XCTAssertFalse(dapiParseQuote(["id": "qte_a", "status": "ready"])?.isUsable ?? true, "ready without a price")
+        XCTAssertTrue(dapiParseQuote(["id": "qte_a", "status": "ready", "price": ["amount": 100, "currency": "usd"],
+                                      "approval": ["status": "not_submitted"]])?.isUsable ?? false)
     }
 
     func testUnknownQuoteStatusIsKeptLowerCasedAndNotReady() {
@@ -258,16 +278,22 @@ final class DapiClientTests: XCTestCase {
         XCTAssertEqual(noneTransport.count, 1)
     }
 
-    func testQuotesListStopsWithoutCursorOrOnRepeatedCursor() async throws {
+    func testQuotesListFailsOnAMissingOrRepeatedCursor() async throws {
+        // `has_more` without a cursor: the rest can't be read, and a partial answer could hide a quote.
         let (client, transport) = makeClient([.reply(200, listJSON([quoteJSON(id: "qte_a1", name: "Stand")], hasMore: true, cursor: nil), [:])])
-        let quotes = try await client.quotes(named: "Stand", maxPages: 10)
-        XCTAssertEqual(quotes.count, 1)
+        let missing = await dapiError { _ = try await client.quotes(named: "Stand", maxPages: 10) }
+        guard case .readFailed? = missing else { return XCTFail("\(String(describing: missing))") }
         XCTAssertEqual(transport.count, 1)
 
         let repeated = listJSON([], hasMore: true, cursor: "same")
         let (second, secondTransport) = makeClient([.reply(200, repeated, [:]), .reply(200, repeated, [:]), .reply(200, repeated, [:])])
-        _ = try await second.quotes(named: "Stand", maxPages: 10)
+        let looped = await dapiError { _ = try await second.quotes(named: "Stand", maxPages: 10) }
+        guard case .readFailed? = looped else { return XCTFail("\(String(describing: looped))") }
         XCTAssertEqual(secondTransport.count, 2)
+
+        let (blank, _) = makeClient([.reply(200, #"{"object":"list","data":[],"has_more":true,"next_cursor":""}"#, [:])])
+        let blankCursor = await dapiError { _ = try await blank.quotes(named: "Stand", maxPages: 10) }
+        guard case .readFailed? = blankCursor else { return XCTFail("\(String(describing: blankCursor))") }
 
         let (empty, emptyTransport) = makeClient([.reply(200, #"{"object":"list","data":[],"has_more":false,"next_cursor":null}"#, [:])])
         let found = try await empty.quotes(named: "Stand", maxPages: 10)
@@ -300,7 +326,7 @@ final class DapiClientTests: XCTestCase {
     func testUploadQuoteFileSendsCreateThenPresignedPut() async throws {
         let file = try modelFile(bytes: 84)
         let (client, transport) = makeClient([.reply(201, uploadReplyJSON, [:]), .reply(200, "", [:])])
-        let uploadID = try await client.uploadQuoteFile(at: file, fileName: "Phone stand.stl", contentType: "model/stl", idempotencyKey: "idem-1")
+        let uploadID = try await uploadBoth(client, file: file, name: "Phone stand.stl", type: "model/stl", key: "idem-1")
         XCTAssertEqual(uploadID, "upl_bfP0GSqKoZFrD72H5Os0rc7HV9XP6eQJu")
         XCTAssertEqual(transport.count, 2)
 
@@ -334,7 +360,7 @@ final class DapiClientTests: XCTestCase {
         let file = try modelFile()
         let headers = #"{"Content-Type":"model/stl","Authorization":"Bearer x","Cookie":"a=b","x-api-key":"k","Host":"evil.example","Content-Length":"9","Proxy-Thing":"1","x-amz-meta-plinth":"ok","X-Bad":"line\r\nInjected: 1","X-Key":"\#(testKey)","x-number":5,"X-Accent":"café"}"#
         let (client, transport) = makeClient([.reply(201, uploadReply(headers: headers), [:]), .reply(200, "", [:])])
-        _ = try await client.uploadQuoteFile(at: file, fileName: "a.stl", contentType: "model/stl", idempotencyKey: "k1")
+        _ = try await uploadBoth(client, file: file, name: "a.stl", type: "model/stl", key: "k1")
         let put = transport.requests[1]
         let names = Set((put.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
         XCTAssertEqual(names, ["content-type", "x-amz-meta-plinth"])
@@ -343,7 +369,7 @@ final class DapiClientTests: XCTestCase {
     func testUploadWithoutStorageHeadersSendsDeclaredContentType() async throws {
         let file = try modelFile(name: "part.3mf")
         let (client, transport) = makeClient([.reply(201, uploadReply(headers: "{}"), [:]), .reply(200, "", [:])])
-        _ = try await client.uploadQuoteFile(at: file, fileName: "part.3mf", contentType: "Model/3MF", idempotencyKey: "k1")
+        _ = try await uploadBoth(client, file: file, name: "part.3mf", type: "Model/3MF", key: "k1")
         XCTAssertEqual(bodyJSON(transport.requests[0])?["content_type"] as? String, "model/3mf")
         XCTAssertEqual(transport.requests[1].value(forHTTPHeaderField: "Content-Type"), "model/3mf")
     }
@@ -358,14 +384,14 @@ final class DapiClientTests: XCTestCase {
         ]
         for link in unsafe {
             let (client, transport) = makeClient([.reply(201, uploadReply(url: link), [:]), .reply(200, "", [:])])
-            let error = await dapiError { _ = try await client.uploadQuoteFile(at: file, fileName: "a.stl", contentType: "model/stl", idempotencyKey: "k") }
+            let error = await dapiError { _ = try await uploadBoth(client, file: file, name: "a.stl", type: "model/stl", key: "k") }
             guard case .notSent(let message)? = error else { XCTFail("\(link): \(String(describing: error))"); continue }
             XCTAssertFalse(message.contains(testKey), link)
             XCTAssertEqual(transport.count, 1, link)
             XCTAssertTrue(transport.uploadedFiles.isEmpty, link)
         }
         let (client, transport) = makeClient([.reply(201, uploadReply(method: "POST"), [:])])
-        let error = await dapiError { _ = try await client.uploadQuoteFile(at: file, fileName: "a.stl", contentType: "model/stl", idempotencyKey: "k") }
+        let error = await dapiError { _ = try await uploadBoth(client, file: file, name: "a.stl", type: "model/stl", key: "k") }
         guard case .notSent? = error else { return XCTFail("\(String(describing: error))") }
         XCTAssertEqual(transport.count, 1)
         XCTAssertNil(dapiUploadURLProblem(URL(string: "https://dapi-uploads.s3.eu-central-1.amazonaws.com/temp/a.stl?X-Amz-Signature=x")!))
@@ -376,48 +402,80 @@ final class DapiClientTests: XCTestCase {
         let file = try modelFile()
         let reply = #"{"id":"upl_../x","upload_url":"https://files.example.com/a","method":"PUT","headers":{}}"#
         let (client, transport) = makeClient([.reply(201, reply, [:])])
-        let error = await dapiError { _ = try await client.uploadQuoteFile(at: file, fileName: "a.stl", contentType: "model/stl", idempotencyKey: "k") }
+        let error = await dapiError { _ = try await uploadBoth(client, file: file, name: "a.stl", type: "model/stl", key: "k") }
         guard case .outcomeUnknown? = error else { return XCTFail("\(String(describing: error))") }
         XCTAssertEqual(transport.count, 1)
     }
 
-    func testFileChecksHappenBeforeAnythingIsSent() async throws {
-        let empty = try modelFile(bytes: 0, name: "empty.stl")
-        let missing = folder.appendingPathComponent("missing.stl")
-        let large = folder.appendingPathComponent("large.stl")
-        FileManager.default.createFile(atPath: large.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: large)
-        try handle.truncate(atOffset: UInt64(dapiMaxQuoteFileBytes) + 1)
-        try handle.close()
-        let ok = try modelFile()
-        let cases: [(URL, String, String)] = [
-            (empty, "empty.stl", "model/stl"), (missing, "missing.stl", "model/stl"), (large, "large.stl", "model/stl"),
-            (folder, "folder.stl", "model/stl"), (ok, "picture.png", "model/stl"), (ok, "noextension", "model/stl"),
-            (ok, "a.stl", "image/png"), (ok, "", "model/stl"), (ok, String(repeating: "a", count: 300) + ".stl", "model/stl"),
-            (ok, "bad\nname.stl", "model/stl"), (URL(string: "https://example.com/a.stl")!, "a.stl", "model/stl")
+    func testUploadRequestChecksHappenBeforeAnythingIsSent() async throws {
+        let cases: [(String, String, Int64)] = [
+            ("picture.png", "model/stl", 84), ("noextension", "model/stl", 84), ("a.stl", "image/png", 84), ("", "model/stl", 84),
+            (String(repeating: "a", count: 300) + ".stl", "model/stl", 84), ("bad\nname.stl", "model/stl", 84),
+            ("a.stl", "model/stl", 0), ("a.stl", "model/stl", dapiMaxQuoteFileBytes + 1),
+            // The content type must match the extension: 3DAPI refuses a mismatch.
+            ("a.stl", "model/obj", 84), ("a.obj", "model/stl", 84), ("a.stl", "application/octet-stream", 84),
+            ("a.3mf", "model/stl", 84), ("a.step", "model/step", 84)
         ]
-        for (url, name, type) in cases {
-            let (client, transport) = makeClient([.reply(201, uploadReplyJSON, [:]), .reply(200, "", [:])])
-            let error = await dapiError { _ = try await client.uploadQuoteFile(at: url, fileName: name, contentType: type, idempotencyKey: "k") }
-            guard case .notSent? = error else { XCTFail("\(name): \(String(describing: error))"); continue }
+        for (name, type, size) in cases {
+            let (client, transport) = makeClient([.reply(201, uploadReplyJSON, [:])])
+            let error = await dapiError { _ = try await client.createUpload(fileName: name, contentType: type, sizeBytes: size, idempotencyKey: "k") }
+            guard case .notSent? = error else { XCTFail("\(name) \(type): \(String(describing: error))"); continue }
             XCTAssertEqual(transport.count, 0, name)
         }
-        // Exactly the limit is allowed.
-        let limit = folder.appendingPathComponent("limit.stl")
-        FileManager.default.createFile(atPath: limit.path, contents: nil)
-        let limitHandle = try FileHandle(forWritingTo: limit)
-        try limitHandle.truncate(atOffset: UInt64(dapiMaxQuoteFileBytes))
-        try limitHandle.close()
-        let (client, transport) = makeClient([.reply(201, uploadReplyJSON, [:]), .reply(200, "", [:])])
-        _ = try await client.uploadQuoteFile(at: limit, fileName: "limit.stl", contentType: "model/stl", idempotencyKey: "k")
-        XCTAssertEqual(bodyJSON(transport.requests[0])?["size_bytes"] as? Int64, dapiMaxQuoteFileBytes)
+        let (client, _) = makeClient([])
+        let png = await dapiError { _ = try await client.createUpload(fileName: "a.png", contentType: "image/png", sizeBytes: 1, idempotencyKey: "k") }
+        XCTAssertEqual(png, .notSent("Plinth can quote STL, OBJ and 3MF models. Nothing was sent."))
+        // Exactly the limit is allowed, and each format goes with its own type.
+        for (name, type) in [("limit.stl", "model/stl"), ("a.OBJ", "model/obj"), ("a.3mf", "model/3mf")] {
+            let (ok, transport) = makeClient([.reply(201, uploadReplyJSON, [:])])
+            _ = try await ok.createUpload(fileName: name, contentType: type, sizeBytes: dapiMaxQuoteFileBytes, idempotencyKey: "k")
+            XCTAssertEqual(bodyJSON(transport.requests[0])?["size_bytes"] as? Int64, dapiMaxQuoteFileBytes)
+            XCTAssertEqual(bodyJSON(transport.requests[0])?["content_type"] as? String, type)
+        }
+    }
+
+    func testBytesAreCheckedBeforeThePut() async throws {
+        let file = try modelFile(bytes: 84)
+        let missing = folder.appendingPathComponent("missing.stl")
+        func target(size: Int64 = 84, url: String = "https://files.example.com/temp/a.stl?sig=1") -> DapiUploadTarget {
+            DapiUploadTarget(uploadID: "upl_abc", uploadURL: URL(string: url)!, headers: [:], contentType: "model/stl", sizeBytes: size)
+        }
+        let cases: [(DapiUploadTarget, URL)] = [
+            (target(size: 85), file), // the file changed size since the upload request
+            (target(), missing), (target(), folder), (target(), URL(string: "https://example.com/a.stl")!),
+            (target(url: "http://files.example.com/a.stl"), file), (target(url: "https://127.0.0.1/a.stl"), file)
+        ]
+        for (uploadTarget, url) in cases {
+            let (client, transport) = makeClient([.reply(200, "", [:])])
+            let error = await dapiError { try await client.sendUploadBytes(uploadTarget, fileURL: url) }
+            guard case .notSent? = error else { XCTFail("\(url): \(String(describing: error))"); continue }
+            XCTAssertEqual(transport.count, 0)
+        }
+        let (client, transport) = makeClient([.reply(200, "", [:])])
+        try await client.sendUploadBytes(target(), fileURL: file)
+        XCTAssertEqual(transport.uploadedFiles, [file])
+        XCTAssertEqual(transport.requests[0].value(forHTTPHeaderField: "Content-Type"), "model/stl")
+        XCTAssertNil(transport.requests[0].value(forHTTPHeaderField: "x-api-key"))
+    }
+
+    func testCancelledPutThrowsCancellation() async throws {
+        let file = try modelFile(bytes: 84)
+        let (client, transport) = makeClient([.fail(URLError(.cancelled))])
+        let target = DapiUploadTarget(uploadID: "upl_abc", uploadURL: URL(string: "https://files.example.com/a.stl")!, headers: [:],
+                                      contentType: "model/stl", sizeBytes: 84)
+        do {
+            try await client.sendUploadBytes(target, fileURL: file)
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        } catch { XCTFail("\(error)") }
+        XCTAssertEqual(transport.count, 1)
     }
 
     func testIdempotencyKeyIsValidatedBeforeSending() async throws {
         let file = try modelFile()
         for key in ["", "has space", "line\nbreak", String(repeating: "k", count: 256), "é"] {
             let (client, transport) = makeClient([.reply(201, uploadReplyJSON, [:])])
-            let error = await dapiError { _ = try await client.uploadQuoteFile(at: file, fileName: "a.stl", contentType: "model/stl", idempotencyKey: key) }
+            let error = await dapiError { _ = try await uploadBoth(client, file: file, name: "a.stl", type: "model/stl", key: key) }
             guard case .notSent? = error else { XCTFail("\(key): \(String(describing: error))"); continue }
             XCTAssertEqual(transport.count, 0)
         }
@@ -574,7 +632,7 @@ final class DapiClientTests: XCTestCase {
 
             let file = try modelFile()
             let (uploader, uploads) = makeClient([step])
-            let uploadError = await dapiError { _ = try await uploader.uploadQuoteFile(at: file, fileName: "a.stl", contentType: "model/stl", idempotencyKey: "k") }
+            let uploadError = await dapiError { _ = try await uploadBoth(uploader, file: file, name: "a.stl", type: "model/stl", key: "k") }
             guard case .outcomeUnknown? = uploadError else { XCTFail("upload \(step): \(String(describing: uploadError))"); continue }
             XCTAssertEqual(uploads.count, 1)
 
@@ -619,7 +677,7 @@ final class DapiClientTests: XCTestCase {
         ]
         for (step, expected) in cases {
             let (client, transport) = makeClient([.reply(201, uploadReplyJSON, [:]), step])
-            let error = await dapiError { _ = try await client.uploadQuoteFile(at: file, fileName: "a.stl", contentType: "model/stl", idempotencyKey: "k") }
+            let error = await dapiError { _ = try await uploadBoth(client, file: file, name: "a.stl", type: "model/stl", key: "k") }
             switch (error, expected) {
             case (.refused(let status, nil, nil)?, "refused"): XCTAssertTrue((400..<500).contains(status))
             case (.outcomeUnknown?, "unknown"), (.rateLimited(nil, _)?, "rate"), (.notSent?, "notSent"): break

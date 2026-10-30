@@ -25,6 +25,9 @@ private final class StubDapi: DapiQuoting, @unchecked Sendable {
     let accountResult: Result<DapiAccount, DapiError>
     let onboardingResult: Result<DapiOnboarding, DapiError>
     let gate: DapiTestGate?
+    /// Thrown instead of the results when set (a cancellation, say).
+    var accountThrows: Error?
+    var onboardingThrows: Error?
 
     init(account: Result<DapiAccount, DapiError>,
          onboarding: Result<DapiOnboarding, DapiError> = .failure(.readFailed("no")), gate: DapiTestGate? = nil) {
@@ -35,13 +38,18 @@ private final class StubDapi: DapiQuoting, @unchecked Sendable {
 
     func account() async throws -> DapiAccount {
         if let gate { await gate.wait() }
+        if let accountThrows { throw accountThrows }
         return try accountResult.get()
     }
-    func onboarding() async throws -> DapiOnboarding { try onboardingResult.get() }
+    func onboarding() async throws -> DapiOnboarding {
+        if let onboardingThrows { throw onboardingThrows }
+        return try onboardingResult.get()
+    }
     func quotes(named name: String, maxPages: Int) async throws -> [DapiQuote] { throw DapiError.notSent("stub") }
-    func uploadQuoteFile(at fileURL: URL, fileName: String, contentType: String, idempotencyKey: String) async throws -> String {
+    func createUpload(fileName: String, contentType: String, sizeBytes: Int64, idempotencyKey: String) async throws -> DapiUploadTarget {
         throw DapiError.notSent("stub")
     }
+    func sendUploadBytes(_ target: DapiUploadTarget, fileURL: URL) async throws { throw DapiError.notSent("stub") }
     func createQuote(uploadID: String, name: String, idempotencyKey: String) async throws -> DapiQuote { throw DapiError.notSent("stub") }
     func quote(id: String) async throws -> DapiQuote { throw DapiError.notSent("stub") }
     func shippingEstimate(quoteID: String, quantity: Int, countryCode: String) async throws -> DapiShippingEstimate {
@@ -147,9 +155,10 @@ final class DapiConnectionTests: XCTestCase {
         XCTAssertNil(dapiAccountProblem(integrator()))
         XCTAssertNil(dapiAccountProblem(integrator(["orders:read", "QUOTES:WRITE", "quotes:read", "orders:write"])))
         let designer = try XCTUnwrap(dapiAccountProblem(DapiAccount(kind: "designer", approval: nil, effectiveScopes: allScopes)))
-        XCTAssertTrue(designer.contains("integrator account"), designer)
-        XCTAssertTrue(designer.contains("dapi.digital/integrator/sign-up"), designer)
-        XCTAssertTrue(designer.contains("no 3DAPI seller account"), designer)
+        XCTAssertEqual(designer, "This key is from a 3DAPI seller account, which can’t get quotes. Make a 3DAPI integrator account (with a different email from your seller account) and use its key.")
+        // One message everywhere: the client's refusals for a seller key say the same.
+        XCTAssertEqual(DapiError.refused(status: 403, code: "actor_not_allowed", message: nil).userMessage, designer)
+        XCTAssertEqual(DapiError.refused(status: 403, code: "purpose_not_allowed", message: nil).userMessage, designer)
         XCTAssertNotNil(dapiAccountProblem(DapiAccount(kind: "admin", approval: nil, effectiveScopes: allScopes)))
         let oneMissing = try XCTUnwrap(dapiAccountProblem(integrator(["quotes:read", "quotes:write"])))
         XCTAssertTrue(oneMissing.hasPrefix("This key can’t use orders:read."), oneMissing)
@@ -168,15 +177,95 @@ final class DapiConnectionTests: XCTestCase {
                                                                         uploadsUsed: 30, uploadsLimit: nil)),
                        "Integrator account · Approved")
         XCTAssertEqual(dapiAccountStatusLine(integrator(approval: "rejected"), onboarding: nil), "Integrator account · Not approved by 3DAPI")
-        XCTAssertEqual(dapiAccountStatusLine(integrator(), onboarding: nil), "Integrator account · Waiting for 3DAPI’s approval")
-        XCTAssertEqual(dapiAccountStatusLine(integrator(), onboarding: pendingOnboarding),
-                       "Waiting for 3DAPI’s approval: 3 of 10 files approved · 7 of 25 quotes used this round")
+        XCTAssertEqual(dapiAccountStatusLine(integrator(), onboarding: nil), "Not yet approved by 3DAPI")
+        XCTAssertEqual(dapiAccountStatusLine(integrator(), onboarding: pendingOnboarding), "Not yet approved by 3DAPI · 7 of 25 quotes used")
         XCTAssertEqual(dapiAccountStatusLine(integrator(), onboarding: DapiOnboarding(status: "in_review", approvedFiles: 0, requiredFiles: 10,
                                                                                       uploadsUsed: 10, uploadsLimit: 25)),
-                       "Waiting for 3DAPI’s approval: 0 of 10 files approved · 10 of 25 quotes used this round · Files in review")
+                       "Not yet approved by 3DAPI · 10 of 25 quotes used · Files in review")
         XCTAssertEqual(dapiAccountStatusLine(integrator(), onboarding: DapiOnboarding(status: "changes_requested", approvedFiles: 8,
                                                                                       requiredFiles: 10, uploadsUsed: 2, uploadsLimit: nil)),
-                       "Waiting for 3DAPI’s approval: 8 of 10 files approved · Changes requested")
+                       "Not yet approved by 3DAPI · Changes requested")
+    }
+
+    func testScopeAdviceOnlyForOrdersWrite() {
+        XCTAssertNil(dapiKeyScopeAdvice(nil))
+        XCTAssertNil(dapiKeyScopeAdvice(integrator()))
+        let advice = dapiKeyScopeAdvice(integrator(allScopes + ["Orders:Write"]))
+        XCTAssertEqual(advice, "This key can also place paid orders on 3DAPI. Plinth needs only quotes:read, quotes:write and orders:read, so a key without orders:write is safer.")
+        // Advice only: the key still passes the account check.
+        XCTAssertNil(dapiAccountProblem(integrator(allScopes + ["orders:write"])))
+    }
+
+    // MARK: Quote write records
+
+    func testQuoteWriteRecordsAreSessionOnlyAndClearedByAKeyChange() async throws {
+        registry.set(StubDapi(account: .success(integrator())), for: integratorKey)
+        registry.set(StubDapi(account: .success(integrator())), for: otherIntegratorKey)
+        let connection = makeConnection()
+        let saved = await connection.saveAndTest(key: integratorKey)
+        XCTAssertNil(saved)
+
+        connection.beginQuoteWrite(forFileHash: "ABC")
+        XCTAssertTrue(connection.quoteWriteIsInFlight(forFileHash: "abc"))
+        XCTAssertEqual(connection.keyChangeBlockedReason, "Wait for the 3DAPI request to finish.", "even with no sheet open")
+        // Closing a sheet doesn't touch the records.
+        connection.sheetOpened()
+        connection.sheetClosed()
+        XCTAssertTrue(connection.quoteWriteIsInFlight(forFileHash: "abc"))
+        connection.noteQuoteWriteUnknown(forFileHash: "abc")
+        connection.endQuoteWrite(forFileHash: "abc")
+        XCTAssertFalse(connection.quoteWriteIsInFlight(forFileHash: "abc"))
+        XCTAssertNil(connection.keyChangeBlockedReason)
+        XCTAssertTrue(connection.quoteWriteOutcomeUnknown(forFileHash: "ABC"))
+
+        // A usable ready quote for that file settles it; another file's record stays.
+        connection.noteQuoteWriteUnknown(forFileHash: "def")
+        connection.rememberReadyQuote(id: "qte_1", forFileHash: "abc")
+        XCTAssertFalse(connection.quoteWriteOutcomeUnknown(forFileHash: "abc"))
+        XCTAssertTrue(connection.quoteWriteOutcomeUnknown(forFileHash: "def"))
+
+        // A new key starts afresh, and so does removing it.
+        let replaced = await connection.saveAndTest(key: otherIntegratorKey)
+        XCTAssertNil(replaced)
+        XCTAssertFalse(connection.quoteWriteOutcomeUnknown(forFileHash: "def"))
+        connection.noteQuoteWriteUnknown(forFileHash: "ghi")
+        try connection.remove()
+        XCTAssertFalse(connection.quoteWriteOutcomeUnknown(forFileHash: "ghi"))
+        // Nothing about them reaches preferences.
+        XCTAssertEqual(Set((defaults.persistentDomain(forName: suite) ?? [:]).keys), [DapiConnection.keySavedDefaultsKey])
+    }
+
+    // MARK: Cancellation
+
+    func testCancellationKeepsTheAccountAndOnboarding() async throws {
+        let stub = StubDapi(account: .success(integrator()), onboarding: .success(pendingOnboarding))
+        registry.set(stub, for: integratorKey)
+        let connection = makeConnection()
+        let saved = await connection.saveAndTest(key: integratorKey)
+        XCTAssertNil(saved)
+        XCTAssertEqual(connection.onboarding, pendingOnboarding)
+
+        // Settings closing mid-read (or Stop) cancels: nothing is cleared and no failure is reported.
+        stub.accountThrows = CancellationError()
+        let status = await connection.refreshStatus()
+        XCTAssertNil(status)
+        XCTAssertEqual(connection.account, integrator())
+        XCTAssertEqual(connection.onboarding, pendingOnboarding)
+        stub.accountThrows = nil
+        stub.onboardingThrows = URLError(.cancelled)
+        let read = await connection.refreshOnboarding()
+        XCTAssertNil(read)
+        XCTAssertEqual(connection.onboarding, pendingOnboarding)
+
+        // A real failure still clears them.
+        stub.onboardingThrows = DapiError.readFailed("down")
+        await connection.refreshOnboarding()
+        XCTAssertNil(connection.onboarding)
+        stub.accountThrows = DapiError.readFailed("down")
+        let failed = await connection.refreshStatus()
+        XCTAssertNotNil(failed)
+        XCTAssertNil(connection.account)
+        XCTAssertEqual(connection.activeRequests, 0)
     }
 
     func testBlockedReasonAndCounters() {

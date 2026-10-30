@@ -434,6 +434,16 @@ func spendReportRangeText(_ entry: SpendReportDeliveryCost) -> String {
     return lowest == highest ? spendReportUSD(lowest) : "\(spendReportUSD(lowest))–\(spendReportUSD(highest))"
 }
 
+/// What the Spending Report would show for delivery to `countryCode` from `orders` on the default platform
+/// (`ordersShownOnPlatform`, without the Orders list's lock exception, as `StudioStore.spendReport(for:)` counts),
+/// or nil when none of them went there. Display only (Get 3DAPI Quote…'s Slant delivery figure).
+func spendReportDeliveryCost(orders: [Record], platformID: String, countryCode: String) -> SpendReportDeliveryCost? {
+    let code = countryCode.uppercased()
+    guard !code.isEmpty else { return nil }
+    return spendReport(orders: ordersShownOnPlatform(orders, platformID: platformID)).deliveryCosts
+        .first { $0.countryCode == code && $0.orders > 0 }
+}
+
 /// Default source phrase: the report is built from the Orders list.
 let spendReportLoadedListSource = "in the loaded Orders list"
 

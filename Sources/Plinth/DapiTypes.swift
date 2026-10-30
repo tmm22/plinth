@@ -71,10 +71,35 @@ struct DapiQuote: Equatable, Sendable {
     let failureReason: String?
     let suggestedMaterials: [DapiSuggestedMaterial]
     let createdAt: Date?
+    /// `approval.status`: "not_submitted", "in_review", "approved" or "rejected" (lower-cased), or nil.
+    var approvalStatus: String? = nil
 
     var isReady: Bool { status == "ready" }
     var isProcessing: Bool { status == "processing" }
     var isFailed: Bool { status == "failed" }
+    /// 3DAPI rejected the file in review: its price can't be used (no shipping estimate, no order).
+    var isRejected: Bool { approvalStatus == "rejected" }
+    /// A ready quote Plinth can compare: it has a price and wasn't rejected. Only these are remembered or shown.
+    var isUsable: Bool { isReady && price != nil && !isRejected }
+}
+
+/// Where the file's bytes go after `POST /v2/uploads` (`createUpload`): the `upl_` ID, the presigned storage link
+/// (already checked by `dapiUploadURLProblem`), the storage headers Plinth may send (`dapiSafeUploadHeaders`), and the
+/// content type and size 3DAPI was told.
+struct DapiUploadTarget: Equatable, Sendable {
+    let uploadID: String
+    let uploadURL: URL
+    let headers: [String: String]
+    let contentType: String
+    let sizeBytes: Int64
+}
+
+/// The one message for a key from a 3DAPI seller (designer) account, which can't get quotes.
+let dapiDesignerKeyMessage = "This key is from a 3DAPI seller account, which can’t get quotes. Make a 3DAPI integrator account (with a different email from your seller account) and use its key."
+
+/// A Swift task cancellation, or a URL task cancelled with it: the seller stopped, nothing failed.
+func dapiIsCancellation(_ error: Error) -> Bool {
+    error is CancellationError || (error as? URLError)?.code == .cancelled
 }
 
 /// `POST /v2/integrator/orders/shipping-estimate`: shipping for a quantity of one ready quote to a country.
@@ -118,11 +143,14 @@ protocol DapiQuoting: Sendable {
     /// `GET /v2/quotes`, newest first, reading at most `maxPages` pages of 100, and returning only the quotes whose
     /// `name` equals `name` exactly. Read-only.
     func quotes(named name: String, maxPages: Int) async throws -> [DapiQuote]
-    /// `POST /v2/uploads` (purpose `quote_file`), then the presigned PUT of the file's bytes to the `upload_url` it
-    /// returns (never with the key). Returns the `upl_` ID. A failure after `POST /v2/uploads` was sent is
-    /// `.outcomeUnknown` or `.refused`, except a storage link Plinth refuses to use, which is `.notSent`: no bytes
-    /// left the Mac, and the empty upload can't become a quote and expires in 24 hours. Nothing is ever sent twice.
-    func uploadQuoteFile(at fileURL: URL, fileName: String, contentType: String, idempotencyKey: String) async throws -> String
+    /// `POST /v2/uploads` (purpose `quote_file`): a write, sent once and never cancelled by Plinth. `contentType` must be
+    /// `dapiQuoteFileContentType(forExtension:)` of the file name's extension (3DAPI refuses a mismatch). A failure
+    /// after it was sent is `.outcomeUnknown` or `.refused`, except a storage link Plinth refuses to use, which is
+    /// `.notSent`: the empty upload can't become a quote and expires in 24 hours.
+    func createUpload(fileName: String, contentType: String, sizeBytes: Int64, idempotencyKey: String) async throws -> DapiUploadTarget
+    /// The presigned PUT of the file's bytes to `target` (never with the key or cookies), after checking the file is
+    /// still `target.sizeBytes` long. Cancellable: Stop cancels it part-way, which throws `CancellationError`. Sent once.
+    func sendUploadBytes(_ target: DapiUploadTarget, fileURL: URL) async throws
     /// `POST /v2/quotes` for an upload. Returns the new quote (usually "processing").
     func createQuote(uploadID: String, name: String, idempotencyKey: String) async throws -> DapiQuote
     /// `GET /v2/quotes/{id}`.

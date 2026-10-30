@@ -24,6 +24,11 @@ struct DapiSettingsSection: View {
                 if let line = dapiAccountStatusLine(connection.account, onboarding: connection.onboarding) {
                     LabeledContent("Account", value: line)
                 }
+                // Advice only: the key still works for quotes.
+                if let advice = dapiKeyScopeAdvice(connection.account) {
+                    Label(advice, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             // No onSubmit: Return never sends the key anywhere.
             SecureField(connection.isConfigured ? "Replace key" : "API key", text: $keyField, prompt: Text("sk_…"))
@@ -57,9 +62,9 @@ struct DapiSettingsSection: View {
             Text("3DAPI (optional)")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Get 3DAPI Quote… in Models compares 3DAPI’s price for a model with Slant’s. Plinth never orders or pays on 3DAPI.")
-                Text("It needs a key from a 3DAPI integrator account, which is separate from a 3DAPI seller account. Give the key only quotes:read, quotes:write and orders:read.")
-                Text("The key is kept in the macOS Keychain on this Mac and sent only to public-api.dapi.digital. Getting a quote sends the model file to 3DAPI, which keeps it: its API can’t delete it. 3DAPI is an independent service, separate from Plinth and Slant 3D.")
+                Text("Compares 3DAPI’s price with Slant’s in Models (Get 3DAPI Quote…). Quotes are free; Plinth never orders or pays on 3DAPI.")
+                Text("You need a 3DAPI integrator account, which must use a different email from any 3DAPI seller account. Create its key with quotes:read, quotes:write and orders:read.")
+                Text("The key stays in this Mac’s Keychain and goes only to 3DAPI. 3DAPI keeps each quoted model file. 3DAPI is independent of Plinth and Slant 3D.")
                 Link("3DAPI Integrator Sign-Up", destination: dapiIntegratorSignUpURL)
             }
             .settingsFooterLayout()

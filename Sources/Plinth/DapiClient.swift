@@ -25,24 +25,23 @@ let dapiUploadIdleTimeout: TimeInterval = 60
 let dapiMaxRetryWait: TimeInterval = 3600
 /// Longest 3DAPI ID Plinth puts in a path (real ones are about 36 characters).
 let dapiMaxIDLength = 128
-/// Longest 3DAPI message or failure reason Plinth shows.
+/// Longest 3DAPI message Plinth shows.
 let dapiMaxMessageLength = 300
+/// Longest failure reason Plinth shows for a failed quote (3DAPI's explanations can run to a few sentences).
+let dapiMaxFailureReasonLength = 600
 /// Pages `quotes(named:maxPages:)` may read.
 let dapiQuoteListPageLimit = 1...10
-/// File extensions and content types 3DAPI accepts for `quote_file` uploads.
-let dapiQuoteFileExtensions: Set<String> = ["stl", "3mf", "obj", "step", "stp"]
-let dapiQuoteFileContentTypes: Set<String> = [
-    "model/stl", "model/3mf", "model/obj", "model/step", "application/step", "application/sla",
-    "application/vnd.ms-pki.stl", "application/octet-stream"
-]
+/// The formats Plinth quotes, for copy.
+let dapiQuotableFormatsText = "Plinth can quote STL, OBJ and 3MF models."
 
-/// The content type Plinth declares for a quote file with this extension, or nil for one 3DAPI doesn't quote.
+/// The content type Plinth declares for a quote file with this extension, or nil for one Plinth doesn't quote (3DAPI
+/// also takes STEP, but Plinth's library holds only STL, OBJ and 3MF). `createUpload` sends only this pairing, because
+/// 3DAPI refuses a `content_type` that doesn't match the file name's extension.
 func dapiQuoteFileContentType(forExtension fileExtension: String) -> String? {
     switch fileExtension.lowercased() {
     case "stl": return "model/stl"
     case "3mf": return "model/3mf"
     case "obj": return "model/obj"
-    case "step", "stp": return "model/step"
     default: return nil
     }
 }
@@ -282,9 +281,12 @@ func dapiParseQuote(_ json: [String: Any], secrets: [String] = []) -> DapiQuote?
                                      fileFilamentType: dapiDisplayText(object["file_filament_type"], limit: 40),
                                      match: dapiWord(object["match"]))
     }
-    let failure = (json["failure_reason"] as? String).map { dapiRedacted($0, secrets: secrets) }.flatMap { $0.isEmpty ? nil : $0 }
+    let failure = (json["failure_reason"] as? String).map { dapiRedacted($0, secrets: secrets, limit: dapiMaxFailureReasonLength) }
+        .flatMap { $0.isEmpty ? nil : $0 }
+    let approval = dapiWord((json["approval"] as? [String: Any])?["status"])
     return DapiQuote(id: id, name: json["name"] as? String, status: status, price: dapiMoney(json["price"]),
-                     failureReason: failure, suggestedMaterials: materials, createdAt: dapiDate(json["created_at"]))
+                     failureReason: failure, suggestedMaterials: materials, createdAt: dapiDate(json["created_at"]),
+                     approvalStatus: approval)
 }
 
 /// `POST /v2/integrator/orders/shipping-estimate`. Nil without a readable total.
@@ -714,9 +716,9 @@ struct DapiClient: DapiQuoting {
     }
 
     /// Reads pages of 100 newest first, following `next_cursor` while `has_more`, for at most `maxPages` (clamped to
-    /// 1…10) pages. It stops early when 3DAPI says there's more but gives no cursor, or repeats one. Any page failing
-    /// fails the whole lookup (a partial answer could hide a quote). An entry Plinth can't read is skipped, unless its
-    /// name is the one asked for, which fails the lookup as unreadable.
+    /// 1…10) pages. Any page failing fails the whole lookup, and so does `has_more` with a missing, unusable or repeated
+    /// cursor: a partial answer could hide a quote and lead to a duplicate create. An entry Plinth can't read is
+    /// skipped, unless its name is the one asked for, which fails the lookup as unreadable.
     func quotes(named name: String, maxPages: Int) async throws -> [DapiQuote] {
         guard !name.isEmpty else { throw DapiError.notSent("A quote name is needed to look for existing quotes.") }
         let pages = min(max(maxPages, dapiQuoteListPageLimit.lowerBound), dapiQuoteListPageLimit.upperBound)
@@ -736,31 +738,33 @@ struct DapiClient: DapiQuoting {
                 }
                 if quote.name == name { matches.append(quote) }
             }
-            guard dapiJSONBool(json["has_more"]) == true,
-                  let next = json["next_cursor"] as? String, !next.isEmpty, next.utf8.count <= 2048,
-                  !seenCursors.contains(next) else { break }
+            guard dapiJSONBool(json["has_more"]) == true else { break }
+            guard let next = json["next_cursor"] as? String, !next.isEmpty, next.utf8.count <= 2048,
+                  !seenCursors.contains(next) else { throw unreadable(.listQuotes) }
             seenCursors.insert(next)
             cursor = next
         }
         return matches
     }
 
-    func uploadQuoteFile(at fileURL: URL, fileName: String, contentType: String, idempotencyKey: String) async throws -> String {
+    func createUpload(fileName: String, contentType: String, sizeBytes: Int64, idempotencyKey: String) async throws -> DapiUploadTarget {
         // Local checks, before anything is sent.
-        let size = try quoteFileSize(fileURL)
-        let fileExtension = (fileName as NSString).pathExtension.lowercased()
         guard !fileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, fileName.utf16.count <= 255,
               fileName.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
             throw DapiError.notSent("The model’s file name can’t be sent to 3DAPI (it must be 1 to 255 characters), so nothing was sent.")
         }
-        guard dapiQuoteFileExtensions.contains(fileExtension) else {
-            throw DapiError.notSent("3DAPI quotes only STL, 3MF, OBJ and STEP files, so nothing was sent.")
+        guard let expectedType = dapiQuoteFileContentType(forExtension: (fileName as NSString).pathExtension) else {
+            throw DapiError.notSent("\(dapiQuotableFormatsText) Nothing was sent.")
         }
         let type = contentType.trimmingCharacters(in: .whitespaces).lowercased()
-        guard dapiQuoteFileContentTypes.contains(type) else {
-            throw DapiError.notSent("3DAPI doesn’t accept this file type for quotes, so nothing was sent.")
+        guard type == expectedType else {
+            throw DapiError.notSent("The file’s type doesn’t match its extension, which 3DAPI refuses, so nothing was sent.")
         }
-        let body: [String: Any] = ["purpose": "quote_file", "file_name": fileName, "content_type": type, "size_bytes": size]
+        guard sizeBytes >= 1 else { throw DapiError.notSent("The model file is empty, so nothing was sent.") }
+        guard sizeBytes <= dapiMaxQuoteFileBytes else {
+            throw DapiError.notSent("This model is larger than 3DAPI’s 250 MB limit for quotes, so nothing was sent.")
+        }
+        let body: [String: Any] = ["purpose": "quote_file", "file_name": fileName, "content_type": type, "size_bytes": sizeBytes]
         let request = try makeAPIRequest(method: "POST", path: "/v2/uploads", body: body, idempotencyKey: idempotencyKey)
 
         let json = try await perform(request, .createUpload)
@@ -781,18 +785,25 @@ struct DapiClient: DapiQuoting {
         guard method.trimmingCharacters(in: .whitespaces).uppercased() == "PUT" else {
             throw DapiError.notSent("3DAPI asked for an upload method Plinth doesn’t use, so the model wasn’t sent. Nothing was charged; 3DAPI deletes the unused upload after 24 hours.")
         }
-        // The file must still be the size 3DAPI was told.
-        guard (try? quoteFileSize(fileURL)) == size else {
-            throw DapiError.notSent("The model file changed while it was being uploaded, so it wasn’t sent. Try again.")
-        }
+        return DapiUploadTarget(uploadID: uploadID, uploadURL: uploadURL, headers: dapiSafeUploadHeaders(json["headers"], apiKey: apiKey),
+                                contentType: type, sizeBytes: sizeBytes)
+    }
 
-        var put = URLRequest(url: uploadURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: dapiUploadIdleTimeout)
+    func sendUploadBytes(_ target: DapiUploadTarget, fileURL: URL) async throws {
+        // The same checks again, in case the target didn't come from `createUpload`.
+        if let problem = dapiUploadURLProblem(target.uploadURL, apiKey: apiKey) {
+            throw DapiError.notSent("Plinth won’t use this upload link (\(problem)), so the model wasn’t sent. Nothing was charged; 3DAPI deletes the unused upload after 24 hours.")
+        }
+        // The file must still be the size 3DAPI was told, right before the bytes go.
+        guard (try? quoteFileSize(fileURL)) == target.sizeBytes else {
+            throw DapiError.notSent("The model file changed after Get Quote was pressed, so it wasn’t sent. Press Get Quote to upload it again.")
+        }
+        var put = URLRequest(url: target.uploadURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: dapiUploadIdleTimeout)
         put.httpMethod = "PUT"
         put.httpShouldHandleCookies = false
-        let headers = dapiSafeUploadHeaders(json["headers"], apiKey: apiKey)
-        for (name, value) in headers { put.setValue(value, forHTTPHeaderField: name) }
+        for (name, value) in dapiSafeUploadHeaders(target.headers, apiKey: apiKey) { put.setValue(value, forHTTPHeaderField: name) }
         // Without a Content-Type from 3DAPI, send the one it was told, so URLSession doesn't pick its own.
-        if put.value(forHTTPHeaderField: "Content-Type") == nil { put.setValue(type, forHTTPHeaderField: "Content-Type") }
+        if put.value(forHTTPHeaderField: "Content-Type") == nil { put.setValue(target.contentType, forHTTPHeaderField: "Content-Type") }
 
         try Task.checkCancellation()
         let reply: DapiHTTPReply
@@ -804,7 +815,6 @@ struct DapiClient: DapiQuoting {
         guard (200..<300).contains(reply.status) else {
             throw dapiClassifyReply(reply, operation: .storagePut, secrets: secrets)
         }
-        return uploadID
     }
 
     /// The size of a readable regular file, within 1…`dapiMaxQuoteFileBytes`; `.notSent` otherwise.
@@ -915,26 +925,24 @@ func dapiRefusalMessage(status: Int, code: String?, message: String?) -> String 
         return "3DAPI didn’t accept the API key. Check it in Settings, or create a new key in the 3DAPI dashboard."
     case "missing_scope":
         return "This 3DAPI key doesn’t have the permission this needs. Create a key with the quotes:read, quotes:write and orders:read scopes."
-    case "actor_not_allowed":
-        return "This is a 3DAPI seller (designer) key. Price quotes for your own files need a 3DAPI integrator account and its key."
-    case "purpose_not_allowed":
-        return "This 3DAPI key can’t upload files for quotes. Price quotes need a 3DAPI integrator account and its key."
+    case "actor_not_allowed", "purpose_not_allowed":
+        return dapiDesignerKeyMessage
     case "credential_not_allowed":
         return "3DAPI allows this only from its dashboard, not with an API key."
     case "account_blacklisted":
         return "3DAPI says this account may no longer use its API. Contact 3DAPI."
     case "file_type_not_allowed":
-        return "3DAPI doesn’t accept this file type for quotes. It quotes STL, 3MF, OBJ and STEP files."
+        return "3DAPI didn’t accept this file type. \(dapiQuotableFormatsText)"
     case "file_too_large":
         return "This model is larger than 3DAPI’s 250 MB limit for quotes."
     case "invalid_file":
         return "3DAPI couldn’t read the file as the model type its name says. Export it again, then try again."
     case "unknown_upload", "upload_missing", "upload_purpose_mismatch":
-        return "3DAPI couldn’t find the uploaded model. Try again to upload it afresh."
+        return "3DAPI couldn’t find the uploaded model. Press Get Quote to upload it again."
     case "upload_expired":
-        return "The upload expired before the quote was requested (3DAPI keeps uploads for 24 hours). Try again to upload the model afresh."
+        return "The upload expired before the quote was requested (3DAPI keeps uploads for 24 hours). Press Get Quote to upload it again."
     case "upload_already_used":
-        return "3DAPI has already used this upload for another quote. Try again to upload the model afresh."
+        return "3DAPI has already used this upload for another quote. Press Get Quote to upload it again."
     case "upload_limit_reached":
         return "You’ve used the 25 quotes of this 3DAPI onboarding round. Submit files for approval in the 3DAPI dashboard to continue."
     case "approval_in_review":

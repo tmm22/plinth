@@ -48,9 +48,7 @@ func dapiKeyProblem(_ raw: String) -> String? {
 func dapiAccountProblem(_ account: DapiAccount) -> String? {
     let kind = account.kind.lowercased()
     guard kind == "integrator" else {
-        if kind == "designer" {
-            return "This key belongs to a 3DAPI seller account, which can’t get price quotes. Quotes need a separate 3DAPI integrator account: sign up at dapi.digital/integrator/sign-up with an email that has no 3DAPI seller account, then make a key there."
-        }
+        if kind == "designer" { return dapiDesignerKeyMessage }
         return "This key isn’t for a 3DAPI integrator account, which price quotes need."
     }
     let scopes = Set(account.effectiveScopes.map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
@@ -72,9 +70,9 @@ func dapiAccountStatusLine(_ account: DapiAccount?, onboarding: DapiOnboarding?)
     let approval = account.approval?.lowercased()
     if approval == "approved" || onboarding?.status == "approved" { return "Integrator account · Approved" }
     if approval == "rejected" { return "Integrator account · Not approved by 3DAPI" }
-    guard let onboarding else { return "Integrator account · Waiting for 3DAPI’s approval" }
-    var line = "Waiting for 3DAPI’s approval: \(onboarding.approvedFiles) of \(onboarding.requiredFiles) files approved"
-    if let limit = onboarding.uploadsLimit { line += " · \(onboarding.uploadsUsed) of \(limit) quotes used this round" }
+    var line = "Not yet approved by 3DAPI"
+    guard let onboarding else { return line }
+    if let limit = onboarding.uploadsLimit { line += " · \(onboarding.uploadsUsed) of \(limit) quotes used" }
     switch onboarding.status {
     case "in_review": line += " · Files in review"
     case "changes_requested": line += " · Changes requested"
@@ -83,9 +81,17 @@ func dapiAccountStatusLine(_ account: DapiAccount?, onboarding: DapiOnboarding?)
     return line
 }
 
-/// Why the 3DAPI key can't be saved or removed now, or nil.
-func dapiKeyChangeBlockedReason(activeRequests: Int, openSheets: Int) -> String? {
-    if activeRequests > 0 { return "Wait for the 3DAPI request to finish." }
+/// Settings' note when the saved key can do more than Plinth needs (it never blocks anything), or nil.
+func dapiKeyScopeAdvice(_ account: DapiAccount?) -> String? {
+    guard let account, account.effectiveScopes.contains(where: { $0.trimmingCharacters(in: .whitespaces).lowercased() == "orders:write" })
+    else { return nil }
+    return "This key can also place paid orders on 3DAPI. Plinth needs only quotes:read, quotes:write and orders:read, so a key without orders:write is safer."
+}
+
+/// Why the 3DAPI key can't be saved or removed now, or nil. A quote write still waiting for 3DAPI (`writesInFlight`)
+/// counts as a request even after its sheet closed.
+func dapiKeyChangeBlockedReason(activeRequests: Int, openSheets: Int, writesInFlight: Int = 0) -> String? {
+    if activeRequests > 0 || writesInFlight > 0 { return "Wait for the 3DAPI request to finish." }
     if openSheets > 0 { return "Close the Get 3DAPI quote sheet first." }
     return nil
 }
@@ -98,7 +104,8 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
 
 /// The app-wide 3DAPI connection: whether a key is saved (a preferences flag; the key itself lives only in the
 /// `dapi-api-key` Keychain item), the last account check (memory only), the work counters that stop the key changing
-/// mid-request, and the session-only cache of ready quotes by file hash.
+/// mid-request, the session-only cache of ready quotes by file hash, and the session-only records of quote writes
+/// (upload and create) still waiting for 3DAPI or whose outcome is unknown, by file hash.
 @MainActor final class DapiConnection: ObservableObject {
     static let shared = DapiConnection()
     static let keySavedDefaultsKey = "dapiKeySaved"
@@ -111,6 +118,13 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
     @Published private(set) var activeRequests = 0
     /// Open Get 3DAPI quote sheets. A quote belongs to one account, so the key can't change while one is open.
     @Published private(set) var openSheets = 0
+
+    /// File SHA-256s (hex, lower-case) with an upload or quote create sent and not yet answered. Memory only; never
+    /// cleared by closing a sheet, so a reopened sheet can't send a second one meanwhile.
+    @Published private(set) var quoteWritesInFlight: Set<String> = []
+    /// File SHA-256s whose upload or quote create had an unknown outcome this session. Memory only; cleared for a file
+    /// once a usable quote for it is found, and for all on a key save or removal.
+    @Published private(set) var quoteWritesUnknown: Set<String> = []
 
     private var client: (any DapiQuoting)?
     /// File SHA-256 (hex, lower-case) → ready quote ID. Memory only, and for the saved key's account only.
@@ -133,7 +147,19 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
 
     /// Why the key can't be saved or removed now, or nil.
     var keyChangeBlockedReason: String? {
-        dapiKeyChangeBlockedReason(activeRequests: activeRequests, openSheets: openSheets)
+        dapiKeyChangeBlockedReason(activeRequests: activeRequests, openSheets: openSheets, writesInFlight: quoteWritesInFlight.count)
+    }
+
+    func quoteWriteIsInFlight(forFileHash hash: String) -> Bool { quoteWritesInFlight.contains(hash.lowercased()) }
+    func quoteWriteOutcomeUnknown(forFileHash hash: String) -> Bool { quoteWritesUnknown.contains(hash.lowercased()) }
+    func beginQuoteWrite(forFileHash hash: String) {
+        guard !hash.isEmpty else { return }
+        quoteWritesInFlight.insert(hash.lowercased())
+    }
+    func endQuoteWrite(forFileHash hash: String) { quoteWritesInFlight.remove(hash.lowercased()) }
+    func noteQuoteWriteUnknown(forFileHash hash: String) {
+        guard !hash.isEmpty else { return }
+        quoteWritesUnknown.insert(hash.lowercased())
     }
 
     func beginRequest() { activeRequests += 1 }
@@ -162,21 +188,30 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         return client
     }
 
-    /// Reads `GET /v2/integrator/onboarding` with the saved key and keeps it in `onboarding`; failures are ignored
-    /// (the allowance line just isn't shown).
-    func refreshOnboarding() async {
-        guard let client = try? currentClient() else { onboarding = nil; return }
+    /// Reads `GET /v2/integrator/onboarding` with the saved key, keeps it in `onboarding` and returns it. A failure
+    /// returns nil and hides the allowance line; a cancellation (Stop, or Settings closing) returns nil and keeps the
+    /// last reading.
+    @discardableResult
+    func refreshOnboarding() async -> DapiOnboarding? {
+        guard let client = try? currentClient() else { onboarding = nil; return nil }
         let generation = keyGeneration
         beginRequest()
         defer { endRequest() }
-        let result = try? await client.onboarding()
-        guard generation == keyGeneration else { return }
-        onboarding = result
+        do {
+            let result = try await client.onboarding()
+            guard generation == keyGeneration else { return nil }
+            onboarding = result
+            return result
+        } catch {
+            guard generation == keyGeneration, !dapiIsCancellation(error) else { return nil }
+            onboarding = nil
+            return nil
+        }
     }
 
     /// Reads the saved key's account, then its onboarding when it can quote. A failure clears both, so Settings'
-    /// account line is hidden rather than out of date; nothing else changes. Returns the failure's text, the reason
-    /// the account can't quote, or nil.
+    /// account line is hidden rather than out of date; a cancellation leaves both as they were. Returns the failure's
+    /// text, the reason the account can't quote, or nil.
     @discardableResult
     func refreshStatus() async -> String? {
         let client: any DapiQuoting
@@ -195,6 +230,7 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         guard generation == keyGeneration else { return nil }
         switch result {
         case .failure(let error):
+            if dapiIsCancellation(error) { return nil }
             account = nil
             onboarding = nil
             return dapiFailureMessage(error)
@@ -238,6 +274,7 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         keyGeneration += 1
         client = candidate
         readyQuotes = [:]
+        quoteWritesUnknown = []
         account = checked
         onboarding = nil
         isConfigured = true
@@ -260,9 +297,11 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
     /// The ready quote this session already found for a file's SHA-256 (hex), or nil.
     func readyQuoteID(forFileHash hash: String) -> String? { readyQuotes[hash.lowercased()] }
 
+    /// Remembers a usable ready quote for a file, which also settles any unknown write outcome for that file.
     func rememberReadyQuote(id: String, forFileHash hash: String) {
         guard isConfigured, !id.isEmpty, !hash.isEmpty else { return }
         readyQuotes[hash.lowercased()] = id
+        quoteWritesUnknown.remove(hash.lowercased())
     }
 
     private func forgetSavedKey() {
@@ -270,6 +309,7 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         keyGeneration += 1
         client = nil
         readyQuotes = [:]
+        quoteWritesUnknown = []
         account = nil
         onboarding = nil
         isConfigured = false
