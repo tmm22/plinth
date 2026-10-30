@@ -431,7 +431,32 @@ final class LegacyMigrationTests: XCTestCase {
         XCTAssertFalse(outcome.copyFailed, "The copy must not fail verification on every launch")
         XCTAssertEqual(outcome.supportDirectory, plinth)
         XCTAssertEqual(try Data(contentsOf: plinth.appendingPathComponent("models.json")), Data(json.utf8))
-        XCTAssertNil(legacyMigrationActivityDetail(outcome), "No “0 models” line")
+        XCTAssertEqual(legacyMigrationActivityDetail(outcome), "Library brought over", "No “0 models” line")
+    }
+
+    func testAMarkerFileAlreadyInSlantStudiosFolderDoesntBreakTheCopy() throws {
+        try makeLegacyLibrary()
+        try write("", to: legacy.appendingPathComponent(supportFolderMovedMarkerName))
+        let outcome = performLegacyMigration(environment(FakeDefaults()))
+        XCTAssertFalse(outcome.copyFailed, "A move undone by hand must not fail on every launch")
+        XCTAssertEqual(outcome.supportDirectory, plinth)
+    }
+
+    func testOnlyALibraryCopiedFromSlantStudioLetsRemoveDeleteItsAddress() throws {
+        try makeLegacyLibrary()
+        let moved = FakeDefaults()
+        XCTAssertEqual(performLegacyMigration(environment(moved)).slantStudioDirectory, legacy)
+        XCTAssertEqual(performLegacyMigration(environment(moved)).slantStudioDirectory, legacy, "Still so on later launches")
+
+        try FileManager.default.removeItem(at: plinth)
+        try write("[]", to: plinth.appendingPathComponent("models.json"))
+        let separate = FakeDefaults()
+        let kept = performLegacyMigration(environment(separate))
+        XCTAssertTrue(kept.libraryKeptSeparate)
+        XCTAssertNil(kept.slantStudioDirectory, "Slant Studio's own address is never deleted for a separate library")
+        acceptPlinthsOwnLibrary(separate)
+        XCTAssertEqual(separate.values[LegacyMigrationKeys.supportFolder] as? Bool, true, "Dismiss writes the folder marker")
+        XCTAssertNil(performLegacyMigration(environment(separate)).slantStudioDirectory)
     }
 
     func testModelsOutsideTheFolderKeepTheirPaths() throws {
@@ -623,7 +648,7 @@ final class LegacyMigrationTests: XCTestCase {
         XCTAssertTrue(legacySlantStudioOpenNoticeText.contains("don’t share their payment and draft safeguards"))
     }
 
-    func testSellerAddressRemoveAlsoListsSlantStudiosCopiesOnlyWhenGiven() {
+    func testSellerAddressRemoveAlsoListsSlantStudiosCopiesOnlyWhenGiven() throws {
         let required = [plinth.appendingPathComponent("seller-address.json"), plinth.appendingPathComponent("seller-address.unreadable.json")]
         let none = sellerAddressFilesToRemove(supportDirectory: plinth, slantStudioDirectory: nil)
         XCTAssertEqual(none.required, required)
@@ -636,7 +661,8 @@ final class LegacyMigrationTests: XCTestCase {
         let failed = sellerAddressFilesToRemove(supportDirectory: legacy, slantStudioDirectory: legacy)
         XCTAssertEqual(failed.required.map(\.lastPathComponent), ["seller-address.json", "seller-address.unreadable.json"])
         XCTAssertEqual(failed.bestEffort, [])
-        // Only the packaged Plinth app's launch step names Slant Studio's folder.
+        // Only the packaged Plinth app's launch step names Slant Studio's folder, once its library came from there.
+        try makeLegacyLibrary()
         let defaults = FakeDefaults()
         XCTAssertEqual(performLegacyMigration(environment(defaults)).slantStudioDirectory, legacy)
         XCTAssertNil(performLegacyMigration(environment(defaults, identity: .other)).slantStudioDirectory)
@@ -648,8 +674,11 @@ final class LegacyMigrationTests: XCTestCase {
             legacyMigrationActivityDetail(LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy,
                                                                  movedModels: models, movedSettings: settings))
         }
-        XCTAssertNil(detail(0, nil))
-        XCTAssertNil(detail(0, 0))
+        // A move with nothing to count still leaves a record, without a “0 models” count.
+        XCTAssertEqual(detail(0, nil), "Library brought over")
+        XCTAssertEqual(detail(0, 0), "Library brought over")
+        XCTAssertNil(detail(nil, nil))
+        XCTAssertNil(detail(nil, 0))
         XCTAssertEqual(detail(0, 3), "3 settings")
         XCTAssertEqual(detail(2, 0), "2 models")
         XCTAssertEqual(detail(1, 1), "1 model · 1 setting")

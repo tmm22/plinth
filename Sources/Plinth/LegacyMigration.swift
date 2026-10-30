@@ -36,6 +36,8 @@ enum LegacyMigrationKeys {
     static let notifyWasOn = "plinth.migration.notifyWasOn"
     /// Launches on which Slant Studio's preferences file existed but couldn't be read.
     static let defaultsUnreadableLaunches = "plinth.migration.defaultsUnreadableLaunches"
+    /// Plinth's library was copied from Slant Studio's folder (so Remove of the seller's address also deletes that copy).
+    static let libraryCameFromSlantStudio = "plinth.migration.libraryCameFromSlantStudio"
 }
 
 /// Launches after the first on which an unreadable preferences file is tried again; after them the copy is given up.
@@ -371,7 +373,8 @@ func migrateSupportFolder(legacy: URL, new: URL, fileManager: FileManager = .def
     }
     // Marks the copy as the migration's own before it can appear under Plinth's name.
     do {
-        try Data().write(to: temporary.appendingPathComponent(supportFolderMovedMarkerName), options: .withoutOverwriting)
+        // The temporary copy is Plinth's own; a marker copied from the old folder (a move undone by hand) is overwritten.
+        try Data().write(to: temporary.appendingPathComponent(supportFolderMovedMarkerName), options: .atomic)
     } catch { return fail() }
     guard verifySupportFolderCopy(legacy: source, copy: temporary, finalLocation: new, fileManager: fileManager) else {
         return fail()
@@ -433,7 +436,8 @@ struct LegacyMigrationOutcome: Equatable, Sendable {
     var movedSettings: Int?
     /// Both folders hold the seller's data, so Plinth kept its own and left Slant Studio's where it is.
     var libraryKeptSeparate = false
-    /// Slant Studio's folder, only in the packaged Plinth app (Remove of the seller's address also deletes its copy).
+    /// Slant Studio's folder, only in the packaged Plinth app and only when Plinth's library was copied from it (Remove
+    /// of the seller's address also deletes its copy). Nil when Plinth kept a separate library of its own.
     var slantStudioDirectory: URL?
 }
 
@@ -476,9 +480,15 @@ func performLegacyMigration(_ environment: LegacyMigrationEnvironment) -> Legacy
     case .other: return LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy)
     case .plinth: break
     }
-    var outcome = LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy,
-                                         slantStudioDirectory: legacy)
+    var outcome = LegacyMigrationOutcome(supportDirectory: plinth, otherSupportDirectory: legacy)
     let defaults = environment.defaults
+    func finished() -> LegacyMigrationOutcome {
+        var result = outcome
+        if defaults.object(forKey: LegacyMigrationKeys.libraryCameFromSlantStudio) as? Bool == true {
+            result.slantStudioDirectory = legacy
+        }
+        return result
+    }
 
     let marker = defaults.object(forKey: LegacyMigrationKeys.defaults) as? Bool == true
     let unreadable = defaults.object(forKey: LegacyMigrationKeys.defaultsUnreadableLaunches) as? Int ?? 0
@@ -494,11 +504,15 @@ func performLegacyMigration(_ environment: LegacyMigrationEnvironment) -> Legacy
         if count > 0 { outcome.movedSettings = count }
     }
 
-    guard defaults.object(forKey: LegacyMigrationKeys.supportFolder) as? Bool != true else { return outcome }
+    guard defaults.object(forKey: LegacyMigrationKeys.supportFolder) as? Bool != true else { return finished() }
     switch migrateSupportFolder(legacy: legacy, new: plinth, fileManager: environment.fileManager) {
-    case .notNeeded, .alreadyMoved:
+    case .notNeeded:
+        defaults.set(true, forKey: LegacyMigrationKeys.supportFolder)
+    case .alreadyMoved:
+        defaults.set(true, forKey: LegacyMigrationKeys.libraryCameFromSlantStudio)
         defaults.set(true, forKey: LegacyMigrationKeys.supportFolder)
     case .moved(let models):
+        defaults.set(true, forKey: LegacyMigrationKeys.libraryCameFromSlantStudio)
         defaults.set(true, forKey: LegacyMigrationKeys.supportFolder)
         outcome.movedModels = models
     case .conflict:
@@ -510,7 +524,7 @@ func performLegacyMigration(_ environment: LegacyMigrationEnvironment) -> Legacy
         outcome.otherSupportDirectory = plinth
         outcome.copyFailed = true
     }
-    return outcome
+    return finished()
 }
 
 /// The real launch environment.
@@ -587,7 +601,14 @@ func legacyMigrationActivityDetail(_ outcome: LegacyMigrationOutcome) -> String?
     if let settings = outcome.movedSettings, settings > 0 {
         parts.append(settings == 1 ? "1 setting" : "\(settings) settings")
     }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    if parts.isEmpty { return outcome.movedModels != nil ? "Library brought over" : nil }
+    return parts.joined(separator: " · ")
+}
+
+/// The seller dismissed the "kept its own library" notice: the folder step is done for good, and Slant Studio's folder
+/// stays as it is (its address copy is never deleted by Remove, because this library didn't come from it).
+func acceptPlinthsOwnLibrary(_ defaults: MigrationDefaults) {
+    defaults.set(true, forKey: LegacyMigrationKeys.supportFolder)
 }
 
 /// Activity's line when both folders hold the seller's data: no paths. Nil otherwise.
@@ -818,7 +839,7 @@ let legacyNotificationsOffNoticeText = "Order notifications are off for now: mac
     /// back. Slant Studio's folder is left as it is.
     func dismissLibraryNotice() {
         libraryNoticeDismissed = true
-        UserDefaults.standard.set(true, forKey: LegacyMigrationKeys.supportFolder)
+        acceptPlinthsOwnLibrary(UserDefaults.standard)
     }
 
     /// Starts following Slant Studio's launches and quits. Read-only: it never blocks, asks or sends anything.
