@@ -163,6 +163,7 @@ struct AccountSettingsTab: View {
             SellerAddressSettingsSection() // SellerAddressView.swift
 
             ShopifySettingsSection() // ShopifySettingsView.swift
+            DapiSettingsSection() // DapiSettingsView.swift
         }
         .formStyle(.grouped)
         .frame(width: 620, height: settingsTabHeight)
