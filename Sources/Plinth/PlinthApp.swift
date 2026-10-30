@@ -204,6 +204,12 @@ let studioHelpSections: [StudioHelpSection] = [
         request that costs money is a button you press, with an estimate shown first, and Plinth never resends one by \
         itself.
         """),
+    StudioHelpSection(title: "Price comparison with 3DAPI (optional)", body: """
+        **Get 3DAPI Quote…** in a model’s **Print configuration** shows what 3DAPI, a separate print service, would \
+        charge to print it, beside Slant’s price. It needs a key from a 3DAPI integrator account, saved in \
+        **Settings › Account**. Getting a quote sends the model file to 3DAPI, which keeps it. Plinth only compares \
+        prices: it never orders or pays on 3DAPI.
+        """),
     StudioHelpSection(title: "What Plinth never does by itself", body: """
         No menu item or keyboard shortcut uploads, pays, cancels or sends anything. When Plinth can’t tell whether a \
         payment or cancellation went through, it holds that order until a reload shows what happened.
