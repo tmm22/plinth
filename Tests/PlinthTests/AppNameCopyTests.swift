@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// The app is called Plinth. Text shown to the seller names it "Plinth"; text sent only to Claude says "the app", and
 /// the Claude prompts say once that Plinth is the app (not the plinth tool, a base under a model).
@@ -79,7 +79,7 @@ final class AppNameCopyTests: XCTestCase {
     func testNoStringLiteralInTheSourcesNamesTheOldApp() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/SlantStudio")
+            .appendingPathComponent("Sources/Plinth")
         let files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(files.count, 50, "The scan must read the app's sources: \(sources.path)")

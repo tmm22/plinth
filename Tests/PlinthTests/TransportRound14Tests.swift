@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 14 transport fixes: error copy (401, 409, 2xx failures, 429), query encoding, the User-Agent, upload copy by
 /// step, Upload from URL, real record IDs, file refresh, platform edits, failed deliveries, catalog prices and the
@@ -142,8 +142,8 @@ final class TransportRound14Tests: XCTestCase {
         XCTAssertEqual(slantUserAgent(appVersion: "1.0\r\nX-Evil: 1", os: sonoma), "Plinth/dev (macOS 14.5)")
         XCTAssertEqual(slantUserAgent(appVersion: "1.0 (beta)", os: sonoma), "Plinth/dev (macOS 14.5)")
         XCTAssertEqual(slantUserAgent(appVersion: String(repeating: "9", count: 40), os: sonoma), "Plinth/dev (macOS 14.5)")
-        XCTAssertTrue(slantStudioUserAgent.hasPrefix("Plinth/"))
-        XCTAssertTrue(slantStudioUserAgent.contains("(macOS "))
+        XCTAssertTrue(plinthUserAgent.hasPrefix("Plinth/"))
+        XCTAssertTrue(plinthUserAgent.contains("(macOS "))
     }
 
     // MARK: Upload copy by step

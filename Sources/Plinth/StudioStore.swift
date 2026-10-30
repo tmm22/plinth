@@ -1670,7 +1670,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             self.error = uploadFailureMessage(stage: failedStage, error: error)
             return true
         }) {
-            // Quit asks first until the upload has its answer (SlantStudioApp.swift).
+            // Quit asks first until the upload has its answer (PlinthApp.swift).
             let write = SlantWritesInFlight.shared.begin(.upload)
             defer { SlantWritesInFlight.shared.end(write) }
             // A Replace File unlinks every model from the replaced file before anything is sent, and saves that, so a
@@ -1988,7 +1988,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         }) {
             var body: [String: Any] = ["URL": trimmedURL, "name": trimmedName, "platformId": platformID, "type": type]
             if !ownerID.isEmpty { body["ownerId"] = ownerID }
-            // Quit asks first until Slant answers, as for a Models upload (SlantStudioApp.swift).
+            // Quit asks first until Slant answers, as for a Models upload (PlinthApp.swift).
             let write = SlantWritesInFlight.shared.begin(.upload)
             defer { SlantWritesInFlight.shared.end(write) }
             // A Replace File unlinks every model from the replaced file before sending (saved), so neither a quit, a

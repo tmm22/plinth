@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class PersonalisationTests: XCTestCase {
     // MARK: Template values

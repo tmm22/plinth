@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 // ScadSafety's round 6 gaps: the old DXF modules and `file =` argument, `\x`/`\u`/`\U` escapes decoded before the
 // path check, and path-like text anywhere in a string.

@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 15 review fixes on the money path: Pay Several Drafts' duplicate pass, the money-word matcher, the Workbench's
 /// view of a draft's totals, the review's item list and when Create Anyway is asked for.

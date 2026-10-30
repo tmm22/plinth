@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 15: hardening the money path against Slant's next silent API change.
 final class OrdersSafetyRound15Tests: XCTestCase {

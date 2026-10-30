@@ -171,7 +171,7 @@ func isMainStudioWindowCandidate(identifier: String?, isPanel: Bool, canBecomeMa
 }
 
 /// Receives Open With, double-click and Dock-icon drops. Imports copy the file into the library, as the Import panel does.
-final class SlantStudioAppDelegate: NSObject, NSApplicationDelegate {
+final class PlinthAppDelegate: NSObject, NSApplicationDelegate {
     /// The notification delegate must be set before launch finishes, so a click on an order notification that launched
     /// the app is delivered (OrderWatch.swift holds it until the window and store exist).
     func applicationWillFinishLaunching(_ notification: Notification) {

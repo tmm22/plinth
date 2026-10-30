@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class PrintPreparationTests: XCTestCase {
     private func exported(_ mesh: Mesh) throws -> STLMesh { try ReinforcementEngine.stl(mesh.makeWatertight()) }

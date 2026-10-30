@@ -1,7 +1,7 @@
 import XCTest
 import CoreLocation
 import Contacts
-@testable import SlantStudio
+@testable import Plinth
 
 final class DeliveryLocationTests: XCTestCase {
     func testSuggestionMapsInternationalAddressAndPreservesContactDetails() throws {

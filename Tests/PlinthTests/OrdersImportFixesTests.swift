@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 5 review fixes to Orders and Import Orders: left-out items and the buyer's amounts, the unconfirmed-draft
 /// guard's overflow, Look for Draft on Slant, the import sheet's sections, Paste Address and the Spending Report.

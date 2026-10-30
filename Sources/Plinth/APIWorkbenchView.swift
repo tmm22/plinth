@@ -486,7 +486,7 @@ struct EndpointView: View {
                     aliases: lockIDs
                 )
                 mutationAttempted = true
-                // Quit asks first until this write has its answer (SlantStudioApp.swift).
+                // Quit asks first until this write has its answer (PlinthApp.swift).
                 let write = SlantWritesInFlight.shared.begin(isPay ? .payment : .cancellation)
                 defer { SlantWritesInFlight.shared.end(write) }
                 let response: APIResponse
@@ -562,7 +562,7 @@ struct EndpointView: View {
                     }
                 }
                 defer { if isOpenSCAD { openSCAD.quota.finish() } }
-                // Quit asks first until a draft create has its answer (SlantStudioApp.swift).
+                // Quit asks first until a draft create has its answer (PlinthApp.swift).
                 let write = request.isDraftCreate ? SlantWritesInFlight.shared.begin(.draft) : nil
                 defer { if let write { SlantWritesInFlight.shared.end(write) } }
                 mutationAttempted = true

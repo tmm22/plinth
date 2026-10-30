@@ -953,7 +953,7 @@ struct OrderComposerView: View {
                     failure = orderComposerCreateFailureMessage(error)
                     return true
                 }) {
-                    // Quit asks first until this create has its answer (SlantStudioApp.swift).
+                    // Quit asks first until this create has its answer (PlinthApp.swift).
                     let write = SlantWritesInFlight.shared.begin(.draft)
                     defer { SlantWritesInFlight.shared.end(write) }
                     let response = try await store.client.request("POST", path: "/orders", body: body)
@@ -2182,7 +2182,7 @@ struct OrderActionConfirmSheet: View {
                 attemptedWrite = true
                 writeAttempted = true
                 capturedRefundOnly = successRefundOnly
-                // Quit asks first until this write has its answer (SlantStudioApp.swift).
+                // Quit asks first until this write has its answer (PlinthApp.swift).
                 let write = SlantWritesInFlight.shared.begin(isPay ? .payment : .cancellation)
                 defer { SlantWritesInFlight.shared.end(write) }
                 let mutateResponse: APIResponse

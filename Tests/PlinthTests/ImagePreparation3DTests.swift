@@ -2,7 +2,7 @@ import XCTest
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
-@testable import SlantStudio
+@testable import Plinth
 
 /// Photos for Meshy and Tripo (round 8): 2048 px, a higher JPEG quality, transparency kept, metadata still stripped.
 final class ImagePreparation3DTests: XCTestCase {

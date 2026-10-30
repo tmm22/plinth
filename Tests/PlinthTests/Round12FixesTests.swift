@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 12 review fixes.
 final class Round12FixesTests: XCTestCase {

@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class TeardropTests: XCTestCase {
     private static func exported(_ mesh: Mesh) throws -> STLMesh { try ReinforcementEngine.stl(mesh.makeWatertight()) }

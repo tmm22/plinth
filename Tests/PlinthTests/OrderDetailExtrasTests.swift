@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class OrderDetailExtrasTests: XCTestCase {
     private let gb = Locale(identifier: "en_GB")

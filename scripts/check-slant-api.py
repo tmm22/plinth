@@ -8,7 +8,7 @@ Run before every release and whenever the app's API change check fires:
 
 1. Fetches https://slant3dapi.com/v2/api/openapi.json (public, no key, https
    only, no redirects, at most 2 MB) and prints its ETag and Last-Modified.
-2. Compares it, as parsed JSON, with Sources/SlantStudio/Resources/
+2. Compares it, as parsed JSON, with Sources/Plinth/Resources/
    slant-openapi-upstream.json (Slant's spec as last reviewed), separating
    contract changes from wording-only changes (description, summary, title,
    example, examples and externalDocs, the keys the app's daily check
@@ -53,7 +53,7 @@ from pathlib import Path
 SPEC_URL = "https://slant3dapi.com/v2/api/openapi.json"
 MAX_BYTES = 2 * 1024 * 1024
 TIMEOUT_SECONDS = 30
-RESOURCES = Path(__file__).resolve().parent.parent / "Sources" / "SlantStudio" / "Resources"
+RESOURCES = Path(__file__).resolve().parent.parent / "Sources" / "Plinth" / "Resources"
 SNAPSHOT = RESOURCES / "slant-openapi-upstream.json"
 STUDIO_SPEC = RESOURCES / "openapi.json"
 TAG = "x-plinth-source"

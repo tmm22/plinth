@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 11: placement checks (minimum contact, tipping, turn about Z, overhangs past 50°) and print advisories.
 final class PrintAdvisoriesTests: XCTestCase {

@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Each request takes the next scripted reply; records every request. Never touches the network.
 private final class MultiViewTransport: ImageTo3DTransport, @unchecked Sendable {

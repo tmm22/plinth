@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 // Round 13: window reopening, Help, the review's close check, the Claude key hold, next-send estimates and labels.
 

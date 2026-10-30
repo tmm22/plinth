@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 11: the print-ready pipeline with the turn about Z, the bottom-edge chamfer, purpose-aware internal walls,
 /// the copy's measurements and advisories, hidden pockets and Fill Hidden Pockets.

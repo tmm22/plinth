@@ -1,6 +1,6 @@
 import XCTest
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// Each request takes the next scripted reply; records every request and download. Never touches the network.
 private final class ReplicaScriptedTransport: ImageTo3DTransport, @unchecked Sendable {

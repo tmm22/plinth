@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 5 review fixes for the Shopify connection: the store and items recorded on drafts, fulfilling only what
 /// Slant made, the same-order check, plan limits, sale amounts and the fetch/token edge cases.

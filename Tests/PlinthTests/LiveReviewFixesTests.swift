@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import SlantStudio
+@testable import Plinth
 
 /// Fixes from live testing against Slant on 23 Oct 2026 (Models and Settings).
 final class LiveReviewFixesTests: XCTestCase {

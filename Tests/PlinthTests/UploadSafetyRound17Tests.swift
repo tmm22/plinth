@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 17 review fixes for uploads: the pre-PUT guard, a failed Replace File, Upload Again's name and dialog, the
 /// same-name copy, suggested names, the rate-limit stop and the copy around them. All IDs and names are invented.

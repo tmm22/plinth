@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class ReinforcementTests: XCTestCase {
     private func tray() throws -> STLMesh {

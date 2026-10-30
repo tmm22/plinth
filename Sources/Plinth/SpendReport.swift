@@ -552,7 +552,7 @@ extension StudioStore {
     /// Unlike the Orders list, an order under the pay/cancel lock on another platform isn't kept: it isn't this
     /// platform's spend.
     func spendReport(for records: [Record]) -> SpendReport {
-        SlantStudio.spendReport(orders: ordersShownOnPlatform(records, platformID: platformID),
+        Plinth.spendReport(orders: ordersShownOnPlatform(records, platformID: platformID),
                                 modelNames: orderItemModelNames(localModels: localModels, files: files),
                                 productSKUs: spendReportProductSKUs(savedProducts, localModels: localModels))
     }

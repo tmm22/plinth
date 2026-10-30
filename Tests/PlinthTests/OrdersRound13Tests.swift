@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 13 orders fixes: the live SUBMITTED status, inline failures, Paste Address's address check, the review run,
 /// readable tracking values, the margin's minus sign and order watch's hold caption.

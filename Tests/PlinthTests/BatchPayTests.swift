@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class BatchPayTests: XCTestCase {
     private func draft(_ id: String, status: String = "DRAFT", total: Any? = "10.00", extra: [String: Any] = [:]) -> [String: Any] {

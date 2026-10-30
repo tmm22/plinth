@@ -1,12 +1,12 @@
 import XCTest
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class ModelThumbnailAndTrashTests: XCTestCase {
     private var root: URL!
 
     override func setUpWithError() throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioThumbTrash-\(UUID().uuidString)", isDirectory: true)
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("PlinthThumbTrash-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 

@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 14 money paths: the unknown-outcome lock's decisions after a 2xx pay, failures before sending, the created-
 /// draft check, the Workbench's draft marker and batch body, the duplicate advisory and the quit question.

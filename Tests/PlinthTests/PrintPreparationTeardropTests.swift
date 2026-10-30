@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// A round hole for `r12HoledBlock`: its outline anticlockwise round `centre`, in the face it opens through.
 struct R12Hole {

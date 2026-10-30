@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 13 (Models and mesh tools): copy names, the Auto-improve triangle limit, wall-thickness wording, sheet titles
 /// and Catalog display helpers.

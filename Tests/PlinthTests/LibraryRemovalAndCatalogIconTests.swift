@@ -1,8 +1,8 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class LibraryRemovalAndCatalogIconTests: XCTestCase {
-    private let support = URL(fileURLWithPath: "/tmp/SlantStudioTests/Support", isDirectory: true)
+    private let support = URL(fileURLWithPath: "/tmp/PlinthTests/Support", isDirectory: true)
 
     func testManagedCopyOnlyMatchesFilesInsideTheAppModelsFolder() {
         XCTAssertTrue(isManagedModelCopy(support.appendingPathComponent("Models/abc.stl"), supportDirectory: support))

@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 16: Slant's order status can lag its own shipping record (29 Oct 2026: PRINTING with `fulfillment.status`
 /// SHIPPED, tracking and a printed label). Studio shows the record's word and drops read-only alarms, and the cancel
@@ -226,13 +226,13 @@ final class ShippingRecordDisplayTests: XCTestCase {
         XCTAssertFalse(orderConfirmReviewGate(order: nil, loaded: true, isPay: false, writeSucceeded: false, writeAttempted: false).enabled)
     }
 
-    /// A source check over Sources/SlantStudio: the display status, its helpers and anything computed from them never
+    /// A source check over Sources/Plinth: the display status, its helpers and anything computed from them never
     /// reach the code that decides pay, cancel, the lock, Pay Several Drafts or spend: not in a forbidden file, not as
     /// an argument anywhere inside a (multi-line) call to a write gate, not through a local `let`/`var`, and not inside
     /// a gate's own definition.
     func testTheDisplayStatusStaysOutOfEveryWritePath() throws {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("Sources/SlantStudio")
+            .deletingLastPathComponent().appendingPathComponent("Sources/Plinth")
         let files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(files.count, 20)

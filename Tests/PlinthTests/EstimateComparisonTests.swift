@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class EstimateComparisonTests: XCTestCase {
     private func price(_ total: String, _ quantity: Int) -> ComparisonPrice {

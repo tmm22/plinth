@@ -327,7 +327,7 @@ func slantUserAgent(appVersion: String?, os: OperatingSystemVersion) -> String {
     return "Plinth/\(version) (macOS \(macOS))"
 }
 
-let slantStudioUserAgent = slantUserAgent(
+let plinthUserAgent = slantUserAgent(
     appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
     os: ProcessInfo.processInfo.operatingSystemVersion
 )
@@ -651,7 +651,7 @@ struct APIClient {
         request.httpMethod = method.uppercased()
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         // Only Slant API requests name the app; presigned storage PUTs and downloads keep URLSession's default.
-        request.setValue(slantStudioUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(plinthUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(path == "/files/openScad" ? "application/sla, application/json" : "application/json", forHTTPHeaderField: "Accept")
         if let body {
             guard JSONSerialization.isValidJSONObject(body) else { throw APIError.invalidRequest("The request body must be a JSON object or array.") }

@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 private final class StubProtocol: URLProtocol {
     static var handler: ((URLRequest) throws -> (Int, [String: String], Data))?
@@ -317,17 +317,17 @@ final class APIClientTests: XCTestCase {
             let agent = request.value(forHTTPHeaderField: "User-Agent") ?? ""
             switch request.url?.path {
             case "/v2/api/files/direct-upload":
-                XCTAssertEqual(agent, slantStudioUserAgent)
+                XCTAssertEqual(agent, plinthUserAgent)
                 return (200, [:], Data("{\"data\":{\"presignedUrl\":\"https://storage.example/model.stl\",\"filePlaceholder\":{\"id\":\"abc\"}}}".utf8))
             case "/model.stl":
-                XCTAssertNotEqual(agent, slantStudioUserAgent, "the storage PUT keeps URLSession's own User-Agent")
+                XCTAssertNotEqual(agent, plinthUserAgent, "the storage PUT keeps URLSession's own User-Agent")
                 XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
                 return (200, [:], Data())
             case "/v2/api/files/confirm-upload":
-                XCTAssertEqual(agent, slantStudioUserAgent)
+                XCTAssertEqual(agent, plinthUserAgent)
                 return (200, [:], Data("{\"data\":{\"publicFileServiceId\":\"f-1\"}}".utf8))
             case "/v2/api/orders":
-                XCTAssertEqual(agent, slantStudioUserAgent)
+                XCTAssertEqual(agent, plinthUserAgent)
                 XCTAssertTrue(request.url?.absoluteString.contains("endDate=2026-10-29T00:00:00%2B10:00") == true,
                               request.url?.absoluteString ?? "")
                 return (200, [:], Data("{\"data\":[]}".utf8))

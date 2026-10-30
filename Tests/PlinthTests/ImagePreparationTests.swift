@@ -3,7 +3,7 @@ import SwiftUI
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
-@testable import SlantStudio
+@testable import Plinth
 
 final class ImagePreparationTests: XCTestCase {
     /// A width × height photo with EXIF, GPS and TIFF details and the given orientation tag.
@@ -122,7 +122,7 @@ final class ImagePreparationTests: XCTestCase {
     }
 
     func testFileReadingPreparesTheSameImage() throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioTests-\(UUID().uuidString)")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("PlinthTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let data = photo(width: 300, height: 200)

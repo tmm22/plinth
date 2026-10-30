@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 # The SwiftPM product, which names the executable and its resource bundle.
 # Phase R of the Plinth rename sets this to Plinth with the package rename.
-PRODUCT="SlantStudio"
+PRODUCT="Plinth"
 APP_DIR="$PROJECT_DIR/dist/Plinth.app"
 
 # Plinth was called Slant Studio. Unregister and remove a leftover build of it so
@@ -30,7 +30,7 @@ BIN_DIR="$(swift build -c release --show-bin-path)"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/$PRODUCT" "$APP_DIR/Contents/MacOS/$PRODUCT"
-cp "$PROJECT_DIR/Sources/SlantStudio/Resources/Euclid-LICENSE.txt" "$APP_DIR/Contents/Resources/Euclid-LICENSE.txt"
+cp "$PROJECT_DIR/Sources/Plinth/Resources/Euclid-LICENSE.txt" "$APP_DIR/Contents/Resources/Euclid-LICENSE.txt"
 # Keep the OpenAPI documents inside Contents/Resources. A SwiftPM resource
 # bundle at the .app root is unsigned content and codesign rejects it.
 # Newer SwiftPM build systems nest bundle resources under Contents/Resources.

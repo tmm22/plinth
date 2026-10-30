@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 11: hole rings, pin slots, thin-section slots and the purpose-aware plan.
 final class InternalWallsKindsTests: XCTestCase {

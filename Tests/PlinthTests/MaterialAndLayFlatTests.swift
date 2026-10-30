@@ -1,6 +1,6 @@
 import XCTest
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 12: material suggestions by purpose and Lay It Flat Along Its Length.
 final class MaterialAndLayFlatTests: XCTestCase {

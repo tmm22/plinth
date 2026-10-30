@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 11 review fixes: pockets, the walls step's limit, review overhangs, bores, the chamfer, lineage and decoding.
 final class PrintPreparationReviewFixesTests: XCTestCase {

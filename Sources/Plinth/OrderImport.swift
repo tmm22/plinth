@@ -1255,7 +1255,7 @@ enum OrderImportRowState: Equatable {
         // The batch holds the app-wide busy flag so no other Slant task interleaves with it.
         store.busy = true
         store.progress = "Importing orders"
-        // Quit asks first while the batch runs (SlantStudioApp.swift).
+        // Quit asks first while the batch runs (PlinthApp.swift).
         let write = SlantWritesInFlight.shared.begin(.importOrders)
         Task {
             await self.execute(jobs, store: store)

@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class OrderWatchRound5Tests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_790_000_000)

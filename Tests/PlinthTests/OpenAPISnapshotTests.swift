@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Studio's patched `openapi.json` and the snapshot of Slant's live spec (`slant-openapi-upstream.json`) are both
 /// bundled. `scripts/check-slant-api.py` compares them in detail; these tests keep the basics true in every build.

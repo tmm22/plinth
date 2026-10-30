@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Spending Report: printing cost per product, delivery per country, and Load the Whole Period's pure helpers.
 final class SpendReportCostsTests: XCTestCase {

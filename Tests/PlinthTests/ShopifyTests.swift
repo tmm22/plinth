@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class ShopifyTests: XCTestCase {
     private func json(_ text: String) -> [String: Any] {

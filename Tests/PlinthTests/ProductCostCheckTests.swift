@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Saved Products › Check Cost…: parts, prerequisites, catalog prices, the per-unit sum and the delivery pointer.
 final class ProductCostCheckTests: XCTestCase {

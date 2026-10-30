@@ -1,6 +1,6 @@
 import XCTest
 import Security
-@testable import SlantStudio
+@testable import Plinth
 
 /// The move from Slant Studio to Plinth. Every test works in its own temporary folder with in-memory preferences and
 /// a fake Keychain: nothing here touches the real Keychain, preference domains or ~/Library.

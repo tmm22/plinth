@@ -60,7 +60,7 @@ enum ImageTo3DService: String, CaseIterable, Identifiable, Codable, Sendable {
         }
     }
 
-    /// Keychain account, alongside the Slant key's "api-key" in the "SlantStudio" service.
+    /// Keychain account, alongside the Slant key's "api-key" in the "Plinth" service.
     var keychainAccount: String {
         switch self {
         case .meshy: return "meshy-api-key"

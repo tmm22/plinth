@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class AutoImproveTests: XCTestCase {
     private let cube20 = Mesh.cube(center: Vector(10,10,10), size: Vector(20,20,20))

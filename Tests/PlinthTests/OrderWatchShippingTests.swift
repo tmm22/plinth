@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// The order watch follows the status Studio shows (`orderDisplayStatus`), so a PRINTING order whose shipping record
 /// says SHIPPED (live, 29 Oct 2026) is reported as shipped once; and Show / notification clicks read changed orders

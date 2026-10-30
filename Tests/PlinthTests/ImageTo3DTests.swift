@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// A scripted network: each request takes the next reply in order. Records every request and download.
 private final class ScriptedTransport: ImageTo3DTransport, @unchecked Sendable {

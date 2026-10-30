@@ -1,6 +1,6 @@
 import XCTest
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 4 review fixes in the Models, personalisation and listing area.
 final class ModelsReviewFixesTests: XCTestCase {
@@ -90,7 +90,7 @@ final class ModelsReviewFixesTests: XCTestCase {
         XCTAssertTrue(isPersonalisationTempFolderName("SlantStudio-Personalised-\(id)"))
         XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-"))
         XCTAssertFalse(isPersonalisationTempFolderName("SlantStudio-OpenSCAD-\(id)-extra"))
-        XCTAssertFalse(isPersonalisationTempFolderName("SlantStudioListing-\(id)"))
+        XCTAssertFalse(isPersonalisationTempFolderName("PlinthListing-\(id)"))
     }
 
     func testStaleFoldersRespectAnotherRunningCopy() {

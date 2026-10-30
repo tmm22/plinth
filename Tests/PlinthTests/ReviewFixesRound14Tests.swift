@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 14 review fixes: copy for pages trimmed by the date filter, unknown outcomes in the pay/cancel review and the
 /// Workbench, creates that may already exist, the quantity check and the status hints.

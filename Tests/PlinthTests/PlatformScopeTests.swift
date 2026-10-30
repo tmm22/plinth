@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Slant's `GET /orders` didn't filter by `platformId` in Studio's tests, and every order seen names its platform in
 /// `customer.platformId` (no top-level `platformId`). Studio scopes what it shows and sums locally, while duplicate,
@@ -111,7 +111,7 @@ final class PlatformScopeTests: XCTestCase {
     /// confirm markers or guard duplicates never call it.
     func testTheDisplayFilterStaysOutOfGuardsAndWrites() throws {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("Sources/SlantStudio")
+            .deletingLastPathComponent().appendingPathComponent("Sources/Plinth")
         let files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(files.count, 20)

@@ -1,7 +1,7 @@
 import XCTest
 import Compression
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 // MARK: - Test ZIP writer
 

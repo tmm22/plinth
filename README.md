@@ -14,7 +14,7 @@ swift test
 open "dist/Plinth.app"
 ```
 
-Or open `Package.swift` in Xcode / `swift run SlantStudio`. Packaging is ad-hoc signed for the current Mac; public distribution needs Developer ID signing and notarization. If an earlier `dist/Slant Studio.app` build is there and isn't running, the script unregisters it from Launch Services and removes it, so **Open With** doesn't list both apps.
+Or open `Package.swift` in Xcode / `swift run Plinth`. Packaging is ad-hoc signed for the current Mac; public distribution needs Developer ID signing and notarization. If an earlier `dist/Slant Studio.app` build is there and isn't running, the script unregisters it from Launch Services and removes it, so **Open With** doesn't list both apps.
 
 ## Moving from Slant Studio
 

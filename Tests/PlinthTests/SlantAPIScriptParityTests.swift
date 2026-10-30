@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// `scripts/check-slant-api.py` is the release gate for Slant's API, and the app's daily check (`SlantAPIChanges.swift`)
 /// must judge a change the same way: otherwise the script can say "no change" or "wording only" while every seller

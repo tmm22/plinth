@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 
 @main
-struct SlantStudioApp: App {
-    @NSApplicationDelegateAdaptor(SlantStudioAppDelegate.self) private var appDelegate
+struct PlinthApp: App {
+    @NSApplicationDelegateAdaptor(PlinthAppDelegate.self) private var appDelegate
     @StateObject private var store = StudioStore()
     @StateObject private var modalPresentation = ModalPresentationMonitor()
     init() {
@@ -304,7 +304,7 @@ func slantWritesQuitQuestion(_ kinds: [SlantWriteKind]) -> (title: String, messa
             + "went through, so it can’t warn you before you send it again. Wait for it to finish, then quit.")
 }
 
-extension SlantStudioAppDelegate {
+extension PlinthAppDelegate {
     /// Asks before quitting while a Slant write is in flight, with Don't Quit as the default; quits at once otherwise.
     @objc func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {

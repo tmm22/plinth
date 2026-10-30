@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 14: reading orders after Slant's status change of 26 Oct 2026 (DRAFT, SUBMITTED, PRINTING, SHIPPED,
 /// CANCELLED), live pagination, the publicId lookup, the date filter's margin and the order watch's re-label rule.

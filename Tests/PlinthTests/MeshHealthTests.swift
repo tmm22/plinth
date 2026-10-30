@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class MeshHealthTests: XCTestCase {
     private func faces(_ points: [SIMD3<Float>], _ faces: [(Int, Int, Int)]) -> [SIMD3<Float>] {

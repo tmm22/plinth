@@ -2,7 +2,7 @@ import XCTest
 import Euclid
 import simd
 import CryptoKit
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 10 review fixes for the print-ready copy, internal walls and the copy tools.
 final class PrintPreparationFixesTests: XCTestCase {
@@ -411,7 +411,7 @@ final class PrintPreparationFixesTests: XCTestCase {
         let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
         guard FileManager.default.isExecutableFile(atPath: xcrun.path) else { throw XCTSkip("xcrun isn't available") }
         let bundle = Bundle(for: Self.self).bundlePath
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("SlantStudioHashSeed-\(UUID().uuidString)")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("PlinthHashSeed-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         func launch(deterministic: Bool) throws -> Process {
@@ -422,7 +422,7 @@ final class PrintPreparationFixesTests: XCTestCase {
             if deterministic { environment["SWIFT_DETERMINISTIC_HASHING"] = "1" } else { environment.removeValue(forKey: "SWIFT_DETERMINISTIC_HASHING") }
             let process = Process()
             process.executableURL = xcrun
-            process.arguments = ["xctest", "-XCTest", probes.map { "SlantStudioTests.\($0.test)" }.joined(separator: ","), bundle]
+            process.arguments = ["xctest", "-XCTest", probes.map { "PlinthTests.\($0.test)" }.joined(separator: ","), bundle]
             process.environment = environment
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice

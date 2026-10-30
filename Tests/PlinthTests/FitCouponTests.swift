@@ -1,7 +1,7 @@
 import CryptoKit
 import XCTest
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class FitCouponTests: XCTestCase {
     // MARK: Fixtures

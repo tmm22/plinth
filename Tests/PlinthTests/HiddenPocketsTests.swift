@@ -1,7 +1,7 @@
 import XCTest
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class HiddenPocketsTests: XCTestCase {
     private func cuboid(_ low: SIMD3<Float>, _ high: SIMD3<Float>, inward: Bool = false) throws -> [Float] {

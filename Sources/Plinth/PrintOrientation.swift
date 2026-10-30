@@ -575,7 +575,7 @@ func printPlacement(_ assessments: [OrientationAssessment], in mesh: STLMesh, in
 
 extension STLMesh {
     func printPlacement(intent: PartIntent, allowTurn: Bool = true) -> PrintPlacementChoice? {
-        SlantStudio.printPlacement(orientationAssessments(), in: self, intent: intent, allowTurn: allowTurn)
+        Plinth.printPlacement(orientationAssessments(), in: self, intent: intent, allowTurn: allowTurn)
     }
 
     /// The turn about Z that lines up this mesh's faces once placed in `orientation`, or 0 when there is none or the
@@ -740,17 +740,17 @@ extension STLMesh {
         let intent = model.partIntent ?? PartIntent()
         let lineage = studioCopyLineage(model)
         // Refusals first, so a locked copy is never measured.
-        let quick = SlantStudio.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: [],
+        let quick = Plinth.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: [],
                                                requiresZUp: lineage.inheritsZUpLock, keepsPlacement: lineage.keepsPlacement,
                                                fromPrintReadyCopy: lineage.fromPrintReadyCopy, preparedCopy: model.printRecipe != nil,
                                                fitCoupon: model.fitCoupon == true)
         guard quick.unavailable == .noPlacement else { return quick }
         let assessments = orientationAssessments()
-        let outcome = SlantStudio.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: assessments,
+        let outcome = Plinth.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: assessments,
                                                  requiresZUp: false, keepsPlacement: false, fromPrintReadyCopy: false)
         guard let plan = outcome.plan else { return outcome }
         let turn = placementTurnDegrees(after: plan.placement.assessment.orientation)
-        return SlantStudio.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: assessments,
+        return Plinth.layFlatOutcome(intent: intent, extents: maximum - minimum, assessments: assessments,
                                           turns: [plan.placement.assessment.id: turn],
                                           requiresZUp: false, keepsPlacement: false, fromPrintReadyCopy: false)
     }

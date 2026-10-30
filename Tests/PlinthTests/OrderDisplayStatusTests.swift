@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class OrderDisplayStatusTests: XCTestCase {
     private func order(_ status: Any?, fulfillment: Any? = nil) -> [String: Any] {

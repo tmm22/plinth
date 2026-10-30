@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class ModelsRound5FixesTests: XCTestCase {
     private let nonCommercial = ModelSourceDetails(designer: "Maker", licence: "CC BY-NC-SA 4.0")

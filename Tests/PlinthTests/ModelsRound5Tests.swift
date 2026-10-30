@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class ModelsRound5Tests: XCTestCase {
     private func model(metadata: String, objects: String? = nil) -> String {

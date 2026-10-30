@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Order item names, the review sheet's item-list layout choice and the import sheet's row/button copy.
 final class OrderItemNamesTests: XCTestCase {

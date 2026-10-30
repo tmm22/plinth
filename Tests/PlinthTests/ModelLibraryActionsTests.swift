@@ -1,6 +1,6 @@
 import XCTest
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class ModelLibraryActionsTests: XCTestCase {
     // MARK: Rename
@@ -42,13 +42,13 @@ final class ModelLibraryActionsTests: XCTestCase {
     }
 
     func testExportDestinationRefusesLibraryFolderAndSourceFile() {
-        let support = URL(fileURLWithPath: "/tmp/SlantStudioSupportTest", isDirectory: true)
+        let support = URL(fileURLWithPath: "/tmp/PlinthSupportTest", isDirectory: true)
         let source = support.appendingPathComponent("Models/ABC.stl")
         XCTAssertNotNil(exportDestinationProblem(source: source, destination: source, supportDirectory: support))
         XCTAssertNotNil(exportDestinationProblem(source: source, destination: support.appendingPathComponent("Models/other.stl"), supportDirectory: support))
         XCTAssertNotNil(exportDestinationProblem(source: source, destination: support.appendingPathComponent("models.json"), supportDirectory: support))
         XCTAssertNil(exportDestinationProblem(source: source, destination: URL(fileURLWithPath: "/tmp/Exports/bracket.stl"), supportDirectory: support))
-        XCTAssertNil(exportDestinationProblem(source: source, destination: URL(fileURLWithPath: "/tmp/SlantStudioSupportTest-other/bracket.stl"), supportDirectory: support))
+        XCTAssertNil(exportDestinationProblem(source: source, destination: URL(fileURLWithPath: "/tmp/PlinthSupportTest-other/bracket.stl"), supportDirectory: support))
     }
 
     func testExportCopiesWithoutTouchingSourceAndReplacesExisting() throws {

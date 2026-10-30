@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 import Euclid
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 /// A closed, outward prism over `outline` with `holes`, from `z0` to `z1`, as a triangle soup. Walls are split into
 /// `rings` bands. `inward` reverses every triangle (a cavity shell).

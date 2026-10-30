@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 // Suggest Accessories: the strict tool, the request, Studio's own validation and deny list, using an idea in the
 // brief, the design turn's context, the cost forecast and the runner, driven by stubbed replies (no network).

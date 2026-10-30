@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 /// Round 17: Slant keeps one file per owner and name (M-67), file IDs (M-28), Upload from URL's type (M-27), model
 /// analysis units and age (M-30, M-23) and catalog dimensions (M-33). All values are invented.

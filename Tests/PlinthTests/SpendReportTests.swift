@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class SpendReportTests: XCTestCase {
     private func order(_ id: String, status: String?, created: String?, total: Any? = nil,

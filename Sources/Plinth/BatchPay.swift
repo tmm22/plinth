@@ -614,7 +614,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
         // The batch holds the app-wide busy flag, so no other Slant task runs between its payments.
         store.busy = true
         store.progress = "Paying orders"
-        // Quit asks first while the batch runs (SlantStudioApp.swift).
+        // Quit asks first while the batch runs (PlinthApp.swift).
         let write = SlantWritesInFlight.shared.begin(.payDrafts)
         Task {
             await self.executePayments(queue, store: store, onCompleted: onCompleted)

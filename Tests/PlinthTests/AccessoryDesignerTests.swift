@@ -1,6 +1,6 @@
 import XCTest
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 // Design an Accessory from a Photo: code safety, the brief and prompt, Studio's render facts, and the bounded design
 // loop driven by stubbed Claude replies and renders (no network, no OpenSCAD).

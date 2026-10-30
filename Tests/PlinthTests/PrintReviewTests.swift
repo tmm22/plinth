@@ -1,6 +1,6 @@
 import XCTest
 import simd
-@testable import SlantStudio
+@testable import Plinth
 
 final class PrintReviewTests: XCTestCase {
     // MARK: Fixtures

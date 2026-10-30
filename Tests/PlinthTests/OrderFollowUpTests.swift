@@ -1,5 +1,5 @@
 import XCTest
-@testable import SlantStudio
+@testable import Plinth
 
 final class OrderFollowUpTests: XCTestCase {
     private let day: TimeInterval = 86_400
