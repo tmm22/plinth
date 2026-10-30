@@ -99,9 +99,6 @@ final class LegacyMigrationTests: XCTestCase {
         let pattern = try NSRegularExpression(pattern: "<key>CFBundleIdentifier</key>\\s*<string>([^<]*)</string>")
         let match = try XCTUnwrap(pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)))
         let identifier = String(text[Range(match.range(at: 1), in: text)!])
-        if identifier == legacyBundleIdentifier {
-            throw XCTSkip("scripts/build-app.sh still uses Slant Studio's bundle ID; expected to pass once I4's build-script change is merged.")
-        }
         XCTAssertEqual(identifier, plinthBundleIdentifier)
     }
 

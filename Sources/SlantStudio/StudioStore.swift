@@ -971,7 +971,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             saveModels()
         }
         if let detail = legacyMigrationActivityDetail(LegacyMigrationLaunch.outcome) {
-            activities.insert(Activity(title: "Moved from Slant Studio", detail: detail, success: true), at: 0)
+            activities.insert(Activity(title: legacyMigrationActivityTitle, detail: detail, success: true), at: 0)
         }
         savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
         sellerAddress = loadSellerAddress(from: Self.sellerAddressURL)

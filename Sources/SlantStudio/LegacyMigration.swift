@@ -15,8 +15,9 @@ import SwiftUI
 //   Migration never deletes an old item; removing a key in Plinth also tries to remove the old one.
 // Nothing here logs a secret or a path.
 
-let plinthBundleIdentifier = "io.github.tmm22.plinth"
-let legacyBundleIdentifier = "app.slantstudio.mac"
+// The bundle IDs are defined once, in AppIdentity.swift.
+let plinthBundleIdentifier = appBundleIdentifier
+let legacyBundleIdentifier = legacyAppBundleIdentifier
 let plinthKeychainService = "Plinth"
 let legacyKeychainService = "SlantStudio"
 let plinthSupportFolderName = "Plinth"
@@ -711,6 +712,8 @@ func legacyNotifyFlagIsSpent(notificationsOnNow: Bool, orderWatchEnabled: Bool) 
     notificationsOnNow || !orderWatchEnabled
 }
 
+/// Activity title for the one-time move. The old name is allowed in this file only (AppNameCopyTests).
+let legacyMigrationActivityTitle = "Moved from Slant Studio"
 let legacyFolderNotMovedNoticeText = "Plinth couldn’t bring over your Slant Studio library and settings this time, so it is using them where they are. It will try again next time it opens. Nothing was deleted."
 let legacyNotificationsOffNoticeText = "Order notifications are off for now: macOS treats Plinth as a new app, so it needs your permission again."
 

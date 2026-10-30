@@ -88,6 +88,13 @@ final class AppNameCopyTests: XCTestCase {
             let source = try String(contentsOf: file, encoding: .utf8)
             for literal in swiftStringLiterals(source) {
                 literalCount += 1
+                // The move from Slant Studio has to name the old app; only LegacyMigration.swift may, and only as
+                // "Slant Studio" (never "Studio" alone for this app).
+                if file.lastPathComponent == "LegacyMigration.swift" {
+                    let withoutOldName = literal.text.replacingOccurrences(of: "Slant Studio", with: "")
+                    XCTAssertFalse(mentionsStudio(withoutOldName), "\(file.lastPathComponent):\(literal.line): \(literal.text)")
+                    continue
+                }
                 XCTAssertFalse(literal.text.contains("Slant Studio"), "\(file.lastPathComponent):\(literal.line): \(literal.text)")
                 XCTAssertFalse(mentionsStudio(literal.text), "\(file.lastPathComponent):\(literal.line): \(literal.text)")
             }
