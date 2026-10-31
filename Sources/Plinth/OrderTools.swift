@@ -378,6 +378,40 @@ func orderMarketplaceReferenceLine(_ order: [String: Any]) -> String? {
     return "\(orderMarketplaceReferenceLabel(source: reference.source)) \(reference.id)"
 }
 
+/// The Slant order number a reprint draft names in `metadata.reprintOf` (`orderMetadataAddingReprintOf`), trimmed;
+/// nil when absent, empty, not text or a number, longer than `orderReprintOfMaxLength` or spread over lines. Display
+/// only: it never decides a write or a duplicate check.
+func orderReprintOf(_ order: [String: Any]) -> String? {
+    guard let metadata = orderObject(order)["metadata"] as? [String: Any], let value = metadata[orderReprintOfKey] else { return nil }
+    let text: String
+    if let string = value as? String {
+        text = string
+    } else if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+        text = number.stringValue
+    } else {
+        return nil
+    }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.count <= orderReprintOfMaxLength, !trimmed.contains(where: { $0.isNewline }) else { return nil }
+    return trimmed
+}
+
+/// "Reprint of order SLANT_9" for the order detail, or nil when the order isn't a reprint.
+func orderReprintOfLine(_ order: [String: Any]) -> String? {
+    orderReprintOf(order).map { "Reprint of order \($0)" }
+}
+
+/// The loaded order a reprint names, for the detail's Show Original; nil when it isn't loaded or names itself.
+func orderReprintOriginal(of order: [String: Any], loaded: [Record]) -> Record? {
+    guard let number = orderReprintOf(order) else { return nil }
+    let own = orderNumber(orderObject(order))
+    guard number != own else { return nil }
+    return loaded.first { record in
+        let values = orderObject(record.values)
+        return orderNumber(values) == number || record.id == number
+    }
+}
+
 // MARK: - Duplicate-draft guard
 
 /// What happened to one Create Draft press.
@@ -650,11 +684,11 @@ func orderReviewLargeQuantityNotice(_ items: [[String: Any]]) -> String? {
 // MARK: - Draft composer copy
 
 /// The composer's own heading (a sheet shows no window title).
-func orderComposerHeading(sourceOrderNumber: String?) -> String {
+func orderComposerHeading(sourceOrderNumber: String?, isReprint: Bool = false) -> String {
     guard let number = sourceOrderNumber?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty else {
         return "New order draft"
     }
-    return "Duplicate of order \(number)"
+    return isReprint ? "Reprint of order \(number)" : "Duplicate of order \(number)"
 }
 
 /// Shown when a new draft reuses the address from this session's last draft, such as

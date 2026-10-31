@@ -1198,7 +1198,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     /// Reads the order fresh (a GET only) and opens the composer prefilled for review. Nothing is created or charged
     /// here: the user still creates the draft, which Slant prices anew, and places it through the charge review.
-    func duplicateOrderAsDraft(orderID: String) async {
+    /// `asReprint` (Report a Problem's Reprint as New Draft…) only adds the original's number for `metadata.reprintOf`.
+    func duplicateOrderAsDraft(orderID: String, asReprint: Bool = false) async {
         if let reason = duplicateOrderBlockedReason(orderID: orderID) { showError(reason); return }
         var prefill: OrderComposerPrefill?
         _ = await run("Load order to duplicate") {
@@ -1207,7 +1208,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let order = mergeOrderDraftEnvelope(responseObject(response))
             SlantAPIWatch.shared.noteOrder(order)
             guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return that order. Reload Orders and try again.") }
-            prefill = orderComposerPrefill(reordering: Record(values: order))
+            prefill = orderComposerPrefill(reordering: Record(values: order), asReprint: asReprint)
         }
         guard let prefill else { return }
         // State may have changed while loading (e.g. another composer opened or an outcome became unknown).

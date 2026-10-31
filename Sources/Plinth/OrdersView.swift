@@ -187,6 +187,8 @@ struct OrderComposerView: View {
     @State private var initialLines: [OrderLine] = []
     @State private var initialDelivery = DeliveryDetails()
     @State private var sourceOrderNumber: String?
+    /// The original's Slant number when this draft is a reprint (Report a Problem); sent as `metadata.reprintOf`.
+    @State private var reprintOf: String?
     @State private var skippedItems: [String] = []
     @State private var deliveryCopied = true
     @State private var platformNotCopied = false
@@ -257,13 +259,21 @@ struct OrderComposerView: View {
     var body: some View {
         VStack(spacing: 0) {
             // A sheet shows no window title, so the form carries its own heading.
-            Text(orderComposerHeading(sourceOrderNumber: sourceOrderNumber))
+            Text(orderComposerHeading(sourceOrderNumber: sourceOrderNumber, isReprint: reprintOf != nil))
                 .font(.title2.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top], 16)
+            // A reprint says which order it reprints and whether the link goes with the draft (DraftConfirmation.swift).
+            if let note = orderReprintLinkNote(original: reprintOf, sellerMetadata: (try? orderMetadataDictionary(metadataFields)) ?? [:]) {
+                Text(note)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.top, 4)
+            }
             composerForm
         }
-        .navigationTitle(orderComposerHeading(sourceOrderNumber: sourceOrderNumber))
+        .navigationTitle(orderComposerHeading(sourceOrderNumber: sourceOrderNumber, isReprint: reprintOf != nil))
         .frame(minWidth: 720, minHeight: 640)
         // A Create Draft problem note goes once the items or address change; the next Create checks again.
         .onChange(of: lines) { validation = nil }
@@ -792,6 +802,7 @@ struct OrderComposerView: View {
                 platformListLoadedAtSeed = !store.platforms.isEmpty
             }
             sourceOrderNumber = prefill.sourceOrderNumber
+            reprintOf = prefill.reprintOf
             skippedItems = prefill.skippedItems
             shippingProvider = prefill.shippingProvider
         }
@@ -921,7 +932,10 @@ struct OrderComposerView: View {
             // A fresh marker per press, so Check Slant can later tell whether this draft was created
             // (DraftConfirmation.swift). Left out when the reference fields already use all 10 metadata fields.
             let generatedMarker = newStudioDraftMarker()
-            let markedMetadata = orderMetadataAddingDraftMarker(metadata, marker: generatedMarker)
+            // A reprint then names its original (`reprintOf`), only if a field is still free and the seller hasn't
+            // used the key: never at the expense of the seller's fields or the marker.
+            let markedMetadata = orderMetadataAddingReprintOf(orderMetadataAddingDraftMarker(metadata, marker: generatedMarker),
+                                                              original: reprintOf)
             let body = try orderDraftPayload(
                 platformID: draftPlatformID, ownerID: store.ownerID, email: delivery.email, recipientName: delivery.name,
                 line1: delivery.line1, line2: delivery.line2, city: delivery.city, state: delivery.state, zip: delivery.zip, country: country,
@@ -1534,7 +1548,7 @@ struct OrdersView: View {
     func reprintIfRequested() {
         guard let id = reprintAfterDismiss else { return }
         reprintAfterDismiss = nil
-        Task { await store.duplicateOrderAsDraft(orderID: id) }
+        Task { await store.duplicateOrderAsDraft(orderID: id, asReprint: true) }
     }
 
     func applyStatusFilter(_ status: String) {
@@ -1773,7 +1787,7 @@ struct OrdersView: View {
                         }
                     }
                     Divider()
-                    OrderSummary(order: displayed)
+                    OrderSummary(order: displayed, onShowOrder: { selection = $0 })
                 }
                 .padding(24)
             }
@@ -2794,6 +2808,9 @@ struct OrderComposerPrefill {
     var platformID: String? = nil
     /// `delivery` is the seller's own saved address (Order a Sample to Me…), shown as fields to check.
     var usesSellerAddress = false
+    /// Report a Problem's Reprint as New Draft…: the original's Slant number, sent as `metadata.reprintOf`
+    /// (`orderMetadataAddingReprintOf`). Nil for a plain duplicate.
+    var reprintOf: String? = nil
 }
 
 private func reorderText(_ value: Any?) -> String {
@@ -2933,8 +2950,11 @@ func deliveryDetails(fromOrder order: [String: Any]) -> DeliveryDetails? {
     return copied.allSatisfy(\.isEmpty) ? nil : delivery
 }
 
-/// Composer prefill for "Duplicate as New Draft". Metadata is not copied because it often holds per-order references.
-func orderComposerPrefill(reordering order: Record) -> OrderComposerPrefill {
+/// Composer prefill for "Duplicate as New Draft". Metadata is not copied because it often holds per-order references
+/// (the marketplace `source`/`sourceOrderId`/`sourceShop`/`sourceItems` that the duplicate checks read, and the
+/// draft marker). A reprint (`asReprint`, from Report a Problem) is the same prefill naming the original's number in
+/// `reprintOf`, which Create Draft adds as Plinth's own field.
+func orderComposerPrefill(reordering order: Record, asReprint: Bool = false) -> OrderComposerPrefill {
     let values = orderObject(order.values)
     let mapped = orderLinesForReorder(order)
     let provider = reorderText((values["options"] as? [String: Any])?["shippingProvider"]).uppercased()
@@ -2948,7 +2968,8 @@ func orderComposerPrefill(reordering order: Record) -> OrderComposerPrefill {
         skippedItems: mapped.skipped,
         sourceOrderNumber: number.isEmpty ? nil : number,
         shippingProvider: orderShippingProviderChoices.contains { !$0.code.isEmpty && $0.code == provider } ? provider : "",
-        platformID: platform.isEmpty ? nil : platform
+        platformID: platform.isEmpty ? nil : platform,
+        reprintOf: asReprint && !number.isEmpty ? number : nil
     )
 }
 
@@ -3101,6 +3122,8 @@ func deliveryApplyingCountryPick(_ code: String, to delivery: DeliveryDetails) -
 struct OrderSummary: View {
     @EnvironmentObject var store: StudioStore
     let order: [String: Any]
+    /// Selects another loaded order in the list (the reprint's Show Original). Nil hides that button.
+    var onShowOrder: ((String) -> Void)? = nil
     var status: String { order["status"] as? String ?? "" }
     var tracking: [(String, String)] { trackingFacts(order["fulfillment"]) }
     var body: some View {
@@ -3175,6 +3198,19 @@ struct OrderSummary: View {
                     Text("\(label): \(reference.id)").textSelection(.enabled).lineLimit(2)
                     Button { copyToPasteboard(reference.id) } label: { Image(systemName: "doc.on.doc") }
                         .accessibilityLabel("Copy \(label.lowercased()) number").help("Copy \(label.lowercased()) number")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            // A draft made by Report a Problem's Reprint as New Draft… names its original (`metadata.reprintOf`).
+            if let reprint = orderReprintOfLine(order) {
+                HStack {
+                    Text(reprint).textSelection(.enabled).lineLimit(2)
+                    if let onShowOrder, let original = orderReprintOriginal(of: order, loaded: store.orders) {
+                        Button("Show Original") { onShowOrder(original.id) }
+                            .controlSize(.small)
+                            .help("Select order \(orderNumber(orderObject(original.values))) in the list")
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
