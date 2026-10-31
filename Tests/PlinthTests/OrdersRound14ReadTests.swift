@@ -247,8 +247,9 @@ final class OrdersRound14ReadTests: XCTestCase {
 
     func testLiveStatusesInAttentionTrackingProblemsAndSpending() {
         let old = t0.addingTimeInterval(-10 * 86_400)
-        XCTAssertEqual(attention("SUBMITTED", created: old, processed: old, now: t0), .notShipped(days: 10, sincePlaced: true))
-        XCTAssertEqual(attention("PRINTING", created: old, now: t0), .notShipped(days: 10, sincePlaced: false))
+        // Ten calendar days from a Friday to a Monday are six business days.
+        XCTAssertEqual(attention("SUBMITTED", created: old, processed: old, now: t0), .notShipped(days: 6, sincePlaced: true))
+        XCTAssertEqual(attention("PRINTING", created: old, now: t0), .notShipped(days: 6, sincePlaced: false))
         XCTAssertNil(attention("SHIPPED", created: old, now: t0))
         XCTAssertNil(attention(" cancelled ", created: old, now: t0))
 

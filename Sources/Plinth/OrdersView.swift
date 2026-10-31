@@ -1712,6 +1712,18 @@ struct OrdersView: View {
                         Text(lagNote).font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    // A paid order not yet shipped (OrderTimeline.swift): when it was paid, that Slant shares no print
+                    // stages, and the seller's own typical time to a label (default platform only). Display only.
+                    if let paidCaption = orderPaidAwaitingShipmentCaption(displayed, hasItemProgress: orderHasItemProgress(displayed)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(paidCaption)
+                            if let typical = store.orderShipTimeSummary(for: store.orders) {
+                                Text(orderShipTimeDetailLine(typical))
+                            }
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                     // Why this order needs attention (OrderFollowUp.swift), which the list shows only as a marker.
                     if let attention = orderAttention(displayed, now: Date()) {
                         Label("Needs attention: \(attention.detail)", systemImage: "exclamationmark.triangle.fill")
@@ -3131,6 +3143,8 @@ struct OrderSummary: View {
             } else {
                 Text("Item details appear after the draft is calculated.").foregroundStyle(.secondary)
             }
+            // Created, Paid, Shipping label created and Arrive by, from the order's own dates (OrderTimeline.swift).
+            OrderTimelineSection(order: order)
             if let address = ((order["customer"] as? [String: Any])?["details"] as? [String: Any])?["address"] as? [String: Any] {
                 Text([address["name"], address["line1"], address["line2"], address["city"], address["state"], address["zip"], address["country"]].compactMap { $0 as? String }.filter { !$0.isEmpty }.joined(separator: ", "))
                     .font(.callout).foregroundStyle(.secondary)

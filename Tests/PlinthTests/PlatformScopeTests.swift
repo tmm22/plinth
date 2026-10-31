@@ -115,7 +115,9 @@ final class PlatformScopeTests: XCTestCase {
         let files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "swift" }
         XCTAssertGreaterThan(files.count, 20)
-        let allowed: Set<String> = ["OrderTools.swift", "StudioStore.swift", "OrdersView.swift", "SpendReport.swift", "OrderWatch.swift"]
+        let allowed: Set<String> = ["OrderTools.swift", "StudioStore.swift", "OrdersView.swift", "SpendReport.swift", "OrderWatch.swift",
+                                     // The payment-to-label time sums loaded orders for display only.
+                                     "OrderTimeline.swift"]
         for file in files {
             let text = try String(contentsOf: file, encoding: .utf8)
             let uses = text.contains("ordersShownOnPlatform(") || text.contains("ordersOnDefaultPlatform")

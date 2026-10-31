@@ -382,7 +382,7 @@ final class OrdersSafetyRound15Tests: XCTestCase {
         /// What the list, detail and Tracking for Your Shop show.
         let title: String
         let lags: Bool
-        /// orderAttention for an order past its arrive-by date, and for one placed 6 days ago with no arrive-by date.
+        /// orderAttention for an order past its arrive-by date, and for one placed 6 business days ago with no arrive-by date.
         let late: Bool
         let notShipped: Bool
         let progressShown: Bool
@@ -440,8 +440,8 @@ final class OrdersSafetyRound15Tests: XCTestCase {
         for meaning in shippingRecordTable {
             let message = "\(meaning.status) + \(meaning.fulfillment)"
             let base: [String: Any] = [
-                "publicId": "SLANT_1", "status": meaning.status, "createdAt": "2026-10-23T09:00:00.000Z",
-                "processedAt": "2026-10-23T09:01:00.000Z", "printingCost": "10.00", "deliveryCost": "20.00",
+                "publicId": "SLANT_1", "status": meaning.status, "createdAt": "2026-10-21T09:00:00.000Z",
+                "processedAt": "2026-10-21T09:01:00.000Z", "printingCost": "10.00", "deliveryCost": "20.00",
                 "items": [["type": "PRINT", "price": "10.00", "currency": "USD", "quantity": 1]],
                 "metadata": ["source": "etsy", "sourceOrderId": "3141"],
                 "customer": ["details": ["address": ["name": "Ada", "country": "GB"]]]

@@ -219,21 +219,54 @@ final class OrderFollowUpTests: XCTestCase {
         XCTAssertEqual(draft(created: iso(now.addingTimeInterval(day)))?.title, "Late", "clock skew counts as new")
     }
 
-    func testNotShippedAfterProductionDays() {
-        let threshold = Double(orderAttentionProductionDays) * day
-        let placed = now.addingTimeInterval(-threshold - 3600)
-        let values = order("S", status: "PRINTING", created: iso(now.addingTimeInterval(-20 * day)),
-                           extra: ["processedAt": iso(placed)]).values
-        XCTAssertEqual(orderAttention(values, now: now), .notShipped(days: orderAttentionProductionDays, sincePlaced: true))
+    func testNotShippedAndNotStartedCountBusinessDays() {
+        // `now` is Friday 23 Oct 2026, 12:00 UTC.
+        let utc = TimeZone(identifier: "UTC")!
+        func attention(_ status: String, placed: String?, created: String = "2026-10-01T10:00:00Z", at: Date? = nil) -> OrderAttention? {
+            var extra: [String: Any] = [:]
+            if let placed { extra["processedAt"] = placed }
+            return orderAttention(order("S", status: status, created: created, extra: extra).values, now: at ?? now, timeZone: utc)
+        }
+        // Placed the Friday before: five business days, so Not shipped, whatever the status while being made.
+        XCTAssertEqual(attention("PRINTING", placed: "2026-10-16T10:00:00Z"),
+                       .notShipped(days: orderAttentionNotShippedBusinessDays, sincePlaced: true))
+        XCTAssertEqual(attention("SUBMITTED", placed: "2026-10-16T10:00:00Z"), .notShipped(days: 5, sincePlaced: true),
+                       "Not shipped outranks waiting to print")
+        // Monday: four business days. Still being printed is fine; still waiting to print is not.
+        XCTAssertNil(attention("PRINTING", placed: "2026-10-19T10:00:00Z"))
+        XCTAssertEqual(attention("SUBMITTED", placed: "2026-10-19T10:00:00Z"), .notStarted(days: 4, sincePlaced: true))
+        XCTAssertEqual(attention(" submitted ", placed: "2026-10-20T23:59:00Z"),
+                       .notStarted(days: orderAttentionNotStartedBusinessDays, sincePlaced: true))
+        XCTAssertNil(attention("SUBMITTED", placed: "2026-10-21T08:00:00Z"), "two business days")
+        // Older waiting words from earlier replies get only Not shipped.
+        XCTAssertNil(attention("PAID", placed: "2026-10-19T10:00:00Z"))
+        XCTAssertNil(attention("QUEUED", placed: "2026-10-22T10:00:00Z"))
+        // Weekends don't count: paid Wednesday, checked the next Monday (five calendar days) is three business days.
+        let monday = ISO8601DateFormatter().date(from: "2026-10-26T09:00:00Z")!
+        XCTAssertNil(attention("PRINTING", placed: "2026-10-21T10:00:00Z", at: monday))
+        XCTAssertEqual(attention("SUBMITTED", placed: "2026-10-21T10:00:00Z", at: monday), .notStarted(days: 3, sincePlaced: true))
+        XCTAssertNil(attention("SUBMITTED", placed: "2026-10-23T10:00:00Z", at: ISO8601DateFormatter().date(from: "2026-10-25T20:00:00Z")!),
+                     "paid on Friday, nothing by Sunday")
         // Counted from when it was placed, not from when the draft was made.
-        let recentlyPlaced = order("S", status: "QUEUED", created: iso(now.addingTimeInterval(-20 * day)),
-                                   extra: ["processedAt": iso(now.addingTimeInterval(-day))]).values
-        XCTAssertNil(orderAttention(recentlyPlaced, now: now))
+        XCTAssertNil(attention("QUEUED", placed: iso(now.addingTimeInterval(-day))))
         // Without processedAt, from creation, and the text says so.
-        let noProcessed = order("S", status: "AWAITING_SHIPMENT", created: iso(now.addingTimeInterval(-8 * day))).values
-        XCTAssertEqual(orderAttention(noProcessed, now: now), .notShipped(days: 8, sincePlaced: false))
-        XCTAssertEqual(OrderAttention.notShipped(days: 8, sincePlaced: false).detail, "Not shipped 8 days after it was created.")
+        XCTAssertEqual(attention("AWAITING_SHIPMENT", placed: nil, created: "2026-10-15T10:00:00Z"), .notShipped(days: 6, sincePlaced: false))
+        XCTAssertEqual(attention("SUBMITTED", placed: nil, created: "2026-10-20T10:00:00Z"), .notStarted(days: 3, sincePlaced: false))
+        // A payment date in the future (clock skew) isn't an age.
+        XCTAssertNil(attention("SUBMITTED", placed: iso(now.addingTimeInterval(3 * day)), created: "2026-10-01T10:00:00Z"))
         XCTAssertNil(orderAttention(order("S", status: "SHIPPED", created: iso(now.addingTimeInterval(-30 * day))).values, now: now))
+    }
+
+    func testNotShippedAndNotStartedCopy() {
+        XCTAssertEqual(OrderAttention.notShipped(days: 6, sincePlaced: false).detail, "Not shipped 6 business days after it was created.")
+        XCTAssertEqual(OrderAttention.notShipped(days: 5, sincePlaced: true).detail, "Not shipped 5 business days after it was placed.")
+        XCTAssertEqual(OrderAttention.notStarted(days: 3, sincePlaced: true).detail,
+                       "Paid 3 business days ago and Slant still lists it as Submitted, waiting to print.")
+        XCTAssertEqual(OrderAttention.notStarted(days: 1, sincePlaced: false).detail,
+                       "Created 1 business day ago and Slant still lists it as Submitted, waiting to print.")
+        XCTAssertEqual(OrderAttention.notStarted(days: 3, sincePlaced: true).title, "Waiting to print")
+        XCTAssertEqual(OrderAttention.notShipped(days: 5, sincePlaced: true).title, "Not shipped")
+        XCTAssertTrue(orderAttentionFilterHint(moreOnServer: false).contains("not shipped 5 business days after being placed, still waiting to print after 3 business days"))
     }
 
     func testDraftNotPlacedWindow() {
