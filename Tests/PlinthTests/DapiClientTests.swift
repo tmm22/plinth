@@ -175,7 +175,8 @@ final class DapiClientTests: XCTestCase {
              "uploads":{"used":7,"limit":25},"files_to_submit":10,"current_request":null,"order_blockers":["billing_details_missing"]}
             """, [:])])
         let onboarding = try await client.onboarding()
-        XCTAssertEqual(onboarding, DapiOnboarding(status: "collecting", approvedFiles: 3, requiredFiles: 10, uploadsUsed: 7, uploadsLimit: 25))
+        XCTAssertEqual(onboarding, DapiOnboarding(status: "collecting", approvedFiles: 3, requiredFiles: 10, uploadsUsed: 7, uploadsLimit: 25,
+                                                    orderBlockers: ["billing_details_missing"]))
         XCTAssertEqual(transport.requests[0].url?.absoluteString, "https://public-api.dapi.digital/v2/integrator/onboarding")
         XCTAssertEqual(transport.requests[0].httpMethod, "GET")
         assertAPIHeaders(transport.requests[0])
