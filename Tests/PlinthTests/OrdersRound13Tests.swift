@@ -181,7 +181,7 @@ final class OrdersRound13Tests: XCTestCase {
         XCTAssertEqual(orderAPIValueTitle(" usps "), "usps")
         // Copies and the Shopify CSV still read Slant's value.
         let facts = trackingFacts(["provider": "SHIPPO", "deliveryMethod": "INTERNATIONAL", "trackingNumbers": ["1Z"]])
-        XCTAssertEqual(facts.first { $0.0 == "Carrier" }?.1, "SHIPPO")
+        XCTAssertEqual(facts.first { $0.0 == "Label service" }?.1, "SHIPPO", "a label service is named as one, with Slant's value")
     }
 
     func testMarginPercentUsesATrueMinus() {

@@ -821,8 +821,10 @@ func ordersCSVRow(_ record: Record, includeAddresses: Bool) -> [String] {
     // Slant documents order costs in USD; an explicit currency on the order wins.
     var currency = csvText(order["currency"])
     if currency.isEmpty, printing != nil || delivery != nil || total != nil { currency = "USD" }
-    let fulfillment = order["fulfillment"] as? [String: Any]
-    let carrier = csvText(fulfillment?["provider"]).isEmpty ? csvText(fulfillment?["carrier"]) : csvText(fulfillment?["provider"])
+    // Slant's provider is usually the label service (SHIPPO), which isn't the carrier: the column is left blank then.
+    // A carrier worked out from the tracking number isn't filled in either: the export holds only what Slant returned.
+    let provider = fulfillmentProvider(order["fulfillment"])
+    let carrier = provider.flatMap { carrierLabelServiceName($0) == nil ? $0 : nil } ?? ""
     let tracking = trackingFacts(order["fulfillment"]).filter { $0.0 == "Tracking number" }.map(\.1).joined(separator: "; ")
     var row = [
         orderNumber(order), created, csvText(order["status"]), itemCount, itemSummary,

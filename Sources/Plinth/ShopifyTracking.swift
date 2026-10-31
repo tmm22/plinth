@@ -31,6 +31,8 @@ struct ShopifyTrackingCandidate: Identifiable, Equatable {
     let trackingNumbers: [String]
     /// The carrier as Shopify names it, or empty (Shopify then works it out from the number).
     let company: String
+    /// Whether `company` was worked out from the tracking numbers (`shopifyTrackingCompanyChoice`), not named by Slant.
+    var companyFromNumber = false
     /// The store the draft was fetched from, or nil when it was imported from a CSV export.
     var sourceShop: String? = nil
     /// The Shopify items (and units) the draft was made from, or nil when they weren't recorded.
@@ -38,6 +40,16 @@ struct ShopifyTrackingCandidate: Identifiable, Equatable {
     /// For the same-order check when `sourceShop` is nil. Memory only.
     var recipientName = ""
     var postcode = ""
+}
+
+/// The send confirmation's message, naming the carriers that go with the tracking.
+func shopifyTrackingConfirmationMessage(jobs: [ShopifyTrackingCandidate], notifyCustomer: Bool) -> String {
+    var parts = ["Shopify marks the items Slant made in each order as fulfilled with this tracking, which Plinth can’t undo."]
+    let carriers = shopifyTrackingCompanySentence(jobs)
+    if !carriers.isEmpty { parts.append(carriers) }
+    parts.append(notifyCustomer ? "Customers are emailed their shipping details." : "Customers aren’t emailed.")
+    parts.append("Plinth sends one order at a time and stops if Shopify doesn’t confirm one.")
+    return parts.joined(separator: " ")
 }
 
 /// The sheet's store and orders, fixed when it opens.
@@ -54,8 +66,10 @@ func shopifyTrackingCandidates(_ entries: [ShopFollowUpEntry], done: Set<String>
         guard entry.isShopify, !done.contains(entry.id), let id = entry.marketplaceID, !entry.trackingNumbers.isEmpty else { return nil }
         let name = shopifyOrderName(id)
         guard !name.isEmpty, seen.insert(entry.id).inserted else { return nil }
+        let choice = shopifyTrackingCompanyChoice(entry)
         return ShopifyTrackingCandidate(id: entry.id, orderName: name, trackingNumbers: entry.trackingNumbers,
-                                        company: shopifyTrackingCompanyName(shopifyTrackingCompany(entry)),
+                                        company: shopifyTrackingCompanyName(choice.company),
+                                        companyFromNumber: choice.fromNumber && !choice.company.isEmpty,
                                         sourceShop: entry.sourceShop, sourceItems: entry.sourceItems,
                                         recipientName: entry.recipientName, postcode: entry.postcode)
     }
@@ -71,6 +85,33 @@ private let shopifyCarrierNames: [String: String] = [
     "ONTRAC": "OnTrac", "PUROLATOR": "Purolator", "LASERSHIP": "LaserShip", "AMAZONLOGISTICS": "Amazon Logistics US",
     "GLS": "GLS", "POSTNL": "PostNL", "DEUTSCHEPOST": "Deutsche Post", "LAPOSTE": "La Poste", "SENDLE": "Sendle"
 ]
+
+/// The review's words for a candidate's company: "USPS (from the tracking number)", "UPS", or nil when blank.
+func shopifyTrackingCompanyText(_ candidate: ShopifyTrackingCandidate) -> String? {
+    guard !candidate.company.isEmpty else { return nil }
+    return candidate.companyFromNumber ? "\(candidate.company) (from the tracking number)" : candidate.company
+}
+
+/// The confirmation's sentence about the carriers sent: "Carrier sent with the tracking: USPS for 2 orders (worked
+/// out from the tracking numbers); for the rest Shopify works it out." Empty when no order names one.
+func shopifyTrackingCompanySentence(_ jobs: [ShopifyTrackingCandidate]) -> String {
+    var counts: [String: Int] = [:]
+    var fromNumber = false
+    for job in jobs where !job.company.isEmpty {
+        counts[job.company, default: 0] += 1
+        if job.companyFromNumber { fromNumber = true }
+    }
+    guard !counts.isEmpty else { return "" }
+    let parts = counts.keys.sorted().map { name -> String in
+        let count = counts[name] ?? 0
+        return count == 1 ? "\(name) for 1 order" : "\(name) for \(count) orders"
+    }
+    let blank = jobs.count - counts.values.reduce(0, +)
+    var sentence = "Carrier sent with the tracking: \(parts.joined(separator: ", "))"
+    if fromNumber { sentence += " (worked out from the tracking numbers where Slant names only its label service)" }
+    sentence += blank > 0 ? "; for the rest Shopify works it out from the number." : "."
+    return sentence
+}
 
 func shopifyTrackingCompanyName(_ provider: String) -> String {
     let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -583,7 +624,7 @@ struct ShopifyTrackingSheet: View {
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text("Shopify marks the items Slant made in each order as fulfilled with this tracking, which Plinth can’t undo. \(notifyCustomer ? "Customers are emailed their shipping details." : "Customers aren’t emailed.") Plinth sends one order at a time and stops if Shopify doesn’t confirm one.")
+            Text(shopifyTrackingConfirmationMessage(jobs: candidates.filter { readyIDs.contains($0.id) }, notifyCustomer: notifyCustomer))
         }
         .onAppear {
             if !registered { registered = true; connection.trackingSheetOpened() }
@@ -617,7 +658,10 @@ struct ShopifyTrackingSheet: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text("Shopify order \(candidate.orderName)").fontWeight(.semibold).lineLimit(1)
-                    if !candidate.company.isEmpty { Text("· \(candidate.company)").foregroundStyle(.secondary).lineLimit(1) }
+                    if let company = shopifyTrackingCompanyText(candidate) {
+                        Text("· \(company)").foregroundStyle(.secondary).lineLimit(1)
+                            .help(candidate.companyFromNumber ? carrierDetectedHelp : "The carrier Slant named")
+                    }
                 }
                 Text(candidate.trackingNumbers.joined(separator: ", ")).font(.callout.monospaced()).lineLimit(2).textSelection(.enabled)
                 if connection.unconfirmedTrackingSends[candidate.id] != nil, state != .sent {

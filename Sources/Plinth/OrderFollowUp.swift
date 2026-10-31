@@ -352,10 +352,9 @@ func shopFollowUpEntry(_ record: Record) -> ShopFollowUpEntry? {
     let numbers = orderTrackingNumbers(order)
     guard !numbers.isEmpty else { return nil }
     let reference = orderMarketplaceReference(order)
-    let provider = trackingFacts(order["fulfillment"]).first { $0.0 == "Carrier" }?.1.trimmingCharacters(in: .whitespacesAndNewlines)
     return ShopFollowUpEntry(
         id: record.id, slantOrderNumber: orderNumber(order), marketplaceID: reference?.id, source: reference?.source,
-        recipientFirstName: orderRecipientFirstName(order), provider: (provider?.isEmpty ?? true) ? nil : provider,
+        recipientFirstName: orderRecipientFirstName(order), provider: fulfillmentProvider(order["fulfillment"]),
         trackingNumbers: numbers, status: (order["status"] as? String) ?? "", created: orderCreatedDate(order),
         sourceShop: orderShopifySourceShop(order), sourceItems: orderShopifySourceItems(order),
         recipientName: orderRecipientName(order), postcode: orderShippingPostcode(order),
@@ -402,25 +401,57 @@ func shopFollowUpTrackingText(_ entry: ShopFollowUpEntry) -> String {
     entry.trackingNumbers.joined(separator: ", ")
 }
 
-/// What Copy Order & Tracking puts on the clipboard: "3141592653 — 1Z999AA10123456784". The marketplace order
-/// number when imported, otherwise Slant's. Never the recipient's name.
+/// The carrier the order's tracking numbers agree on, worked out from them (`carrierDetected`), or nil. Slant's
+/// provider counts only when it names a real carrier, which must then agree.
+func shopFollowUpDetectedCarrier(_ entry: ShopFollowUpEntry) -> DetectedCarrier? {
+    carrierDetected(forNumbers: entry.trackingNumbers, namedCarrier: entry.provider)
+}
+
+/// What Copy Order & Tracking puts on the clipboard: "3141592653 — 1Z999AA10123456784", and after each number whose
+/// carrier Plinth recognises, that carrier and its tracking page: "(UPS: https://www.ups.com/track?tracknum=…)". The
+/// marketplace order number when imported, otherwise Slant's. Never the recipient's name. Copy Tracking stays the
+/// bare numbers, for a shop's tracking-number field.
 func shopFollowUpOrderAndTrackingText(_ entry: ShopFollowUpEntry) -> String {
-    "\(entry.marketplaceID ?? entry.slantOrderNumber) — \(shopFollowUpTrackingText(entry))"
+    let numbers = entry.trackingNumbers.map { number -> String in
+        guard let carrier = carrierDetected(forNumber: number, namedCarrier: entry.provider) else { return number }
+        if let url = carrier.trackingURL { return "\(number) (\(carrier.name): \(url.absoluteString))" }
+        return "\(number) (\(carrier.name))"
+    }
+    return "\(entry.marketplaceID ?? entry.slantOrderNumber) — \(numbers.joined(separator: ", "))"
+}
+
+/// The row's carrier caption: "Label service: Shippo · Carrier: USPS (from the tracking number)", "Carrier: UPS",
+/// or nil when Slant names nothing and no carrier is recognised.
+func shopFollowUpCarrierLine(_ entry: ShopFollowUpEntry) -> String? {
+    var parts: [String] = []
+    if let provider = entry.provider {
+        if let service = carrierLabelServiceName(provider) { parts.append("Label service: \(service)") }
+        else { parts.append("Carrier: \(orderAPIValueTitle(provider))") }
+    }
+    if entry.provider.map({ carrierLabelServiceName($0) != nil }) ?? true, let carrier = shopFollowUpDetectedCarrier(entry) {
+        parts.append("Carrier: \(carrier.name) (from the tracking number)")
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
 // MARK: - Shopify tracking CSV
 
 let shopifyTrackingCSVColumns = ["Order name", "Tracking number", "Tracking company"]
 
-/// Label services Slant may report as the fulfilment provider. They aren't carriers, so they're not sent to Shopify
-/// as the tracking company (Shopify works the carrier out from the number when the company is blank).
-let shopFollowUpLabelServices: Set<String> = ["SHIPPO", "SHIPSTATION"]
-
-/// The tracking company for Shopify: the provider unless it's a label service, else blank.
+/// The tracking company for Shopify: Slant's provider when it names a real carrier (as before); when it is a label
+/// service (`carrierLabelServiceName`: never sent as the company) or blank, the carrier every tracking number agrees
+/// on, worked out from the numbers, but only under the exact name Shopify lists (`DetectedCarrier.shopifyCompany`);
+/// otherwise blank, and Shopify works the carrier out itself.
 func shopifyTrackingCompany(_ entry: ShopFollowUpEntry) -> String {
-    guard let provider = entry.provider?.trimmingCharacters(in: .whitespacesAndNewlines), !provider.isEmpty else { return "" }
-    let key = provider.uppercased().filter { $0.isLetter || $0.isNumber }
-    return shopFollowUpLabelServices.contains(key) ? "" : provider
+    shopifyTrackingCompanyChoice(entry).company
+}
+
+/// `shopifyTrackingCompany` and whether it was worked out from the tracking numbers (shown as such in the review).
+func shopifyTrackingCompanyChoice(_ entry: ShopFollowUpEntry) -> (company: String, fromNumber: Bool) {
+    let provider = entry.provider?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !provider.isEmpty, carrierLabelServiceName(provider) == nil { return (provider, false) }
+    guard let company = detectCarrier(forNumbers: entry.trackingNumbers)?.shopifyCompany else { return ("", false) }
+    return (company, true)
 }
 
 /// The Shopify order name. Import Orders stores the export's Name column ("#1001", or whatever prefix the shop uses)
@@ -503,7 +534,7 @@ struct ShopFollowUpSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Tracking for your shop").font(.title2.bold())
-                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop; marks last until you quit Plinth. Only loaded orders are listed.")
+                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop; Plinth remembers the marks (order IDs only) until you disconnect or change the API key. Only loaded orders are listed.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -582,7 +613,7 @@ struct ShopFollowUpSheet: View {
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .accessibilityLabel("Marked as done in your shop, \(shopFollowUpOrderTitle(entry))")
-                .help("Mark as done once you’ve added this order’s tracking in your shop (this session only)")
+                .help("Mark as done once you’ve added this order’s tracking in your shop. Plinth remembers this until you disconnect or change the API key.")
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(shopFollowUpOrderTitle(entry)).font(.body.weight(.medium)).textSelection(.enabled)
@@ -594,8 +625,8 @@ struct ShopFollowUpSheet: View {
                 .lineLimit(1)
                 Text(shopFollowUpTrackingText(entry))
                     .font(.callout.monospaced()).textSelection(.enabled).lineLimit(2)
-                if let provider = entry.provider {
-                    Text("Provider: \(orderAPIValueTitle(provider))").font(.caption).foregroundStyle(.secondary)
+                if let line = shopFollowUpCarrierLine(entry) {
+                    Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(line)
                 }
             }
             Spacer(minLength: 8)
