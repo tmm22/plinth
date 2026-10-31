@@ -25,16 +25,27 @@ struct DapiQuoteButton: View {
         return local
     }
 
+    /// The Models bar's primary step (before a ready quote is known). Never a default button and no shortcut either way.
+    var prominent = false
+
     var body: some View {
         let local = available
         if local != nil || presented != nil {
-            Button("Get 3DAPI Quote…") {
+            let button = Button("Get 3DAPI Quote…") {
                 guard let local else { return }
                 presented = DapiQuoteModel(id: local.id, name: local.name, url: local.url, format: ModelFileFormat(url: local.url))
             }
-            .buttonStyle(.bordered)
             .disabled(local == nil)
             .help("Price this model on 3DAPI and compare it with Slant")
+            // The sheet hangs on the stack, not on either styled button, so a quote turning ready (which makes the
+            // button plain) can't tear the open sheet down.
+            ZStack {
+                if prominent {
+                    button.buttonStyle(.borderedProminent)
+                } else {
+                    button.buttonStyle(.bordered)
+                }
+            }
             .sheet(item: $presented) { model in
                 DapiQuoteSheet(model: model).environmentObject(store)
             }

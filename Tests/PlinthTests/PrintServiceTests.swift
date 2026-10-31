@@ -107,6 +107,68 @@ final class PrintServiceTests: XCTestCase {
         XCTAssertFalse(dapiOrderWatchShouldBeActive(service: .slant, dapiKeySaved: false))
     }
 
+    func testOrderWatchRestartsWhenTheKeyIsReplaced() {
+        func state(_ active: Bool, _ generation: Int) -> DapiOrderWatchCoordination {
+            DapiOrderWatchCoordination(active: active, keyGeneration: generation)
+        }
+        // Launch: the first value sets the state either way.
+        XCTAssertEqual(dapiOrderWatchActivations(from: nil, to: state(false, 0)), [false])
+        XCTAssertEqual(dapiOrderWatchActivations(from: nil, to: state(true, 0)), [true])
+        // Service or key saved/removed.
+        XCTAssertEqual(dapiOrderWatchActivations(from: state(false, 0), to: state(true, 0)), [true])
+        XCTAssertEqual(dapiOrderWatchActivations(from: state(true, 0), to: state(false, 0)), [false])
+        // Key A replaced by key B while active (also lifts a pause after a refused key): stop, then start afresh.
+        XCTAssertEqual(dapiOrderWatchActivations(from: state(true, 1), to: state(true, 2)), [false, true])
+        // A generation change while inactive (Slant chosen) changes nothing; nothing changes on a repeat.
+        XCTAssertEqual(dapiOrderWatchActivations(from: state(false, 1), to: state(false, 2)), [])
+        XCTAssertEqual(dapiOrderWatchActivations(from: state(true, 2), to: state(true, 2)), [])
+        // First save: the generation moves before the key counts as saved, then the watch starts once.
+        var last: DapiOrderWatchCoordination? = nil
+        var calls: [Bool] = []
+        for next in [state(false, 0), state(false, 1), state(true, 1)] {
+            calls += dapiOrderWatchActivations(from: last, to: next)
+            last = next
+        }
+        XCTAssertEqual(calls, [false, true])
+    }
+
+    func testComposerNeverQueuedWithoutAKey() {
+        XCTAssertEqual(dapiComposerOpening(service: .dapi, keySaved: true, modalUIShown: false), .openComposer)
+        XCTAssertEqual(dapiComposerOpening(service: .dapi, keySaved: false, modalUIShown: false), .openSettings)
+        XCTAssertEqual(dapiComposerOpening(service: .dapi, keySaved: true, modalUIShown: true), .ignore)
+        XCTAssertEqual(dapiComposerOpening(service: .dapi, keySaved: false, modalUIShown: true), .ignore)
+        XCTAssertEqual(dapiComposerOpening(service: .slant, keySaved: true, modalUIShown: false), .ignore)
+    }
+
+    func testDapiOrderToolsInTheFileMenu() {
+        for tool in [DapiOrderToolRequest.exportOrders, .trackingForYourShop, .spendingReport] {
+            for destination in [Destination.models, .orders, .catalog] {
+                XCTAssertTrue(dapiOrderToolMenuEnabled(tool, service: .dapi, keySaved: true, destination: destination, modalUIShown: false),
+                              "\(tool) from \(destination)")
+            }
+            XCTAssertFalse(dapiOrderToolMenuEnabled(tool, service: .dapi, keySaved: true, destination: .orders, modalUIShown: true))
+            XCTAssertFalse(dapiOrderToolMenuEnabled(tool, service: .dapi, keySaved: false, destination: .orders, modalUIShown: false))
+            XCTAssertFalse(dapiOrderToolMenuEnabled(tool, service: .slant, keySaved: true, destination: .orders, modalUIShown: false))
+        }
+        // Refresh reloads 3DAPI's Orders only while it is shown.
+        XCTAssertTrue(dapiOrderToolMenuEnabled(.reload, service: .dapi, keySaved: true, destination: .orders, modalUIShown: false))
+        XCTAssertFalse(dapiOrderToolMenuEnabled(.reload, service: .dapi, keySaved: true, destination: .models, modalUIShown: false))
+        XCTAssertFalse(dapiOrderToolMenuEnabled(.reload, service: .dapi, keySaved: true, destination: .catalog, modalUIShown: false))
+        XCTAssertFalse(dapiOrderToolMenuEnabled(.reload, service: .dapi, keySaved: true, destination: .orders, modalUIShown: true))
+    }
+
+    func testModelsBarLeadsWithTheQuoteThenTheOrder() {
+        XCTAssertEqual(dapiModelsPrimaryAction(hasReadyQuote: false, orderingProblem: nil), .getQuote)
+        XCTAssertEqual(dapiModelsPrimaryAction(hasReadyQuote: false, orderingProblem: "Blocked."), .getQuote)
+        XCTAssertEqual(dapiModelsPrimaryAction(hasReadyQuote: true, orderingProblem: nil), .order)
+        XCTAssertEqual(dapiModelsPrimaryAction(hasReadyQuote: true, orderingProblem: "Blocked."), .none)
+        XCTAssertEqual(dapiOrderButtonHelp(orderingProblem: "3DAPI hasn’t approved this account yet."), "3DAPI hasn’t approved this account yet.")
+        XCTAssertTrue(dapiOrderButtonHelp(orderingProblem: nil).contains("Place Order"))
+        XCTAssertEqual(dapiModelsReadyStatus(hasReadyQuote: true, orderingProblem: "Blocked."), "Blocked.")
+        XCTAssertTrue(dapiModelsReadyStatus(hasReadyQuote: false, orderingProblem: nil).hasPrefix("Get a 3DAPI quote first"))
+        XCTAssertTrue(dapiModelsReadyStatus(hasReadyQuote: true, orderingProblem: nil).hasPrefix("3DAPI has quoted this model"))
+    }
+
     // MARK: Main window
 
     func testConnectPromptIsSlantOnly() {

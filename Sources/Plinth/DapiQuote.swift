@@ -32,6 +32,33 @@ func dapiFileSHA256(at url: URL, chunkSize: Int = 1 << 20) throws -> String {
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 }
 
+/// `dapiFileSHA256`, stopping with `CancellationError` between pieces once the current task is cancelled.
+func dapiFileSHA256Cancellable(at url: URL, chunkSize: Int = 1 << 20) throws -> String {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
+        try Task.checkCancellation()
+        hasher.update(data: chunk)
+    }
+    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+}
+
+/// What identifies a file's content for a session hash cache: its path, size and modification date.
+struct DapiFileIdentity: Hashable, Sendable {
+    let path: String
+    let size: Int64
+    let modified: Date?
+}
+
+/// The identity of a regular file that exists, else nil.
+func dapiFileIdentity(at url: URL) -> DapiFileIdentity? {
+    guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+          (attributes[.type] as? FileAttributeType) == .typeRegular,
+          let size = attributes[.size] as? NSNumber else { return nil }
+    return DapiFileIdentity(path: url.standardizedFileURL.path, size: size.int64Value, modified: attributes[.modificationDate] as? Date)
+}
+
 /// The file's size when it is a regular file that exists, else nil.
 func dapiRegularFileSize(at url: URL) -> Int64? {
     guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),

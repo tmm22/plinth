@@ -20,10 +20,11 @@ struct StudioView: View {
                     case .models: ModelsView()
                     case .orders:
                         if printChoice.service == .dapi { DapiOrdersView() } else { OrdersView() }
-                    // `.platforms` never stays selected (it opens Settings); Catalog shows its saved kind.
+                    // `.platforms` never stays selected (it opens Settings); Catalog shows its saved kind, or with 3DAPI
+                    // its materials only (3DAPI has no components or stationery; the saved kind is kept for Slant).
                     case .catalog, .materials, .components, .stationery, .platforms:
                         if printChoice.service == .dapi {
-                            DapiCatalogView(kind: store.catalogKind).id(store.catalogKind) // DapiCatalogView.swift
+                            DapiCatalogView() // DapiCatalogView.swift
                         } else {
                             CatalogView(kind: store.catalogKind).id(store.catalogKind)
                         }

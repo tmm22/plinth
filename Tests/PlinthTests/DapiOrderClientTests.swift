@@ -679,13 +679,119 @@ final class DapiOrderClientTests: XCTestCase {
         XCTAssertTrue(generic.contains("permission"))
         XCTAssertNil(dapiScopeNamed(in: "admin:everything"))
 
-        for code in ["payment_failed", "insufficient_balance", "production_unavailable", "card_payments_unavailable", "quote_not_approved"] {
-            XCTAssertTrue(DapiError.refused(status: 402, code: code, message: nil).userMessage.contains("No order was created")
-                          || DapiError.refused(status: 402, code: code, message: nil).userMessage.contains("no order was created"), code)
+        for code in ["payment_failed", "insufficient_balance", "production_unavailable", "card_payments_unavailable", "quote_not_approved",
+                     "compliance_blocked", "vat_number_invalid", "material_not_allowed", "material_slots_mismatch",
+                     "suggestions_unavailable", "extra_not_found"] {
+            let text = DapiError.refused(status: 402, code: code, message: nil).userMessage
+            XCTAssertTrue(text.localizedCaseInsensitiveContains("nothing was charged"), "\(code): \(text)")
         }
         // Activity stays status-only, whatever the message holds.
         let detailed = DapiError.refused(status: 422, code: "material_slots_mismatch", message: "ord_TestOrder0001 for person@example.com, 1 Test Street")
         XCTAssertEqual(detailed.activityDetail, "HTTP 422 material_slots_mismatch")
         XCTAssertEqual(DapiError.outcomeUnknown("ord_TestOrder0001 plinth-test-0001").activityDetail, "Outcome unknown")
+    }
+
+    // MARK: Parity review fixes
+
+    func testSampleCreditIsSentOnlyWhenTicked() throws {
+        var ticked = orderRequest()
+        ticked.useSampleCredit = true
+        XCTAssertEqual(dapiOrderRequestBody(ticked)["use_sample_credit"] as? Bool, true)
+        XCTAssertEqual(dapiOrderRequestBody(ticked)["mode"] as? String, "wallet")
+        // Off (the default): the key is omitted, never sent as false.
+        XCTAssertFalse(dapiOrderRequestBody(orderRequest()).keys.contains("use_sample_credit"))
+        let data = try JSONSerialization.data(withJSONObject: dapiOrderRequestBody(orderRequest()))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("use_sample_credit"))
+    }
+
+    func testPlaceOrderSendsSampleCreditOnlyWhenTicked() async throws {
+        var ticked = orderRequest()
+        ticked.useSampleCredit = true
+        let (client, transport) = makeClient([.reply(201, orderJSON())])
+        _ = try await client.placeOrder(ticked, idempotencyKey: "plinth-order-0001")
+        let body = try XCTUnwrap(transport.sentRequests.first.flatMap(json))
+        XCTAssertEqual(body["use_sample_credit"] as? Bool, true)
+    }
+
+    func testSuggestedMaterialIDsAreParsedAndValidated() throws {
+        let quote: [String: Any] = [
+            "id": "qte_TestQuote0001", "status": "ready",
+            "suggested_materials": [
+                ["slot": 1, "material": ["id": "mat_TestRed", "name": "PLA Red"], "match": "exact"],
+                ["slot": 2, "material": ["id": "mat_bad/../x", "name": "PLA Odd"]],
+                ["slot": 3, "material": ["name": "PLA Blue"]],
+                ["slot": 4, "material": ["id": "qte_NotAMaterial"]],
+                ["slot": 5]
+            ]
+        ]
+        let parsed = try XCTUnwrap(dapiParseQuote(quote))
+        XCTAssertEqual(parsed.suggestedMaterials.map(\.materialID), ["mat_TestRed", nil, nil, nil, nil])
+        XCTAssertEqual(parsed.suggestedMaterials.map(\.slot), [1, 2, 3, 4, 5])
+        XCTAssertEqual(parsed.suggestedMaterials.first?.materialName, "PLA Red")
+    }
+
+    func testRefusalCopyForOrdering() {
+        let paused = DapiError.refused(status: 409, code: "production_unavailable", message: "Production is paused.").userMessage
+        XCTAssertEqual(paused, "3DAPI has paused production, so it isn’t taking orders right now. Nothing was charged. Try again later.")
+
+        let notCancellable = DapiError.refused(status: 409, code: "order_not_cancellable", message: nil).userMessage
+        XCTAssertTrue(notCancellable.contains("already cancelled"), notCancellable)
+        XCTAssertTrue(notCancellable.contains("production partner already has it"), notCancellable)
+        XCTAssertFalse(notCancellable.contains("charged"), "a refused cancel says nothing about charges")
+
+        // `details.expected_slots` is named, through `dapiErrorBody`.
+        let mismatch = errorBody(422, "material_slots_mismatch", message: "Slots don't match.", details: #"{"expected_slots":[2,1]}"#)
+        let mismatchBody = dapiErrorBody(Data(mismatch.utf8))
+        let mismatchText = DapiError.refused(status: 422, code: "material_slots_mismatch", message: mismatchBody?.message).userMessage
+        XCTAssertTrue(mismatchText.contains("This quote needs a material for slots 1 and 2."), mismatchText)
+        XCTAssertTrue(mismatchText.contains("nothing was charged"), mismatchText)
+        XCTAssertEqual(dapiExpectedSlotsSentence([3]), "This quote needs a material for slot 3.")
+        XCTAssertEqual(dapiExpectedSlotsSentence([1, 2, 3, 3]), "This quote needs a material for slots 1, 2 and 3.")
+        XCTAssertEqual(dapiExpectedSlotsSentence([["slot": 2], ["slot": 1]]), "This quote needs a material for slots 1 and 2.")
+        XCTAssertNil(dapiExpectedSlotsSentence([0, 17, "x", true] as [Any]))
+        XCTAssertNil(dapiExpectedSlotsSentence(nil))
+        let noSlots = DapiError.refused(status: 422, code: "material_slots_mismatch", message: "Nope.").userMessage
+        XCTAssertTrue(noSlots.contains("each slot the quote lists"), noSlots)
+
+        // Any refused Place Order says nothing was charged; other refusals don't claim it.
+        let generic = dapiRefusalMessage(status: 400, code: "validation_failed", message: "Bad.", placingOrder: true)
+        XCTAssertTrue(generic.hasSuffix(dapiNothingChargedSentence), generic)
+        XCTAssertFalse(dapiRefusalMessage(status: 400, code: "validation_failed", message: "Bad.").contains("charged"))
+        let alreadySays = dapiRefusalMessage(status: 409, code: "production_unavailable", message: nil, placingOrder: true)
+        XCTAssertEqual(alreadySays.components(separatedBy: "charged").count, 2, "said once: \(alreadySays)")
+        // Still redacted.
+        let leaky = dapiRefusalMessage(status: 400, code: "something_new", message: "key \(orderTestKey) refused", placingOrder: true)
+        XCTAssertFalse(leaky.contains("0000test"), leaky)
+    }
+
+    func testEveryDocumentedScopeIsNamed() {
+        for scope in ["products:read", "products:write", "stocks:read", "stocks:write", "qc:read", "qc:write",
+                      "quotes:read", "quotes:write", "orders:read", "orders:write", "orders:read_customer", "extras:read",
+                      "extras:write", "wallet:read", "webhooks:read"] {
+            XCTAssertEqual(dapiScopeNamed(in: "Scope needed: \(scope)."), scope)
+            XCTAssertTrue(DapiError.refused(status: 403, code: "missing_scope", message: "Needs \(scope).").userMessage.contains(scope))
+        }
+    }
+
+    func testAListPageWithoutItemsIsNotAnError() async throws {
+        let page = #"{"object":"list","data":[\#(orderJSON(items: false))],"has_more":false,"next_cursor":null}"#
+        let (client, _) = makeClient([.reply(200, page)])
+        let result = try await client.orders(DapiOrderListQuery())
+        XCTAssertEqual(result.orders.count, 1)
+        XCTAssertNil(result.orders.first?.items, "no lines read, not an empty list")
+        XCTAssertEqual(result.orders.first?.itemCount, 3, "the count still comes from item_count")
+    }
+
+    func testOrderingProblemTellsRejectedFromPending() {
+        let rejected = dapiOrderingProblem(account: DapiAccount(kind: "integrator", approval: "rejected", effectiveScopes: ["orders:write"]),
+                                           onboardingOrderBlockers: [])
+        XCTAssertEqual(rejected, "3DAPI turned down this account’s approval. Check 3DAPI’s dashboard or email contact@dapi.digital.")
+        for pending in ["pending", nil, "something_new"] as [String?] {
+            let text = dapiOrderingProblem(account: DapiAccount(kind: "integrator", approval: pending, effectiveScopes: ["orders:write"]),
+                                           onboardingOrderBlockers: [])
+            XCTAssertEqual(text, "3DAPI hasn’t approved this account yet. Ordering opens once 3DAPI approves it.", "\(String(describing: pending))")
+        }
+        XCTAssertNil(dapiOrderingProblem(account: DapiAccount(kind: "integrator", approval: "Approved", effectiveScopes: ["orders:write"]),
+                                         onboardingOrderBlockers: []))
     }
 }

@@ -287,6 +287,65 @@ final class OrderWatchTests: XCTestCase {
         XCTAssertFalse(orderWatchShouldApplyRateLimit(current: current, incoming: RateLimitInfo(limit: 100), now: now))
     }
 
+    // MARK: With 3DAPI as the print service
+
+    func testChecksPauseWhile3DAPIIsThePrintService() {
+        XCTAssertEqual(orderWatchSkipReason(OrderWatchConditions(slantIsPrintService: false)), .otherPrintService)
+        XCTAssertEqual(orderWatchSkipReason(OrderWatchConditions(enabled: false, slantIsPrintService: false)), .disabled)
+        XCTAssertNil(orderWatchSkipReason(OrderWatchConditions(now: Date(), slantIsPrintService: true)))
+        // Looked at again soon, without a request, so choosing Slant again resumes promptly.
+        XCTAssertEqual(orderWatchNextDelay(after: .otherPrintService, now: Date()), orderWatchRecheckDelay)
+    }
+
+    func testDockShowsSlantCountOnlyWhileSlantIsChosen() {
+        XCTAssertEqual(orderWatchDockBadgeCount(slantBadgeCount: 4, service: .slant), 4)
+        XCTAssertEqual(orderWatchDockBadgeCount(slantBadgeCount: 4, service: .dapi), 0)
+        XCTAssertNil(orderWatchDockBadgeLabel(count: orderWatchDockBadgeCount(slantBadgeCount: 4, service: .dapi), showOnDock: true))
+    }
+
+    func testNotificationClickTargetsAndRoutes() {
+        XCTAssertEqual(OrderWatchNotificationTarget(userInfo: [dapiOrderWatchNotificationOrderIDKey: "ord_Test0001"]),
+                       .dapi(orderID: "ord_Test0001"))
+        XCTAssertEqual(OrderWatchNotificationTarget(userInfo: [orderWatchNotificationOrderIDKey: "SLANT-TEST-1"]),
+                       .slant(orderID: "SLANT-TEST-1"))
+        // An invalid 3DAPI ID is never used; nothing else in it is read.
+        XCTAssertEqual(OrderWatchNotificationTarget(userInfo: [dapiOrderWatchNotificationOrderIDKey: "ord_x/../y"]), .slant(orderID: nil))
+        XCTAssertEqual(OrderWatchNotificationTarget(userInfo: [:]), .slant(orderID: nil))
+
+        XCTAssertEqual(orderWatchNotificationRoute(.dapi(orderID: "ord_A"), service: .dapi), .dapiOrder(orderID: "ord_A"))
+        XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: "S1"), service: .slant), .slantOrders(orderID: "S1"))
+        // The other service's notification only raises the window; the service never switches.
+        XCTAssertEqual(orderWatchNotificationRoute(.dapi(orderID: "ord_A"), service: .slant), .windowOnly)
+        XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: "S1"), service: .dapi), .windowOnly)
+        XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: nil), service: .dapi), .windowOnly)
+    }
+
+    func testNotificationClickWaitsForModalUIAndRequests() {
+        let dapiRoute = OrderWatchNotificationRoute.dapiOrder(orderID: "ord_A")
+        func canOpen(_ route: OrderWatchNotificationRoute, sheet: Bool = false, modal: Bool = false, error: Bool = false,
+                     busy: Bool = false, writes: Int = 0, sheets: Int = 0) -> Bool {
+            orderWatchNotificationCanOpen(route, storeSheetPresented: sheet, appModalUIPresented: modal, errorShown: error, busy: busy,
+                                          dapiWritesInFlight: writes, dapiOrderSheetsOpen: sheets)
+        }
+        for route in [dapiRoute, .slantOrders(orderID: "S1")] {
+            XCTAssertTrue(canOpen(route))
+            XCTAssertFalse(canOpen(route, sheet: true), "a Slant review is open")
+            XCTAssertFalse(canOpen(route, modal: true))
+            XCTAssertFalse(canOpen(route, error: true))
+            XCTAssertFalse(canOpen(route, busy: true))
+        }
+        XCTAssertFalse(canOpen(dapiRoute, writes: 1), "a 3DAPI order write waits for its reply")
+        XCTAssertFalse(canOpen(dapiRoute, sheets: 1))
+        XCTAssertTrue(canOpen(.slantOrders(orderID: "S1"), writes: 1), "Slant's rule is unchanged")
+    }
+
+    func testSettingsNoteFor3DAPI() {
+        XCTAssertTrue(orderWatchDapiServiceNote.contains("every 4 minutes"))
+        XCTAssertTrue(orderWatchDapiServiceNote.contains("nothing about them is saved"))
+        XCTAssertTrue(orderWatchDapiServiceNote.contains("order number and status only"))
+        XCTAssertTrue(orderWatchDapiServiceNote.contains("The Dock count shows Slant orders only"))
+    }
+
     func testNotificationsUnavailableOutsideAnAppBundle() {
         // The test runner is an .xctest bundle, never the packaged .app.
         XCTAssertFalse(orderWatchNotificationsAvailable(bundle: Bundle(for: OrderWatchTests.self)))

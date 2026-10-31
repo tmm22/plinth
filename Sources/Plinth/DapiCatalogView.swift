@@ -2,9 +2,11 @@ import SwiftUI
 
 // Catalog while 3DAPI is the print service: 3DAPI's materials (`GET /v2/materials`, read once per visit with the saved
 // key's client; read-only, cancelled when the screen goes, failures shown in place). 3DAPI has no packaging catalogue,
-// so Components and Stationery say so. Nothing here sends anything but that read, and nothing reaches Slant.
+// so Catalog shows Materials only (no Components or Stationery segments, whatever kind Slant's Catalog last showed;
+// that choice is kept for Slant), with a footnote saying why. Nothing here sends anything but that read, and nothing
+// reaches Slant.
 
-/// Components and Stationery with 3DAPI as the print service.
+/// The footnote under 3DAPI's materials: why there are no Components or Stationery.
 let dapiNoPackagingCatalogText = "3DAPI has no catalogue of components or packaging: it ships each order in its own packaging. Choose Slant 3D as the print service in Settings › Account to see Slant’s."
 
 /// One group of 3DAPI materials by filament type.
@@ -61,7 +63,6 @@ func dapiColorComponents(_ hex: String?) -> (red: Double, green: Double, blue: D
 struct DapiCatalogView: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject private var connection = DapiConnection.shared
-    let kind: Destination
     @State private var materials: [DapiMaterial]?
     @State private var loading = false
     @State private var failure: String?
@@ -70,33 +71,21 @@ struct DapiCatalogView: View {
     @State private var attempt = 0
 
     private struct LoadKey: Equatable {
-        let kind: Destination
         let configured: Bool
         let attempt: Int
     }
 
     var body: some View {
-        Group {
-            if kind == .materials {
-                materialsContent
-            } else {
-                EmptyState(icon: kind.icon, title: "No \(kind.rawValue.lowercased()) on 3DAPI", detail: dapiNoPackagingCatalogText)
-            }
-        }
-        .searchable(text: $search, prompt: "Search \(kind.rawValue.lowercased())")
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("Catalog", selection: $store.catalogKind) {
-                    ForEach(Destination.catalogKinds) { kind in
-                        Text(kind.rawValue).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
-            }
-        }
-        // Once per visit (the view is rebuilt per kind) and after Try Again; cancelled when the screen goes.
-        .task(id: LoadKey(kind: kind, configured: connection.isConfigured, attempt: attempt)) { await load() }
+        materialsContent
+            .searchable(text: $search, prompt: "Search materials")
+            // Once per visit and after Try Again; cancelled when the screen goes.
+            .task(id: LoadKey(configured: connection.isConfigured, attempt: attempt)) { await load() }
+    }
+
+    private var packagingFootnote: some View {
+        Text(dapiNoPackagingCatalogText)
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
@@ -115,7 +104,7 @@ struct DapiCatalogView: View {
         } else if let materials {
             let groups = dapiMaterialGroups(materials, search: search)
             if materials.isEmpty {
-                EmptyState(icon: kind.icon, title: "No materials", detail: "3DAPI listed no materials.")
+                EmptyState(icon: Destination.materials.icon, title: "No materials", detail: "3DAPI listed no materials.")
             } else if groups.isEmpty {
                 ContentUnavailableView.search(text: search)
             } else {
@@ -134,6 +123,7 @@ struct DapiCatalogView: View {
                                 }
                             }
                         }
+                        packagingFootnote
                     }
                     .padding(StudioMetrics.pagePadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -175,7 +165,7 @@ struct DapiCatalogView: View {
     /// One read of 3DAPI's materials with the saved key's client. A cancellation (the screen went) keeps nothing and
     /// reports nothing; the key can't change while it runs (`DapiConnection.beginRequest`).
     private func load() async {
-        guard kind == .materials, connection.isConfigured else { return }
+        guard connection.isConfigured else { return }
         failure = nil
         materials = nil
         let client: any DapiOrdering

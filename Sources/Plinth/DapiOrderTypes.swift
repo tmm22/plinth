@@ -312,7 +312,12 @@ func dapiOrderingProblem(account: DapiAccount?, onboardingOrderBlockers: [String
     guard scopes.contains("orders:write") else {
         return "This 3DAPI key can’t place orders. Make a key with orders:write in 3DAPI’s dashboard and save it in Settings › Account."
     }
-    guard account.approval?.lowercased() == "approved" else {
+    switch account.approval?.trimmingCharacters(in: .whitespaces).lowercased() {
+    case "approved":
+        break
+    case "rejected":
+        return "3DAPI turned down this account’s approval. Check 3DAPI’s dashboard or email contact@dapi.digital."
+    default:
         return "3DAPI hasn’t approved this account yet. Ordering opens once 3DAPI approves it."
     }
     if onboardingOrderBlockers.contains(where: { $0.lowercased() == "billing_details_missing" }) {

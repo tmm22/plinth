@@ -74,6 +74,8 @@ struct ModelsView: View {
     /// Slant 3D or 3DAPI (PrintService.swift): which next steps the action bar offers.
     @ObservedObject private var printChoice = PrintServiceChoice.shared
     @ObservedObject private var dapi = DapiConnection.shared
+    /// The selected library model's file hash, for the 3DAPI bar's ready-quote lookup (memory only).
+    @State private var dapiSelectedFileHash: DapiSelectedFileHash?
 
     var body: some View {
         HSplitView {
@@ -88,8 +90,13 @@ struct ModelsView: View {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button("Import Model…") { store.importModel() }
-                    Button("Upload from URL…") { store.showImportFromURL = true }
-                        .disabled(store.importFromURLBlockedReason != nil)
+                    // A Slant upload: like File › Upload from URL…, only while Slant is the print service (3DAPI has
+                    // no URL import).
+                    Button("Upload from URL…") {
+                        guard slantOrderMenuCommandsAvailable(service: PrintServiceChoice.shared.service) else { return }
+                        store.showImportFromURL = true
+                    }
+                    .disabled(!slantOrderMenuCommandsAvailable(service: printChoice.service) || store.importFromURLBlockedReason != nil)
                     // Generates an STL from an OpenSCAD template into the library (Personalisation.swift); never uploads.
                     Button("Personalise from Template…") { store.chooseAndOpenPersonalisationTemplate() }
                     // Opens the sheet only (AccessoryDesignerView.swift); Claude is asked only after Start Design.
@@ -1098,15 +1105,23 @@ struct ModelsView: View {
     /// button is a default or has a shortcut, and Order with 3DAPI… only opens the composer in Orders.
     private var dapiNextStepBlock: some View {
         let step = currentDapiNextStep
+        let orderingProblem = dapiKnownOrderingProblem
+        // Like Slant's estimate-then-order steps: Get 3DAPI Quote… leads until this session knows a ready quote for the
+        // selected file (hashed once off the main actor and cached by `DapiConnection.fileHash(at:)`).
+        let hasReadyQuote = dapiSelectedFileHash.flatMap { known in
+            known.modelID == store.selectedLocal?.id ? dapi.readyQuoteID(forFileHash: known.hash) : nil
+        } != nil
+        let primary = dapiModelsPrimaryAction(hasReadyQuote: hasReadyQuote, orderingProblem: orderingProblem)
         return HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(selectedModelName).font(.headline).lineLimit(1)
-                Text(dapiModelsNextStepStatus(step, orderingProblem: dapiKnownOrderingProblem))
+                Text(step == .ready ? dapiModelsReadyStatus(hasReadyQuote: hasReadyQuote, orderingProblem: orderingProblem)
+                                    : dapiModelsNextStepStatus(step, orderingProblem: orderingProblem))
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            DapiQuoteButton() // DapiQuoteView.swift
+            DapiQuoteButton(prominent: step == .ready && primary == .getQuote) // DapiQuoteView.swift
             switch step {
             case .needsModel:
                 Button("Import Model…") { store.importModel() }
@@ -1124,11 +1139,39 @@ struct ModelsView: View {
                 Button("Edit Quantity") { configurationRequest += 1 }
                     .buttonStyle(.borderedProminent)
             case .ready:
-                Button("Order with 3DAPI…") { orderWithDapi() }
-                    .buttonStyle(.borderedProminent)
-                    .help("Opens the 3DAPI order composer in Orders. Nothing is charged until you review the order and press Place Order.")
+                let order = Button("Order with 3DAPI…") { orderWithDapi() }
+                    .help(dapiOrderButtonHelp(orderingProblem: orderingProblem))
+                if primary == .order {
+                    order.buttonStyle(.borderedProminent)
+                } else {
+                    order.buttonStyle(.bordered)
+                }
             }
         }
+        .task(id: DapiFileHashRequest(modelID: store.selectedLocal?.id, path: store.selectedLocal?.filePath,
+                                      active: dapi.isConfigured && step == .ready)) {
+            await loadDapiSelectedFileHash()
+        }
+    }
+
+    /// Hashes the selected library file for the ready-quote lookup, only while the bar is at its ready step.
+    private func loadDapiSelectedFileHash() async {
+        guard dapi.isConfigured, currentDapiNextStep == .ready, let local = store.selectedLocal else { return }
+        if dapiSelectedFileHash?.modelID != local.id { dapiSelectedFileHash = nil }
+        guard let hash = await dapi.fileHash(at: local.url), !Task.isCancelled,
+              store.selectedLocal?.id == local.id else { return }
+        dapiSelectedFileHash = DapiSelectedFileHash(modelID: local.id, hash: hash)
+    }
+
+    private struct DapiSelectedFileHash: Equatable {
+        let modelID: UUID
+        let hash: String
+    }
+
+    private struct DapiFileHashRequest: Equatable {
+        let modelID: UUID?
+        let path: String?
+        let active: Bool
     }
 
     private func orderWithDapi() {

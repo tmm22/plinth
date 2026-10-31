@@ -251,10 +251,15 @@ extension StudioStore {
         openSavedProducts()
     }
 
-    /// File › Refresh: Slant's, so not on the screens 3DAPI shows (`slantRefreshAvailable`).
+    /// File › Refresh: Slant's (`slantRefreshAvailable`), or with 3DAPI as the print service, a reload of 3DAPI's
+    /// Orders list while it is shown (`performDapiOrderToolFromMenu`).
     func refreshFromMenu() {
-        guard !menuCommandsBlockedByModalUI, connected, !busy,
-              slantRefreshAvailable(service: PrintServiceChoice.shared.service, destination: destination) else { return }
+        guard !menuCommandsBlockedByModalUI else { return }
+        guard slantRefreshAvailable(service: PrintServiceChoice.shared.service, destination: destination) else {
+            performDapiOrderToolFromMenu(.reload)
+            return
+        }
+        guard connected, !busy else { return }
         Task { await refreshCurrent() }
     }
 }

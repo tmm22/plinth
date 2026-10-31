@@ -428,6 +428,30 @@ final class DapiConnectionTests: XCTestCase {
         XCTAssertEqual(connection.account, integrator(approval: "approved"))
     }
 
+    func testFileHashIsCachedUntilTheFileChanges() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DapiConnectionTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("model.stl")
+        try Data("solid test\nendsolid test\n".utf8).write(to: file)
+        let connection = makeConnection()
+        let first = await connection.fileHash(at: file)
+        XCTAssertEqual(first, try dapiFileSHA256(at: file))
+        XCTAssertEqual(try dapiFileSHA256Cancellable(at: file), first)
+        // Same identity: the cached value, even though nothing re-reads the file.
+        let again = await connection.fileHash(at: file)
+        XCTAssertEqual(again, first)
+        // A different size (and date) is a different identity, so it is read again.
+        try Data("solid other\nendsolid other\n".utf8).write(to: file)
+        let changed = await connection.fileHash(at: file)
+        XCTAssertEqual(changed, try dapiFileSHA256(at: file))
+        XCTAssertNotEqual(changed, first)
+        let missing = await connection.fileHash(at: folder.appendingPathComponent("missing.stl"))
+        XCTAssertNil(missing)
+        let directory = await connection.fileHash(at: folder)
+        XCTAssertNil(directory, "only regular files")
+    }
+
     func testQuotesAreNotRememberedWithoutAKey() {
         let connection = makeConnection()
         connection.rememberReadyQuote(id: "qte_1", forFileHash: "abc")

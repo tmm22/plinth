@@ -1,6 +1,6 @@
 import Foundation
 
-// 3DAPI (dapi.digital) HTTP client: quotes for price comparison (an upload, a quote, reads and a shipping estimate) and
+// 3DAPI (dapi.digital) HTTP client: quotes (an upload, a quote, reads and a shipping estimate) and
 // wallet-mode ordering (`DapiOrdering`: materials, wallet, order reads, placing and cancelling). See
 // docs/3DAPI_REFERENCE.md for the contract and DapiTypes.swift / DapiOrderTypes.swift for the shared types.
 //
@@ -306,9 +306,11 @@ func dapiParseQuote(_ json: [String: Any], secrets: [String] = []) -> DapiQuote?
     let materials: [DapiSuggestedMaterial] = (json["suggested_materials"] as? [Any] ?? []).prefix(32).compactMap { entry in
         guard let object = entry as? [String: Any], let slot = dapiJSONInt(object["slot"]), slot >= 0 else { return nil }
         let material = object["material"] as? [String: Any]
+        // Only a well-formed `mat_` ID is kept: it may later be sent as an order line's material.
+        let materialID = (material?["id"] as? String).flatMap { dapiMaterialIDIsSafe($0) ? $0 : nil }
         return DapiSuggestedMaterial(slot: slot, materialName: dapiDisplayText(material?["name"]),
                                      fileFilamentType: dapiDisplayText(object["file_filament_type"], limit: 40),
-                                     match: dapiWord(object["match"]))
+                                     match: dapiWord(object["match"]), materialID: materialID)
     }
     let failure = (json["failure_reason"] as? String).map { dapiRedacted($0, secrets: secrets, limit: dapiMaxFailureReasonLength) }
         .flatMap { $0.isEmpty ? nil : $0 }
@@ -518,8 +520,10 @@ func dapiOrderRequestProblem(_ request: DapiOrderRequest) -> String? {
 }
 
 /// The `POST /v2/integrator/orders` body for a wallet-mode order: each line with `use_suggested_materials: true` or
-/// `materials` (never both), the address and customer (empty optional fields as null), the reference and notes. It
-/// never carries `use_sample_credit`, `checkout`, `unit_sales_price` or extras. Check `dapiOrderRequestProblem` first.
+/// `materials` (never both), the address and customer (empty optional fields as null), the reference and notes, and
+/// `use_sample_credit: true` only when the seller ticked it (`request.useSampleCredit`; wallet mode, which is the only
+/// mode Plinth sends; otherwise the key is omitted). It never carries `checkout`, `unit_sales_price` or extras. Check
+/// `dapiOrderRequestProblem` first.
 func dapiOrderRequestBody(_ request: DapiOrderRequest) -> [String: Any] {
     func nullable(_ text: String?) -> Any { dapiOptionalField(text) ?? NSNull() }
     let items: [[String: Any]] = request.lines.map { line in
@@ -533,7 +537,7 @@ func dapiOrderRequestBody(_ request: DapiOrderRequest) -> [String: Any] {
         return item
     }
     let recipient = request.recipient
-    return [
+    var body: [String: Any] = [
         "mode": "wallet",
         "items": items,
         "shipping_address": [
@@ -552,6 +556,9 @@ func dapiOrderRequestBody(_ request: DapiOrderRequest) -> [String: Any] {
         "reference": request.reference,
         "customer_notes": nullable(request.customerNotes)
     ]
+    // Only an explicit true is sent; without the key 3DAPI charges the order in full (its default is false).
+    if request.useSampleCredit { body["use_sample_credit"] = true }
+    return body
 }
 
 /// The query for `GET /v2/integrator/orders`: `status` repeated (form style, not `status[]`), `reference`, `search`
@@ -581,6 +588,10 @@ func dapiOrderListQueryItems(_ query: DapiOrderListQuery) throws -> [(String, St
         guard !cursor.isEmpty, cursor.utf8.count <= 2048 else { throw DapiError.notSent("The list position isn’t usable. Reload the list.") }
         items.append(("cursor", cursor))
     }
+    // Sent percent-encoded (`expand%5B%5D=items`, the standard form). 3DAPI's spec names the parameter `expand[]`;
+    // whether its server decodes the encoded brackets is unverified live. A page whose orders come back without
+    // `items` still reads as a normal page: those orders have `items == nil` (not an error), and the Orders screen
+    // keeps the lines it already holds for them.
     if query.expandItems { items.append(("expand[]", "items")) }
     return items
 }
@@ -607,9 +618,23 @@ private func dapiScopeName(_ value: Any?) -> String? {
     return text
 }
 
+/// "This quote needs a material for slots 1 and 2." from `material_slots_mismatch`'s `details.expected_slots` (slot
+/// numbers 1–16, or objects with a `slot`; 3DAPI doesn't document the shape further), or nil when none is readable.
+func dapiExpectedSlotsSentence(_ value: Any?) -> String? {
+    var slots: [Int] = []
+    for entry in (value as? [Any] ?? []).prefix(16) {
+        let slot = dapiJSONInt(entry) ?? dapiJSONInt((entry as? [String: Any])?["slot"])
+        if let slot, (1...16).contains(slot), !slots.contains(slot) { slots.append(slot) }
+    }
+    guard !slots.isEmpty else { return nil }
+    let numbers = slots.sorted().map(String.init)
+    if numbers.count == 1 { return "This quote needs a material for slot \(numbers[0])." }
+    return "This quote needs a material for slots \(numbers.dropLast().joined(separator: ", ")) and \(numbers.last!)."
+}
+
 /// The parts of `details` worth showing, as a sentence appended to 3DAPI's message: the fields `validation_failed` lists
-/// (≤ 5), the scopes `missing_scope` names, and the requirement codes `compliance_blocked` lists. Never `fix_url` or any
-/// other link. 3DAPI doesn't document the shape of `details.errors`, so the usual shapes are read.
+/// (≤ 5), the scopes `missing_scope` names, the requirement codes `compliance_blocked` lists and the slots
+/// `material_slots_mismatch` expects. Never `fix_url` or any other link. 3DAPI doesn't document the shape of `details.errors`, so the usual shapes are read.
 func dapiErrorDetailsSummary(code: String, details: [String: Any]?, secrets: [String] = []) -> String? {
     guard let details else { return nil }
     switch code {
@@ -662,6 +687,8 @@ func dapiErrorDetailsSummary(code: String, details: [String: Any]?, secrets: [St
             return word
         }
         return requirements.isEmpty ? nil : "Requirements: \(requirements.joined(separator: ", "))."
+    case "material_slots_mismatch":
+        return dapiExpectedSlotsSentence(details["expected_slots"])
     default:
         return nil
     }
@@ -1427,8 +1454,11 @@ func dapiErrorCodeIsSafe(_ code: String) -> Bool {
 }
 
 /// The scopes a 3DAPI integrator key may carry, for naming the one a `missing_scope` refusal needs.
+/// Every scope in the spec's `Me.effective_scopes` enum (checked 31 Oct 2026). The presets in `Me.scopes` (`pricing`,
+/// `order`, `full`) have no colon and are never named.
 let dapiKnownScopes = ["quotes:read", "quotes:write", "orders:read_customer", "orders:read", "orders:write", "extras:read",
-                       "extras:write", "wallet:read", "webhooks:read"]
+                       "extras:write", "wallet:read", "webhooks:read", "products:read", "products:write", "stocks:read",
+                       "stocks:write", "qc:read", "qc:write"]
 
 /// The first known scope named in 3DAPI's message (which carries `details`' scope, see `dapiErrorDetailsSummary`).
 func dapiScopeNamed(in text: String?) -> String? {
@@ -1442,8 +1472,19 @@ func dapiScopeNamed(in text: String?) -> String? {
     return nil
 }
 
-/// The seller's text for a definite refusal, by 3DAPI's stable code; 3DAPI's redacted message otherwise.
-func dapiRefusalMessage(status: Int, code: String?, message: String?) -> String {
+/// The sentence every refused Place Order carries: 3DAPI creates and charges nothing it refuses.
+let dapiNothingChargedSentence = "No order was created, so nothing was charged."
+
+/// The seller's text for a definite refusal, by 3DAPI's stable code; 3DAPI's redacted message otherwise. With
+/// `placingOrder` (a refused `POST /v2/integrator/orders`), the text always says nothing was charged; codes that only
+/// placing an order can return say so either way.
+func dapiRefusalMessage(status: Int, code: String?, message: String?, placingOrder: Bool = false) -> String {
+    let text = dapiRefusalReason(status: status, code: code, message: message)
+    guard placingOrder, !text.contains("charged") else { return text }
+    return "\(text) \(dapiNothingChargedSentence)"
+}
+
+private func dapiRefusalReason(status: Int, code: String?, message: String?) -> String {
     let quoted = message.map { dapiRedacted($0) }.flatMap { $0.isEmpty ? nil : $0 }
     switch code {
     case "missing_credentials", "invalid_api_key", "invalid_session", "ambiguous_credentials":
@@ -1484,37 +1525,47 @@ func dapiRefusalMessage(status: Int, code: String?, message: String?) -> String 
     case "quote_rejected":
         return "3DAPI rejected this file in review, so it can’t estimate shipping for it or print it."
     case "quote_not_approved":
-        return "3DAPI hasn’t approved your account yet, so it can’t take orders. No order was created."
+        return "3DAPI hasn’t approved your account yet, so it can’t take orders. \(dapiNothingChargedSentence)"
     case "payment_failed":
-        return "3DAPI couldn’t take the payment: the card was declined or the charge failed. No order was created. Check your card in 3DAPI’s dashboard."
+        return "3DAPI couldn’t take the payment: the card was declined or the charge failed. \(dapiNothingChargedSentence) Check your card in 3DAPI’s dashboard."
     case "insufficient_balance":
-        return "Your 3DAPI wallet doesn’t cover this order and there’s no saved card. No order was created. Top up the wallet or add a card in 3DAPI’s dashboard."
+        return "Your 3DAPI wallet doesn’t cover this order and there’s no saved card. \(dapiNothingChargedSentence) Top up the wallet or add a card in 3DAPI’s dashboard."
     case "compliance_blocked":
         var needs: [String] = []
         if quoted?.contains("billing") ?? false { needs.append("your business billing details") }
         if quoted?.contains("responsible") ?? false { needs.append("an EU responsible person (to sell to EU or UK customers from outside the EU and UK)") }
         let what = needs.isEmpty ? "account details 3DAPI asks for" : needs.joined(separator: " and ")
-        return "3DAPI can’t take orders from this account yet. Add \(what) in 3DAPI’s dashboard. No order was created."
+        return "3DAPI can’t take orders from this account yet. Add \(what) in 3DAPI’s dashboard. \(dapiNothingChargedSentence)"
     case "production_unavailable":
-        return "3DAPI has paused production, so it isn’t taking orders right now. No order was created. Try again later."
+        // Account-wide: 3DAPI pauses production for everyone, not for this order.
+        return "3DAPI has paused production, so it isn’t taking orders right now. Nothing was charged. Try again later."
     case "card_payments_unavailable":
-        return "3DAPI can’t take card payments right now, so no order was created. Try again later."
+        return "3DAPI can’t take card payments right now. \(dapiNothingChargedSentence) Try again later."
     case "order_not_cancellable":
-        return "3DAPI can’t cancel this order: it’s already cancelled, or a production partner has started it. 3DAPI can cancel only before a production partner starts; email contact@dapi.digital."
+        return "3DAPI can’t cancel this order: it’s already cancelled, or a production partner already has it. 3DAPI cancels only orders no production partner has taken yet; to stop this one, email contact@dapi.digital."
     case "order_not_found":
         return "3DAPI has no order with that ID for this account."
     case "extra_not_found", "extra_not_approved":
-        return "3DAPI refused an extra part on this order. Plinth doesn’t add extras, so check the order in 3DAPI’s dashboard."
+        return "3DAPI refused an extra part on this order. Plinth doesn’t add extras, so check the order in 3DAPI’s dashboard. \(dapiNothingChargedSentence)"
     case "material_not_allowed":
-        return "3DAPI doesn’t offer one of the chosen materials. Reload the materials and choose again."
+        return "3DAPI doesn’t offer one of the chosen materials. Reload the materials and choose again. \(dapiNothingChargedSentence)"
     case "material_slots_mismatch":
-        return "The materials chosen don’t match the colour slots this file prints with. Choose one material for each slot the quote lists, or use the suggested materials."
+        // `dapiErrorBody` appends `dapiExpectedSlotsSentence` to the message when 3DAPI names the expected slots.
+        let slots = quoted.flatMap { text -> String? in
+            guard let range = text.range(of: #"This quote needs a material for slots? [0-9]+(, [0-9]+)*( and [0-9]+)?\."#,
+                                         options: .regularExpression) else { return nil }
+            return String(text[range])
+        }
+        if let slots {
+            return "The materials chosen don’t match the colour slots this file prints with. \(slots) Choose one material for each, or use the suggested materials. \(dapiNothingChargedSentence)"
+        }
+        return "The materials chosen don’t match the colour slots this file prints with. Choose one material for each slot the quote lists, or use the suggested materials. \(dapiNothingChargedSentence)"
     case "suggestions_unavailable":
-        return "3DAPI has no suggested materials for this quote. Choose a material for each colour slot instead."
+        return "3DAPI has no suggested materials for this quote. Choose a material for each colour slot instead. \(dapiNothingChargedSentence)"
     case "currency_not_supported":
         return "3DAPI refused the currency: it works in US dollars only."
     case "vat_number_invalid":
-        return "3DAPI couldn’t confirm the VAT number, so no order was created."
+        return "3DAPI couldn’t confirm the VAT number. \(dapiNothingChargedSentence)"
     case "invalid_cursor":
         return "3DAPI didn’t accept the list position. Reload the list."
     case "shipping_destination_not_served":

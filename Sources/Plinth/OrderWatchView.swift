@@ -64,8 +64,12 @@ struct OrderWatchFocusBar: View {
 
 // MARK: - Settings › Advanced
 
+/// Settings › Advanced › Order updates, while 3DAPI is the print service.
+let orderWatchDapiServiceNote = "While 3DAPI is your print service, Slant’s orders aren’t checked; Plinth checks them again, and reports what changed meanwhile, when you choose Slant 3D. 3DAPI orders are checked every 4 minutes in memory only: nothing about them is saved on this Mac. Their notifications use the switch above and show the order number and status only. The Dock count shows Slant orders only."
+
 struct OrderWatchSettingsSection: View {
     @ObservedObject private var watch = OrderWatch.shared
+    @ObservedObject private var printChoice = PrintServiceChoice.shared
     @State private var confirmForget = false
 
     var body: some View {
@@ -98,6 +102,11 @@ struct OrderWatchSettingsSection: View {
             // A refused key (401/403) or Slant's rate limit (429) holds checks back; Activity may be hidden.
             if watch.enabled, let caption = orderWatchHoldCaption(watch.hold, now: Date()) {
                 Label(caption, systemImage: "pause.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if printChoice.service == .dapi {
+                Label(orderWatchDapiServiceNote, systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

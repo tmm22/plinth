@@ -135,9 +135,12 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
     @Published private(set) var quoteWritesUnknown: Set<String> = []
 
     private var client: (any DapiQuoting)?
-    /// File SHA-256 (hex, lower-case) → ready quote ID. Memory only, and for the saved key's account only.
-    private var readyQuotes: [String: String] = [:]
-    /// Bumped whenever the key is saved or removed, so a reply for an earlier key is never kept.
+    /// File SHA-256 (hex, lower-case) → ready quote ID. Memory only, and for the saved key's account only. Published so
+    /// the Models bar's next step follows a quote becoming ready.
+    @Published private var readyQuotes: [String: String] = [:]
+    /// File SHA-256s this session by path, size and modification date (`fileHash(at:)`), so the Models bar can look up
+    /// a ready quote without reading the file again. Memory only; not account data, so a key change keeps it.
+    private var fileHashes: [DapiFileIdentity: String] = [:]
     /// Bumped whenever the saved key is saved, replaced or removed: replies for an earlier key are dropped, and the
     /// order screens and the order watch start over for the new key (it may belong to another account).
     @Published private(set) var keyGeneration = 0
@@ -319,6 +322,19 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
 
     /// The ready quote this session already found for a file's SHA-256 (hex), or nil.
     func readyQuoteID(forFileHash hash: String) -> String? { readyQuotes[hash.lowercased()] }
+
+    /// The file's SHA-256 (hex, lower-case), from this session's cache when the file's path, size and modification date
+    /// are unchanged; otherwise read off the main actor (cancelled with the caller). Nil when it can't be read.
+    func fileHash(at url: URL) async -> String? {
+        guard let identity = dapiFileIdentity(at: url) else { return nil }
+        if let cached = fileHashes[identity] { return cached }
+        let work = Task.detached(priority: .utility) { try dapiFileSHA256Cancellable(at: url) }
+        let hash = await withTaskCancellationHandler { try? await work.value } onCancel: { work.cancel() }
+        guard let hash, !Task.isCancelled else { return nil }
+        if fileHashes.count >= 500 { fileHashes = [:] }
+        fileHashes[identity] = hash
+        return hash
+    }
 
     /// Remembers a usable ready quote for a file, which also settles any unknown write outcome for that file.
     func rememberReadyQuote(id: String, forFileHash hash: String) {
