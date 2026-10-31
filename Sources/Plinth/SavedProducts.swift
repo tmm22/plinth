@@ -186,6 +186,81 @@ func savedProductOrderLines(
     return result
 }
 
+/// Whether a saved product could be added to a draft now, from what Plinth has loaded. Read-only: it uses the same
+/// resolver as the composer and Import Orders, for one unit, so its reasons are the ones they would give.
+struct SavedProductOrderability: Equatable {
+    /// The resolver's blockers for one unit sold, in its order.
+    var blockers: [String] = []
+    /// Catalogs this product's items need that Plinth holds no entries for, in a fixed order (materials, components,
+    /// stationery). The resolver never blocks on an empty catalog, so their stock and availability weren't checked.
+    var uncheckedCatalogs: [Destination] = []
+    var canOrder: Bool { blockers.isEmpty }
+}
+
+func savedProductOrderability(
+    _ product: SavedProduct, localModels: [LocalModel], filaments: [Record], components: [Record], stationery: [Record]
+) -> SavedProductOrderability {
+    let resolution = savedProductOrderLines(product, units: 1, localModels: localModels, filaments: filaments,
+                                            components: components, stationery: stationery)
+    func needs(_ type: String, _ value: (SavedProductLine) -> String) -> Bool {
+        product.lines.contains { $0.type == type && !value($0).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+    var unchecked: [Destination] = []
+    if filaments.isEmpty, needs("PRINT", \.filamentID) { unchecked.append(.materials) }
+    if components.isEmpty, needs("COMPONENT", \.reference) { unchecked.append(.components) }
+    if stationery.isEmpty, needs("STATIONERY", \.reference) { unchecked.append(.stationery) }
+    return SavedProductOrderability(blockers: resolution.blockers, uncheckedCatalogs: unchecked)
+}
+
+/// The row's reason, e.g. "Can’t be ordered: PLA Black is out of stock." with "(+1 more)" when there are others.
+func savedProductCantOrderText(_ orderability: SavedProductOrderability) -> String? {
+    guard let first = orderability.blockers.first else { return nil }
+    let more = orderability.blockers.count - 1
+    return "Can’t be ordered: \(first)" + (more > 0 ? " (+\(more) more)" : "")
+}
+
+/// "2 products can’t be ordered right now.", or nil when every product can.
+func savedProductsCantOrderCountText(_ count: Int) -> String? {
+    guard count > 0 else { return nil }
+    return count == 1 ? "1 product can’t be ordered right now." : "\(count) products can’t be ordered right now."
+}
+
+/// Says which catalogs weren't checked and why, so an unloaded catalog never reads as "all is well". Nil when every
+/// catalog the products need was checked.
+func savedProductsUncheckedCatalogsText(_ kinds: [Destination], loaded: Set<Destination>) -> String? {
+    func noun(_ kind: Destination) -> String {
+        switch kind {
+        case .materials: return "materials"
+        case .components: return "components"
+        default: return "stationery"
+        }
+    }
+    func list(_ kinds: [Destination]) -> String {
+        let names = kinds.map(noun)
+        guard names.count > 1 else { return names.first ?? "" }
+        return names.dropLast().joined(separator: ", ") + " and " + names.last!
+    }
+    let ordered = Destination.catalogKinds.filter { kinds.contains($0) }
+    let notLoaded = ordered.filter { !loaded.contains($0) }
+    let empty = ordered.filter { loaded.contains($0) }
+    var sentences: [String] = []
+    if !notLoaded.isEmpty {
+        let reason = notLoaded.count == 1 ? "that catalog isn’t loaded" : "those catalogs aren’t loaded"
+        sentences.append("Stock and availability weren’t checked for \(list(notLoaded)), because \(reason).")
+    }
+    if !empty.isEmpty {
+        sentences.append("Stock and availability weren’t checked for \(list(empty)), because Slant listed none.")
+    }
+    return sentences.isEmpty ? nil : sentences.joined(separator: " ")
+}
+
+/// A product's name in a picker: "Name (SKU)", marked when it can't be ordered right now.
+func savedProductPickerTitle(_ product: SavedProduct, canOrder: Bool) -> String {
+    let sku = product.sku.trimmingCharacters(in: .whitespacesAndNewlines)
+    let name = sku.isEmpty ? savedProductDisplayName(product) : "\(savedProductDisplayName(product)) (\(sku))"
+    return canOrder ? name : "\(name) — can’t be ordered"
+}
+
 private func itemTypeLabel(_ type: String) -> String {
     switch type {
     case "COMPONENT": return "component"

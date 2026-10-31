@@ -319,6 +319,136 @@ func profitRateEditorNeedsAttention(preset: ProfitFeePreset, ratesValid: Bool, c
     return !ratesValid || (preset == .custom && currentRates == ProfitFeeRates())
 }
 
+// MARK: - Listing price check (Saved Products › Check Cost)
+//
+// What a listing price would leave after fees and cost, for one order of the units Check Cost priced, and the reverse:
+// the lowest listing price that keeps a target margin. Uses `profitCheck` and its fee rules unchanged. Nothing typed
+// here is saved: the listing price, shipping and target live in Check Cost's view only (saved products hold no prices).
+
+struct ListingPriceCheckResult: Equatable {
+    /// Signed lines for the whole order, like the Profit check's receipt.
+    let lines: [ProfitLine]
+    let units: Int
+    let revenue: Decimal
+    let fees: Decimal
+    /// Check Cost's estimate plus the delivery average, if any.
+    let cost: Decimal
+    let profit: Decimal
+    let marginPercent: Decimal?
+    /// Profit and fees ÷ units, to the cent.
+    let profitPerUnit: Decimal
+    let feesPerUnit: Decimal
+}
+
+let listingPriceCostLineLabel = "Slant cost (Check Cost estimate)"
+let listingPriceDeliveryLineLabel = "Delivery (average of past orders)"
+
+/// Listing price × units plus the shipping charged per order, less the Profit check's fees (units sold = `units`, so
+/// Etsy's per-unit listing fee counts each), Check Cost's estimate and, when known, the average delivery of past
+/// orders. Amounts are rounded to the cent first, as the Profit check rounds them.
+func listingPriceCheck(listingPricePerUnit: Decimal, shippingCharged: Decimal, units: Int, productCost: Decimal,
+                       delivery: Decimal?, preset: ProfitFeePreset, rates: ProfitFeeRates, offsiteAds: Bool) -> ListingPriceCheckResult {
+    let count = max(1, units)
+    let price = roundedToCents(max(0, listingPricePerUnit))
+    let cost = roundedToCents(max(0, productCost))
+    let deliveryCost = delivery.map { roundedToCents(max(0, $0)) }
+    let result = profitCheck(itemTotal: price * Decimal(count), shippingCharged: shippingCharged, preset: preset, rates: rates,
+                             offsiteAds: offsiteAds, unitsSold: count, slantTotal: cost + (deliveryCost ?? 0))
+    // profitCheck lists item, shipping, the fees, then the Slant total: relabel the first two and split the last.
+    var lines: [ProfitLine] = []
+    for (index, line) in result.lines.enumerated() {
+        if index == 0 {
+            let label = count == 1 ? "Listing price" : "Listing price (\(count) × \(profitMoney(price)))"
+            lines.append(ProfitLine(label: label, amount: line.amount))
+        } else if index == 1 {
+            if line.amount != 0 { lines.append(ProfitLine(label: "Shipping you charge", amount: line.amount)) }
+        } else if index == result.lines.count - 1 {
+            lines.append(ProfitLine(label: listingPriceCostLineLabel, amount: -cost))
+            if let deliveryCost { lines.append(ProfitLine(label: listingPriceDeliveryLineLabel, amount: -deliveryCost)) }
+        } else {
+            lines.append(line)
+        }
+    }
+    let units = Decimal(count)
+    return ListingPriceCheckResult(lines: lines, units: count, revenue: result.revenue, fees: result.fees,
+                                   cost: result.slantTotal, profit: result.profit, marginPercent: result.marginPercent,
+                                   profitPerUnit: roundedToCents(result.profit / units), feesPerUnit: roundedToCents(result.fees / units))
+}
+
+enum ListingPriceTarget: Equatable {
+    /// The lowest listing price per unit, to the cent, that keeps the margin.
+    case price(Decimal)
+    /// The shipping charged alone already keeps the margin, whatever the listing price.
+    case coveredByShipping
+    case unreachable(String)
+}
+
+private func roundedUpToCents(_ value: Decimal) -> Decimal {
+    var input = value
+    var output = Decimal()
+    NSDecimalRound(&output, &input, 2, .up)
+    return output
+}
+
+/// The lowest listing price per unit whose `listingPriceCheck` margin is at least `targetPercent`, solved with the
+/// percentage fees (on item + shipping), the fixed processing fee, the per-unit listing fee and Etsy's $100 Offsite Ads
+/// cap, then confirmed with the same cent-rounded fee maths the check shows. Unreachable when the percentage fees and
+/// the margin add up to 100% or more, or the price would pass `profitMoneyInputLimit`.
+func listingPriceForTargetMargin(_ targetPercent: Decimal, shippingCharged: Decimal, units: Int, productCost: Decimal,
+                                 delivery: Decimal?, preset: ProfitFeePreset, rates: ProfitFeeRates,
+                                 offsiteAds: Bool) -> ListingPriceTarget {
+    guard targetPercent >= 0, targetPercent < 100 else {
+        return .unreachable("Can’t reach a margin of 100% or more: fees and costs always take a share.")
+    }
+    let count = max(1, units)
+    let shipping = roundedToCents(max(0, shippingCharged))
+    let cost = roundedToCents(max(0, productCost)) + (delivery.map { roundedToCents(max(0, $0)) } ?? 0)
+    let ads = offsiteAds && preset.offersOffsiteAds && preset.hasRates
+    let percentFees: Decimal = preset.hasRates ? rates.transactionPercent + rates.processingPercent : 0
+    var fixed: Decimal = preset.hasRates ? rates.processingFixed + rates.listingFeePerItem * Decimal(count) : 0
+    func revenueNeeded(percent: Decimal, fixed: Decimal) -> Decimal? {
+        let share = 1 - (percent + targetPercent) / 100
+        return share > 0 ? (fixed + cost) / share : nil
+    }
+    let feeShare = percentFees + (ads ? rates.offsiteAdsPercent : 0)
+    guard var revenue = revenueNeeded(percent: feeShare, fixed: fixed) else {
+        return .unreachable("Can’t reach \(profitPercentText(targetPercent)): fees of \(profitPercentText(feeShare)) of the sale plus that margin leave nothing to cover the cost.")
+    }
+    if ads, revenue * rates.offsiteAdsPercent / 100 > etsyOffsiteAdsCap {
+        // Past the cap the Offsite Ads fee is a flat $100.
+        fixed += etsyOffsiteAdsCap
+        if let capped = revenueNeeded(percent: percentFees, fixed: fixed) { revenue = capped }
+    }
+    let itemTotal = revenue - shipping
+    func keepsMargin(_ price: Decimal) -> Bool {
+        let check = listingPriceCheck(listingPricePerUnit: price, shippingCharged: shipping, units: count, productCost: productCost,
+                                      delivery: delivery, preset: preset, rates: rates, offsiteAds: offsiteAds)
+        return check.revenue > 0 && check.profit * 100 >= targetPercent * check.revenue
+    }
+    if itemTotal <= 0 {
+        if shipping > 0 { return .coveredByShipping }
+        // Nothing to cover: the smallest price keeps the margin.
+        return keepsMargin(Decimal(string: "0.01")!) ? .price(Decimal(string: "0.01")!) : .unreachable("Can’t find a listing price for this margin.")
+    }
+    let limit = profitMoneyInputLimit
+    var price = roundedUpToCents(itemTotal / Decimal(count))
+    guard price <= limit else { return .unreachable("Would need a listing price over \(profitMoney(limit)) a unit.") }
+    // Each fee is rounded to the cent as charged, so the solved price can fall a cent or so short: step up to confirm.
+    var steps = 0
+    while !keepsMargin(price) {
+        steps += 1
+        price += Decimal(string: "0.01")!
+        guard steps <= 1_000, price <= limit else { return .unreachable("Can’t find a listing price for this margin.") }
+    }
+    // And step down while a cent less still keeps it, so the price shown is the lowest.
+    let cent = Decimal(string: "0.01")!
+    while price > cent, keepsMargin(price - cent), steps <= 2_000 {
+        steps += 1
+        price -= cent
+    }
+    return .price(price)
+}
+
 // MARK: Saved fee settings (rates and preset only)
 
 enum ProfitFeeSettings {
@@ -595,6 +725,136 @@ struct ProfitCheckPanel: View {
     }
     /// Saves the preset and only valid rates; never what the buyer paid.
     func persist() {
+        ProfitFeeSettings.save(preset: preset, rates: currentRates)
+    }
+}
+
+// MARK: - Fee preset and rates editor (Check Cost's listing price check)
+
+/// The Profit check's marketplace fee preset, dated summary line and rate editor, for Check Cost's listing price check.
+/// It saves only the preset and valid rates through `ProfitFeeSettings`, as the Profit check does, and reports the
+/// rates in use through `validRates` (nil while a shown rate is invalid). Whether a sale came from Offsite Ads is
+/// session-only.
+struct ProfitFeeRatesEditor: View {
+    @Binding var preset: ProfitFeePreset
+    @Binding var validRates: ProfitFeeRates?
+    @Binding var offsiteAds: Bool
+    @State private var rateTexts: [ProfitRateField: String] = [:]
+    @State private var loaded = false
+    @State private var ratesExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            LabeledContent {
+                Picker("Marketplace fees", selection: Binding(get: { preset }, set: { choosePreset($0) })) {
+                    ForEach(ProfitFeePreset.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 260)
+            } label: {
+                Text("Marketplace fees").fixedSize()
+            }
+            if preset.hasRates {
+                Text(parsedRates.map { profitFeeRatesSummary(preset: preset, rates: $0, offsiteAds: offsiteAds) }
+                     ?? "\(preset.title): check the highlighted rates.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                DisclosureGroup("Edit rates", isExpanded: Binding(get: { ratesExpanded || needsAttention }, set: { ratesExpanded = $0 })) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if preset != .custom {
+                            Text("Assumed rates. Check your own account and edit them if yours differ. They’re shared with the Profit check.")
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        if preset != .shopifyBasicUS { rateField(.transactionPercent, "Transaction fee (% of item + shipping)") }
+                        rateField(.processingPercent, "Payment processing (%)")
+                        rateField(.processingFixed, "Payment processing ($ per order)")
+                        if preset != .shopifyBasicUS { rateField(.listingFeePerItem, "Listing fee ($ per unit sold)") }
+                        if preset.offersOffsiteAds { rateField(.offsiteAdsPercent, "Offsite Ads fee (%, max $100)") }
+                        if preset != .custom, currentRates != preset.defaultRates || rateTexts.values.contains(where: { $0.isEmpty }) {
+                            Button("Restore \(preset.title) Rates") { restoreDefaults() }.controlSize(.small)
+                        }
+                    }
+                    .padding(.top, 4)
+                }.studioDisclosureStyle()
+                if preset.offersOffsiteAds {
+                    Toggle("Sale comes from Offsite Ads", isOn: $offsiteAds)
+                }
+            }
+        }
+        .onAppear(perform: loadIfNeeded)
+    }
+
+    @ViewBuilder
+    private func rateField(_ field: ProfitRateField, _ title: String) -> some View {
+        let binding = Binding(get: { rateTexts[field] ?? "" }, set: {
+            if needsAttention { ratesExpanded = true }
+            rateTexts[field] = $0
+            persist()
+            if needsAttention { ratesExpanded = true }
+        })
+        LabeledContent(title) {
+            VStack(alignment: .trailing, spacing: 2) {
+                TextField(title, text: binding).labelsHidden().accessibilityLabel(title).frame(width: 80).multilineTextAlignment(.trailing)
+                if rateValue(field) == nil {
+                    Text(field.isPercent ? "Enter 0–100" : "Enter an amount").font(.caption2).foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    private var needsAttention: Bool {
+        profitRateEditorNeedsAttention(preset: preset, ratesValid: parsedRates != nil, currentRates: currentRates)
+    }
+    private func rateValue(_ field: ProfitRateField) -> Decimal? {
+        let text = rateTexts[field] ?? ""
+        return field.isPercent ? parseProfitPercent(text) : parseProfitAmount(text)
+    }
+    /// Rates as typed; nil when any field is invalid (no fees at all for None).
+    private var parsedRates: ProfitFeeRates? {
+        var rates = ProfitFeeRates()
+        guard preset.hasRates else { return rates }
+        for field in ProfitRateField.allCases {
+            guard let value = rateValue(field) else { return nil }
+            rates[field] = value
+        }
+        return rates
+    }
+    private var currentRates: ProfitFeeRates {
+        var rates = preset.defaultRates
+        for field in ProfitRateField.allCases { if let value = rateValue(field) { rates[field] = value } }
+        return rates
+    }
+
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        loaded = true
+        fill(ProfitFeeSettings.loadRates(preset))
+        if needsAttention { ratesExpanded = true }
+    }
+    private func fill(_ rates: ProfitFeeRates) {
+        let separator = Locale.current.decimalSeparator ?? "."
+        var texts: [ProfitRateField: String] = [:]
+        for field in ProfitRateField.allCases {
+            var text = profitRateText(rates[field])
+            if separator == "," { text = text.replacingOccurrences(of: ".", with: ",") }
+            texts[field] = text
+        }
+        rateTexts = texts
+        validRates = parsedRates
+    }
+    private func choosePreset(_ newPreset: ProfitFeePreset) {
+        preset = newPreset
+        fill(ProfitFeeSettings.loadRates(newPreset))
+        persist()
+        if needsAttention { ratesExpanded = true }
+    }
+    private func restoreDefaults() {
+        ProfitFeeSettings.resetRates(preset)
+        fill(preset.defaultRates)
+        persist()
+    }
+    /// Saves the preset and valid rates only, as the Profit check does; never a price, margin or target.
+    private func persist() {
+        validRates = parsedRates
         ProfitFeeSettings.save(preset: preset, rates: currentRates)
     }
 }

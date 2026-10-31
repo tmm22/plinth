@@ -226,6 +226,45 @@ func productDeliveryHintText(_ hint: ProductDeliveryHint?) -> String {
     return "Delivery isn’t included. Loaded orders with this product most often went to \(country), where Slant charged \(money(NSDecimalNumber(decimal: hint.average))) on average for delivery (\(orders)). The Spending Report has every country."
 }
 
+// MARK: Listing price check
+
+/// The cost the listing price check may use: Check Cost's total for the units shown, only once every part is priced,
+/// because a partial total would overstate the profit. Nil otherwise.
+func listingPriceCheckCost(_ summary: ProductCostSummary) -> Decimal? {
+    summary.complete ? summary.total : nil
+}
+
+/// Why the listing price check can't run yet, or nil.
+func listingPriceCheckUnavailableText(_ summary: ProductCostSummary) -> String? {
+    guard !summary.complete else { return nil }
+    return summary.partCount == 0 || summary.pricedCount == 0
+        ? "Check the cost first to see what a listing price would leave you."
+        : "Every part needs a price before a listing price can be checked: a partial cost would overstate the profit."
+}
+
+/// How the delivery figure is described: an average of past orders, never a quote. Nil-safe for a missing hint.
+func listingPriceDeliveryNote(_ hint: ProductDeliveryHint?) -> String {
+    guard let hint else {
+        return "Delivery isn’t included: no loaded orders with this product show what Slant charged for delivery, so the profit is before delivery."
+    }
+    let orders = hint.orders == 1 ? "1 past order" : "\(hint.orders) past orders"
+    return "Delivery is the average Slant charged on \(orders) to \(spendReportCountryTitle(hint.countryCode)), not a quote. Slant prices delivery when a draft is created."
+}
+
+/// "List at $18.40 a unit to keep a 30% margin." and the like, for the target margin row.
+func listingPriceTargetText(_ target: ListingPriceTarget, targetPercent: Decimal) -> String {
+    switch target {
+    case .price(let price):
+        return "List at \(profitMoney(price)) a unit or more to keep a \(profitPercentText(targetPercent)) margin."
+    case .coveredByShipping:
+        return "The shipping you charge already keeps a \(profitPercentText(targetPercent)) margin, whatever the listing price."
+    case .unreachable(let reason):
+        return reason
+    }
+}
+
+let listingPriceCheckCaption = "Try a listing price to see what you’d keep, in US dollars. Nothing you type here is saved, and it clears when you close Check Cost. Only the fee preset and rates are remembered, shared with the Profit check."
+
 // MARK: - Runner
 
 @MainActor final class ProductCostCheckRunner: ObservableObject {
@@ -384,6 +423,14 @@ struct ProductCostCheckView: View {
     let onDone: () -> Void
     @StateObject private var runner = ProductCostCheckRunner()
     @State private var unitsText = "1"
+    // Listing price check: memory only, never saved with the product or in preferences.
+    @State private var listingPriceText = ""
+    @State private var shippingChargedText = ""
+    @State private var targetMarginText = ""
+    @State private var offsiteAds = false
+    @State private var feePreset = ProfitFeeSettings.loadPreset()
+    /// Starts from the saved rates so the first frame never shows a rate problem; the editor keeps it current.
+    @State private var feeRates: ProfitFeeRates? = ProfitFeeSettings.loadRates(ProfitFeeSettings.loadPreset())
 
     private var units: Int? { savedProductUnitsSold(unitsText) }
     private var plannedParts: [ProductCostPart] {
@@ -423,10 +470,12 @@ struct ProductCostCheckView: View {
                     unitsRow
                     partsGrid(parts)
                     summaryBlock(summary, units: shownUnits)
-                    Label(productDeliveryHintText(productDeliveryHint(product, localModels: store.localModels, orders: store.orders)),
-                          systemImage: "shippingbox")
+                    let deliveryHint = productDeliveryHint(product, localModels: store.localModels, orders: store.orders)
+                    Label(productDeliveryHintText(deliveryHint), systemImage: "shippingbox")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                    listingPriceSection(summary, units: shownUnits, deliveryHint: deliveryHint)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
@@ -521,6 +570,111 @@ struct ProductCostCheckView: View {
             Text(money(NSDecimalNumber(decimal: total))).monospacedDigit()
         } else {
             Text("—").foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func listingPriceSection(_ summary: ProductCostSummary, units: Int, deliveryHint: ProductDeliveryHint?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Listing price check").font(.headline)
+            if self.units == nil {
+                // Never show figures for a unit count other than the one typed.
+                Text("Enter the units in the order first.").font(.callout).foregroundStyle(.secondary)
+            } else if let reason = listingPriceCheckUnavailableText(summary) {
+                Text(reason).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let cost = listingPriceCheckCost(summary) {
+                Text(listingPriceCheckCaption).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                moneyField(units == 1 ? "Listing price" : "Listing price per unit", text: $listingPriceText, prompt: "0.00")
+                moneyField("Shipping you charge per order", text: $shippingChargedText, prompt: "Optional")
+                ProfitFeeRatesEditor(preset: $feePreset, validRates: $feeRates, offsiteAds: $offsiteAds)
+                Label(listingPriceDeliveryNote(deliveryHint), systemImage: "shippingbox")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                listingPriceResult(cost: cost, units: units, delivery: deliveryHint?.average)
+                Divider()
+                LabeledContent("Target margin") {
+                    HStack(spacing: 4) {
+                        TextField("Target margin", text: $targetMarginText, prompt: Text("30"))
+                            .labelsHidden().accessibilityLabel("Target margin")
+                            .frame(width: 80).multilineTextAlignment(.trailing)
+                        Text("%").foregroundStyle(.secondary)
+                    }
+                }
+                targetMarginResult(cost: cost, units: units, delivery: deliveryHint?.average)
+                Text("\(profitCheckExclusionsNote) Fees are assumptions; costs are Slant’s estimates and can change.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .labeledContentStyle(.receipt)
+    }
+
+    private func moneyField(_ title: String, text: Binding<String>, prompt: String) -> some View {
+        LabeledContent(title) {
+            HStack(spacing: 4) {
+                Text("$").foregroundStyle(.secondary)
+                TextField(title, text: text, prompt: Text(prompt)).labelsHidden().accessibilityLabel(title)
+                    .frame(width: 110).multilineTextAlignment(.trailing)
+            }
+        }
+    }
+
+    /// Typed shipping, 0 when blank; nil when it can't be read.
+    private var shippingCharged: Decimal? {
+        shippingChargedText.trimmingCharacters(in: .whitespaces).isEmpty ? 0 : parseProfitAmount(shippingChargedText)
+    }
+
+    @ViewBuilder
+    private func listingPriceResult(cost: Decimal, units: Int, delivery: Decimal?) -> some View {
+        if listingPriceText.trimmingCharacters(in: .whitespaces).isEmpty {
+            Text("Enter a listing price to see the estimated profit.").font(.callout).foregroundStyle(.secondary)
+        } else if let price = parseProfitAmount(listingPriceText), let shipping = shippingCharged, let rates = feeRates {
+            let result = listingPriceCheck(listingPricePerUnit: price, shippingCharged: shipping, units: units, productCost: cost,
+                                           delivery: delivery, preset: feePreset, rates: rates, offsiteAds: offsiteAds)
+            if units > 1 {
+                Text("For one order of \(units) units").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(Array(result.lines.enumerated()), id: \.offset) { _, line in
+                LabeledContent(line.label) { Text(profitMoney(line.amount)).monospacedDigit() }.font(.callout)
+            }
+            LabeledContent("Estimated profit") {
+                Text(profitMoney(result.profit)).monospacedDigit().fontWeight(.semibold)
+                    .foregroundStyle(result.profit < 0 ? .red : .primary)
+            }
+            if units > 1 {
+                LabeledContent("Fees per unit") { Text(profitMoney(-result.feesPerUnit)).monospacedDigit() }.font(.callout)
+                LabeledContent("Estimated profit per unit") { Text(profitMoney(result.profitPerUnit)).monospacedDigit() }
+            }
+            if let margin = result.marginPercent {
+                LabeledContent("Estimated margin") { Text(profitPercentText(margin)).monospacedDigit() }
+            }
+        } else if feeRates == nil, feePreset.hasRates {
+            Text("Check the highlighted fee rates.").font(.callout).foregroundStyle(.orange)
+        } else {
+            Text("Check the highlighted amounts: use numbers like 24.99.").font(.callout).foregroundStyle(.orange)
+        }
+    }
+
+    @ViewBuilder
+    private func targetMarginResult(cost: Decimal, units: Int, delivery: Decimal?) -> some View {
+        let typed = targetMarginText.trimmingCharacters(in: .whitespaces)
+        if typed.isEmpty {
+            Text("Enter a margin to see the listing price that keeps it.").font(.caption).foregroundStyle(.secondary)
+        } else if let target = parseProfitPercent(typed), let shipping = shippingCharged, let rates = feeRates {
+            let answer = listingPriceForTargetMargin(target, shippingCharged: shipping, units: units, productCost: cost,
+                                                     delivery: delivery, preset: feePreset, rates: rates, offsiteAds: offsiteAds)
+            let unreachable: Bool = { if case .unreachable = answer { return true }; return false }()
+            Text(listingPriceTargetText(answer, targetPercent: target))
+                .font(.callout).foregroundStyle(unreachable ? .orange : .primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        } else if parseProfitPercent(typed) == nil {
+            Text("Enter a margin from 0 to 100, such as 30.").font(.caption).foregroundStyle(.orange)
+        } else {
+            Text("Check the highlighted amounts first.").font(.caption).foregroundStyle(.orange)
         }
     }
 
