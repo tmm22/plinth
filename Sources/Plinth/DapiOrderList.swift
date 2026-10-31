@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 // The 3DAPI Orders list's state: pages read newest first by cursor, the Status filter and server-side search, the
@@ -85,6 +86,28 @@ struct DapiOrderListFilter: Equatable {
     var search: String
 }
 
+/// Whether an order belongs under a filter: its status, when one is chosen, and the search as part of its number or
+/// reference in any case (3DAPI's own search). Used for orders shown on their own (a notification, a placed or found
+/// order), which no page read with the filter listed.
+func dapiOrderMatchesFilter(_ order: DapiOrder, _ filter: DapiOrderListFilter) -> Bool {
+    if let status = filter.status, order.status != status { return false }
+    let search = filter.search.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !search.isEmpty else { return true }
+    return [order.number, order.reference ?? ""].contains { $0.range(of: search, options: .caseInsensitive) != nil }
+}
+
+/// Orders shown on their own this session that the list keeps.
+let dapiPinnedOrderLimit = 10
+
+/// A fresh first page's rows, with the orders shown on their own (`pinned`, newest first) that the page doesn't list
+/// and that match the filter, first. So an order a notification or a placed order put in the list isn't dropped by a
+/// page read before or after it, and a row that doesn't match the filter shown is never added.
+func dapiRowsKeepingPinned(_ rows: [DapiOrder], pinned: [DapiOrder], filter: DapiOrderListFilter) -> [DapiOrder] {
+    let listed = Set(rows.map(\.id))
+    let kept = pinned.filter { !listed.contains($0.id) && dapiOrderMatchesFilter($0, filter) }
+    return dapiMergeOrders(kept, with: rows)
+}
+
 /// The orders one Activity line can name: never numbers, references, prices or names.
 let dapiOrdersActivityTitle = "3DAPI orders"
 
@@ -110,6 +133,18 @@ struct DapiOrderListEnvironment {
 }
 
 @MainActor final class DapiOrderListState: ObservableObject {
+    /// The Orders screen's list. It outlives the screen (the orders loaded stay for the next visit) and forgets every
+    /// order as soon as the key is saved, replaced or removed, even while Orders isn't shown; the screen reads again
+    /// when it next appears (`keyChanged`).
+    static let shared: DapiOrderListState = {
+        let list = DapiOrderListState(environment: .live())
+        // @Published sends the new value before the property changes, so only the value passed in is used.
+        list.keySubscription = DapiConnection.shared.$keyGeneration.dropFirst().sink { [weak list] generation in
+            MainActor.assumeIsolated { list?.forgetIfKeyChanged(generation: generation) }
+        }
+        return list
+    }()
+
     @Published private(set) var orders: [DapiOrder] = []
     @Published private(set) var hasMore = false
     @Published private(set) var loading = false
@@ -139,6 +174,12 @@ struct DapiOrderListEnvironment {
     private var refreshToken: UUID?
     /// The filter the listed rows were read with; nil before the first page.
     private var rowsFilter: DapiOrderListFilter?
+    /// Orders shown on their own (`show`, `insertAndSelect`), newest first, as last read: a fresh first page keeps them
+    /// (`dapiRowsKeepingPinned`). Forgotten with the key's orders.
+    private(set) var pinned: [DapiOrder] = []
+    /// The latest page read's task, kept after it ends or is stopped, so tests can wait for it.
+    private(set) var lastLoadTask: Task<Void, Never>?
+    private var keySubscription: AnyCancellable?
     private let environment: DapiOrderListEnvironment
     var log: ((_ title: String, _ detail: String, _ success: Bool) -> Void)?
 
@@ -147,6 +188,9 @@ struct DapiOrderListEnvironment {
     }
 
     var selectedOrder: DapiOrder? { orders.first { $0.id == selection } }
+
+    /// Rows the tools (Export Orders, Tracking for Your Shop, and the File menu's versions) can use now.
+    var hasRowsForTools: Bool { canUseRowsForTools && !orders.isEmpty }
 
     /// The filter shown now.
     var shownFilter: DapiOrderListFilter { DapiOrderListFilter(status: status, search: appliedSearch) }
@@ -204,16 +248,28 @@ struct DapiOrderListEnvironment {
         loadError = nil
         selection = nil
         orderRefreshFailure = nil
+        pinned = []
     }
 
-    /// `DapiConnection.keyGeneration` changed (a key saved, replaced or removed), even to a key that looks like the
-    /// same account: forget the earlier key's orders and drop its replies, then read again with the new key when one is
-    /// saved. Idempotent per generation: a second call with the same generation does nothing.
-    func keyChanged(generation newGeneration: Int, configured: Bool) {
-        guard keyGeneration != newGeneration else { return }
+    /// Forgets the earlier key's orders (and drops its replies) when `newGeneration` differs from the one these orders
+    /// were read with; nothing otherwise. Returns whether it forgot.
+    @discardableResult
+    func forgetIfKeyChanged(generation newGeneration: Int) -> Bool {
+        guard keyGeneration != newGeneration else { return false }
         keyGeneration = newGeneration
         forgetAll()
-        if configured { reload() }
+        return true
+    }
+
+    /// The Orders screen appeared, or `DapiConnection.keyGeneration` changed (a key saved, replaced or removed, even to
+    /// a key that looks like the same account): a new generation forgets the earlier key's orders and drops its replies.
+    /// Then, with a key saved, a list whose first page wasn't read yet (or whose read was stopped) is read; loaded
+    /// orders, or a failed read (never retried by itself), stay as they are. The same generation again never forgets or
+    /// reads loaded orders.
+    func keyChanged(generation newGeneration: Int, configured: Bool) {
+        forgetIfKeyChanged(generation: newGeneration)
+        // An order shown on its own (`show`, `insertAndSelect`) isn't a page: the page is still read.
+        if configured, rowsFilter == nil, loadError == nil, !loading { reload() }
     }
 
     /// Stops every read (the screen went away). Loaded orders stay.
@@ -240,6 +296,9 @@ struct DapiOrderListEnvironment {
                 nextCursor = nil
                 rowsFilter = nil
                 loaded = false
+            } else if rowsFilter == nil {
+                // No page yet: only orders shown on their own are listed; keep those the filter shown matches.
+                orders = orders.filter { dapiOrderMatchesFilter($0, filter) }
             }
             // The same filter (Refresh): the rows and their cursor stay until the new page arrives, so a failed
             // read leaves a working Load More.
@@ -248,7 +307,7 @@ struct DapiOrderListEnvironment {
         let query = dapiOrderListQuery(status: status, search: appliedSearch, cursor: reset ? nil : nextCursor)
         loading = true
         loadError = nil
-        loadTask = Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
             let result: Result<DapiOrderPage, Error>
             do { result = .success(try await self.environment.client().orders(query)) } catch { result = .failure(error) }
@@ -257,7 +316,16 @@ struct DapiOrderListEnvironment {
             self.loadTask = nil
             switch result {
             case .success(let page):
-                self.orders = reset ? dapiMergeOrders([], with: page.orders) : dapiMergeOrders(self.orders, with: page.orders)
+                if reset {
+                    // Orders shown on their own that this page doesn't list stay (a notification's order read before
+                    // or after the page, a placed order 3DAPI doesn't list yet), when they match the filter.
+                    self.refreshPinned(from: self.orders)
+                    self.orders = dapiRowsKeepingPinned(dapiMergeOrders([], with: page.orders), pinned: self.pinned,
+                                                        filter: filter)
+                } else {
+                    self.orders = dapiMergeOrders(self.orders, with: page.orders)
+                }
+                self.refreshPinned(from: page.orders)
                 self.hasMore = page.hasMore && page.nextCursor != nil
                 self.nextCursor = page.nextCursor
                 self.rowsFilter = filter
@@ -270,6 +338,30 @@ struct DapiOrderListEnvironment {
                 self.log?(dapiOrdersActivityTitle, (error as? DapiError)?.activityDetail ?? "Read failed", false)
             }
         }
+        loadTask = task
+        lastLoadTask = task
+    }
+
+    /// Keeps the pinned orders' copies as fresh as `rows` (the newer copy, its lines kept when it has none).
+    private func refreshPinned(from rows: [DapiOrder]) {
+        guard !pinned.isEmpty else { return }
+        pinned = pinned.map { pin in rows.first { $0.id == pin.id }.map { dapiOrderKeepingItems($0, from: pin) } ?? pin }
+    }
+
+    /// An order shown on its own: pinned (newest first, at most `dapiPinnedOrderLimit`), listed and selected. When it
+    /// doesn't match the filter shown, every order is shown again (Status and search cleared, page 1 read again), so
+    /// the list never holds a row that doesn't match the filter shown and the tools only see rows that do.
+    private func showOnItsOwn(_ order: DapiOrder, first: Bool) {
+        pinned = Array(([order] + pinned.filter { $0.id != order.id }).prefix(dapiPinnedOrderLimit))
+        if !dapiOrderMatchesFilter(order, shownFilter) {
+            status = nil
+            appliedSearch = ""
+            startLoad(reset: true)
+        }
+        orders = first ? dapiInsertingOrder(order, into: orders) : dapiReplacingOrder(order, in: orders)
+        loaded = true
+        selection = order.id
+        settle([order])
     }
 
     /// Refresh this order: one read of the selected order, replacing its row.
@@ -278,7 +370,7 @@ struct DapiOrderListEnvironment {
     }
 
     /// A clicked order notification: one read of that order by ID, shown first in the list (when it isn't listed)
-    /// and selected. Read-only.
+    /// and selected, and kept by later pages (`showOnItsOwn`, which clears a filter it doesn't match). Read-only.
     func show(orderID id: String) {
         if orders.contains(where: { $0.id == id }) { selection = id }
         readOrder(id: id, select: true)
@@ -305,10 +397,7 @@ struct DapiOrderListEnvironment {
             case .success(let order):
                 guard order.id == id else { return }
                 if select {
-                    self.orders = dapiReplacingOrder(order, in: self.orders)
-                    self.loaded = true
-                    self.selection = order.id
-                    self.settle([order])
+                    self.showOnItsOwn(order, first: false)
                 } else if self.orders.contains(where: { $0.id == order.id }) {
                     self.apply(order)
                 }
@@ -323,15 +412,13 @@ struct DapiOrderListEnvironment {
     /// A re-read or returned order (refresh, cancel, lookup) in place of its older copy.
     func apply(_ order: DapiOrder) {
         orders = dapiReplacingOrder(order, in: orders)
+        refreshPinned(from: [order])
         settle([order])
     }
 
-    /// A newly placed or found order: first in the list, and selected.
+    /// A newly placed or found order: first in the list, and selected (clearing a filter it doesn't match).
     func insertAndSelect(_ order: DapiOrder) {
-        orders = dapiInsertingOrder(order, into: orders)
-        loaded = true
-        selection = order.id
-        settle([order])
+        showOnItsOwn(order, first: true)
     }
 
     private func settle(_ orders: [DapiOrder]) {

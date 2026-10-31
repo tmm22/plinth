@@ -379,7 +379,8 @@ struct DapiComposerPrefill: Equatable, Sendable {
 
     /// Place or cancel requests sent and not yet answered.
     @Published private(set) var writesInFlight = 0
-    /// Order sheets (composer, review, cancel) currently shown.
+    /// Order sheets currently shown: the composer, the place and cancel reviews, and the order tools' sheets (Spending
+    /// Report, Tracking for Your Shop, Report a Problem; `dapiOrderSheetCounted`).
     @Published private(set) var openSheets = 0
     /// Orders sent whose outcome is unknown, oldest first.
     @Published private(set) var unconfirmedOrders: [DapiUnconfirmedOrder] = []

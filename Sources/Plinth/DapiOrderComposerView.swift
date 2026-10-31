@@ -32,6 +32,8 @@ struct DapiOrderComposerView: View {
     @State private var sellerAddressMissing = false
     @State private var review: DapiReviewRequest?
     @State private var placed = false
+    /// Look for Order on 3DAPI, started from this sheet's notice, is reading.
+    @State private var lookupRunning = false
 
     private var problems: [DapiComposerField: String] { dapiRecipientProblems(address, notes: notes) }
     private var linesProblem: String? { dapiComposerLinesProblem(state.lines) }
@@ -91,7 +93,8 @@ struct DapiOrderComposerView: View {
             Button("Discard Order", role: .destructive) { close() }
             Button("Keep Editing", role: .cancel) {}
         } message: {
-            Text("Nothing was sent to 3DAPI. The lines and details you entered are discarded.")
+            Text(dapiComposerDiscardMessage(hasUnconfirmedAttempt: !state.sentReferences.isDisjoint(
+                with: session.unconfirmedOrders.map(\.reference))))
         }
         .confirmationDialog("Replace the delivery details?", isPresented: $confirmUseMyAddress, titleVisibility: .visible) {
             Button("Use My Address") { applyMyAddress() }
@@ -101,7 +104,7 @@ struct DapiOrderComposerView: View {
             Text("The name, email and address in this order are replaced with your saved address.")
         }
         .sheet(item: $review, onDismiss: { if placed { close() } }) { request in
-            DapiPlaceOrderSheet(draft: request.draft, onPlaced: { order in
+            DapiPlaceOrderSheet(draft: request.draft, handle: request.handle, onPlaced: { order in
                 placed = true
                 onPlaced(order)
             }, onFound: onFound,
@@ -111,11 +114,15 @@ struct DapiOrderComposerView: View {
         }
         // One of this composer's own attempts was found (or placed): 3DAPI has the order, so close exactly as after a
         // placed order (the list selects it through `onFound`/`onPlaced`). The same draft is never left open to be
-        // placed again without the Place Anyway question.
+        // placed again without the Place Anyway question. A review whose own order request is with 3DAPI is never
+        // dismissed: it reports that outcome, and closing it then closes this composer (`placed`, the sheet's onDismiss).
         .onChange(of: session.unconfirmedOrders.map(\.reference)) { _, references in
             guard state.ownOrderSettled(unconfirmedReferences: references) else { return }
             placed = true
-            if review != nil { review = nil } else { close() }
+            guard let request = review else { close(); return }
+            guard !request.handle.isWriting() else { return }
+            request.handle.close()
+            review = nil
         }
         .onAppear {
             if !registered {
@@ -125,13 +132,15 @@ struct DapiOrderComposerView: View {
             seedIfNeeded()
         }
         .onDisappear {
-            // A review shown over the composer isn't a close.
-            guard review == nil else { return }
-            state.close()
+            // The count is released on every teardown, a review shown over the composer included; a reappearance
+            // counts again.
             if registered {
                 registered = false
                 session.sheetClosed()
             }
+            // A review shown over the composer isn't a close.
+            guard review == nil else { return }
+            state.close()
         }
         .onChange(of: shippingKey) { _, key in state.shippingInputsChanged(key) }
         .onChange(of: showAddressPaste) { _, shown in
@@ -187,7 +196,7 @@ struct DapiOrderComposerView: View {
             }
             if !session.unconfirmedOrders.isEmpty {
                 Section {
-                    DapiUnconfirmedOrdersNotice(onFound: onFound)
+                    DapiUnconfirmedOrdersNotice(onFound: onFound, onLookingChange: { lookupRunning = $0 })
                 }
             }
             if let order = seed.duplicateOf {
@@ -566,12 +575,14 @@ struct DapiOrderComposerView: View {
             // No default-action shortcut: Return in a field never opens the review, and the review's Place Order
             // takes its own click.
             Button("Review Order…") {
-                guard let draft, review == nil else { return }
-                review = DapiReviewRequest(draft: draft)
+                guard let draft, review == nil, !lookupRunning else { return }
+                review = DapiReviewRequest(draft: draft, handle: DapiReviewHandle())
             }
             .buttonStyle(.borderedProminent)
-            .disabled(reviewBlockedReason != nil || draft == nil || state.isResolving)
-            .help(reviewBlockedReason ?? "Check prices, shipping and your account before placing the order")
+            // Not while Look for Order on 3DAPI is looking for one of this sheet's attempts: it may find that order.
+            .disabled(reviewBlockedReason != nil || draft == nil || state.isResolving || lookupRunning)
+            .help(reviewBlockedReason ?? (lookupRunning ? "Wait for Look for Order on 3DAPI to finish."
+                                          : "Check prices, shipping and your account before placing the order"))
         }
         .padding(16)
         .background(.bar)
@@ -591,4 +602,13 @@ struct DapiOrderComposerView: View {
 struct DapiReviewRequest: Identifiable {
     let id = UUID()
     let draft: DapiOrderDraft
+    let handle: DapiReviewHandle
+}
+
+/// Lets the composer ask the review it opened whether its order request is with 3DAPI, and close the review's reads
+/// before dismissing it (like Go Back), so a re-check finishing during the dismissal never sends. Set by the review
+/// when it appears.
+@MainActor final class DapiReviewHandle {
+    var isWriting: () -> Bool = { false }
+    var close: () -> Void = {}
 }

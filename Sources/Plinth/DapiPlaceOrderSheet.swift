@@ -14,12 +14,16 @@ struct DapiPlaceOrderSheet: View {
     let onFound: (DapiOrder) -> Void
     let onSending: (DapiUnconfirmedOrder) -> Void
     let onNotCharged: (String) -> Void
+    let handle: DapiReviewHandle?
 
     /// `onSending` runs just before the order request goes out and `onNotCharged` when 3DAPI definitely didn't place an
-    /// attempt (before its record is removed), so the composer knows its own attempts (`DapiComposerState`).
-    init(draft: DapiOrderDraft, onPlaced: @escaping (DapiOrder) -> Void, onFound: @escaping (DapiOrder) -> Void,
+    /// attempt (before its record is removed), so the composer knows its own attempts (`DapiComposerState`). `handle`
+    /// lets the composer see whether the order request is with 3DAPI and close the reads before dismissing the review.
+    init(draft: DapiOrderDraft, handle: DapiReviewHandle? = nil, onPlaced: @escaping (DapiOrder) -> Void,
+         onFound: @escaping (DapiOrder) -> Void,
          onSending: @escaping (DapiUnconfirmedOrder) -> Void = { _ in }, onNotCharged: @escaping (String) -> Void = { _ in }) {
         _runner = StateObject(wrappedValue: DapiPlaceOrderRunner(draft: draft, environment: .live()))
+        self.handle = handle
         self.onPlaced = onPlaced
         self.onFound = onFound
         self.onSending = onSending
@@ -83,6 +87,9 @@ struct DapiPlaceOrderSheet: View {
             runner.onPlaced = onPlaced
             runner.onSending = onSending
             runner.onNotCharged = onNotCharged
+            let runner = self.runner
+            handle?.isWriting = { [weak runner] in runner?.isWriting ?? false }
+            handle?.close = { [weak runner] in runner?.close() }
             runner.start()
         }
         .onDisappear {
@@ -157,7 +164,9 @@ struct DapiPlaceOrderSheet: View {
                         let price = figures.quotes[line.request.quoteID]?.price
                         GridRow(alignment: .top) {
                             Text(line.name).lineLimit(2)
-                            Text(line.materialsText).font(.callout).fixedSize(horizontal: false, vertical: true)
+                            // Suggested materials as the quote, just read, names them: what 3DAPI will print.
+                            Text(dapiReviewMaterialsText(line, quotes: figures.quotes)).font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
                             Text("\(line.request.quantity)").monospacedDigit()
                             Text(price.map(dapiMoneyText) ?? "—").monospacedDigit()
                             Text(price.flatMap { dapiLineUpTo(unitPrice: $0, quantity: line.request.quantity) }.map(dapiMoneyText) ?? "—")

@@ -31,7 +31,7 @@ struct DapiReportProblemButton: View {
         Button("Report a Problem…") { reportingProblem = true }
             .help("Put together a message about this order to send to 3DAPI. Nothing is sent by Plinth.")
             .sheet(isPresented: $reportingProblem) {
-                DapiProblemReportSheet(order: order)
+                DapiProblemReportSheet(order: order).dapiOrderSheetCounted()
             }
     }
 }

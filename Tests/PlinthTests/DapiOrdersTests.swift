@@ -5,9 +5,43 @@ import XCTest
 // lookup and list runners against a scripted stub. Nothing here reaches the network, the Keychain, `DapiConnection`
 // or `DapiOrderSession`.
 
+/// Holds every call that reaches it until the test releases it (then lets every later call through), so a test can act
+/// at a known point of a request instead of sleeping.
+final class DapiOrderTestGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    private var arrivals = 0
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    /// How many calls have reached the gate.
+    var reached: Int { lock.withLock { arrivals } }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let pass: Bool = lock.withLock {
+                arrivals += 1
+                if released { return true }
+                waiting.append(continuation)
+                return false
+            }
+            if pass { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let held: [CheckedContinuation<Void, Never>] = lock.withLock {
+            released = true
+            defer { waiting = [] }
+            return waiting
+        }
+        held.forEach { $0.resume() }
+    }
+}
+
 /// A scripted 3DAPI that quotes and orders: each method returns its configured result and records its calls.
 final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     private let lock = NSLock()
+    private var _gates: [String: DapiOrderTestGate] = [:]
     private var _calls: [String] = []
     private var _quoteReads: [String: [Result<DapiQuote, DapiError>]] = [:]
     private var _shipping: [Result<DapiShippingEstimate, DapiError>] = []
@@ -39,6 +73,18 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     func scriptOrderReads(_ results: [Result<DapiOrder, DapiError>]) { lock.withLock { _orderReads = results } }
     func scriptPages(_ results: [Result<DapiOrderPage, DapiError>]) { lock.withLock { _pages = results } }
 
+    /// From now on, calls named `name` ("read", "orders", "order", …) wait at the returned gate after being recorded.
+    func gate(_ name: String) -> DapiOrderTestGate {
+        let gate = DapiOrderTestGate()
+        lock.withLock { _gates[name] = gate }
+        return gate
+    }
+
+    private func passGate(_ name: String) async {
+        let gate: DapiOrderTestGate? = lock.withLock { _gates[name] }
+        await gate?.wait()
+    }
+
     private func record(_ call: String) { lock.withLock { _calls.append(call) } }
     private func next<T>(_ list: inout [Result<T, DapiError>]) -> Result<T, DapiError> {
         guard let first = list.first else { return .failure(.readFailed("no script")) }
@@ -58,6 +104,7 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     }
     func quote(id: String) async throws -> DapiQuote {
         record("read")
+        await passGate("read")
         let result: Result<DapiQuote, DapiError> = lock.withLock {
             var list = _quoteReads[id] ?? []
             let value = next(&list)
@@ -69,11 +116,16 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     func shippingEstimate(quoteID: String, quantity: Int, countryCode: String) async throws -> DapiShippingEstimate {
         record("shipping1"); throw DapiError.notSent("unused")
     }
-    func materials() async throws -> [DapiMaterial] { record("materials"); return try materialsResult.get() }
+    func materials() async throws -> [DapiMaterial] {
+        record("materials")
+        await passGate("materials")
+        return try materialsResult.get()
+    }
     func wallet() async throws -> DapiWallet { record("wallet"); return try walletResult.get() }
     func orders(_ query: DapiOrderListQuery) async throws -> DapiOrderPage {
         record("orders")
         let result: Result<DapiOrderPage, DapiError> = lock.withLock { _queries.append(query); return next(&_pages) }
+        await passGate("orders")
         return try result.get()
     }
     func shippingEstimate(lines: [DapiOrderLineRequest], countryCode: String) async throws -> DapiShippingEstimate {
@@ -84,6 +136,7 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     func order(id: String) async throws -> DapiOrder {
         record("order")
         let result: Result<DapiOrder, DapiError> = lock.withLock { next(&_orderReads) }
+        await passGate("order")
         return try result.get()
     }
     func placeOrder(_ request: DapiOrderRequest, idempotencyKey: String) async throws -> DapiOrder {
@@ -160,8 +213,10 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
             now: { Date(timeIntervalSince1970: 1_793_000_000) })
     }
 
+    /// Waits for something that must happen (up to 10 s, so a loaded machine doesn't fail it); never used to show that
+    /// something didn't happen.
     func waitUntil(_ condition: @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<400 {
+        for _ in 0..<2_000 {
             if condition() { return }
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
@@ -398,10 +453,12 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
             hashFile: { _ in "" }, noteHash: { _, _ in }))
         state.loadMaterialsIfNeeded()
         await waitUntil { !state.materialsLoading && state.materialsProblem != nil }
-        // Later changes in the form ask again; nothing is read by itself.
+        // Later changes in the form ask again; nothing is read by itself. A read would start at once (it sets
+        // `materialsLoading` before it reaches 3DAPI), so this needs no waiting.
         state.loadMaterialsIfNeeded()
         state.loadMaterialsIfNeeded()
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(state.materialsLoading, "No read started")
+        XCTAssertNotNil(state.materialsProblem)
         XCTAssertEqual(stub.count("materials"), 1)
         stub.materialsResult = .success([DapiMaterial(id: "mat_a", name: "PLA Red", color: nil, colorHex: nil, filamentType: "pla")])
         state.retryMaterials()
@@ -469,6 +526,65 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         var account = reviewed
         account.orderingProblem = "Not approved"
         XCTAssertEqual(dapiReviewChanges(reviewed: reviewed, current: account), ["Not approved"])
+        // A line sent with 3DAPI's suggestions gets what the quote suggests when it is placed: a change counts.
+        var suggested = reviewed
+        suggested.suggestedMaterials = ["qte_1": ["1|mat_red|PLA Red"]]
+        var otherSuggestion = suggested
+        otherSuggestion.suggestedMaterials = ["qte_1": ["1|mat_blue|PLA Blue"]]
+        XCTAssertEqual(dapiReviewChanges(reviewed: suggested, current: suggested), [])
+        XCTAssertEqual(dapiReviewChanges(reviewed: suggested, current: otherSuggestion, names: ["qte_1": "Bracket"]),
+                       ["Bracket: 3DAPI’s suggested materials changed."])
+        XCTAssertEqual(dapiReviewChanges(reviewed: suggested, current: reviewed).count, 1, "Suggestions gone")
+    }
+
+    func testSuggestionSignatureIsSortedAndNamesIDAndName() {
+        let quote = DapiOrdersTests.quote("qte_1", suggestions: [
+            DapiSuggestedMaterial(slot: 2, materialName: "PLA White", fileFilamentType: "PLA", match: "exact", materialID: "mat_w"),
+            DapiSuggestedMaterial(slot: 1, materialName: " PLA Red ", fileFilamentType: "PLA", match: "close"),
+        ])
+        XCTAssertEqual(dapiSuggestionSignature(quote), ["1||PLA Red", "2|mat_w|PLA White"])
+        let fresh = DapiOrdersTests.quote("qte_1", suggestions: [
+            DapiSuggestedMaterial(slot: 2, materialName: "PLA White", fileFilamentType: "PLA", match: "exact"),
+            DapiSuggestedMaterial(slot: 1, materialName: "PLA Red", fileFilamentType: "PLA", match: "exact"),
+        ])
+        let line = DapiOrderDraft.Line(request: DapiOrderLineRequest(quoteID: "qte_1", quantity: 1, materials: .suggested),
+                                       name: "Bracket", materialsText: "3DAPI’s suggestion: PLA Old")
+        XCTAssertEqual(dapiReviewMaterialsText(line, quotes: ["qte_1": fresh]), "3DAPI’s suggestion: PLA Red, PLA White",
+                       "The review names the fresh quote's suggestions")
+        XCTAssertEqual(dapiReviewMaterialsText(line, quotes: [:]), "3DAPI’s suggestion: PLA Old")
+        let chosen = DapiOrderDraft.Line(request: DapiOrderLineRequest(quoteID: "qte_1", quantity: 1,
+                                                                       materials: .slots([DapiMaterialSlot(slot: 1, materialID: "mat_a")])),
+                                         name: "Bracket", materialsText: "PLA Black")
+        XCTAssertEqual(dapiReviewMaterialsText(chosen, quotes: ["qte_1": quote]), "PLA Black")
+    }
+
+    func testChangedSuggestionsStopBeforeSending() async {
+        let stub = ScriptedDapiOrders()
+        let red = [DapiSuggestedMaterial(slot: 1, materialName: "PLA Red", fileFilamentType: "PLA", match: "exact")]
+        let blue = [DapiSuggestedMaterial(slot: 1, materialName: "PLA Blue", fileFilamentType: "PLA", match: "exact")]
+        stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1", suggestions: red)),
+                                   .success(DapiOrdersTests.quote("qte_1", suggestions: blue))])
+        stub.scriptShipping([.success(DapiOrdersTests.shipping(699))])
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(runner.changes, ["Bracket: 3DAPI’s suggested materials changed."])
+        XCTAssertEqual(runner.figures?.quotes["qte_1"]?.suggestedMaterials.first?.materialName, "PLA Blue")
+        XCTAssertEqual(stub.count("place"), 0)
+        XCTAssertEqual(harness.begun, 0)
+    }
+
+    func testSuggestionsGoneBlocksTheReview() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1", suggestions: []))])
+        stub.scriptShipping([.success(DapiOrdersTests.shipping(699))])
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        guard case .blocked(let message) = runner.phase else { return XCTFail("\(runner.phase)") }
+        XCTAssertTrue(message.contains("no longer suggests materials"))
+        XCTAssertFalse(runner.canPlace)
     }
 
     // MARK: Place outcomes
@@ -626,12 +742,41 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         let stub = scriptedReady()
         let harness = PlaceHarness()
         let runner = await readyRunner(stub, harness)
+        let gate = stub.gate("read")
         runner.placeOrder()
+        // The re-check is inside its quote read when Go Back closes the review; then 3DAPI answers.
+        await waitUntil { gate.reached == 1 }
         runner.close()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        gate.release()
+        await runner.lastCheckTask?.value
+        // `send` records the attempt and begins the write synchronously, so had the re-check gone on to send, both
+        // would show by now.
         XCTAssertEqual(stub.count("place"), 0)
         XCTAssertEqual(harness.begun, 0)
         XCTAssertTrue(harness.unconfirmed.isEmpty)
+        XCTAssertEqual(runner.phase, .rechecking, "Nothing ran after the close")
+    }
+
+    func testReappearingDuringTheRecheckStartsTheChecksOverWithoutSending() async {
+        let stub = scriptedReady()
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        let gate = stub.gate("read")
+        runner.placeOrder()
+        await waitUntil { gate.reached == 1 }
+        // The sheet goes away and comes back while the re-check waits.
+        runner.close()
+        runner.start()
+        XCTAssertEqual(runner.phase, .checking, "Back to the first checks, not stuck re-checking")
+        gate.release()
+        await runner.lastCheckTask?.value
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(stub.count("place"), 0, "The earlier press never sends")
+        XCTAssertEqual(harness.begun, 0)
+        // Only a new press sends.
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(stub.count("place"), 1)
     }
 
     func testTheAttemptIsRecordedBeforeSendingAndRemovedOnSuccess() async {
@@ -664,8 +809,23 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(notCharged, ["ETSY-123_pldeadbeef"])
         XCTAssertTrue(harness.unconfirmed.isEmpty)
         guard case .notCharged(let text) = runner.phase else { return XCTFail("\(runner.phase)") }
-        XCTAssertEqual(text, DapiError.refused(status: 402, code: "insufficient_balance", message: nil).userMessage
-                       + " Nothing was charged.", "The client's copy is the single source")
+        XCTAssertEqual(text, dapiRefusalMessage(status: 402, code: "insufficient_balance", message: nil, placingOrder: true),
+                       "The client's copy is the single source")
+        XCTAssertEqual(text.components(separatedBy: "charged").count - 1, 1, "Says nothing was charged exactly once: \(text)")
+    }
+
+    func testPlaceRefusalSaysNothingWasChargedExactlyOnce() {
+        let codes: [String?] = ["insufficient_balance", "payment_failed", "quote_rejected", "production_unavailable",
+                                "material_not_allowed", "validation_failed", nil]
+        for code in codes {
+            let text = dapiPlaceRefusalMessage(DapiError.refused(status: 422, code: code, message: "Something"))
+            XCTAssertEqual(text.lowercased().components(separatedBy: "nothing was charged").count - 1, 1,
+                           "\(code ?? "no code"): \(text)")
+        }
+        guard case .notCharged(let limited) = dapiPlaceFailure(DapiError.rateLimited(code: "rate_limited", retryAt: nil)) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(limited.components(separatedBy: "charged").count - 1, 1, limited)
     }
 
     func testAnOrderInFlightMakesAnotherPlaceAskButNotItself() async {
@@ -701,6 +861,14 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertFalse(state.ownOrderSettled(unconfirmedReferences: []), "A refused attempt isn't a found order")
         state.noteSending(reference: "ref_2")
         XCTAssertTrue(state.ownOrderSettled(unconfirmedReferences: []))
+    }
+
+    func testDiscardSaysNothingWasSentOnlyWithoutAnUnconfirmedAttempt() {
+        XCTAssertTrue(dapiComposerDiscardMessage(hasUnconfirmedAttempt: false).hasPrefix("Nothing was sent to 3DAPI."))
+        let sent = dapiComposerDiscardMessage(hasUnconfirmedAttempt: true)
+        XCTAssertFalse(sent.contains("Nothing was sent"))
+        XCTAssertTrue(sent.contains("may have been placed and charged"))
+        XCTAssertTrue(sent.contains("Look for Order on 3DAPI"))
     }
 
     func sampleCreditWallet(_ cents: Int) -> DapiWallet {
@@ -951,11 +1119,72 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         let runner = cancelRunner(stub, harness)
         runner.start()
         await waitUntil { runner.phase != .loading }
+        let gate = stub.gate("order")
         runner.cancelOrder()
-        runner.close() // Go Back during the re-read.
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        // Go Back during the re-read, then 3DAPI answers it.
+        await waitUntil { gate.reached == 1 }
+        runner.close()
+        gate.release()
+        await runner.lastReadTask?.value
+        // `send` locks the order and begins the write synchronously, so had the re-read gone on to send, both would
+        // show by now.
         XCTAssertEqual(stub.count("cancel"), 0)
         XCTAssertEqual(harness.begun, 0)
+        XCTAssertTrue(harness.unknown.isEmpty)
+    }
+
+    func testReappearingDuringTheCancelRecheckReadsAgainWithoutSending() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_1", status: .paid))])
+        let harness = CancelHarness()
+        let runner = cancelRunner(stub, harness)
+        runner.start()
+        await waitUntil { runner.phase != .loading }
+        let gate = stub.gate("order")
+        runner.cancelOrder()
+        await waitUntil { gate.reached == 1 }
+        runner.close()
+        runner.start()
+        gate.release()
+        await runner.lastReadTask?.value
+        XCTAssertTrue(runner.canCancel, "Back to the opening read, not stuck loading")
+        XCTAssertEqual(stub.count("cancel"), 0, "The earlier press never sends")
+        XCTAssertEqual(harness.begun, 0)
+    }
+
+    func testTheCancelLockIsRecordedBeforeSending() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_1", status: .paid))])
+        let harness = CancelHarness()
+        let runner = DapiCancelOrderRunner(orderID: "ord_1", shownStatus: .paid, environment: DapiCancelEnvironment(
+            client: { stub },
+            beginWrite: { harness.begun += 1; return UUID() },
+            endWrite: { _ in harness.ended += 1 },
+            outcomeUnknown: { harness.unknown.contains($0) },
+            sentFrom: { harness.sentFrom[$0] },
+            noteUnknown: { harness.unknown.insert($0); harness.sentFrom[$0] = $1; stub.note("locked \($0)") },
+            clearUnknown: { harness.unknown.remove($0); harness.sentFrom[$0] = nil; stub.note("unlocked \($0)") },
+            noteCancelled: { harness.cancelled.insert($0) },
+            newIdempotencyKey: { "cancel-key" }))
+        runner.start()
+        await waitUntil { runner.phase != .loading }
+        runner.cancelOrder()
+        await waitUntil { if case .done = runner.phase { true } else { false } }
+        XCTAssertEqual(stub.calls.filter { $0 != "order" }, ["locked ord_1", "cancel", "unlocked ord_1"],
+                       "Locked before the request, lifted by the returned cancelled order")
+        XCTAssertTrue(harness.unknown.isEmpty)
+        // An unclear outcome keeps the lock made before sending.
+        let unclear = ScriptedDapiOrders()
+        unclear.scriptOrderReads([.success(DapiOrdersTests.order("ord_1", status: .paid))])
+        unclear.cancelResult = .failure(.outcomeUnknown("timeout"))
+        let unclearHarness = CancelHarness()
+        let second = cancelRunner(unclear, unclearHarness)
+        second.start()
+        await waitUntil { second.phase != .loading }
+        second.cancelOrder()
+        await waitUntil { if case .done = second.phase { true } else { false } }
+        XCTAssertEqual(unclearHarness.unknown, ["ord_1"])
+        XCTAssertEqual(unclearHarness.sentFrom, ["ord_1": .paid])
     }
 
     func testCancelCopyFollowsTheModeAndStatus() {
@@ -1044,11 +1273,20 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
             client: { stub }, unconfirmedOrders: { [] }, cancelOutcomeUnknown: { [] },
             confirmUnconfirmed: { _ in }, clearCancelUnknown: { _ in }))
         list.log = { _, detail, _ in activity.append(detail) }
-        list.reload()
-        await waitUntil { !list.loading && list.loadError != nil }
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        // The Orders screen appears: the first page is read.
+        list.keyChanged(generation: 0, configured: true)
+        let firstRead = list.lastLoadTask
+        XCTAssertNotNil(firstRead)
+        await firstRead?.value
+        XCTAssertNotNil(list.loadError)
+        XCTAssertFalse(list.loading, "No other read started after the failure")
+        XCTAssertTrue(list.lastLoadTask == firstRead, "No read was started after the failure")
         XCTAssertEqual(stub.count("orders"), 1)
         XCTAssertEqual(activity, ["Read failed"])
+        // The screen appearing again doesn't retry a failed read by itself either.
+        list.keyChanged(generation: 0, configured: true)
+        XCTAssertFalse(list.loading)
+        XCTAssertEqual(stub.count("orders"), 1)
     }
 
     func testInsertAndSelectPutsAPlacedOrderFirst() {
@@ -1097,14 +1335,19 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(list.orders.map(\.id), ["ord_old"])
         XCTAssertEqual(stub.count("orders"), 1)
         // A read for the earlier key is on its way when the key changes: its reply is dropped.
+        let gate = stub.gate("orders")
         list.reload()
+        let lateRead = list.lastLoadTask
+        await waitUntil { gate.reached == 1 }
         list.keyChanged(generation: 2, configured: false)
         XCTAssertTrue(list.orders.isEmpty)
         XCTAssertNil(list.selection)
         XCTAssertFalse(list.hasMore)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        gate.release() // 3DAPI answers for the earlier key.
+        await lateRead?.value
         XCTAssertTrue(list.orders.isEmpty)
         XCTAssertFalse(list.loaded)
+        XCTAssertEqual(stub.count("orders"), 2)
         // A new key reads again.
         stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_new", status: .paid)], hasMore: false, nextCursor: nil))])
         list.keyChanged(generation: 3, configured: true)
@@ -1176,6 +1419,101 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(list.orders.map(\.id), ["ord_z"])
         XCTAssertEqual(stub.count("order"), 1)
         XCTAssertEqual(stub.count("orders"), 0)
+    }
+
+    func testAShownOrderSurvivesAPageThatArrivesAfterIt() async {
+        // A notification click while Orders is first read: the by-ID read answers before the page.
+        let stub = ScriptedDapiOrders()
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_a", status: .paid)], hasMore: false, nextCursor: nil))])
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_old", status: .shipped))])
+        let list = listState(stub)
+        let pageGate = stub.gate("orders")
+        list.keyChanged(generation: 1, configured: true)
+        let pageRead = list.lastLoadTask
+        await waitUntil { pageGate.reached == 1 }
+        list.show(orderID: "ord_old")
+        await waitUntil { list.refreshingOrderID == nil }
+        XCTAssertEqual(list.selection, "ord_old")
+        pageGate.release()
+        await pageRead?.value
+        XCTAssertEqual(list.orders.map(\.id), ["ord_old", "ord_a"], "The page doesn't drop the order shown on its own")
+        XCTAssertEqual(list.selectedOrder?.id, "ord_old")
+        XCTAssertTrue(list.hasRowsForTools)
+        // A later Refresh keeps it too, with a single row per ID.
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_b", status: .paid),
+                                                          DapiOrdersTests.order("ord_a", status: .paid)], hasMore: false, nextCursor: nil))])
+        list.reload()
+        await list.lastLoadTask?.value
+        XCTAssertEqual(list.orders.map(\.id), ["ord_old", "ord_b", "ord_a"])
+        XCTAssertEqual(list.selectedOrder?.id, "ord_old")
+        // A new key forgets it.
+        list.keyChanged(generation: 2, configured: false)
+        XCTAssertTrue(list.orders.isEmpty)
+        XCTAssertTrue(list.pinned.isEmpty)
+    }
+
+    func testAShownOrderOutsideTheFilterClearsTheFilter() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_s", status: .shipped)], hasMore: false, nextCursor: nil))])
+        let list = listState(stub)
+        list.applyStatus(.shipped)
+        list.applySearch("2AP")
+        await list.lastLoadTask?.value
+        XCTAssertEqual(list.orders.map(\.id), ["ord_s"])
+        // A placed order (Paid) isn't a Shipped row: the list shows every order again rather than mixing it in.
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_s", status: .shipped)], hasMore: false, nextCursor: nil))])
+        list.insertAndSelect(DapiOrdersTests.order("ord_new", status: .paid))
+        XCTAssertNil(list.status)
+        XCTAssertEqual(list.appliedSearch, "")
+        XCTAssertEqual(list.selection, "ord_new")
+        XCTAssertFalse(list.canUseRowsForTools, "No page for the cleared filter yet")
+        await list.lastLoadTask?.value
+        XCTAssertEqual(stub.queries.last?.statuses, [])
+        XCTAssertNil(stub.queries.last?.search)
+        XCTAssertEqual(list.orders.map(\.id), ["ord_new", "ord_s"])
+        XCTAssertTrue(list.canUseRowsForTools)
+        // An order that matches the filter shown keeps it.
+        stub.scriptPages([.success(DapiOrderPage(orders: [], hasMore: false, nextCursor: nil))])
+        list.applyStatus(.paid)
+        await list.lastLoadTask?.value
+        XCTAssertEqual(list.orders.map(\.id), ["ord_new"], "Only pinned rows that match the filter come back")
+        list.insertAndSelect(DapiOrdersTests.order("ord_paid", status: .paid))
+        XCTAssertEqual(list.status, .paid)
+        // Pure rule.
+        let order = DapiOrdersTests.order("ord_1", status: .paid, reference: "ETSY-123_pldeadbeef")
+        XCTAssertTrue(dapiOrderMatchesFilter(order, DapiOrderListFilter(status: nil, search: "")))
+        XCTAssertTrue(dapiOrderMatchesFilter(order, DapiOrderListFilter(status: .paid, search: "etsy")))
+        XCTAssertTrue(dapiOrderMatchesFilter(order, DapiOrderListFilter(status: nil, search: "2apord")))
+        XCTAssertFalse(dapiOrderMatchesFilter(order, DapiOrderListFilter(status: .shipped, search: "")))
+        XCTAssertFalse(dapiOrderMatchesFilter(order, DapiOrderListFilter(status: nil, search: "shopify")))
+    }
+
+    func testTheSameKeyGenerationKeepsLoadedOrders() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_a", status: .paid)], hasMore: false, nextCursor: nil))])
+        let list = listState(stub)
+        list.keyChanged(generation: 4, configured: true)
+        await list.lastLoadTask?.value
+        list.selection = "ord_a"
+        // The screen goes away and comes back with the same key.
+        list.cancel()
+        list.keyChanged(generation: 4, configured: true)
+        XCTAssertEqual(list.orders.map(\.id), ["ord_a"])
+        XCTAssertEqual(list.selection, "ord_a")
+        XCTAssertFalse(list.loading)
+        XCTAssertEqual(stub.count("orders"), 1)
+        // A read stopped by the screen going away is read again when it comes back.
+        let gate = stub.gate("orders")
+        list.forgetIfKeyChanged(generation: 5)
+        list.keyChanged(generation: 5, configured: true)
+        await waitUntil { gate.reached == 1 }
+        list.cancel()
+        XCTAssertFalse(list.loading)
+        gate.release()
+        list.keyChanged(generation: 5, configured: true)
+        XCTAssertTrue(list.loading)
+        await list.lastLoadTask?.value
+        XCTAssertEqual(list.orders.map(\.id), ["ord_a"])
     }
 
     func testEmptyStateOffersEveryWayBack() {
