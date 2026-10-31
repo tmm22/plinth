@@ -45,6 +45,8 @@ struct DapiOnboarding: Equatable, Sendable {
     /// Quotes used this onboarding round, and the round's limit (nil once approved: unlimited).
     let uploadsUsed: Int
     let uploadsLimit: Int?
+    /// `order_blockers`: what stops ordering (today only "billing_details_missing"); empty when nothing does.
+    var orderBlockers: [String] = []
 }
 
 /// One extruder slot's suggested material on a ready quote.

@@ -189,6 +189,15 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         return client
     }
 
+    /// The ordering client for the saved key (the same `DapiClient`). Throws like `currentClient()`, and `.notSent`
+    /// when the client can't order (a test stub that only quotes).
+    func currentOrderingClient() throws -> any DapiOrdering {
+        guard let ordering = try currentClient() as? any DapiOrdering else {
+            throw DapiError.notSent("This 3DAPI connection can’t place orders.")
+        }
+        return ordering
+    }
+
     /// Reads `GET /v2/integrator/onboarding` with the saved key, keeps it in `onboarding` and returns it. A failure
     /// returns nil and hides the allowance line; a cancellation (Stop, or Settings closing) returns nil and keeps the
     /// last reading.

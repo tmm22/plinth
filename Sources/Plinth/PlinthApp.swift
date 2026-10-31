@@ -279,6 +279,16 @@ enum SlantWriteKind: String, CaseIterable {
     case upload = "an upload"
     case importOrders = "an Import Orders draft"
     case payDrafts = "a Pay Several Drafts payment"
+    case dapiOrder = "a 3DAPI order"
+    case dapiCancellation = "a 3DAPI cancellation"
+
+    /// The service that will answer it.
+    var service: PrintService {
+        switch self {
+        case .dapiOrder, .dapiCancellation: .dapi
+        default: .slant
+        }
+    }
 }
 
 /// Slant writes still waiting for a reply: a pay or cancel (Orders or the API Workbench), a draft create (the composer
@@ -305,8 +315,10 @@ func slantWritesQuitQuestion(_ kinds: [SlantWriteKind]) -> (title: String, messa
     let named = SlantWriteKind.allCases.filter { kinds.contains($0) }.map(\.rawValue)
     guard let last = named.last else { return nil }
     let list = named.count == 1 ? last : named.dropLast().joined(separator: ", ") + " and " + last
-    return ("Quit while Slant is still answering?",
-            "Plinth is still waiting for Slant to answer \(list). If you quit now, Plinth can’t record whether it "
+    let services = Set(kinds.map(\.service))
+    let who = services == [.dapi] ? "3DAPI" : (services == [.slant] ? "Slant" : "Slant and 3DAPI")
+    return ("Quit while \(who) \(services.count > 1 ? "are" : "is") still answering?",
+            "Plinth is still waiting for \(who) to answer \(list). If you quit now, Plinth can’t record whether it "
             + "went through, so it can’t warn you before you send it again. Wait for it to finish, then quit.")
 }
 
