@@ -4,6 +4,8 @@ import AppKit
 struct StudioView: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject private var openQueue = ExternalModelOpenQueue.shared
+    /// Slant 3D or 3DAPI (PrintService.swift): which Orders and Catalog screens show.
+    @ObservedObject private var printChoice = PrintServiceChoice.shared
     @Environment(\.openSettings) private var openSettings
     var body: some View {
         NavigationSplitView {
@@ -11,15 +13,20 @@ struct StudioView: View {
         } detail: {
             Group {
                 if showsConnectAccountPrompt(destination: store.destination, hasKey: store.hasKey,
-                                             hasLocalModels: !store.localModels.isEmpty) {
+                                             hasLocalModels: !store.localModels.isEmpty, service: printChoice.service) {
                     ConnectAccountPrompt()
                 } else {
                     switch store.destination {
                     case .models: ModelsView()
-                    case .orders: OrdersView()
+                    case .orders:
+                        if printChoice.service == .dapi { DapiOrdersView() } else { OrdersView() }
                     // `.platforms` never stays selected (it opens Settings); Catalog shows its saved kind.
                     case .catalog, .materials, .components, .stationery, .platforms:
-                        CatalogView(kind: store.catalogKind).id(store.catalogKind)
+                        if printChoice.service == .dapi {
+                            DapiCatalogView(kind: store.catalogKind).id(store.catalogKind) // DapiCatalogView.swift
+                        } else {
+                            CatalogView(kind: store.catalogKind).id(store.catalogKind)
+                        }
                     case .api: APIWorkbenchView()
                     case .activity: ActivityView()
                     }
@@ -52,11 +59,15 @@ struct StudioView: View {
                                 .accessibilityLabel(store.progress)
                         }
                     }
-                    Button { Task { await store.refreshCurrent() } } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+                    // Slant's Refresh. With 3DAPI as the print service, Models, Orders and Catalog show 3DAPI (Orders
+                    // reloads itself), so this would only read Slant: it stays for the Slant developer screens.
+                    if slantRefreshAvailable(service: printChoice.service, destination: store.destination) {
+                        Button { Task { await store.refreshCurrent() } } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .help(store.connected ? "Refresh" : "Connect your account to refresh")
+                        .disabled(store.busy || !store.connected)
                     }
-                    .help(store.connected ? "Refresh" : "Connect your account to refresh")
-                    .disabled(store.busy || !store.connected)
                 }
             }
         }
@@ -95,6 +106,8 @@ struct StudioView: View {
         .onAppear { OrderWatch.shared.attach(store) }
         // The daily check of Slant's public API description (SlantAPIChanges.swift): keyless, never `store.run`.
         .onAppear { SlantAPIWatch.shared.attach(store) }
+        // The 3DAPI order watch runs only while 3DAPI is the print service with a saved key (PrintService.swift).
+        .onAppear { printChoice.startCoordinatingDapiOrderWatch() }
         // Restored at launch by `StudioStore.destination`'s initial value.
         .onChange(of: store.destination) { _, new in
             if sidebarDestinations(showDeveloperTools: true).contains(new) {
@@ -189,6 +202,8 @@ func restoredSidebarDestination(saved: String?, showDeveloperTools: Bool) -> Des
 struct StudioSidebar: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject private var orderWatch = OrderWatch.shared
+    @ObservedObject private var dapiOrderWatch = DapiOrderWatch.shared
+    @ObservedObject private var printChoice = PrintServiceChoice.shared
 
     private var selection: Binding<Destination?> {
         Binding(
@@ -217,8 +232,10 @@ struct StudioSidebar: View {
 
     private func row(_ item: Destination) -> some View {
         Label(item.rawValue, systemImage: item.icon)
-            // Unseen order changes that need attention or reached the customer (OrderWatch.swift); 0 shows nothing.
-            .badge(item == .orders ? orderWatch.badgeCount : 0)
+            // Unseen order changes that need attention or reached the customer, from the chosen service's order watch
+            // (OrderWatch.swift, DapiOrderWatch.swift); 0 shows nothing.
+            .badge(item == .orders ? ordersSidebarBadgeCount(service: printChoice.service, slantCount: orderWatch.badgeCount,
+                                                             dapiCount: dapiOrderWatch.badgeCount) : 0)
             .tag(item)
             .help(goMenuShortcut(for: item).map { "\(item.rawValue) (⌘\($0))" } ?? item.rawValue)
     }
@@ -228,18 +245,30 @@ struct StudioSidebar: View {
 /// main window, so this is never the only way in.
 struct ConnectionStatusFooter: View {
     @EnvironmentObject var store: StudioStore
+    @ObservedObject private var printChoice = PrintServiceChoice.shared
+    @ObservedObject private var dapi = DapiConnection.shared
+
+    /// The chosen print service's connection: its status and whether it is ready (green) or has a key (orange).
+    private var state: (status: String, ready: Bool, hasKey: Bool) {
+        switch printChoice.service {
+        case .slant:
+            let status = connectionFooterStatus(hasKey: store.hasKey, connected: store.connected,
+                                                accountLoaded: store.accountLoaded, busy: store.busy)
+            return (slantConnectionFooterStatus(status), store.connected, store.hasKey)
+        case .dapi:
+            let status = dapiConnectionFooterStatus(keySaved: dapi.isConfigured, account: dapi.account, onboarding: dapi.onboarding)
+            return (status, dapiCanOrder(keySaved: dapi.isConfigured, account: dapi.account, onboarding: dapi.onboarding),
+                    dapi.isConfigured)
+        }
+    }
 
     var body: some View {
-        let status = connectionFooterStatus(
-            hasKey: store.hasKey,
-            connected: store.connected,
-            accountLoaded: store.accountLoaded,
-            busy: store.busy
-        )
+        let state = state
+        let status = state.status
         Button { store.requestSettings(.account) } label: {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(store.connected ? Color.green : (store.hasKey ? Color.orange : Color.secondary.opacity(0.6)))
+                    .fill(state.ready ? Color.green : (state.hasKey ? Color.orange : Color.secondary.opacity(0.6)))
                     .frame(width: 7, height: 7)
                 Text(status)
                     .font(.caption)
@@ -253,7 +282,8 @@ struct ConnectionStatusFooter: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .help("Open Settings to manage your Slant account")
+        .help(printChoice.service == .dapi ? "Open Settings to manage your print service and 3DAPI key"
+                                           : "Open Settings to manage your Slant account")
         .accessibilityLabel("\(status). Open Settings")
     }
 }

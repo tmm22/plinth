@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 // Which print service the seller works with: Slant 3D (the default, everything Plinth has always done) or 3DAPI
 // (dapi.digital), which offers the same workflows where its API allows. The choice is the only new preference; the
@@ -30,13 +31,15 @@ enum PrintService: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// The seller's current print service, shared by the main window and Settings. Changing it is refused while either
-/// service has a write waiting for its reply or an order sheet is open (`changeBlockedReason`, filled in by the
-/// Settings implementation), so a running order never loses the screen that reports its outcome.
+/// service has a write waiting for its reply or an order sheet is open (`printServiceChangeBlockedReason`, computed by
+/// Settings), so a running order never loses the screen that reports its outcome.
 @MainActor final class PrintServiceChoice: ObservableObject {
     static let shared = PrintServiceChoice()
 
     @Published private(set) var service: PrintService
     private let defaults: UserDefaults
+    /// Set once the main window starts coordinating the 3DAPI order watch (`startCoordinatingDapiOrderWatch`).
+    private var orderWatchSubscription: AnyCancellable?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -52,5 +55,211 @@ enum PrintService: String, CaseIterable, Identifiable, Sendable {
         self.service = service
         defaults.set(service.rawValue, forKey: PrintService.defaultsKey)
         return nil
+    }
+
+    /// Keeps the 3DAPI order watch running exactly while 3DAPI is the print service and a 3DAPI key is saved: at
+    /// launch (the first call), whenever the service changes and whenever the key is saved or removed. Idempotent;
+    /// called once the main window appears, so preferences are read only after the move from Slant Studio.
+    func startCoordinatingDapiOrderWatch() {
+        guard orderWatchSubscription == nil else { return }
+        let connection = DapiConnection.shared
+        let watch = DapiOrderWatch.shared
+        orderWatchSubscription = $service.combineLatest(connection.$isConfigured)
+            .map { dapiOrderWatchShouldBeActive(service: $0, dapiKeySaved: $1) }
+            .removeDuplicates()
+            .sink { active in MainActor.assumeIsolated { watch.setActive(active) } }
+    }
+}
+
+/// Whether the 3DAPI order watch should run: only while 3DAPI is the print service and its key is saved.
+func dapiOrderWatchShouldBeActive(service: PrintService, dapiKeySaved: Bool) -> Bool {
+    service == .dapi && dapiKeySaved
+}
+
+// MARK: - Switching services
+
+/// Why the print service can't change now, or nil. A switch replaces the Orders screen and Models' next steps, so it
+/// waits while either service has a write waiting for its reply (whose outcome the screen reports), a 3DAPI order sheet
+/// is open, a Slant request runs, the Get 3DAPI quote sheet or any other sheet, alert or dialog is shown in any window
+/// (a Slant pay or cancel review among them), or a 3DAPI request is still working.
+func printServiceChangeBlockedReason(dapiOrderSessionReason: String?, writesInFlight: [SlantWriteKind], slantBusy: Bool,
+                                     modalUIShown: Bool, dapiRequestsRunning: Int, dapiQuoteSheetsOpen: Int,
+                                     dapiQuoteWritesInFlight: Int) -> String? {
+    if let dapiOrderSessionReason { return dapiOrderSessionReason }
+    if writesInFlight.contains(where: { $0.service == .dapi }) { return "Wait for 3DAPI to answer the order or cancellation first." }
+    if !writesInFlight.isEmpty { return "Wait for Slant to answer the request that’s still waiting first." }
+    if slantBusy { return "Wait for the current request to finish." }
+    if dapiQuoteSheetsOpen > 0 { return "Close the Get 3DAPI quote sheet first." }
+    if modalUIShown { return "Close the open sheet, alert or dialog first." }
+    if dapiRequestsRunning > 0 || dapiQuoteWritesInFlight > 0 { return "Wait for the 3DAPI request to finish." }
+    return nil
+}
+
+/// Settings › Account › Print service's footer.
+let printServiceSettingsFooter = "Choose who prints your orders. This changes Models’ next steps, the Orders section and Catalog’s materials; your model library and Get 3DAPI Quote… stay as they are. The two services never share data: no price, ID or file from one is sent to the other."
+
+/// Shown under the picker while 3DAPI is chosen without a saved 3DAPI key.
+let printServiceDapiKeyMissingNote = "Add your 3DAPI integrator key under 3DAPI below to quote and order with 3DAPI."
+
+/// Settings › Account's first section: the print service picker. A change goes through
+/// `PrintServiceChoice.select(_:blockedReason:)` with the reason computed at the moment of the change.
+struct PrintServiceSettingsSection: View {
+    @EnvironmentObject var store: StudioStore
+    @EnvironmentObject var modalPresentation: ModalPresentationMonitor
+    @ObservedObject private var choice = PrintServiceChoice.shared
+    @ObservedObject private var dapi = DapiConnection.shared
+    @ObservedObject private var dapiOrders = DapiOrderSession.shared
+    @State private var refusal: String?
+
+    /// From published state, for the disabled look; `blockedNow` is checked when the seller picks.
+    private var blocked: String? {
+        printServiceChangeBlockedReason(
+            dapiOrderSessionReason: dapiOrders.changeBlockedReason, writesInFlight: [], slantBusy: store.busy,
+            modalUIShown: store.isPresentingSheet || modalPresentation.isPresenting,
+            dapiRequestsRunning: dapi.activeRequests, dapiQuoteSheetsOpen: dapi.openSheets,
+            dapiQuoteWritesInFlight: dapi.quoteWritesInFlight.count)
+    }
+
+    private var blockedNow: String? {
+        printServiceChangeBlockedReason(
+            dapiOrderSessionReason: DapiOrderSession.shared.changeBlockedReason,
+            writesInFlight: SlantWritesInFlight.shared.kinds, slantBusy: store.busy,
+            modalUIShown: store.isPresentingSheet || appIsPresentingModalUI(),
+            dapiRequestsRunning: dapi.activeRequests, dapiQuoteSheetsOpen: dapi.openSheets,
+            dapiQuoteWritesInFlight: dapi.quoteWritesInFlight.count)
+    }
+
+    var body: some View {
+        Section {
+            Picker("Print service", selection: Binding(get: { choice.service }, set: { pick($0) })) {
+                ForEach(PrintService.allCases) { service in
+                    Text(service.displayName).tag(service)
+                }
+            }
+            .disabled(blocked != nil)
+            .help(blocked ?? "Choose the print service for Models, Orders and Catalog")
+            if let blocked {
+                Text(blocked).font(.caption).foregroundStyle(.secondary)
+            } else if let refusal {
+                Label(refusal, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            }
+            if choice.service == .dapi, !dapi.isConfigured {
+                Label(printServiceDapiKeyMissingNote, systemImage: "key")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Print service")
+        } footer: {
+            Text(printServiceSettingsFooter).settingsFooterLayout()
+        }
+    }
+
+    private func pick(_ service: PrintService) {
+        refusal = choice.select(service, blockedReason: blockedNow)
+    }
+}
+
+// MARK: - Main window rules
+
+/// The Connect Slant Account prompt replaces a screen that can't work without a Slant key. With 3DAPI as the print
+/// service, Orders and Catalog are 3DAPI's (they explain a missing 3DAPI key themselves) and Models works offline, so
+/// the Slant prompt never shows.
+func showsConnectAccountPrompt(destination: Destination, hasKey: Bool, hasLocalModels: Bool, service: PrintService) -> Bool {
+    guard service == .slant else { return false }
+    return showsConnectAccountPrompt(destination: destination, hasKey: hasKey, hasLocalModels: hasLocalModels)
+}
+
+/// The sidebar's Orders badge: the chosen service's order watch only.
+func ordersSidebarBadgeCount(service: PrintService, slantCount: Int, dapiCount: Int) -> Int {
+    service == .dapi ? dapiCount : slantCount
+}
+
+/// Whether the toolbar (and File › Refresh) offers Slant's Refresh. With 3DAPI chosen, Models, Orders and Catalog
+/// show 3DAPI (Orders reloads itself), so only the Slant developer screens keep it.
+func slantRefreshAvailable(service: PrintService, destination: Destination) -> Bool {
+    service == .slant || destination.isDeveloperDestination
+}
+
+/// Whether the Slant-only commands in the File menu (Upload from URL…, Import Orders…, Export Orders…, Tracking for
+/// Your Shop…, Spending Report…) are offered: only while Slant is the print service.
+func slantOrderMenuCommandsAvailable(service: PrintService) -> Bool { service == .slant }
+
+/// File › New Order Draft…'s title: 3DAPI has no drafts, so with 3DAPI it opens the order composer.
+func newOrderMenuTitle(service: PrintService) -> String {
+    service == .dapi ? "New 3DAPI Order…" : "New Order Draft…"
+}
+
+/// Whether the last account check says the saved 3DAPI key can place orders.
+func dapiCanOrder(keySaved: Bool, account: DapiAccount?, onboarding: DapiOnboarding?) -> Bool {
+    guard keySaved, let account, dapiAccountProblem(account) == nil else { return false }
+    return dapiOrderingProblem(account: account, onboardingOrderBlockers: onboarding?.orderBlockers ?? []) == nil
+}
+
+/// The sidebar footer's status while 3DAPI is the print service. Before the first account check this session, a saved
+/// key is only "Key saved".
+func dapiConnectionFooterStatus(keySaved: Bool, account: DapiAccount?, onboarding: DapiOnboarding?) -> String {
+    guard keySaved else { return "3DAPI · No key" }
+    guard let account else { return "3DAPI · Key saved" }
+    if dapiAccountProblem(account) != nil { return "3DAPI · Key can’t be used" }
+    return dapiCanOrder(keySaved: keySaved, account: account, onboarding: onboarding) ? "Connected to 3DAPI" : "3DAPI · Quotes only"
+}
+
+/// The sidebar footer's status while Slant is the print service (`connectionFooterStatus`), naming Slant when the
+/// status doesn't already.
+func slantConnectionFooterStatus(_ status: String) -> String {
+    status.contains("Slant") ? status : "Slant 3D · \(status)"
+}
+
+// MARK: - Models' next steps with 3DAPI
+
+/// The Models next-action bar's step while 3DAPI is the print service.
+enum DapiModelsNextStep: Equatable {
+    case needsModel, needsLocalCopy, fileMissing, needsKey, invalidQuantity, ready
+}
+
+/// 3DAPI quotes and prints files from this Mac, so an uploaded Slant model needs a local copy first.
+func dapiModelsNextStep(hasSelection: Bool, selectedIsLocal: Bool, localFileExists: Bool, keySaved: Bool,
+                        quantityValid: Bool) -> DapiModelsNextStep {
+    if !hasSelection { return .needsModel }
+    if !selectedIsLocal { return .needsLocalCopy }
+    if !localFileExists { return .fileMissing }
+    if !keySaved { return .needsKey }
+    if !quantityValid { return .invalidQuantity }
+    return .ready
+}
+
+/// The bar's status line for a 3DAPI step. `orderingProblem` (from the last account check) replaces the ready line;
+/// Get 3DAPI Quote… still works without ordering.
+func dapiModelsNextStepStatus(_ step: DapiModelsNextStep, orderingProblem: String?) -> String {
+    switch step {
+    case .needsModel: return "Import a model to quote and order it with 3DAPI."
+    case .needsLocalCopy: return "3DAPI prints models from this Mac. Download this model into the library first."
+    case .fileMissing: return "This model’s file is missing from the library, so 3DAPI can’t quote or print it. Import it again."
+    case .needsKey: return "Add your 3DAPI integrator key in Settings › Account to quote and order with 3DAPI."
+    case .invalidQuantity: return "Enter a whole-number quantity from 1 to 10,000."
+    case .ready:
+        if let orderingProblem { return orderingProblem }
+        return "Get a 3DAPI quote, or order it with 3DAPI. Nothing is charged until you review the order and press Place Order."
+    }
+}
+
+/// The 3DAPI composer's starting point for Order with 3DAPI….
+func dapiOrderPrefill(modelID: UUID, quantity: Int) -> DapiComposerPrefill {
+    DapiComposerPrefill(modelID: modelID, quantity: min(max(quantity, 1), 10_000), countryCode: nil)
+}
+
+/// Order a Sample to Me… with 3DAPI: one of the model, to the seller's own saved address, for review in the composer.
+func dapiSampleOrderPrefill(modelID: UUID) -> DapiComposerPrefill {
+    DapiComposerPrefill(modelID: modelID, quantity: 1, countryCode: nil, useSellerAddress: true)
+}
+
+extension StudioStore {
+    /// Opens the 3DAPI order composer in Orders with `prefill`. Only while 3DAPI is the print service and nothing modal
+    /// is shown; nothing is sent (the composer reviews the order, and only Place Order there sends it).
+    func openDapiComposer(_ prefill: DapiComposerPrefill) {
+        guard PrintServiceChoice.shared.service == .dapi, !isPresentingSheet, !appIsPresentingModalUI() else { return }
+        DapiOrderSession.shared.composerRequest = prefill
+        destination = .orders
     }
 }

@@ -71,6 +71,9 @@ struct ModelsView: View {
     @State private var savingScaledCopy = false
     @State private var savingSTLCopy = false
     @Environment(\.undoManager) private var undoManager
+    /// Slant 3D or 3DAPI (PrintService.swift): which next steps the action bar offers.
+    @ObservedObject private var printChoice = PrintServiceChoice.shared
+    @ObservedObject private var dapi = DapiConnection.shared
 
     var body: some View {
         HSplitView {
@@ -331,7 +334,16 @@ struct ModelsView: View {
                 .id(inspectorTopID)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if showsModelsNextStepBar(hasSelection: hasSelection, step: currentNextStep) {
+                if printChoice.service == .dapi {
+                    // 3DAPI's next steps (PrintService.swift): Get 3DAPI Quote… and Order with 3DAPI….
+                    if hasSelection || currentDapiNextStep != .needsModel {
+                        dapiNextStepBlock
+                            .padding(.horizontal, StudioMetrics.pagePadding)
+                            .padding(.vertical, 12)
+                            .background(.regularMaterial)
+                            .overlay(alignment: .top) { Divider() }
+                    }
+                } else if showsModelsNextStepBar(hasSelection: hasSelection, step: currentNextStep) {
                     nextStepBlock
                         .padding(.horizontal, StudioMetrics.pagePadding)
                         .padding(.vertical, 12)
@@ -443,7 +455,9 @@ struct ModelsView: View {
             Text(libraryEmpty ? "Import your first model" : "Choose a model")
                 .font(.title2.weight(.semibold))
             Text(libraryEmpty
-                 ? "Import an STL, OBJ or 3MF file to preview, upload and estimate it. You can also drop a file here."
+                 ? (printChoice.service == .dapi
+                    ? "Import an STL, OBJ or 3MF file to preview, quote and order it with 3DAPI. You can also drop a file here."
+                    : "Import an STL, OBJ or 3MF file to preview, upload and estimate it. You can also drop a file here.")
                  : "Select a model in the library, or import a new one. You can also drop a file here.")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -451,7 +465,13 @@ struct ModelsView: View {
             HStack(spacing: 10) {
                 Button("Import Model…") { store.importModel() }
                     .buttonStyle(.borderedProminent)
-                if !store.hasKey {
+                if printChoice.service == .dapi {
+                    if !dapi.isConfigured {
+                        // The 3DAPI key is set up in the Settings window.
+                        Button("Add 3DAPI Key…") { store.requestSettings(.account) }
+                            .buttonStyle(.bordered)
+                    }
+                } else if !store.hasKey {
                     // The connection is set up in the Settings window.
                     Button("Connect Slant Account…") { store.requestSettings(.account) }
                         .buttonStyle(.bordered)
@@ -496,12 +516,15 @@ struct ModelsView: View {
             Button("Fill Hidden Pockets") { store.fillHiddenPockets(modelID: model.id) }
                 .disabled(store.busy || store.hiddenPocketsFill.workingModelID != nil)
         }
-        if model.remoteID != nil {
+        if printChoice.service == .dapi {
+            // Opens 3DAPI's composer in Orders for review only; nothing is sent from here (SellerAddress.swift).
+            Button("Order a Sample to Me…") { store.orderSampleToMe(fileID: nil, localModelID: model.id) }
+        } else if model.remoteID != nil {
             // Opens the composer for review only; nothing is created or paid from here (SellerAddress.swift).
             Button("Order a Sample to Me…") { store.orderSampleToMe(fileID: model.remoteID) }
                 .disabled(store.busy || store.orderDraftBlockedReason != nil)
         }
-        if model.remoteID != nil {
+        if model.remoteID != nil, printChoice.service == .slant {
             Divider()
             // Only asks: reads the file list (read-only), then one confirmation; the upload starts from that dialog.
             Button("Upload Again…") { startUpload(model.id, reupload: true) }
@@ -523,9 +546,16 @@ struct ModelsView: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(id, forType: .string)
         }
-        // Opens the composer for review only; nothing is created or paid from here (SellerAddress.swift).
-        Button("Order a Sample to Me…") { store.orderSampleToMe(fileID: id) }
-            .disabled(store.busy || store.orderDraftBlockedReason != nil)
+        if printChoice.service == .dapi {
+            // 3DAPI prints files from this Mac: only through the linked library model, never Slant's file.
+            if let linked = localModel(linkedTo: id, in: store.localModels) {
+                Button("Order a Sample to Me…") { store.orderSampleToMe(fileID: nil, localModelID: linked.id) }
+            }
+        } else {
+            // Opens the composer for review only; nothing is created or paid from here (SellerAddress.swift).
+            Button("Order a Sample to Me…") { store.orderSampleToMe(fileID: id) }
+                .disabled(store.busy || store.orderDraftBlockedReason != nil)
+        }
         Divider()
         if store.hiddenFileIDs.contains(id) {
             Button("Show in List") { store.unhideCloudModel(id: id) }
@@ -773,82 +803,89 @@ struct ModelsView: View {
         Card {
             VStack(alignment: .leading, spacing: 18) {
                 SectionHeading(title: "Print configuration")
-                LabeledContent("Material") {
-                    // One picker, grouped by type when there is more than one. Changing it marks the estimate stale.
-                    Picker("Material", selection: $store.filamentID) {
-                        Text("Choose a material").tag("")
-                        if materialNeedsPreviousChoiceTag {
-                            Text("Previously chosen material").tag(store.filamentID)
-                        }
-                        let sections = materialPickerSections(store.filaments)
-                        if sections.count > 1 {
-                            ForEach(sections, id: \.type) { section in
-                                Section(section.type) {
-                                    ForEach(indexedRecords(section.materials), id: \.id) { row in
-                                        Text(filamentPickerLabel(row.record)).tag(row.record.id)
+                if printChoice.service == .dapi {
+                    // Slant's materials and estimate belong to Slant; 3DAPI suggests materials with each quote.
+                    Text("3DAPI suggests a material with each quote; you can choose another when you order.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    LabeledContent("Material") {
+                        // One picker, grouped by type when there is more than one. Changing it marks the estimate stale.
+                        Picker("Material", selection: $store.filamentID) {
+                            Text("Choose a material").tag("")
+                            if materialNeedsPreviousChoiceTag {
+                                Text("Previously chosen material").tag(store.filamentID)
+                            }
+                            let sections = materialPickerSections(store.filaments)
+                            if sections.count > 1 {
+                                ForEach(sections, id: \.type) { section in
+                                    Section(section.type) {
+                                        ForEach(indexedRecords(section.materials), id: \.id) { row in
+                                            Text(filamentPickerLabel(row.record)).tag(row.record.id)
+                                        }
                                     }
                                 }
-                            }
-                        } else {
-                            ForEach(indexedRecords(store.filaments), id: \.id) { row in
-                                Text(filamentPickerLabel(row.record)).tag(row.record.id)
-                            }
-                        }
-                    }
-                    // VoiceOver reads the picker's own (hidden) label; an extra accessibilityLabel was read as well.
-                    .labelsHidden()
-                    .frame(maxWidth: 280)
-                }
-                if store.filaments.isEmpty {
-                    HStack {
-                        Text("Load materials to choose a print material.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("Load Materials") { Task { await store.loadCatalog(.materials) } }
-                            .disabled(!store.hasKey || store.busy)
-                    }
-                }
-                if let mismatch = preparedMaterialMismatch(recipeFilamentID: store.selectedLocal?.printRecipe?.materialID,
-                                                           selectedFilamentID: store.filamentID, filaments: store.filaments) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(preparedMaterialMismatchMessage(mismatch))
-                            .font(.callout).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if mismatch.canApply, let name = mismatch.name {
-                            Button("Use Prepared Material (\(name))") { store.filamentID = mismatch.filamentID }
-                                .buttonStyle(.bordered)
-                                .accessibilityLabel("Use prepared material, \(name)")
-                        }
-                    }
-                } else if let hint = materialPurposeHint(intent: store.selectedLocal?.partIntent, isSTL: store.selectedLocal?.supportsPreview == true,
-                                                         selectedFilamentID: store.filamentID, filaments: store.filaments,
-                                                         preparedCopy: store.selectedLocal?.printRecipe != nil) {
-                    // A suggestion from the saved purpose, never over a prepared copy's own material; only its Use
-                    // button changes the material.
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(hint.message)
-                            .font(.callout).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if hint.options.count == 1, let option = hint.options.first {
-                            Button("Use \(hint.profile)") { store.filamentID = option.id }
-                                .buttonStyle(.bordered)
-                                .disabled(store.busy)
-                                .help("Sets the material to \(option.name)")
-                        } else {
-                            Menu("Use \(hint.profile)") {
-                                ForEach(hint.options, id: \.id) { option in
-                                    Button(option.name) { store.filamentID = option.id }
+                            } else {
+                                ForEach(indexedRecords(store.filaments), id: \.id) { row in
+                                    Text(filamentPickerLabel(row.record)).tag(row.record.id)
                                 }
                             }
-                            .fixedSize()
-                            .disabled(store.busy)
                         }
-                        // The seller's explicit choice, saved for this model; not the default, no shortcut.
-                        if let model = store.selectedLocal, let intent = model.partIntent {
-                            Button("Keep Current Material") {
-                                store.savePartIntent(materialIntentKeepingCurrent(intent), modelID: model.id)
+                        // VoiceOver reads the picker's own (hidden) label; an extra accessibilityLabel was read as well.
+                        .labelsHidden()
+                        .frame(maxWidth: 280)
+                    }
+                    if store.filaments.isEmpty {
+                        HStack {
+                            Text("Load materials to choose a print material.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Load Materials") { Task { await store.loadCatalog(.materials) } }
+                                .disabled(!store.hasKey || store.busy)
+                        }
+                    }
+                    if let mismatch = preparedMaterialMismatch(recipeFilamentID: store.selectedLocal?.printRecipe?.materialID,
+                                                               selectedFilamentID: store.filamentID, filaments: store.filaments) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(preparedMaterialMismatchMessage(mismatch))
+                                .font(.callout).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if mismatch.canApply, let name = mismatch.name {
+                                Button("Use Prepared Material (\(name))") { store.filamentID = mismatch.filamentID }
+                                    .buttonStyle(.bordered)
+                                    .accessibilityLabel("Use prepared material, \(name)")
                             }
-                            .disabled(store.busy)
-                            .help("Keeps the material as it is and stops this suggestion for this model")
+                        }
+                    } else if let hint = materialPurposeHint(intent: store.selectedLocal?.partIntent, isSTL: store.selectedLocal?.supportsPreview == true,
+                                                             selectedFilamentID: store.filamentID, filaments: store.filaments,
+                                                             preparedCopy: store.selectedLocal?.printRecipe != nil) {
+                        // A suggestion from the saved purpose, never over a prepared copy's own material; only its Use
+                        // button changes the material.
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(hint.message)
+                                .font(.callout).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if hint.options.count == 1, let option = hint.options.first {
+                                Button("Use \(hint.profile)") { store.filamentID = option.id }
+                                    .buttonStyle(.bordered)
+                                    .disabled(store.busy)
+                                    .help("Sets the material to \(option.name)")
+                            } else {
+                                Menu("Use \(hint.profile)") {
+                                    ForEach(hint.options, id: \.id) { option in
+                                        Button(option.name) { store.filamentID = option.id }
+                                    }
+                                }
+                                .fixedSize()
+                                .disabled(store.busy)
+                            }
+                            // The seller's explicit choice, saved for this model; not the default, no shortcut.
+                            if let model = store.selectedLocal, let intent = model.partIntent {
+                                Button("Keep Current Material") {
+                                    store.savePartIntent(materialIntentKeepingCurrent(intent), modelID: model.id)
+                                }
+                                .disabled(store.busy)
+                                .help("Keeps the material as it is and stops this suggestion for this model")
+                            }
                         }
                     }
                 }
@@ -871,9 +908,12 @@ struct ModelsView: View {
                     Label(notice, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange)
                 }
-                CompareEstimatesButton(modelName: selectedModelName) // EstimateComparison.swift
-                DapiQuoteButton() // DapiQuoteView.swift
-                if let estimate = store.estimate {
+                if printChoice.service == .slant {
+                    CompareEstimatesButton(modelName: selectedModelName) // EstimateComparison.swift
+                    // Price comparison; with 3DAPI as the print service it sits in the next-action bar instead.
+                    DapiQuoteButton() // DapiQuoteView.swift
+                }
+                if printChoice.service == .slant, let estimate = store.estimate {
                     Divider()
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 6) {
@@ -1034,6 +1074,66 @@ struct ModelsView: View {
             estimateIsCurrent: store.estimateIsCurrent,
             isUploading: uploading
         )
+    }
+
+    // MARK: 3DAPI next steps
+
+    private var currentDapiNextStep: DapiModelsNextStep {
+        dapiModelsNextStep(
+            hasSelection: hasSelection,
+            selectedIsLocal: store.selectedLocal != nil,
+            localFileExists: store.selectedLocal.map { FileManager.default.fileExists(atPath: $0.filePath) } ?? false,
+            keySaved: dapi.isConfigured,
+            quantityValid: printQuantity(quantityText) != nil
+        )
+    }
+
+    /// Why the saved key can't order, once this session's account check has said so; nil before any check.
+    private var dapiKnownOrderingProblem: String? {
+        dapi.account.flatMap { dapiOrderingProblem(account: $0, onboardingOrderBlockers: dapi.onboarding?.orderBlockers ?? []) }
+    }
+
+    /// The next-action bar while 3DAPI is the print service. Get 3DAPI Quote… (with its own sheet) stays in the bar for
+    /// every step, so a step change can't tear its sheet down; it shows only with a saved key and a local file. Neither
+    /// button is a default or has a shortcut, and Order with 3DAPI… only opens the composer in Orders.
+    private var dapiNextStepBlock: some View {
+        let step = currentDapiNextStep
+        return HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(selectedModelName).font(.headline).lineLimit(1)
+                Text(dapiModelsNextStepStatus(step, orderingProblem: dapiKnownOrderingProblem))
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            DapiQuoteButton() // DapiQuoteView.swift
+            switch step {
+            case .needsModel:
+                Button("Import Model…") { store.importModel() }
+                    .buttonStyle(.borderedProminent)
+            case .needsLocalCopy:
+                Button("Download into Library") { downloadSelected() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.busy || !store.hasKey)
+            case .fileMissing:
+                EmptyView()
+            case .needsKey:
+                Button("Add 3DAPI Key…") { store.requestSettings(.account) }
+                    .buttonStyle(.borderedProminent)
+            case .invalidQuantity:
+                Button("Edit Quantity") { configurationRequest += 1 }
+                    .buttonStyle(.borderedProminent)
+            case .ready:
+                Button("Order with 3DAPI…") { orderWithDapi() }
+                    .buttonStyle(.borderedProminent)
+                    .help("Opens the 3DAPI order composer in Orders. Nothing is charged until you review the order and press Place Order.")
+            }
+        }
+    }
+
+    private func orderWithDapi() {
+        guard let local = store.selectedLocal, let quantity = printQuantity(quantityText) else { return }
+        store.openDapiComposer(dapiOrderPrefill(modelID: local.id, quantity: quantity))
     }
 
     private func isUploading(_ id: UUID) -> Bool {

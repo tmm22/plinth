@@ -177,9 +177,23 @@ extension StudioStore {
     }
 
     /// Order a Sample to Me…: opens the normal composer prefilled for review. Without a saved address it explains
-    /// and offers Settings instead. Does nothing under a sheet, alert or dialog.
-    func orderSampleToMe(fileID: String?) {
+    /// and offers Settings instead. Does nothing under a sheet, alert or dialog. With 3DAPI as the print service it
+    /// opens 3DAPI's composer in Orders instead, for the library model `localModelID` (3DAPI prints files from this
+    /// Mac, never a Slant file ID), with the seller's address; nothing is sent from here either.
+    func orderSampleToMe(fileID: String?, localModelID: UUID? = nil) {
         guard !isPresentingSheet, !appIsPresentingModalUI() else { return }
+        if PrintServiceChoice.shared.service == .dapi {
+            guard let localModelID, localModels.contains(where: { $0.id == localModelID }) else {
+                showError("3DAPI prints models from this Mac. Download this model into the library first.")
+                return
+            }
+            guard sellerAddress != nil else {
+                showSellerAddressNeeded = true
+                return
+            }
+            openDapiComposer(dapiSampleOrderPrefill(modelID: localModelID))
+            return
+        }
         if let reason = sampleOrderBlockedReason(fileID: fileID, draftBlockedReason: orderDraftBlockedReason,
                                                  composerOpen: showOrderComposer, busy: busy) {
             showError(reason)
