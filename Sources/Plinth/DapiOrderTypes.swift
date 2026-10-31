@@ -286,6 +286,8 @@ protocol DapiOrdering: Sendable {
     func wallet() async throws -> DapiWallet
     /// One page of `GET /v2/integrator/orders`. Read-only.
     func orders(_ query: DapiOrderListQuery) async throws -> DapiOrderPage
+    /// `POST /v2/integrator/orders/shipping-estimate` for every line of an order (creates nothing; excl. VAT).
+    func shippingEstimate(lines: [DapiOrderLineRequest], countryCode: String) async throws -> DapiShippingEstimate
     /// `GET /v2/integrator/orders/{id}` with its lines. Read-only.
     func order(id: String) async throws -> DapiOrder
     /// `POST /v2/integrator/orders`, wallet mode: CHARGES AT ONCE. Sent once with `idempotencyKey`, never retried and
