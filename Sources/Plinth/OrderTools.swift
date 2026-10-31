@@ -316,23 +316,19 @@ func orderAPIValueTitle(_ raw: String) -> String {
     return words.prefix(1).uppercased() + words.dropFirst()
 }
 
-/// Slant's `updatedAt` as "28 Oct 2026, 09:14" for the detail's Updated fact, or nil when absent, unreadable or within
-/// a minute of `createdAt` (an order nothing has changed since it was made).
-func orderDetailUpdatedLabel(_ order: [String: Any]) -> String? {
+/// When Slant last changed the order (`updatedAt`), for the Timeline's Last updated row; nil when absent, unreadable
+/// or within a minute of `createdAt` (an order nothing has changed since it was made).
+func orderLastUpdatedDate(_ order: [String: Any]) -> Date? {
     guard let raw = order["updatedAt"] as? String, let updated = orderTimestamp(raw) else { return nil }
     if let created = orderCreatedDate(order), abs(updated.timeIntervalSince(created)) < 60 { return nil }
-    return updated.formatted(date: .abbreviated, time: .shortened)
+    return updated
 }
 
-/// Extra order fields Slant returns that the detail pane shows only when present: when the order was placed
-/// (`processedAt`; Slant's docs call a DRAFT "not yet processed"), when Slant last changed it (`updatedAt`), the requested shipping
-/// provider and the fulfillment delivery instructions.
+/// Extra order fields Slant returns that the detail pane's receipt shows only when present: the requested shipping
+/// provider and the fulfillment delivery instructions. Dates (paid, last updated) belong to the Timeline
+/// (`orderTimelineEvents`).
 func orderDetailFacts(_ order: [String: Any]) -> [(String, String)] {
     var rows: [(String, String)] = []
-    if let processed = order["processedAt"] as? String, !processed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        rows.append(("Placed", orderDateLabel(processed)))
-    }
-    if let updated = orderDetailUpdatedLabel(order) { rows.append(("Updated", updated)) }
     if let provider = (order["options"] as? [String: Any])?["shippingProvider"] as? String {
         let title = orderShippingProviderTitle(provider)
         if !title.isEmpty { rows.append(("Shipping provider", title)) }
@@ -611,6 +607,8 @@ func orderOtherPlatformsHiddenLine(_ hidden: Int) -> String? {
 func orderSearchHint(typed: String, searchActive: Bool) -> String? {
     if searchActive { return "Showing what Slant found. Clear the search to return to the list." }
     guard !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    // A tracking number isn't an order number: Slant's lookup wouldn't find it, so don't suggest Return for one.
+    if detectCarrier(typed) != .notRecognised { return "Showing loaded orders that match." }
     // Slant's lookup finds order numbers only (see orderSearchQueryItems), so don't promise more.
     return "Showing loaded orders that match. Press Return to look up an order number on Slant."
 }
@@ -780,13 +778,13 @@ func postcodeFormatWarning(_ postcode: String, country: String, whileEditing: Bo
 
 let ordersCSVBaseColumns = [
     "Order number", "Created", "Status", "Item count", "Items",
-    "Printing cost", "Delivery cost", "Total", "Currency", "Carrier", "Tracking numbers"
+    "Printing cost", "Delivery cost", "Total", "Currency", "Carrier", "Carrier (from tracking number)", "Tracking numbers"
 ] + ordersCSVReferenceColumns
 /// Base columns after the tracking numbers: the marketplace reference from the order's metadata (`source` and
-/// `sourceOrderId`, which Import Orders writes; not customer data, so not behind the addresses opt-in), when it was
-/// paid (`processedAt`), the status Orders shows (`orderDisplayStatus`; "Status" stays Slant's own) and when Slant's
-/// shipping record was created (`fulfillment.createdAt`, about when the label was made).
-let ordersCSVReferenceColumns = ["Marketplace", "Marketplace order", "Paid", "Status shown", "Label created"]
+/// `sourceOrderId`, which Import Orders writes; references, not customer data, so not behind the addresses opt-in:
+/// owner decision, delegated, 1 Nov 2026), when it was paid (`processedAt`), the status Orders shows
+/// (`orderDisplayStatus`; "Status" stays Slant's own) and when the shipping label was created (`fulfillment.createdAt`).
+let ordersCSVReferenceColumns = ["Marketplace", "Marketplace order", "Paid", "Status in Plinth", "Shipping label created"]
 /// Opt-in columns: recipient, address and the order's metadata (which may hold customer references).
 let ordersCSVAddressColumns = [
     "Recipient", "Email", "Address line 1", "Address line 2", "City", "State", "Postal code", "Country", "Metadata"
@@ -847,7 +845,8 @@ private let csvCreatedFormatter: ISO8601DateFormatter = {
 }()
 
 /// The CSV row values for one order, in `ordersCSVBaseColumns` (+ address columns) order. Fields Slant didn't return
-/// are left blank; nothing is estimated or filled in.
+/// are left blank; nothing is estimated or filled in, but for Carrier (from tracking number), which is Plinth's own
+/// unambiguous reading of the numbers.
 func ordersCSVRow(_ record: Record, includeAddresses: Bool) -> [String] {
     let order = orderObject(record.values)
     let created: String
@@ -874,13 +873,16 @@ func ordersCSVRow(_ record: Record, includeAddresses: Bool) -> [String] {
     var currency = csvText(order["currency"])
     if currency.isEmpty, printing != nil || delivery != nil || total != nil { currency = "USD" }
     // Slant's provider is usually the label service (SHIPPO), which isn't the carrier: the column is left blank then.
-    // A carrier worked out from the tracking number isn't filled in either: the export holds only what Slant returned.
+    // The carrier Plinth works out from the tracking numbers has its own column, filled only when every number names
+    // the same carrier unambiguously (`carrierDetected`), so Carrier still holds only what Slant returned.
     let provider = fulfillmentProvider(order["fulfillment"])
     let carrier = provider.flatMap { carrierLabelServiceName($0) == nil ? $0 : nil } ?? ""
-    let tracking = trackingFacts(order["fulfillment"]).filter { $0.0 == "Tracking number" }.map(\.1).joined(separator: "; ")
+    let numbers = trackingFacts(order["fulfillment"]).filter { $0.0 == "Tracking number" }.map(\.1)
+    let detected = carrierDetected(forNumbers: numbers, namedCarrier: provider)?.name ?? ""
+    let tracking = numbers.joined(separator: "; ")
     var row = [
         orderNumber(order), created, csvText(order["status"]), itemCount, itemSummary,
-        csvAmount(printing), csvAmount(delivery), csvAmount(total), currency, carrier, tracking
+        csvAmount(printing), csvAmount(delivery), csvAmount(total), currency, carrier, detected, tracking
     ]
     row += ordersCSVReferenceValues(order)
     if includeAddresses {

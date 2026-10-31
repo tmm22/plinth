@@ -115,7 +115,26 @@ func orderCanHideDraft(_ order: [String: Any], locked: Bool) -> Bool {
     orderRawStatusIsDraft(order) && !locked
 }
 
-/// The one line under the Orders list (and in its empty states) while hidden drafts are left out.
+/// What the Orders list leaves out, in one short line: "Not shown: 3 hidden drafts, 2 orders on other platforms".
+/// Nil when nothing is left out. The list puts a Show button for the drafts beside it.
+func orderNotShownLine(hiddenDrafts: Int, otherPlatforms: Int) -> String? {
+    var parts: [String] = []
+    if hiddenDrafts > 0 { parts.append(hiddenDrafts == 1 ? "1 hidden draft" : "\(hiddenDrafts.formatted()) hidden drafts") }
+    if otherPlatforms > 0 {
+        parts.append(otherPlatforms == 1 ? "1 order on another platform" : "\(otherPlatforms.formatted()) orders on other platforms")
+    }
+    return parts.isEmpty ? nil : "Not shown: " + parts.joined(separator: ", ")
+}
+
+/// Hover text for that line: why each part is left out.
+func orderNotShownHelp(hiddenDrafts: Int, otherPlatforms: Int) -> String {
+    var parts: [String] = []
+    if hiddenDrafts > 0 { parts.append("Drafts you hid on this Mac are listed again with Show Hidden Drafts in the Status menu.") }
+    if otherPlatforms > 0 { parts.append("Orders lists your default platform’s orders (Settings › Account).") }
+    return parts.joined(separator: " ")
+}
+
+/// The fuller line for the "Only hidden drafts" empty state.
 func orderHiddenDraftsLine(_ hidden: Int) -> String? {
     guard hidden > 0 else { return nil }
     let count = hidden == 1 ? "1 hidden draft isn’t" : "\(hidden.formatted()) hidden drafts aren’t"
@@ -123,19 +142,19 @@ func orderHiddenDraftsLine(_ hidden: Int) -> String? {
 }
 
 /// Under a hidden draft's detail (shown while Show Hidden Drafts is on, or still selected after hiding it).
-let orderHiddenDraftDetailNote = "Hidden from Orders on this Mac. Slant still has this draft; it costs nothing unless you place it."
+let orderHiddenDraftDetailNote = "Hidden on this Mac; Slant still has it, and it costs nothing unless you place it."
 
 /// Help for Hide Draft.
 let orderHideDraftHelp = "Leave this draft out of Orders on this Mac. Nothing is sent to Slant, which keeps the draft; it shows again if it is placed."
 
 // MARK: - Copy Tracking Number
 
-/// The context menu's tracking item: the title and the number it copies. One number is copied as it is; with several,
-/// the first is copied and the title says so. Nil when Slant returned no tracking number.
+/// The context menu's tracking item: the title and what it copies. One number is copied as it is; several are all
+/// copied, one per line, under "Copy Tracking Numbers". Nil when Slant returned no tracking number.
 func orderCopyTrackingMenuItem(_ numbers: [String]) -> (title: String, value: String)? {
     guard let first = numbers.first else { return nil }
     if numbers.count == 1 { return ("Copy Tracking Number", first) }
-    return ("Copy First Tracking Number (1 of \(numbers.count))", first)
+    return ("Copy Tracking Numbers", numbers.joined(separator: "\n"))
 }
 
 // MARK: - Store hooks

@@ -197,7 +197,7 @@ enum OrderAttention: Equatable {
         case .pastArriveBy(let date):
             return "Past its arrive-by date (\(orderArriveByLabel(date))) and not shipped yet."
         case .notShipped(let days, let sincePlaced):
-            return "Not shipped \(orderBusinessDaysText(days)) after it was \(sincePlaced ? "placed" : "created")."
+            return "Not shipped \(orderBusinessDaysText(days)) after it was \(sincePlaced ? "paid" : "created")."
         case .notStarted(let days, let sincePlaced):
             return "\(sincePlaced ? "Paid" : "Created") \(orderBusinessDaysText(days)) ago and Slant still lists it as Submitted, waiting to print."
         case .draftNotPlaced(let days):
@@ -262,7 +262,7 @@ func orderAttentionFiltered(_ records: [Record], enabled: Bool, now: Date) -> [R
 /// Under the list while Needs Attention is on: what it checks, and that only loaded orders are checked.
 func orderAttentionFilterHint(moreOnServer: Bool) -> String {
     let base = "Showing loaded orders that need attention: payment problems, past their arrive-by date, not shipped "
-        + "\(orderAttentionNotShippedBusinessDays) business days after being placed, still waiting to print after "
+        + "\(orderAttentionNotShippedBusinessDays) business days after being paid, still waiting to print after "
         + "\(orderAttentionNotStartedBusinessDays) business days, or drafts not placed after \(orderAttentionDraftDays) days."
     return moreOnServer ? base + " Load more to check older orders." : base
 }
@@ -420,19 +420,25 @@ func shopFollowUpOrderAndTrackingText(_ entry: ShopFollowUpEntry) -> String {
     return "\(entry.marketplaceID ?? entry.slantOrderNumber) — \(numbers.joined(separator: ", "))"
 }
 
-/// The row's carrier caption: "Label service: Shippo · Carrier: USPS (from the tracking number)", "Carrier: UPS",
-/// or nil when Slant names nothing and no carrier is recognised.
-func shopFollowUpCarrierLine(_ entry: ShopFollowUpEntry) -> String? {
-    var parts: [String] = []
-    if let provider = entry.provider {
-        if let service = carrierLabelServiceName(provider) { parts.append("Label service: \(service)") }
-        else { parts.append("Carrier: \(orderAPIValueTitle(provider))") }
+/// The row's carrier caption, just the carrier's name ("USPS", "UPS"), with how Plinth knows in its help: Slant's
+/// carrier when it names a real one, else the carrier the tracking numbers agree on (`carrierDetectedHelp`, naming
+/// any label service). With neither, "Label service: Shippo" when Slant named one; nil when Slant names nothing and
+/// no carrier is recognised.
+func shopFollowUpCarrierCaption(_ entry: ShopFollowUpEntry) -> (text: String, help: String)? {
+    let service = entry.provider.flatMap(carrierLabelServiceName)
+    if let provider = entry.provider, service == nil {
+        return (orderAPIValueTitle(provider), "The carrier Slant named.")
     }
-    if entry.provider.map({ carrierLabelServiceName($0) != nil }) ?? true, let carrier = shopFollowUpDetectedCarrier(entry) {
-        parts.append("Carrier: \(carrier.name) (from the tracking number)")
+    if let carrier = shopFollowUpDetectedCarrier(entry) {
+        return (carrier.name, carrierDetectedHelp(labelService: service))
     }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    if let service { return ("Label service: \(service)", "The service that made the shipping label; it isn’t the carrier.") }
+    return nil
 }
+
+/// Help for the done tick: what is remembered, where, and until when.
+let shopFollowUpDoneHelp = "Mark as done once you’ve added this order’s tracking in your shop. Plinth remembers your marks on this Mac (order IDs only) until you disconnect or change the API key."
+
 
 // MARK: - Shopify tracking CSV
 
@@ -534,7 +540,7 @@ struct ShopFollowUpSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Tracking for your shop").font(.title2.bold())
-                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop; Plinth remembers the marks (order IDs only) until you disconnect or change the API key. Only loaded orders are listed.")
+                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop. Plinth remembers your marks on this Mac. Only loaded orders are listed.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -613,7 +619,7 @@ struct ShopFollowUpSheet: View {
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .accessibilityLabel("Marked as done in your shop, \(shopFollowUpOrderTitle(entry))")
-                .help("Mark as done once you’ve added this order’s tracking in your shop. Plinth remembers this until you disconnect or change the API key.")
+                .help(shopFollowUpDoneHelp)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(shopFollowUpOrderTitle(entry)).font(.body.weight(.medium)).textSelection(.enabled)
@@ -625,8 +631,8 @@ struct ShopFollowUpSheet: View {
                 .lineLimit(1)
                 Text(shopFollowUpTrackingText(entry))
                     .font(.callout.monospaced()).textSelection(.enabled).lineLimit(2)
-                if let line = shopFollowUpCarrierLine(entry) {
-                    Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(line)
+                if let carrier = shopFollowUpCarrierCaption(entry) {
+                    Text(carrier.text).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(carrier.help)
                 }
             }
             Spacer(minLength: 8)

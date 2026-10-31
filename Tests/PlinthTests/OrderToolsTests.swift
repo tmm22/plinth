@@ -87,9 +87,9 @@ final class OrderToolsTests: XCTestCase {
             "options": ["shippingProvider": "SHIPSTATION"],
             "fulfillment": ["deliveryInstructions": " Leave at the side door "]
         ])
-        XCTAssertEqual(facts.map(\.0), ["Placed", "Shipping provider", "Delivery instructions"])
-        XCTAssertEqual(facts[1].1, "ShipStation")
-        XCTAssertEqual(facts[2].1, "Leave at the side door")
+        XCTAssertEqual(facts.map(\.0), ["Shipping provider", "Delivery instructions"], "the paid date is the Timeline's")
+        XCTAssertEqual(facts[0].1, "ShipStation")
+        XCTAssertEqual(facts[1].1, "Leave at the side door")
         XCTAssertEqual(orderDetailFacts(["options": ["shippingProvider": "FEDEX_DIRECT"]]).first?.1, "FEDEX_DIRECT")
     }
 
@@ -230,9 +230,10 @@ final class OrderToolsTests: XCTestCase {
         let rows = parseCSV(csv)
         XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(rows[0], ordersCSVBaseColumns)
-        XCTAssertEqual(Array(rows[1].prefix(11)), [
+        // Carrier (from tracking number) is blank: "1Z1" and "1Z2" aren't valid UPS numbers.
+        XCTAssertEqual(Array(rows[1].prefix(12)), [
             "SLANT_ABC", "2026-10-03T09:00:00Z", "SHIPPED", "3", "2 × Bracket, large; 1 × Clip \"mini\"\nv2",
-            "10.00", "5.50", "15.50", "USD", "USPS", "1Z1; 1Z2"
+            "10.00", "5.50", "15.50", "USD", "USPS", "", "1Z1; 1Z2"
         ])
         // The reference columns (HiddenDraftsTests): no marketplace, paid or label times on this order.
         XCTAssertEqual(Array(rows[1].suffix(5)), ["", "", "", "SHIPPED", ""])
@@ -405,6 +406,11 @@ final class OrderToolsTests: XCTestCase {
         let searched = orderSearchHint(typed: "ada", searchActive: true)
         XCTAssertEqual(searched, "Showing what Slant found. Clear the search to return to the list.")
         XCTAssertFalse(searched?.contains("Press Return") ?? true)
+        // A tracking number isn't an order number, so Return isn't suggested for one.
+        for number in ["LS123456785US", "1Z999AA10123456784", "9261290876543210987652"] {
+            XCTAssertEqual(orderSearchHint(typed: number, searchActive: false), "Showing loaded orders that match.", number)
+        }
+        XCTAssertTrue(orderSearchHint(typed: "SLANT_123", searchActive: false)?.contains("Press Return") == true)
     }
 
     func testTrackingHiddenOnlyWhenThereIsNothingToTrack() {

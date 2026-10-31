@@ -41,6 +41,12 @@ final class OrderTimelineTests: XCTestCase {
         XCTAssertEqual(events.map(\.date), [date("2026-10-19T09:00:00Z"), date("2026-10-19T09:05:00Z"),
                                             date("2026-10-23T15:00:00Z"), date("2026-11-05T00:00:00Z")])
         XCTAssertEqual(events.last?.dateOnly, true)
+        // Last updated comes last, and only when the order changed after it was made.
+        var updated = full
+        updated["updatedAt"] = "2026-10-24T08:00:00.000Z"
+        XCTAssertEqual(orderTimelineEvents(updated).map(\.title), ["Created", "Paid", "Shipping label created", "Arrive by", "Last updated"])
+        updated["updatedAt"] = "2026-10-19T09:00:30.000Z"
+        XCTAssertEqual(orderTimelineEvents(updated).last?.title, "Arrive by", "within a minute of creation")
 
         // A draft: created only (Slant sends no processedAt and a null fulfillment).
         XCTAssertEqual(orderTimelineEvents(order("DRAFT", paid: NSNull(), fulfillment: NSNull())).map(\.title), ["Created"])
@@ -52,16 +58,16 @@ final class OrderTimelineTests: XCTestCase {
         XCTAssertEqual(orderTimelineEvents(order(fulfillment: ["status": "SHIPPED", "createdAt": NSNull()])).map(\.title), ["Created", "Paid"])
     }
 
-    func testTheShippingRecordIsALabelOnlyWhenSlantSaysSo() {
+    func testTheShippingRecordDateIsAlwaysTheShippingLabel() {
         var record = shippedRecord
         record["labelPrinted"] = false
-        XCTAssertEqual(orderTimelineEvents(order(fulfillment: record)).map(\.title), ["Created", "Paid", "Shipping record created"])
+        XCTAssertEqual(orderTimelineEvents(order(fulfillment: record)).map(\.title), ["Created", "Paid", "Shipping label created"])
         for odd: Any in ["true", 1, NSNull()] {
             record["labelPrinted"] = odd
             XCTAssertFalse(orderShippingLabelPrinted(order(fulfillment: record)), "\(odd)")
         }
         record.removeValue(forKey: "labelPrinted")
-        XCTAssertEqual(orderTimelineEvents(order(fulfillment: record)).last?.title, "Shipping record created")
+        XCTAssertEqual(orderTimelineEvents(order(fulfillment: record)).last?.title, "Shipping label created")
         XCTAssertTrue(orderShippingLabelPrinted(order(fulfillment: shippedRecord)))
     }
 
@@ -87,24 +93,25 @@ final class OrderTimelineTests: XCTestCase {
 
     func testThePaidCaptionCountsBusinessDays() {
         let now = date("2026-11-02T12:00:00Z") // Monday
-        func caption(_ values: [String: Any], at: Date? = nil, progress: Bool = false) -> String? {
-            orderPaidAwaitingShipmentCaption(values, hasItemProgress: progress, now: at ?? now, locale: gb, timeZone: utc)
+        func caption(_ values: [String: Any], at: Date? = nil, typical: OrderShipTimeSummary? = nil) -> String? {
+            orderPaidAwaitingShipmentCaption(values, typical: typical, now: at ?? now, locale: gb, timeZone: utc)
         }
         // Paid Wednesday: Thursday, Friday and Monday.
-        XCTAssertEqual(caption(order(paid: "2026-10-28T10:00:00Z")),
-                       "Paid 28 Oct · 3 business days ago · Slant doesn’t share print stages or a finish date.")
-        XCTAssertEqual(caption(order("SUBMITTED", paid: "2026-10-30T10:00:00Z")),
-                       "Paid 30 Oct · 1 business day ago · Slant doesn’t share print stages or a finish date.")
-        XCTAssertEqual(caption(order(paid: "2026-11-02T08:00:00Z")),
-                       "Paid 2 Nov · today · Slant doesn’t share print stages or a finish date.")
-        // Paid Saturday, read on Sunday.
-        XCTAssertEqual(caption(order(paid: "2026-10-31T10:00:00Z"), at: date("2026-11-01T10:00:00Z")),
-                       "Paid 31 Oct · no business days since · Slant doesn’t share print stages or a finish date.")
+        XCTAssertEqual(caption(order(paid: "2026-10-28T10:00:00Z")), "Paid 3 business days ago (28 Oct).")
+        XCTAssertEqual(caption(order("SUBMITTED", paid: "2026-10-30T10:00:00Z")), "Paid 1 business day ago (30 Oct).")
+        XCTAssertEqual(caption(order(paid: "2026-11-02T08:00:00Z")), "Paid today (2 Nov).")
+        // While no business day has passed, calendar words: paid Saturday, read on Sunday; paid Friday, read on Sunday.
+        XCTAssertEqual(caption(order(paid: "2026-10-31T10:00:00Z"), at: date("2026-11-01T10:00:00Z")), "Paid yesterday (31 Oct).")
+        XCTAssertEqual(caption(order(paid: "2026-10-30T10:00:00Z"), at: date("2026-11-01T10:00:00Z")), "Paid on Friday (30 Oct).")
         // A payment time ahead of the clock reads as today rather than a negative age.
-        XCTAssertEqual(caption(order(paid: "2026-11-02T13:00:00Z")),
-                       "Paid 2 Nov · today · Slant doesn’t share print stages or a finish date.")
-        // If Slant ever sends item progress again, the caption stops saying it doesn't.
-        XCTAssertEqual(caption(order(paid: "2026-10-28T10:00:00Z"), progress: true), "Paid 28 Oct · 3 business days ago.")
+        XCTAssertEqual(caption(order(paid: "2026-11-02T13:00:00Z")), "Paid today (2 Nov).")
+        // The seller's usual time, in plain words.
+        XCTAssertEqual(caption(order(paid: "2026-10-28T10:00:00Z"), typical: OrderShipTimeSummary(orders: 5, fewest: 3, most: 4, median: 3)),
+                       "Paid 3 business days ago (28 Oct). Your recent orders usually got a shipping label after 3 business days (3–4 over the last 5).")
+        // What Slant doesn't share goes in the help, unless an item ever reports progress again.
+        XCTAssertTrue(orderPaidAwaitingShipmentHelp(hasItemProgress: false, hasTypical: false).hasPrefix("Slant doesn’t share print stages or a finish date."))
+        XCTAssertFalse(orderPaidAwaitingShipmentHelp(hasItemProgress: true, hasTypical: false).contains("print stages"))
+        XCTAssertTrue(orderPaidAwaitingShipmentHelp(hasItemProgress: false, hasTypical: true).contains("isn’t a promise"))
     }
 
     func testThePaidCaptionIsOnlyForPaidOrdersStillBeingMade() {
@@ -232,20 +239,23 @@ final class OrderTimelineTests: XCTestCase {
     func testSummaryWording() {
         let range = OrderShipTimeSummary(orders: 5, fewest: 3, most: 4, median: 3)
         XCTAssertEqual(orderShipTimeDetailLine(range),
-                       "Your recent orders got a shipping label 3–4 business days after payment (median 3, last 5 orders).")
+                       "Your recent orders usually got a shipping label after 3 business days (3–4 over the last 5).")
         let same = OrderShipTimeSummary(orders: 3, fewest: 1, most: 1, median: 1)
         XCTAssertEqual(orderShipTimeDetailLine(same),
-                       "Your recent orders got a shipping label 1 business day after payment (median 1, last 3 orders).")
-        XCTAssertEqual(orderShipTimeReportLine(OrderShipTimeSummary(orders: 4, fewest: 2, most: 4, median: 3.5)),
-                       "4 orders: 2–4 business days, median 3.5.")
-        XCTAssertEqual(orderShipTimeReportText(nil), "")
-        XCTAssertEqual(orderShipTimeReportCSV(nil), "")
-        let text = orderShipTimeReportText(range)
-        XCTAssertTrue(text.hasPrefix("\nPayment to shipping label\n"))
-        XCTAssertTrue(text.contains("5 orders: 3–4 business days, median 3."))
-        XCTAssertTrue(orderShipTimeReportCaption.contains("isn’t a promise"))
-        XCTAssertEqual(orderShipTimeReportCSV(range),
-                       "\r\nPayment to shipping label,Orders,Fewest business days,Most business days,Median business days\r\nRecent orders,5,3,4,3\r\n")
+                       "Your recent orders usually got a shipping label after 1 business day (each of the last 3).")
+        XCTAssertEqual(orderShipTimeDetailLine(OrderShipTimeSummary(orders: 4, fewest: 2, most: 4, median: 3.5)),
+                       "Your recent orders usually got a shipping label after 3.5 business days (2–4 over the last 4).")
+        XCTAssertFalse(orderShipTimeDetailLine(range).contains("median"))
+        XCTAssertEqual(orderShipTimeDetailLine(OrderShipTimeSummary(orders: 3, fewest: 0, most: 1, median: 0)),
+                       "Your recent orders usually got a shipping label the same business day (0–1 over the last 3).")
+    }
+
+    func testTheSpendingReportHasNoShipTimeSection() throws {
+        // Removed in round 18's review: the order detail keeps the usual time, the report doesn't repeat it.
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/Plinth/SpendReport.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        XCTAssertFalse(text.contains("orderShipTime"))
     }
 
     func testBusinessDaysMatchThreeDAPIsCount() {

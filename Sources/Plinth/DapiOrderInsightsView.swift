@@ -303,6 +303,11 @@ struct DapiProblemReportSheet: View {
                 Label(guidance, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Shipped: the carrier's tracking page, opened in the browser only on this click; Plinth sends nothing.
+            if let carrier = dapiProblemTrackingCarrier(problem, order: order), let url = carrier.trackingURL {
+                Button("Track Parcel") { NSWorkspace.shared.open(url) }
+                    .help("Open \(carrier.name)’s tracking page for this order in your browser")
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text("What happened")
                 TextEditor(text: $details)
@@ -349,7 +354,7 @@ struct DapiProblemReportSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 540, height: 600)
+        .frame(width: 540, height: 640)
         .onChange(of: problem) { copied = false }
         .onChange(of: details) { copied = false }
     }

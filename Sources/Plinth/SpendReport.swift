@@ -1008,8 +1008,6 @@ struct SpendingReportSheet: View {
                                    otherPlatformOrders: store.spendReportOtherPlatformCount($0.records))
         } ?? store.spendReportNotes
         let source = loaded.map { spendReportPeriodSource($0.interval) } ?? spendReportLoadedListSource
-        // Payment to shipping label over the report's own orders, on the default platform (OrderTimeline.swift).
-        let shipTime = store.orderShipTimeSummary(for: loaded?.records ?? store.orders)
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Spending report").font(.title2.weight(.bold))
@@ -1041,7 +1039,6 @@ struct SpendingReportSheet: View {
                         if !report.items.isEmpty { itemsTable(report) }
                         if !report.productCosts.isEmpty || report.ordersWithoutItemPrices > 0 { productCostsTable(report) }
                         if !report.deliveryCosts.isEmpty || report.ordersWithoutDelivery > 0 { deliveryTable(report) }
-                        if let shipTime { shipTimeSection(shipTime) }
                         if reprints.orders > 0 { reprintsSection(reprints) }
                     }
                     .padding(24)
@@ -1060,12 +1057,12 @@ struct SpendingReportSheet: View {
                 Button("Copy as Text") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(spendReportText(report, notes: notes, source: source)
-                                                   + orderShipTimeReportText(shipTime) + spendReportReprintText(reprints),
+                                                   + spendReportReprintText(reprints),
                                                    forType: .string)
                     copied = true
                 }
                 .disabled(report.countedOrders == 0)
-                Button("Export CSV…") { exportCSV(report, shipTime: shipTime, reprints: reprints) }
+                Button("Export CSV…") { exportCSV(report, reprints: reprints) }
                     .disabled(report.countedOrders == 0)
             }
             .padding(20)
@@ -1243,16 +1240,6 @@ struct SpendingReportSheet: View {
         }
     }
 
-    /// The seller's own payment-to-label time (OrderTimeline.swift); shown only with enough orders.
-    private func shipTimeSection(_ summary: OrderShipTimeSummary) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionHeading(title: orderShipTimeReportHeading)
-            Text(orderShipTimeReportLine(summary)).monospacedDigit().textSelection(.enabled)
-            Text(orderShipTimeReportCaption).font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
     private func reprintsSection(_ reprints: SpendReportReprints) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeading(title: "Reprints")
@@ -1264,7 +1251,7 @@ struct SpendingReportSheet: View {
         }
     }
 
-    private func exportCSV(_ report: SpendReport, shipTime: OrderShipTimeSummary?, reprints: SpendReportReprints) {
+    private func exportCSV(_ report: SpendReport, reprints: SpendReportReprints) {
         let panel = NSSavePanel()
         panel.title = "Export Spending Report"
         panel.nameFieldStringValue = spendReportDefaultFileName()
@@ -1273,7 +1260,7 @@ struct SpendingReportSheet: View {
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         exportError = nil
         // A UTF-8 byte order mark lets spreadsheet apps read non-ASCII names correctly.
-        let data = Data([0xEF, 0xBB, 0xBF]) + Data((spendReportCSV(report) + orderShipTimeReportCSV(shipTime) + spendReportReprintCSV(reprints)).utf8)
+        let data = Data([0xEF, 0xBB, 0xBF]) + Data((spendReportCSV(report) + spendReportReprintCSV(reprints)).utf8)
         do {
             try data.write(to: destination, options: .atomic)
             store.activities.insert(Activity(title: "Export spending report", detail: report.countedOrders == 1 ? "1 order" : "\(report.countedOrders) orders", success: true), at: 0)

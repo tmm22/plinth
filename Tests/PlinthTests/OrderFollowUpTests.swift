@@ -259,14 +259,14 @@ final class OrderFollowUpTests: XCTestCase {
 
     func testNotShippedAndNotStartedCopy() {
         XCTAssertEqual(OrderAttention.notShipped(days: 6, sincePlaced: false).detail, "Not shipped 6 business days after it was created.")
-        XCTAssertEqual(OrderAttention.notShipped(days: 5, sincePlaced: true).detail, "Not shipped 5 business days after it was placed.")
+        XCTAssertEqual(OrderAttention.notShipped(days: 5, sincePlaced: true).detail, "Not shipped 5 business days after it was paid.")
         XCTAssertEqual(OrderAttention.notStarted(days: 3, sincePlaced: true).detail,
                        "Paid 3 business days ago and Slant still lists it as Submitted, waiting to print.")
         XCTAssertEqual(OrderAttention.notStarted(days: 1, sincePlaced: false).detail,
                        "Created 1 business day ago and Slant still lists it as Submitted, waiting to print.")
         XCTAssertEqual(OrderAttention.notStarted(days: 3, sincePlaced: true).title, "Waiting to print")
         XCTAssertEqual(OrderAttention.notShipped(days: 5, sincePlaced: true).title, "Not shipped")
-        XCTAssertTrue(orderAttentionFilterHint(moreOnServer: false).contains("not shipped 5 business days after being placed, still waiting to print after 3 business days"))
+        XCTAssertTrue(orderAttentionFilterHint(moreOnServer: false).contains("not shipped 5 business days after being paid, still waiting to print after 3 business days"))
     }
 
     func testDraftNotPlacedWindow() {

@@ -1256,23 +1256,24 @@ struct OrdersView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 6)
                 }
-                // Slant's list may hold other platforms' orders; those naming another platform aren't listed.
-                if !tableRows.isEmpty, let hidden = orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount) {
-                    Text(hidden)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 6)
-                }
-                // Drafts the seller hid on this Mac (HiddenDrafts.swift).
-                if !tableRows.isEmpty, let hidden = orderHiddenDraftsLine(hiddenDraftsCount) {
-                    Text(hidden)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 6)
+                // One line for what the list leaves out: drafts hidden on this Mac (HiddenDrafts.swift) and orders
+                // naming another platform (Slant's list may hold other platforms' orders).
+                if !tableRows.isEmpty, let notShown = orderNotShownLine(hiddenDrafts: hiddenDraftsCount, otherPlatforms: otherPlatformsHiddenCount) {
+                    HStack(spacing: 8) {
+                        Text(notShown)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(orderNotShownHelp(hiddenDrafts: hiddenDraftsCount, otherPlatforms: otherPlatformsHiddenCount))
+                        if hiddenDraftsCount > 0 {
+                            Button("Show") { store.showHiddenDrafts = true }
+                                .controlSize(.small)
+                                .accessibilityLabel("Show hidden drafts")
+                                .help("List the drafts hidden on this Mac (Show Hidden Drafts in the Status menu)")
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
                 }
                 if let hint = orderSearchHint(typed: search, searchActive: store.orderSearchActive) {
                     Text(hint)
@@ -1477,7 +1478,7 @@ struct OrdersView: View {
                 applyCompletedOrder(orderID, order)
             }, nextDraft: { nextDraftForReview(after: $0) },
                runPosition: request.method == "POST" && reviewRunActive
-                   ? orderReviewRunPositionText(draftIDs: reviewRunDraftIDs, current: request.orderID) : nil,
+                   ? orderReviewRunPositionText(draftIDs: reviewRunCountedIDs(current: request.orderID), current: request.orderID) : nil,
                inReviewRun: request.method == "POST" && reviewRunActive,
                onReviewNext: { id in
                 // Opens only after this review has closed; that review then needs its own Pay press.
@@ -1567,14 +1568,20 @@ struct OrdersView: View {
     func presentChargeReview(orderID: String, continuingRun: Bool = false, startsRun: Bool = false) {
         if !continuingRun {
             reviewListSnapshot = reviewableListIDs
+            // "Draft N of M" never counts a hidden draft (HiddenDrafts.swift), as the run never offers one.
             reviewRunDraftIDs = orderReviewRunDraftIDs(rows: orderDraftReviewRows(snapshotIDs: reviewListSnapshot, orders: store.orders),
-                                                       isLocked: { store.isOutcomeUnknown(orderID: $0) })
+                                                       isLocked: { store.isOutcomeUnknown(orderID: $0) || store.isHiddenDraft(orderID: $0) })
             reviewRunActive = startsRun
         } else {
             reviewRunActive = true
         }
         reviewRunCurrentID = reviewRunActive ? orderID : nil
         pendingConfirm = PendingOrderConfirm(method: "POST", orderID: orderID)
+    }
+    /// The run's drafts for "Draft N of M": those counted when it began, less any hidden since (the one under review
+    /// always counts, so its position still shows).
+    func reviewRunCountedIDs(current: String) -> [String] {
+        reviewRunDraftIDs.filter { $0 == current || !store.isHiddenDraft(orderID: $0) }
     }
     /// Review Drafts One by One…: opens the existing charge review for the first draft in the list. It never pays.
     func reviewDraftsInOrder() {
@@ -1588,7 +1595,7 @@ struct OrdersView: View {
     func reviewRunContinuation(for id: String) -> (position: String, nextID: String, nextCaption: String)? {
         guard reviewRunActive, reviewRunCurrentID == id, pendingConfirm == nil,
               let next = nextDraftForReview(after: id) else { return nil }
-        let position = orderReviewRunPositionText(draftIDs: reviewRunDraftIDs, current: id).map { "Reviewing drafts one by one: \($0)." }
+        let position = orderReviewRunPositionText(draftIDs: reviewRunCountedIDs(current: id), current: id).map { "Reviewing drafts one by one: \($0)." }
         return (position ?? "Reviewing drafts one by one.", next.id, next.caption)
     }
     /// Opens the next draft's review; that review loads the order fresh and needs its own Pay press.
@@ -1754,8 +1761,8 @@ struct OrdersView: View {
                       systemImage: "line.3.horizontal.decrease.circle")
             } description: {
                 Text([orderFilterEmptyDetail(store.orderFilter, search: query, moreOnServer: moreOnServer),
-                      orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount),
-                      orderHiddenDraftsLine(hiddenDraftsCount)].compactMap { $0 }.joined(separator: " "))
+                      orderNotShownLine(hiddenDrafts: hiddenDraftsCount, otherPlatforms: otherPlatformsHiddenCount).map { $0 + "." }]
+                    .compactMap { $0 }.joined(separator: " "))
             } actions: {
                 if store.orderFilter.isActive {
                     Button("Show All Orders") {
@@ -1834,18 +1841,19 @@ struct OrdersView: View {
                     }
                     // A paid order not yet shipped (OrderTimeline.swift): when it was paid, that Slant shares no print
                     // stages, and the seller's own typical time to a label (default platform only). Display only.
-                    if let paidCaption = orderPaidAwaitingShipmentCaption(displayed, hasItemProgress: orderHasItemProgress(displayed)) {
-                        VStack(alignment: .leading, spacing: 2) {
+                    if orderIsPaidAwaitingShipment(displayed) {
+                        let typical = store.orderShipTimeSummary(for: store.orders)
+                        if let paidCaption = orderPaidAwaitingShipmentCaption(displayed, typical: typical) {
                             Text(paidCaption)
-                            if let typical = store.orderShipTimeSummary(for: store.orders) {
-                                Text(orderShipTimeDetailLine(typical))
-                            }
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .help(orderPaidAwaitingShipmentHelp(hasItemProgress: orderHasItemProgress(displayed),
+                                                                    hasTypical: typical != nil))
                         }
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                     }
                     // Why this order needs attention (OrderFollowUp.swift), which the list shows only as a marker.
-                    if let attention = orderAttention(displayed, now: Date()) {
+                    // Never for a hidden draft (HiddenDrafts.swift): Needs Attention doesn't count one either.
+                    if !store.isHiddenDraft(selected), let attention = orderAttention(displayed, now: Date()) {
                         Label("Needs attention: \(attention.detail)", systemImage: "exclamationmark.triangle.fill")
                             .font(.callout).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
@@ -2935,10 +2943,11 @@ struct OrderTrackingDisplayRow: Equatable {
     var trackCarrier: String? = nil
 }
 
-/// The detail's Tracking rows. A label service is named as one ("Label service: Shippo"), never as the carrier; when
-/// Slant names no carrier, the carrier the tracking numbers agree on is shown as worked out from them; a shipment
-/// status that only repeats the order status in the header is left out. Display only: copies and CSVs read
-/// `trackingFacts`, and nothing here sends a request.
+/// The detail's Tracking rows. When Slant names no carrier and the tracking numbers agree on one, a single
+/// "Carrier: USPS" row stands in for the label service, with how it was worked out (and the label service) in its
+/// help; otherwise a label service is named as one ("Label service: Shippo"), never as the carrier. A shipment status
+/// that only repeats the order status in the header is left out. Display only: copies and CSVs read `trackingFacts`,
+/// and nothing here sends a request.
 func orderTrackingDisplayRows(_ order: [String: Any]) -> [OrderTrackingDisplayRow] {
     let facts = trackingFacts(order["fulfillment"])
     let provider = fulfillmentProvider(order["fulfillment"])
@@ -2966,15 +2975,24 @@ func orderTrackingDisplayRows(_ order: [String: Any]) -> [OrderTrackingDisplayRo
         }
     }
     if !facts.contains(where: { $0.0 == "Carrier" }), let detected = carrierDetected(forNumbers: numbers, namedCarrier: provider) {
-        let index = (rows.firstIndex { $0.label == "Label service" }).map { $0 + 1 } ?? 0
-        rows.insert(OrderTrackingDisplayRow(label: "Carrier", value: "\(detected.name) (from the tracking number)",
-                                            help: carrierDetectedHelp), at: index)
+        let service = provider.flatMap(carrierLabelServiceName)
+        let row = OrderTrackingDisplayRow(label: "Carrier", value: detected.name, help: carrierDetectedHelp(labelService: service))
+        if let index = rows.firstIndex(where: { $0.label == "Label service" }) {
+            rows[index] = row
+        } else {
+            rows.insert(row, at: 0)
+        }
     }
     return rows
 }
 
-/// Hover text for a carrier worked out from a tracking number.
-let carrierDetectedHelp = "Worked out by Plinth from the tracking number’s pattern and check digit. Slant names only the label service."
+/// Hover text for a carrier worked out from a tracking number: "Worked out from the tracking number. Label made
+/// through Shippo." (the label service only when Slant named one).
+func carrierDetectedHelp(labelService: String? = nil) -> String {
+    let base = "Worked out from the tracking number."
+    guard let labelService, !labelService.isEmpty else { return base }
+    return base + " Label made through \(labelService)."
+}
 
 func stringValue(_ value: Any?) -> String? {
     guard let value, !(value is NSNull) else { return nil }

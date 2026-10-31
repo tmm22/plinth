@@ -161,6 +161,17 @@ final class HiddenDraftsTests: XCTestCase {
         XCTAssertTrue(orderHiddenDraftsLine(2)?.hasPrefix("2 hidden drafts aren’t shown.") == true)
     }
 
+    func testNotShownLineMergesHiddenDraftsAndOtherPlatforms() {
+        XCTAssertNil(orderNotShownLine(hiddenDrafts: 0, otherPlatforms: 0))
+        XCTAssertEqual(orderNotShownLine(hiddenDrafts: 3, otherPlatforms: 2), "Not shown: 3 hidden drafts, 2 orders on other platforms")
+        XCTAssertEqual(orderNotShownLine(hiddenDrafts: 1, otherPlatforms: 0), "Not shown: 1 hidden draft")
+        XCTAssertEqual(orderNotShownLine(hiddenDrafts: 0, otherPlatforms: 1), "Not shown: 1 order on another platform")
+        XCTAssertTrue(orderNotShownHelp(hiddenDrafts: 1, otherPlatforms: 1).contains("Show Hidden Drafts"))
+        XCTAssertTrue(orderNotShownHelp(hiddenDrafts: 0, otherPlatforms: 1).contains("default platform"))
+        XCTAssertFalse(orderNotShownHelp(hiddenDrafts: 0, otherPlatforms: 1).contains("Hidden"))
+        XCTAssertEqual(orderHiddenDraftDetailNote, "Hidden on this Mac; Slant still has it, and it costs nothing unless you place it.")
+    }
+
     /// A hidden draft listed by Show Hidden Drafts never needs attention.
     func testHiddenRowsCarryNoAttention() {
         let old = Date(timeIntervalSinceNow: -10 * 86_400)
@@ -179,8 +190,8 @@ final class HiddenDraftsTests: XCTestCase {
         XCTAssertEqual(orderCopyTrackingMenuItem(["TRK1"])?.title, "Copy Tracking Number")
         XCTAssertEqual(orderCopyTrackingMenuItem(["TRK1"])?.value, "TRK1")
         let several = orderCopyTrackingMenuItem(["TRK1", "TRK2", "TRK3"])
-        XCTAssertEqual(several?.title, "Copy First Tracking Number (1 of 3)")
-        XCTAssertEqual(several?.value, "TRK1")
+        XCTAssertEqual(several?.title, "Copy Tracking Numbers")
+        XCTAssertEqual(several?.value, "TRK1\nTRK2\nTRK3", "all of them, one per line")
     }
 
     func testSearchFindsTrackingNumbers() {
@@ -192,7 +203,7 @@ final class HiddenDraftsTests: XCTestCase {
     // MARK: Export columns
 
     func testExportReferenceColumns() throws {
-        XCTAssertEqual(Array(ordersCSVBaseColumns.suffix(5)), ["Marketplace", "Marketplace order", "Paid", "Status shown", "Label created"])
+        XCTAssertEqual(Array(ordersCSVBaseColumns.suffix(5)), ["Marketplace", "Marketplace order", "Paid", "Status in Plinth", "Shipping label created"])
         let record = Record(values: [
             "publicId": "S1", "status": "PRINTING",
             "processedAt": "2026-10-04T10:00:00.000Z",

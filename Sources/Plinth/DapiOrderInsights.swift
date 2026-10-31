@@ -284,6 +284,15 @@ func dapiProblemGuidance(_ kind: DapiProblemKind, order: DapiOrder) -> String? {
     }
 }
 
+/// The carrier whose tracking page 3DAPI's Report a Problem opens with Track Parcel for a late order that has
+/// shipped: the one recognised from the tracking number (`dapiShippingDetectedCarrier`, agreeing with 3DAPI's
+/// carrier), with a page; nil otherwise. Opened only on the seller's click.
+func dapiProblemTrackingCarrier(_ kind: DapiProblemKind?, order: DapiOrder) -> DetectedCarrier? {
+    guard kind == .late, dapiLateStage(order) == .withCarrier,
+          let carrier = dapiShippingDetectedCarrier(order.shipping), carrier.trackingURL != nil else { return nil }
+    return carrier
+}
+
 /// The support message: order number, status, created date, carrier and tracking, items with quantities and
 /// materials, the problem and the seller's description. Never the customer's name, email or address, or the reference.
 /// A late order also says how long ago it was created and, once shipped, how long ago it shipped (3DAPI's dates only).

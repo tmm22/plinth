@@ -723,7 +723,9 @@ struct DapiOrderDetailView: View {
                 Text("Shipping").font(.headline)
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                     if let tier = ship.tier { row("Parcel size", tier.capitalized) }
-                    if let carrier = dapiShippingCarrierText(ship) { row("Carrier", carrier) }
+                    if let carrier = dapiShippingCarrierText(ship) {
+                        row("Carrier", carrier).help(dapiShippingCarrierHelp(ship) ?? "")
+                    }
                     if let shippedAt = ship.shippedAt { row("Shipped", dapiOrderDateTimeText(shippedAt)) }
                     if let tracking = ship.trackingNumber, !tracking.isEmpty {
                         GridRow {
@@ -765,11 +767,17 @@ func dapiShippingDetectedCarrier(_ shipping: DapiOrderShipping) -> DetectedCarri
     return carrierDetected(forNumber: number, namedCarrier: shipping.carrier)
 }
 
-/// The Carrier row: 3DAPI's own name when it gives one, else the carrier worked out from the number ("USPS (from the
-/// tracking number)"), else nil.
+/// The Carrier row: 3DAPI's own name when it gives one, else the carrier worked out from the number ("USPS"; how it
+/// was worked out is in `dapiShippingCarrierHelp`), else nil.
 func dapiShippingCarrierText(_ shipping: DapiOrderShipping) -> String? {
     if let named = shipping.carrier?.trimmingCharacters(in: .whitespacesAndNewlines), !named.isEmpty { return named }
-    return dapiShippingDetectedCarrier(shipping).map { "\($0.name) (from the tracking number)" }
+    return dapiShippingDetectedCarrier(shipping)?.name
+}
+
+/// The Carrier row's help: nil for 3DAPI's own name, `carrierDetectedHelp()` for one worked out from the number.
+func dapiShippingCarrierHelp(_ shipping: DapiOrderShipping) -> String? {
+    if let named = shipping.carrier?.trimmingCharacters(in: .whitespacesAndNewlines), !named.isEmpty { return nil }
+    return dapiShippingDetectedCarrier(shipping) == nil ? nil : carrierDetectedHelp()
 }
 
 /// The caption under the shipping facts, or nil when there's no tracking number or Track Parcel covers it.

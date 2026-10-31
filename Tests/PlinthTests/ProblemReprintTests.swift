@@ -45,6 +45,8 @@ final class ProblemReprintTests: XCTestCase {
         XCTAssertEqual(orderLateStage(slantOrder("PRINTING", fulfillment: ["status": "SHIPPED", "trackingNumbers": ["TEST0001"]])), .withCarrier)
         // A label exists (tracking) though the record doesn't say shipped yet.
         XCTAssertEqual(orderLateStage(slantOrder("PRINTING", fulfillment: ["trackingNumbers": ["TEST0001"]])), .withCarrier)
+        // A shipping record date means a label was made, even before Slant lists a tracking number.
+        XCTAssertEqual(orderLateStage(slantOrder("PRINTING", fulfillment: ["createdAt": "2026-11-02T10:00:00Z"])), .withCarrier)
         for status in ["DRAFT", "CANCELLED", "CANCELED", "PAYMENT_ERROR", "SOMETHING_NEW", ""] {
             XCTAssertNil(orderLateStage(slantOrder(status)), status)
         }
@@ -65,8 +67,15 @@ final class ProblemReprintTests: XCTestCase {
             XCTAssertNil(orderProblemGuidance(kind, order: shipped), kind.title)
         }
         XCTAssertNil(orderProblemGuidance(.late, order: slantOrder("CANCELLED")))
+        // The status shown is trimmed and read in any case before the shipped check.
+        let padded = try XCTUnwrap(orderProblemGuidance(.late, order: slantOrder(" shipped ", fulfillment: ["trackingNumbers": ["T1"]])))
+        XCTAssertTrue(padded.contains("most likely a carrier delay"), padded)
+        // A label made without a tracking number yet: with the carrier, asking for the number.
+        let recordOnly = try XCTUnwrap(orderProblemGuidance(.late, order: slantOrder("PRINTING", fulfillment: ["createdAt": "2026-11-02T10:00:00Z"])))
+        XCTAssertTrue(recordOnly.contains("made a shipping label"), recordOnly)
+        XCTAssertTrue(recordOnly.contains("hasn’t listed a tracking number"), recordOnly)
         // Never a claim window or a promise.
-        for text in [atSlant, carrier, noTracking, labelOnly] {
+        for text in [atSlant, carrier, noTracking, labelOnly, padded, recordOnly] {
             for word in ["within", "claim", "guarantee", "refund"] { XCTAssertFalse(text.lowercased().contains(word), word) }
         }
     }
@@ -85,15 +94,53 @@ final class ProblemReprintTests: XCTestCase {
         let carrier = orderProblemMessage(order: shipped, problem: .late, details: "", now: now, calendar: calendar)
         XCTAssertTrue(carrier.contains("Tracking number: TEST0001"), carrier)
         XCTAssertTrue(carrier.contains("Tracking number: TEST0002"), carrier)
-        XCTAssertTrue(carrier.contains("Shipping record created: 2 November 2026 (3 days ago)"), carrier)
+        XCTAssertTrue(carrier.contains("Shipping label created: 2 November 2026 (3 days ago)"), carrier)
         XCTAssertFalse(carrier.contains("not made yet"))
         XCTAssertFalse(carrier.contains("Paid:"))
         // Other problems keep the message as it was.
         let damaged = orderProblemMessage(order: shipped, problem: .damaged, details: "", now: now, calendar: calendar)
-        XCTAssertFalse(damaged.contains("Shipping record created"))
+        XCTAssertFalse(damaged.contains("Shipping label created"))
         let unknown = orderProblemMessage(order: slantOrder("CANCELLED"), problem: .late, details: "", now: now, calendar: calendar)
         XCTAssertFalse(unknown.contains("Paid:"))
         XCTAssertFalse(unknown.contains("Shipping label"))
+    }
+
+    func testLateAdviceAtSlantUsesTheSellersUsualTime() throws {
+        // Paid Thursday 29 Oct; read on Thursday 5 Nov: 5 business days.
+        let typical = OrderShipTimeSummary(orders: 5, fewest: 3, most: 4, median: 3)
+        let late = try XCTUnwrap(orderProblemGuidance(.late, order: slantOrder("PRINTING"), typical: typical, now: now, timeZone: utc))
+        XCTAssertTrue(late.contains("Paid 5 business days ago; your recent orders usually got a shipping label after 3."), late)
+        XCTAssertTrue(late.contains("the delay is at Slant"), late)
+        XCTAssertFalse(late.contains("may not be late"), late)
+        // Paid Wednesday 4 Nov: 1 business day, under the usual 3.
+        let early = try XCTUnwrap(orderProblemGuidance(.late, order: slantOrder("SUBMITTED", processedAt: "2026-11-04T09:00:00Z"),
+                                                       typical: typical, now: now, timeZone: utc))
+        XCTAssertTrue(early.contains("Paid 1 business day ago; your recent orders usually got a shipping label after 3. It may not be late yet."), early)
+        // Without a usual time, or a paid date, the plain advice.
+        let plain = try XCTUnwrap(orderProblemGuidance(.late, order: slantOrder("PRINTING"), typical: nil, now: now, timeZone: utc))
+        XCTAssertFalse(plain.contains("usually"))
+        let unpaid = try XCTUnwrap(orderProblemGuidance(.late, order: slantOrder("PRINTING", processedAt: nil), typical: typical, now: now, timeZone: utc))
+        XCTAssertFalse(unpaid.contains("usually"))
+        for text in [late, early] {
+            for word in ["within", "claim", "guarantee", "refund", "median"] { XCTAssertFalse(text.lowercased().contains(word), word) }
+        }
+    }
+
+    func testTrackParcelOnlyForALateOrderWithARecognisedCarrier() {
+        let shipped = slantOrder("SHIPPED", fulfillment: ["provider": "SHIPPO", "trackingNumbers": ["LS123456785US"]])
+        XCTAssertEqual(orderProblemTrackingCarrier(.late, order: shipped)?.name, "USPS")
+        XCTAssertNil(orderProblemTrackingCarrier(.damaged, order: shipped))
+        XCTAssertNil(orderProblemTrackingCarrier(nil, order: shipped))
+        XCTAssertNil(orderProblemTrackingCarrier(.late, order: slantOrder("SHIPPED", fulfillment: ["trackingNumbers": ["TEST0001"]])),
+                     "not recognised")
+        XCTAssertNil(orderProblemTrackingCarrier(.late, order: slantOrder("SHIPPED", fulfillment: ["provider": "UPS", "trackingNumbers": ["LS123456785US"]])),
+                     "never another carrier than the one Slant named")
+        XCTAssertNil(orderProblemTrackingCarrier(.late, order: slantOrder("PRINTING")), "still at Slant")
+        let dapiShipped = insightOrder(status: .shipped, tracking: "1Z999AA10123456784")
+        XCTAssertEqual(dapiProblemTrackingCarrier(.late, order: dapiShipped)?.name, "UPS")
+        XCTAssertNil(dapiProblemTrackingCarrier(.late, order: insightOrder(status: .shipped, carrier: "DHL", tracking: "1Z999AA10123456784")))
+        XCTAssertNil(dapiProblemTrackingCarrier(.late, order: insightOrder(status: .paid, tracking: "1Z999AA10123456784")))
+        XCTAssertNil(dapiProblemTrackingCarrier(.other, order: dapiShipped))
     }
 
     // MARK: 3DAPI late stage

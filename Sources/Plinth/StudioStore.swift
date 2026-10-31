@@ -1304,7 +1304,6 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
         disabledPlatformsThisSession = []; webhookSecretUncertainPlatformIDs = []; deadWebhooks = [:]; componentCategories = []
         importedSaleAmounts = [:]
-        forgetShopFollowUpDone()
     }
     // The pay/cancel lock, the unconfirmed draft-create notice and the import ledger are deliberately NOT cleared
     // by a key change or Disconnect: Studio can't tell whether a new key belongs to the same Slant account, and a
@@ -1379,6 +1378,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 platformID = ""
                 fileID = ""; filamentID = ""
                 forgetHiddenDrafts()
+                forgetShopFollowUpDone()
                 cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""
             }
             apiKey = trimmed
@@ -1397,6 +1397,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         apiKey = ""
         resetAccountDataPreservingKey()
         forgetHiddenDrafts()
+        forgetShopFollowUpDone()
     }
     /// Re-fetches the live filament list without blocking other work, so new materials and colours appear without a manual refresh.
     func refreshFilamentsIfStale(maxAge: TimeInterval = 60) async {

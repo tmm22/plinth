@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 // MARK: - Order detail extras
 //
@@ -274,34 +275,52 @@ let orderProblemReportCaption = "Plinth puts together a message with this order�
 
 /// Where a late order is held up, from Slant's own data (read-only advice; the Late delivery problem only).
 enum OrderLateStage: Equatable {
-    /// Being made, with no tracking number: Slant hasn't made a shipping label, so the delay is at Slant.
+    /// Being made, with no shipping label yet (no shipping record date and no tracking number): the delay is at Slant.
     case atSlant
-    /// Slant's shipping record says it shipped, or a label (tracking number) exists: most likely with the carrier.
+    /// Slant's shipping record says it shipped, or a shipping label exists (a shipping record date or a tracking
+    /// number): most likely with the carrier.
     case withCarrier
 }
 
 /// Where a late order is: with the carrier once the shipping record says SHIPPED or DELIVERED (`orderDisplayStatus`,
-/// so a lagging order status still counts as shipped) or any tracking number exists; at Slant while the status is a
-/// production status with no tracking number. Nil for drafts, cancelled orders and statuses Plinth doesn't know.
-/// Slant sends `fulfillment` as null until a label is made (live, Oct 2026). Display and advice only.
+/// so a lagging order status still counts as shipped), or once a shipping label exists (Slant's shipping record date,
+/// `fulfillment.createdAt`, or any tracking number); at Slant while the status is a production status with neither.
+/// Nil for drafts, cancelled orders and statuses Plinth doesn't know. Slant sends `fulfillment` as null until a label
+/// is made (live, Oct 2026). Display and advice only.
 func orderLateStage(_ order: [String: Any]) -> OrderLateStage? {
     let shown = orderDisplayStatus(order).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     let raw = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     if orderFulfillmentShippedStatuses.contains(shown) { return .withCarrier }
     guard orderAttentionProductionStatuses.contains(raw) else { return nil }
-    return orderTrackingNumbers(order).isEmpty ? .atSlant : .withCarrier
+    let labelMade = orderShippingRecordCreatedDate(order) != nil || !orderTrackingNumbers(order).isEmpty
+    return labelMade ? .withCarrier : .atSlant
 }
 
 /// What Plinth says under the problem picker; nil when there's nothing particular. Only Late delivery has advice,
-/// and it depends on whether the order has left Slant (`orderLateStage`). Never a claim window or a promise.
-func orderProblemGuidance(_ kind: OrderProblemKind, order: [String: Any]) -> String? {
+/// and it depends on whether the order has left Slant (`orderLateStage`). At Slant, the seller's own usual time to a
+/// shipping label (`typical`, `orderShipTimeSummary` over the default platform's loaded orders) puts the wait in
+/// context: "Paid 1 business day ago; your recent orders usually got a shipping label after 3. It may not be late
+/// yet." Never a claim window or a promise.
+func orderProblemGuidance(_ kind: OrderProblemKind, order: [String: Any], typical: OrderShipTimeSummary? = nil,
+                          now: Date = Date(), timeZone: TimeZone = .current) -> String? {
     guard kind == .late, let stage = orderLateStage(order) else { return nil }
     switch stage {
     case .atSlant:
-        return "Slant hasn’t made a shipping label for this order yet, so the delay is at Slant, not with the carrier. Send this message to Slant support; it says when the order was paid for."
+        let send = "Send this message to Slant support; it says when the order was paid."
+        guard let typical, let paid = orderPaidDate(order) else {
+            return "Slant hasn’t made a shipping label for this order yet, so the delay is at Slant, not with the carrier. " + send
+        }
+        let calendar = orderBusinessDayCalendar(timeZone: timeZone)
+        let days = paid > now ? 0 : orderBusinessDays(from: paid, to: now, calendar: calendar)
+        let when = typical.median == 0 ? "the same business day" : "after \(orderShipTimeNumberText(typical.median))"
+        let usual = "Paid \(orderPaidAgoText(paid, now: now, timeZone: timeZone)); your recent orders usually got a shipping label \(when)."
+        if Double(days) < typical.median {
+            return "Slant hasn’t made a shipping label for this order yet. \(usual) It may not be late yet. If you still want to ask, send this message to Slant support; it says when the order was paid."
+        }
+        return "Slant hasn’t made a shipping label for this order yet, so the delay is at Slant, not with the carrier. \(usual) " + send
     case .withCarrier:
-        let shipped = orderFulfillmentShippedStatuses.contains(orderDisplayStatus(order).uppercased())
-        let lead = shipped
+        let shown = orderDisplayStatus(order).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let lead = orderFulfillmentShippedStatuses.contains(shown)
             ? "Slant’s shipping record says this order has shipped, so this is most likely a carrier delay."
             : "Slant has made a shipping label for this order, so it may be with the carrier."
         guard !orderTrackingNumbers(order).isEmpty else {
@@ -309,6 +328,17 @@ func orderProblemGuidance(_ kind: OrderProblemKind, order: [String: Any]) -> Str
         }
         return lead + " Check the tracking first. If the carrier hasn’t scanned the parcel, or the tracking has stopped moving, send this message to Slant support; it includes the tracking number."
     }
+}
+
+/// The carrier whose tracking page Report a Problem's Track Parcel opens for a late order with the carrier: one every
+/// tracking number names unambiguously (`carrierDetected`, agreeing with any carrier Slant named) and that has a page;
+/// nil otherwise. Opened only on the seller's click.
+func orderProblemTrackingCarrier(_ kind: OrderProblemKind?, order: [String: Any]) -> DetectedCarrier? {
+    guard kind == .late, orderLateStage(order) == .withCarrier else { return nil }
+    let numbers = orderTrackingNumbers(order)
+    guard numbers.count == 1, let carrier = carrierDetected(forNumbers: numbers, namedCarrier: fulfillmentProvider(order["fulfillment"])),
+          carrier.trackingURL != nil else { return nil }
+    return carrier
 }
 
 /// "31 October 2026" in the Mac's time zone, in English (the message is written in English).
@@ -340,9 +370,9 @@ func problemReportDateWithAge(_ date: Date, now: Date, calendar: Calendar) -> St
     return problemReportDaysAgoText(date, now: now, calendar: calendar).map { "\(text) (\($0))" } ?? text
 }
 
-/// The extra message lines for Late delivery: when it was paid for (Slant's `processedAt`) and that there's no
-/// shipping label yet, or when Slant's shipping record was made (`fulfillment.createdAt`, about when the label was
-/// made). Only dates Slant sent; a missing or unreadable one is left out, never guessed.
+/// The extra message lines for Late delivery: when it was paid (Slant's `processedAt`) and that there's no shipping
+/// label yet, or when the shipping label was created (`fulfillment.createdAt`). Only dates Slant sent; a missing or
+/// unreadable one is left out, never guessed.
 func orderLateProblemLines(_ order: [String: Any], now: Date = Date(), calendar: Calendar = .current) -> [String] {
     guard let stage = orderLateStage(order) else { return [] }
     var lines: [String] = []
@@ -354,7 +384,7 @@ func orderLateProblemLines(_ order: [String: Any], now: Date = Date(), calendar:
         lines.append("Shipping label: not made yet")
     case .withCarrier:
         if let raw = (order["fulfillment"] as? [String: Any])?["createdAt"] as? String, let made = orderTimestamp(raw) {
-            lines.append("Shipping record created: \(problemReportDateWithAge(made, now: now, calendar: calendar))")
+            lines.append("Shipping label created: \(problemReportDateWithAge(made, now: now, calendar: calendar))")
         }
     }
     return lines
@@ -469,10 +499,16 @@ struct OrderProblemReportSheet: View {
                 ForEach(orderProblemKinds(status: orderDisplayStatus(order))) { Text($0.title).tag(OrderProblemKind?.some($0)) }
             }
             .fixedSize()
-            // Late delivery: whether the delay is at Slant or with the carrier (`orderLateStage`).
-            if let guidance = problem.flatMap({ orderProblemGuidance($0, order: order) }) {
+            // Late delivery: whether the delay is at Slant or with the carrier (`orderLateStage`), at Slant against the
+            // seller's own usual time to a shipping label (default platform only).
+            if let guidance = problem.flatMap({ orderProblemGuidance($0, order: order, typical: store.orderShipTimeSummary(for: store.orders)) }) {
                 Label(guidance, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // With the carrier: its tracking page, opened in the browser only on this click; Plinth sends nothing.
+            if let carrier = orderProblemTrackingCarrier(problem, order: order), let url = carrier.trackingURL {
+                Button("Track Parcel") { NSWorkspace.shared.open(url) }
+                    .help("Open \(carrier.name)’s tracking page for this order in your browser")
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("What happened")
@@ -518,7 +554,7 @@ struct OrderProblemReportSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 540, height: 640)
+        .frame(width: 540, height: 680)
         .onChange(of: problem) { copied = false }
         .onChange(of: details) { copied = false }
     }

@@ -279,18 +279,18 @@ final class OrdersRound14ReadTests: XCTestCase {
 
     // MARK: Detail facts
 
-    func testDetailFactsShowPlacedAndUpdated() {
-        let facts = orderDetailFacts([
+    func testDatesLeaveTheReceiptForTheTimeline() {
+        let order: [String: Any] = [
             "createdAt": "2026-10-20T09:00:00.000Z", "processedAt": "2026-10-20T10:00:00.000Z",
             "updatedAt": "2026-10-27T15:30:00.000Z"
-        ])
-        XCTAssertEqual(facts.map(\.0), ["Placed", "Updated"])
-        XCTAssertFalse(facts[1].1.isEmpty)
-        // Unchanged since it was made: no Updated line.
-        XCTAssertNil(orderDetailUpdatedLabel(["createdAt": "2026-10-20T09:00:00.000Z", "updatedAt": "2026-10-20T09:00:00.400Z"]))
-        XCTAssertNotNil(orderDetailUpdatedLabel(["updatedAt": "2026-10-20T09:00:00Z"]))
-        XCTAssertNil(orderDetailUpdatedLabel(["updatedAt": "soon"]))
-        XCTAssertNil(orderDetailUpdatedLabel(["updatedAt": NSNull()]))
+        ]
+        XCTAssertTrue(orderDetailFacts(order).isEmpty, "no Placed or Updated in the receipt")
+        XCTAssertEqual(orderTimelineEvents(order).map(\.title), ["Created", "Paid", "Last updated"])
+        // Unchanged since it was made: no Last updated row.
+        XCTAssertNil(orderLastUpdatedDate(["createdAt": "2026-10-20T09:00:00.000Z", "updatedAt": "2026-10-20T09:00:00.400Z"]))
+        XCTAssertNotNil(orderLastUpdatedDate(["updatedAt": "2026-10-20T09:00:00Z"]))
+        XCTAssertNil(orderLastUpdatedDate(["updatedAt": "soon"]))
+        XCTAssertNil(orderLastUpdatedDate(["updatedAt": NSNull()]))
         XCTAssertTrue(orderDetailFacts(["processedAt": NSNull(), "updatedAt": NSNull()]).isEmpty)
     }
 }

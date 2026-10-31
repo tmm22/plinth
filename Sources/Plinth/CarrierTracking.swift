@@ -7,8 +7,10 @@ import Foundation
 // checksum-valid and unambiguous; anything else is "not recognised" and nothing is shown. Slant's `fulfillment.provider`
 // names the label service (SHIPPO, SHIPSTATION), not the carrier, and Slant sends no tracking link (live, 1 Nov 2026).
 //
-// Rules checked against the MIT-licensed jkeen/tracking_number_data test numbers (UPS 1Z, USPS IMpb, FedEx Express 12
-// and Ground 15, DHL Express 10, UPU S10) and UPU S10's published check digit; only the rules are reimplemented.
+// Rules checked against the MIT-licensed jkeen/tracking_number_data test numbers (UPS 1Z, USPS IMpb, UPU S10) and UPU
+// S10's published check digit; only the rules are reimplemented. FedEx's 12- and 15-digit and DHL Express's 10-digit
+// numbers are deliberately not detected: their check digits are too weak to rule out another carrier's plain digits,
+// and a false match would name the wrong carrier to Shopify and the buyer.
 
 /// A carrier worked out from a tracking number.
 struct DetectedCarrier: Equatable, Sendable {
@@ -60,8 +62,6 @@ func detectCarrier(_ raw: String) -> CarrierDetection {
     case .shared: ambiguousNames += ["USPS", "FedEx Ground Economy"]
     case nil: break
     }
-    if carrierIsFedEx12(number) || carrierIsFedEx15(number) { candidates.append(carrierKnown(.fedex, number: number)) }
-    if carrierIsDHLExpress10(number) { candidates.append(carrierKnown(.dhlExpress, number: number)) }
     let names = Array(Set(candidates.map(\.name) + ambiguousNames)).sorted()
     if names.count > 1 || !ambiguousNames.isEmpty { return .ambiguous(names) }
     guard let only = candidates.first else { return .notRecognised }
@@ -125,7 +125,7 @@ func carrierDetected(forNumbers numbers: [String], namedCarrier: String?) -> Det
 // MARK: Carriers
 
 private enum KnownCarrier {
-    case usps, ups, fedex, dhlExpress
+    case usps, ups
 }
 
 private func carrierKnown(_ carrier: KnownCarrier, number: String) -> DetectedCarrier {
@@ -135,13 +135,6 @@ private func carrierKnown(_ carrier: KnownCarrier, number: String) -> DetectedCa
                                shopifyCompany: "USPS")
     case .ups:
         return DetectedCarrier(name: "UPS", trackingURL: carrierURL("https://www.ups.com/track?tracknum=", number), shopifyCompany: "UPS")
-    case .fedex:
-        return DetectedCarrier(name: "FedEx", trackingURL: carrierURL("https://www.fedex.com/fedextrack/?trknbr=", number),
-                               shopifyCompany: "FedEx")
-    case .dhlExpress:
-        return DetectedCarrier(name: "DHL Express",
-                               trackingURL: carrierURL("https://www.dhl.com/global-en/home/tracking/tracking-express.html?submit=1&tracking-id=", number),
-                               shopifyCompany: "DHL Express")
     }
 }
 
@@ -165,7 +158,7 @@ private func carrierDigits(_ number: String) -> [Int]? {
     return digits
 }
 
-/// GS1 mod 10 (USPS IMpb, FedEx Ground 15): weights 3, 1, 3… from the digit next to the check digit.
+/// GS1 mod 10 (USPS IMpb): weights 3, 1, 3… from the digit next to the check digit.
 func carrierGS1CheckDigitValid(_ digits: [Int]) -> Bool {
     guard digits.count >= 2 else { return false }
     let body = digits.dropLast()
@@ -237,25 +230,4 @@ private func carrierUSPSIMpb(_ number: String) -> CarrierIMpb? {
     case "93", "94", "95": return .usps
     default: return nil
     }
-}
-
-/// FedEx Express: 12 digits; weights 3 1 7 on the first 11, total mod 11 mod 10.
-func carrierIsFedEx12(_ number: String) -> Bool {
-    guard number.count == 12, let digits = carrierDigits(number) else { return false }
-    let weights = [3, 1, 7]
-    let total = digits.prefix(11).enumerated().reduce(0) { $0 + $1.element * weights[$1.offset % 3] }
-    return total % 11 % 10 == digits[11]
-}
-
-/// FedEx Ground: 15 digits, GS1 check digit.
-func carrierIsFedEx15(_ number: String) -> Bool {
-    guard number.count == 15, let digits = carrierDigits(number) else { return false }
-    return carrierGS1CheckDigitValid(digits)
-}
-
-/// DHL Express waybill: 10 digits, the first nine mod 7 as the last.
-func carrierIsDHLExpress10(_ number: String) -> Bool {
-    guard number.count == 10, let digits = carrierDigits(number) else { return false }
-    let body = digits.prefix(9).reduce(0) { $0 * 10 + $1 }
-    return body % 7 == digits[9]
 }

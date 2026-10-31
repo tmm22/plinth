@@ -86,31 +86,29 @@ private let shopifyCarrierNames: [String: String] = [
     "GLS": "GLS", "POSTNL": "PostNL", "DEUTSCHEPOST": "Deutsche Post", "LAPOSTE": "La Poste", "SENDLE": "Sendle"
 ]
 
-/// The review's words for a candidate's company: "USPS (from the tracking number)", "UPS", or nil when blank.
+/// The review's words for a candidate's company: just the carrier ("USPS", "UPS"), or nil when blank. Whether it was
+/// worked out from the tracking numbers goes in the row's help (`shopifyTrackingCompanyHelp`).
 func shopifyTrackingCompanyText(_ candidate: ShopifyTrackingCandidate) -> String? {
-    guard !candidate.company.isEmpty else { return nil }
-    return candidate.companyFromNumber ? "\(candidate.company) (from the tracking number)" : candidate.company
+    candidate.company.isEmpty ? nil : candidate.company
 }
 
-/// The confirmation's sentence about the carriers sent: "Carrier sent with the tracking: USPS for 2 orders (worked
-/// out from the tracking numbers); for the rest Shopify works it out." Empty when no order names one.
+/// Help for the row's carrier.
+func shopifyTrackingCompanyHelp(_ candidate: ShopifyTrackingCandidate) -> String {
+    candidate.companyFromNumber ? carrierDetectedHelp() : "The carrier Slant named."
+}
+
+/// The confirmation's sentence about the carriers sent: "Carrier sent: USPS for 2 orders; Shopify works out the
+/// rest." (the last part only when some orders send none). Empty when no order names one.
 func shopifyTrackingCompanySentence(_ jobs: [ShopifyTrackingCandidate]) -> String {
     var counts: [String: Int] = [:]
-    var fromNumber = false
-    for job in jobs where !job.company.isEmpty {
-        counts[job.company, default: 0] += 1
-        if job.companyFromNumber { fromNumber = true }
-    }
+    for job in jobs where !job.company.isEmpty { counts[job.company, default: 0] += 1 }
     guard !counts.isEmpty else { return "" }
     let parts = counts.keys.sorted().map { name -> String in
         let count = counts[name] ?? 0
         return count == 1 ? "\(name) for 1 order" : "\(name) for \(count) orders"
     }
     let blank = jobs.count - counts.values.reduce(0, +)
-    var sentence = "Carrier sent with the tracking: \(parts.joined(separator: ", "))"
-    if fromNumber { sentence += " (worked out from the tracking numbers where Slant names only its label service)" }
-    sentence += blank > 0 ? "; for the rest Shopify works it out from the number." : "."
-    return sentence
+    return "Carrier sent: \(parts.joined(separator: ", "))" + (blank > 0 ? "; Shopify works out the rest." : ".")
 }
 
 func shopifyTrackingCompanyName(_ provider: String) -> String {
@@ -660,7 +658,7 @@ struct ShopifyTrackingSheet: View {
                     Text("Shopify order \(candidate.orderName)").fontWeight(.semibold).lineLimit(1)
                     if let company = shopifyTrackingCompanyText(candidate) {
                         Text("· \(company)").foregroundStyle(.secondary).lineLimit(1)
-                            .help(candidate.companyFromNumber ? carrierDetectedHelp : "The carrier Slant named")
+                            .help(shopifyTrackingCompanyHelp(candidate))
                     }
                 }
                 Text(candidate.trackingNumbers.joined(separator: ", ")).font(.callout.monospaced()).lineLimit(2).textSelection(.enabled)

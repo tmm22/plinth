@@ -4,9 +4,10 @@ import SwiftUI
 // MARK: - Order timeline and time to ship
 //
 // Display only, worked out from orders already loaded: the order detail's dated events (Created, Paid, Shipping
-// label created, Arrive by), the caption for a paid order that hasn't shipped, and the seller's own typical time from
-// payment to a shipping label (the order detail and the Spending Report). Nothing here sends a request, saves order
-// data, or feeds any pay, cancel or lock check, and nothing is presented as Slant's status or a promise from Slant.
+// label created, Arrive by, Last updated), the caption for a paid order that hasn't shipped, and the seller's own
+// typical time from payment to a shipping label (that caption and Report a Problem's late advice). Nothing here sends
+// a request, saves order data, or feeds any pay, cancel or lock check, and nothing is presented as Slant's status or a
+// promise from Slant.
 //
 // Slant removed its print stages on 26 Oct 2026: live orders read on 1 Nov 2026 had no `printItem.assignments` and a
 // null `estimatedPrintCompletion` on every item. The shipping record (`fulfillment`) is null until the order ships,
@@ -28,7 +29,8 @@ func orderPaidDate(_ order: [String: Any]) -> Date? {
     orderTimelineDate(order["processedAt"])
 }
 
-/// When Slant's shipping record was created (`fulfillment.createdAt`), or nil without one.
+/// When Slant's shipping record was created (`fulfillment.createdAt`), or nil without one. The seller sees it as when
+/// the shipping label was created: the record is made with the label.
 func orderShippingRecordCreatedDate(_ order: [String: Any]) -> Date? {
     orderFulfillmentObject(order).flatMap { orderTimelineDate($0["createdAt"]) }
 }
@@ -43,7 +45,7 @@ func orderShippingLabelPrinted(_ order: [String: Any]) -> Bool {
 /// One dated event in the order detail's timeline.
 struct OrderTimelineEvent: Equatable, Identifiable {
     enum Kind: String, Equatable {
-        case created, paid, shippingRecord, arriveBy
+        case created, paid, shippingRecord, arriveBy, updated
     }
     let kind: Kind
     let title: String
@@ -53,8 +55,9 @@ struct OrderTimelineEvent: Equatable, Identifiable {
     var id: String { kind.rawValue }
 }
 
-/// The order's dated events in a fixed order: Created, Paid, Shipping label created (or Shipping record created when
-/// Slant doesn't say a label was printed), Arrive by. Each appears only when its date reads; nothing is guessed.
+/// The order's dated events in a fixed order: Created, Paid (`processedAt`), Shipping label created (the shipping
+/// record's `createdAt`, whatever `labelPrinted` says), Arrive by, then Last updated (`updatedAt`, left out within a
+/// minute of creation: `orderLastUpdatedDate`). Each appears only when its date reads; nothing is guessed.
 func orderTimelineEvents(_ order: [String: Any]) -> [OrderTimelineEvent] {
     var events: [OrderTimelineEvent] = []
     if let created = orderCreatedDate(order) {
@@ -64,13 +67,14 @@ func orderTimelineEvents(_ order: [String: Any]) -> [OrderTimelineEvent] {
         events.append(OrderTimelineEvent(kind: .paid, title: "Paid", date: paid))
     }
     if let record = orderShippingRecordCreatedDate(order) {
-        events.append(OrderTimelineEvent(kind: .shippingRecord,
-                                         title: orderShippingLabelPrinted(order) ? "Shipping label created" : "Shipping record created",
-                                         date: record))
+        events.append(OrderTimelineEvent(kind: .shippingRecord, title: "Shipping label created", date: record))
     }
     if let arriveBy = orderArriveByDate(order) {
         events.append(OrderTimelineEvent(kind: .arriveBy, title: "Arrive by", date: arriveBy,
                                          dateOnly: orderArriveByIsDateOnly(arriveBy)))
+    }
+    if let updated = orderLastUpdatedDate(order) {
+        events.append(OrderTimelineEvent(kind: .updated, title: "Last updated", date: updated))
     }
     return events
 }
@@ -124,25 +128,53 @@ func orderIsPaidAwaitingShipment(_ order: [String: Any]) -> Bool {
         && orderShippingRecordCreatedDate(order) == nil
 }
 
-/// The caption under the detail's header for a paid order that hasn't shipped: "Paid 29 Oct · 3 business days ago ·
-/// Slant doesn’t share print stages or a finish date." The last part is left out when an item did report progress
-/// (`hasItemProgress`), which Plinth still shows if Slant ever sends it. Nil for any other order.
-func orderPaidAwaitingShipmentCaption(_ order: [String: Any], hasItemProgress: Bool = false, now: Date = Date(),
+/// How long ago the order was paid, in words: "3 business days ago", or, while no business day has passed (paid
+/// today, at the weekend, or ahead of the clock), by the calendar: "today", "yesterday" or "on Saturday".
+func orderPaidAgoText(_ paid: Date, now: Date = Date(), locale: Locale = .current, timeZone: TimeZone = .current) -> String {
+    let calendar = orderBusinessDayCalendar(timeZone: timeZone)
+    if paid > now || calendar.isDate(paid, inSameDayAs: now) { return "today" }
+    let days = orderBusinessDays(from: paid, to: now, calendar: calendar)
+    if days > 0 { return "\(orderBusinessDaysText(days)) ago" }
+    if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(paid, inSameDayAs: yesterday) {
+        return "yesterday"
+    }
+    let formatter = DateFormatter()
+    formatter.locale = locale
+    formatter.timeZone = timeZone
+    formatter.setLocalizedDateFormatFromTemplate("EEEE")
+    return "on \(formatter.string(from: paid))"
+}
+
+/// When the label usually came: "after 3 business days", "after 1 business day", "after 3.5 business days" for a
+/// median halfway between two values, or "the same business day" for a median of 0.
+func orderShipTimeTypicalText(_ summary: OrderShipTimeSummary) -> String {
+    if summary.median == 0 { return "the same business day" }
+    return summary.median == 1 ? "after 1 business day" : "after \(orderShipTimeNumberText(summary.median)) business days"
+}
+
+/// The caption under the detail's header for a paid order that hasn't shipped: "Paid 3 business days ago (29 Oct)."
+/// (or "Paid today (1 Nov).", "Paid yesterday (31 Oct).", "Paid on Saturday (31 Oct)." while no business day has
+/// passed), then, with the seller's own `typical` time, `orderShipTimeDetailLine`. Nil for any other order. That Slant
+/// shares no print stages goes in the help (`orderPaidAwaitingShipmentHelp`).
+func orderPaidAwaitingShipmentCaption(_ order: [String: Any], typical: OrderShipTimeSummary? = nil, now: Date = Date(),
                                       locale: Locale = .current, timeZone: TimeZone = .current) -> String? {
     guard orderIsPaidAwaitingShipment(order), let paid = orderPaidDate(order) else { return nil }
-    let calendar = orderBusinessDayCalendar(timeZone: timeZone)
-    let age: String
-    if paid > now || calendar.isDate(paid, inSameDayAs: now) {
-        age = "today"
-    } else {
-        let days = orderBusinessDays(from: paid, to: now, calendar: calendar)
-        age = days == 0 ? "no business days since" : "\(orderBusinessDaysText(days)) ago"
-    }
-    var parts = ["Paid \(orderTimelineDateText(paid, includeTime: false, now: now, locale: locale, timeZone: timeZone))", age]
-    if !hasItemProgress { parts.append("Slant doesn’t share print stages or a finish date.") }
-    var text = parts.joined(separator: " · ")
-    if hasItemProgress { text += "." }
+    let date = orderTimelineDateText(paid, includeTime: false, now: now, locale: locale, timeZone: timeZone)
+    var text = "Paid \(orderPaidAgoText(paid, now: now, locale: locale, timeZone: timeZone)) (\(date))."
+    if let typical { text += " " + orderShipTimeDetailLine(typical) }
     return text
+}
+
+/// Hover text for that caption: that Slant shares no print stages (left out if an item ever reports progress), how
+/// business days are counted, and where the usual time comes from.
+func orderPaidAwaitingShipmentHelp(hasItemProgress: Bool, hasTypical: Bool) -> String {
+    var parts: [String] = []
+    if !hasItemProgress { parts.append("Slant doesn’t share print stages or a finish date.") }
+    parts.append("Business days are weekdays in this Mac’s time zone; public holidays still count.")
+    if hasTypical {
+        parts.append("The usual time comes from your own recent orders on your default platform (up to \(orderShipTimeSampleLimit) with both dates): from payment to when Slant made the shipping label. It isn’t a promise from Slant.")
+    }
+    return parts.joined(separator: " ")
 }
 
 /// Whether any of the order's items has production progress to show (`orderItemProgress`), judged by the shown status.
@@ -182,7 +214,7 @@ func orderShipTimeSample(_ order: [String: Any], calendar: Calendar) -> (days: I
 
 /// The typical time from payment to a shipping label over `records`, newest record first, at most
 /// `orderShipTimeSampleLimit` orders, each order counted once. Nil with fewer than `orderShipTimeMinimumOrders`.
-/// Callers pass the rows they show or sum: the Spending Report's orders, or the loaded orders on the default platform
+/// Callers pass the loaded orders on the default platform
 /// (`ordersShownOnPlatform`), never every platform's.
 func orderShipTimeSummary(_ records: [Record], calendar: Calendar = .current) -> OrderShipTimeSummary? {
     var seen = Set<String>()
@@ -211,48 +243,18 @@ func orderShipTimeNumberText(_ value: Double) -> String {
     value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
 }
 
-/// "3–4 business days", or "3 business days" when every order took the same.
-func orderShipTimeRangeText(_ summary: OrderShipTimeSummary) -> String {
-    summary.fewest == summary.most ? orderBusinessDaysText(summary.fewest) : "\(summary.fewest)–\(summary.most) business days"
-}
-
-/// The order detail's line for a paid order that hasn't shipped: "Your recent orders got a shipping label 3–4
-/// business days after payment (median 3, last 5 orders)."
+/// The sentence about the seller's usual time: "Your recent orders usually got a shipping label after 3 business days
+/// (3–4 over the last 5)." or, when every order took the same, "(each of the last 3)".
 func orderShipTimeDetailLine(_ summary: OrderShipTimeSummary) -> String {
-    "Your recent orders got a shipping label \(orderShipTimeRangeText(summary)) after payment (median \(orderShipTimeNumberText(summary.median)), last \(summary.orders) orders)."
-}
-
-let orderShipTimeReportHeading = "Payment to shipping label"
-/// Under the Spending Report's section and in the copied text.
-let orderShipTimeReportCaption = "From your own orders in this report: business days from payment to when Slant’s shipping record was created, over your most recent \(orderShipTimeSampleLimit) at most. Weekends aren’t counted; public holidays are. Slant doesn’t publish a finish date, so this isn’t a promise."
-
-/// The section's one-line summary: "5 orders: 3–4 business days, median 3."
-func orderShipTimeReportLine(_ summary: OrderShipTimeSummary) -> String {
-    "\(summary.orders) orders: \(orderShipTimeRangeText(summary)), median \(orderShipTimeNumberText(summary.median))."
-}
-
-/// Appended to the Spending Report's copied text, or "" without a summary.
-func orderShipTimeReportText(_ summary: OrderShipTimeSummary?) -> String {
-    guard let summary else { return "" }
-    return ["", orderShipTimeReportHeading, orderShipTimeReportCaption, orderShipTimeReportLine(summary)]
-        .joined(separator: "\n") + "\n"
-}
-
-/// Appended to the Spending Report's CSV (after a blank row), or "" without a summary. Plain numbers only.
-func orderShipTimeReportCSV(_ summary: OrderShipTimeSummary?) -> String {
-    guard let summary else { return "" }
-    let rows: [[String]] = [
-        [],
-        ["Payment to shipping label", "Orders", "Fewest business days", "Most business days", "Median business days"],
-        ["Recent orders", String(summary.orders), String(summary.fewest), String(summary.most),
-         orderShipTimeNumberText(summary.median)]
-    ]
-    return rows.map { $0.map(csvField).joined(separator: ",") }.joined(separator: "\r\n") + "\r\n"
+    let spread = summary.fewest == summary.most
+        ? "each of the last \(summary.orders)"
+        : "\(summary.fewest)–\(summary.most) over the last \(summary.orders)"
+    return "Your recent orders usually got a shipping label \(orderShipTimeTypicalText(summary)) (\(spread))."
 }
 
 /// The typical time over `records` on the platform `platformID` (`ordersShownOnPlatform`, without the Orders list's
-/// lock exception, as the Spending Report sums: orders naming another platform are left out, orders naming none are
-/// kept, and without a platform nothing is left out). Display only; the records passed in are never changed.
+/// lock exception: orders naming another platform are left out, orders naming none are kept, and without a platform
+/// nothing is left out). Display only; the records passed in are never changed.
 func orderShipTimeSummary(_ records: [Record], platformID: String, calendar: Calendar = .current) -> OrderShipTimeSummary? {
     orderShipTimeSummary(ordersShownOnPlatform(records, platformID: platformID), calendar: calendar)
 }
@@ -266,13 +268,14 @@ extension StudioStore {
 
 // MARK: Views
 
-/// The order detail's timeline: one row per dated event. Display only.
+/// The order detail's timeline: one row per dated event, shown from two events up. Display only.
 struct OrderTimelineSection: View {
     let order: [String: Any]
 
     var body: some View {
         let events = orderTimelineEvents(order)
-        if !events.isEmpty {
+        // A lone date (a draft's Created) says nothing a timeline adds.
+        if events.count >= 2 {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Timeline").font(.headline)
                 ForEach(events) { event in

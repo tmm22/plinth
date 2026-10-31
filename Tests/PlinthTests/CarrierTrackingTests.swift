@@ -40,7 +40,7 @@ final class CarrierTrackingTests: XCTestCase {
         XCTAssertEqual(detectCarrier("RR202401015CV"), .notRecognised, "a real country Plinth has no operator for")
     }
 
-    // MARK: UPS, USPS, FedEx, DHL Express
+    // MARK: UPS, USPS
 
     func testUPS() {
         XCTAssertEqual(carrier("1Z999AA10123456784")?.name, "UPS")
@@ -67,20 +67,18 @@ final class CarrierTrackingTests: XCTestCase {
         XCTAssertNil(carrier("9261290876543210987652"))
     }
 
-    func testFedEx() {
-        XCTAssertEqual(carrier("123456789012")?.name, "FedEx")
-        XCTAssertEqual(carrier("987654321098")?.name, "FedEx")
-        XCTAssertEqual(carrier("123456789012")?.trackingURL?.absoluteString, "https://www.fedex.com/fedextrack/?trknbr=123456789012")
-        XCTAssertNil(carrier("123456789013"))
-        XCTAssertEqual(carrier("123456789012343")?.name, "FedEx", "15-digit Ground")
-        XCTAssertEqual(carrier("555555555555550")?.name, "FedEx")
-        XCTAssertNil(carrier("123456789012344"))
-    }
-
-    func testDHLExpress() {
-        XCTAssertEqual(carrier("1234567891")?.name, "DHL Express")
-        XCTAssertEqual(carrier("9876543213")?.shopifyCompany, "DHL Express")
-        XCTAssertNil(carrier("1234567892"))
+    func testPlainDigitNumbersNameNoCarrier() {
+        // FedEx 12 and 15 and DHL Express 10 aren't detected: their check digits are too weak to tell them from another
+        // carrier's plain digits, and a false match would send the wrong company to Shopify and the buyer. These pass
+        // the check digits those carriers use.
+        for number in ["123456789012", "987654321098", "123456789012343", "555555555555550", "1234567891", "9876543213"] {
+            XCTAssertEqual(detectCarrier(number), .notRecognised, number)
+            XCTAssertNil(carrierDetected(forNumber: number, namedCarrier: nil), number)
+            let entry = ShopFollowUpEntry(id: "S", slantOrderNumber: "S", marketplaceID: "#1", source: "shopify",
+                                          recipientFirstName: nil, provider: "SHIPPO", trackingNumbers: [number], status: "SHIPPED", created: nil)
+            XCTAssertEqual(shopifyTrackingCompany(entry), "", number)
+            XCTAssertNil(shopFollowUpDetectedCarrier(entry), number)
+        }
     }
 
     // MARK: Input handling
@@ -97,7 +95,7 @@ final class CarrierTrackingTests: XCTestCase {
                       String(repeating: "1", count: 41), "0"] {
             XCTAssertEqual(detectCarrier(value), .notRecognised, value)
         }
-        // All zeros passes the FedEx and DHL check digits but is a placeholder.
+        // All zeros passes several check digits but is a placeholder.
         XCTAssertEqual(detectCarrier("000000000000"), .notRecognised)
         XCTAssertEqual(detectCarrier("0000000000"), .notRecognised)
         XCTAssertNil(carrierTrackingNumberKey(String(repeating: "A", count: carrierTrackingNumberMaxLength + 1)))
@@ -132,8 +130,8 @@ final class CarrierTrackingTests: XCTestCase {
         XCTAssertEqual(carrierDetected(forNumber: "LS123456785US", namedCarrier: nil)?.name, "USPS")
         XCTAssertEqual(carrierDetected(forNumber: "LS123456785US", namedCarrier: " ")?.name, "USPS")
         XCTAssertEqual(carrierDetected(forNumber: "LS123456785US", namedCarrier: "USPS_INTERNATIONAL")?.name, "USPS")
-        XCTAssertEqual(carrierDetected(forNumber: "1234567891", namedCarrier: "DHL")?.name, "DHL Express")
-        XCTAssertEqual(carrierDetected(forNumber: "123456789012", namedCarrier: "FEDEX")?.name, "FedEx")
+        XCTAssertEqual(carrierDetected(forNumber: "1Z999AA10123456784", namedCarrier: "United Parcel Service")?.name, "UPS")
+        XCTAssertNil(carrierDetected(forNumber: "123456789012", namedCarrier: "FEDEX"), "FedEx numbers aren't detected")
         XCTAssertNil(carrierDetected(forNumber: "LS123456785US", namedCarrier: "UPS"), "never a link to another carrier than the one named")
         XCTAssertNil(carrierDetected(forNumbers: ["LS123456785US", "1Z999AA10123456784"], namedCarrier: "SHIPPO"))
         XCTAssertTrue(carrierNamesAgree("FedEx", "FEDEX"))
@@ -165,12 +163,12 @@ final class CarrierTrackingDisplayTests: XCTestCase {
 
     func testDetailRowsForALiveShapedShippedOrder() throws {
         let rows = orderTrackingDisplayRows(shippedOrder())
-        XCTAssertEqual(rows.map(\.label), ["Label service", "Carrier", "Service", "Tracking number"],
-                       "the shipment status repeating the header is left out")
-        XCTAssertEqual(rows[0].value, "Shippo")
-        XCTAssertEqual(rows[1].value, "USPS (from the tracking number)")
-        XCTAssertEqual(rows[2].value, "International")
-        let number = rows[3]
+        XCTAssertEqual(rows.map(\.label), ["Carrier", "Service", "Tracking number"],
+                       "one Carrier row stands in for the label service; the shipment status repeating the header is left out")
+        XCTAssertEqual(rows[0].value, "USPS")
+        XCTAssertEqual(rows[0].help, "Worked out from the tracking number. Label made through Shippo.")
+        XCTAssertEqual(rows[1].value, "International")
+        let number = rows[2]
         XCTAssertEqual(number.kind, .number)
         XCTAssertEqual(number.value, "LS123456785US")
         XCTAssertEqual(number.trackCarrier, "USPS")
@@ -197,12 +195,17 @@ final class CarrierTrackingDisplayTests: XCTestCase {
     func testUnrecognisedOddOrMissingNumbers() {
         let unknown = orderTrackingDisplayRows(shippedOrder(fulfillment: ["trackingNumbers": ["LS123456786US"]]))
         XCTAssertFalse(unknown.contains { $0.label == "Carrier" }, "nothing when not recognised")
+        XCTAssertEqual(unknown.first?.label, "Label service", "the label service is named as one")
+        XCTAssertEqual(unknown.first?.value, "Shippo")
+        let noService = orderTrackingDisplayRows(shippedOrder(fulfillment: ["provider": NSNull()]))
+        XCTAssertEqual(noService.first?.label, "Carrier")
+        XCTAssertEqual(noService.first?.help, "Worked out from the tracking number.", "no label service to name")
         XCTAssertNil(unknown.first { $0.kind == .number }?.trackURL)
         let empty = orderTrackingDisplayRows(shippedOrder(fulfillment: ["trackingNumbers": [String]()]))
         XCTAssertFalse(empty.contains { $0.kind == .number || $0.label == "Carrier" })
         let numeric = orderTrackingDisplayRows(shippedOrder(fulfillment: ["trackingNumbers": [NSNumber(value: 123456789012 as Int64), NSNull()]]))
         XCTAssertEqual(numeric.filter { $0.kind == .number }.map(\.value), ["123456789012"], "numbers sent as numbers still read")
-        XCTAssertEqual(numeric.first { $0.kind == .number }?.trackCarrier, "FedEx")
+        XCTAssertNil(numeric.first { $0.kind == .number }?.trackCarrier, "plain digits name no carrier")
         let mixed = orderTrackingDisplayRows(shippedOrder(fulfillment: ["trackingNumbers": ["LS123456785US", "1Z999AA10123456784"]]))
         XCTAssertFalse(mixed.contains { $0.label == "Carrier" }, "numbers that disagree name no single carrier")
         XCTAssertEqual(mixed.filter { $0.kind == .number }.compactMap(\.trackCarrier), ["USPS", "UPS"], "each number keeps its own link")
@@ -210,9 +213,18 @@ final class CarrierTrackingDisplayTests: XCTestCase {
 
     func testExportNeverCallsALabelServiceTheCarrier() throws {
         let column = try XCTUnwrap(ordersCSVBaseColumns.firstIndex(of: "Carrier"))
-        XCTAssertEqual(ordersCSVRow(Record(values: shippedOrder()), includeAddresses: false)[column], "",
-                       "the export holds only what Slant returned, and Slant named only the label service")
-        XCTAssertEqual(ordersCSVRow(Record(values: shippedOrder(fulfillment: ["provider": "UPS"])), includeAddresses: false)[column], "UPS")
+        let detected = try XCTUnwrap(ordersCSVBaseColumns.firstIndex(of: "Carrier (from tracking number)"))
+        XCTAssertEqual(detected, column + 1, "right after Slant's Carrier")
+        let row = ordersCSVRow(Record(values: shippedOrder()), includeAddresses: false)
+        XCTAssertEqual(row[column], "", "Carrier holds only what Slant returned, and Slant named only the label service")
+        XCTAssertEqual(row[detected], "USPS")
+        let ups = ordersCSVRow(Record(values: shippedOrder(fulfillment: ["provider": "UPS"])), includeAddresses: false)
+        XCTAssertEqual(ups[column], "UPS")
+        XCTAssertEqual(ups[detected], "", "the number disagrees with the carrier Slant named")
+        for numbers in [["LS123456786US"], ["9261290876543210987652"], ["LS123456785US", "1Z999AA10123456784"], ["123456789012"]] {
+            let values = shippedOrder(fulfillment: ["trackingNumbers": numbers])
+            XCTAssertEqual(ordersCSVRow(Record(values: values), includeAddresses: false)[detected], "", "\(numbers)")
+        }
     }
 
     // MARK: Tracking for Your Shop
@@ -233,13 +245,14 @@ final class CarrierTrackingDisplayTests: XCTestCase {
     }
 
     func testCarrierCaption() {
-        XCTAssertEqual(shopFollowUpCarrierLine(entry(numbers: ["LS123456785US"])),
-                       "Label service: Shippo · Carrier: USPS (from the tracking number)")
-        XCTAssertEqual(shopFollowUpCarrierLine(entry(numbers: ["LS123456785US"], provider: "UPS")), "Carrier: UPS")
-        XCTAssertEqual(shopFollowUpCarrierLine(entry(numbers: ["1Z999AA10123456784"], provider: nil)),
-                       "Carrier: UPS (from the tracking number)")
-        XCTAssertNil(shopFollowUpCarrierLine(entry(numbers: ["X1"], provider: nil)))
-        XCTAssertEqual(shopFollowUpCarrierLine(entry(numbers: ["X1"])), "Label service: Shippo")
+        let detected = shopFollowUpCarrierCaption(entry(numbers: ["LS123456785US"]))
+        XCTAssertEqual(detected?.text, "USPS", "just the carrier's name")
+        XCTAssertEqual(detected?.help, "Worked out from the tracking number. Label made through Shippo.")
+        XCTAssertEqual(shopFollowUpCarrierCaption(entry(numbers: ["LS123456785US"], provider: "UPS"))?.text, "UPS")
+        XCTAssertEqual(shopFollowUpCarrierCaption(entry(numbers: ["1Z999AA10123456784"], provider: nil))?.help,
+                       "Worked out from the tracking number.")
+        XCTAssertNil(shopFollowUpCarrierCaption(entry(numbers: ["X1"], provider: nil)))
+        XCTAssertEqual(shopFollowUpCarrierCaption(entry(numbers: ["X1"]))?.text, "Label service: Shippo")
     }
 
     func testShopifyCompanyUsesOnlyAnUnambiguousDetectionShopifyNames() {
@@ -254,28 +267,30 @@ final class CarrierTrackingDisplayTests: XCTestCase {
     }
 
     func testSendTrackingCandidatesCarryTheDetectedCompany() throws {
-        let candidates = shopifyTrackingCandidates([entry(numbers: ["9876543213"]), entry(numbers: ["X1"], provider: "UPS")]
+        let candidates = shopifyTrackingCandidates([entry(numbers: ["LS123456785US"]), entry(numbers: ["X1"], provider: "UPS")]
             .enumerated().map { offset, item in
                 ShopFollowUpEntry(id: "S\(offset)", slantOrderNumber: "S\(offset)", marketplaceID: "#100\(offset)", source: "shopify",
                                   recipientFirstName: nil, provider: item.provider, trackingNumbers: item.trackingNumbers,
                                   status: "SHIPPED", created: nil)
             }, done: [])
-        XCTAssertEqual(candidates.map(\.company), ["DHL Express", "UPS"])
+        XCTAssertEqual(candidates.map(\.company), ["USPS", "UPS"])
         XCTAssertEqual(candidates.map(\.companyFromNumber), [true, false])
-        XCTAssertEqual(shopifyTrackingCompanyText(candidates[0]), "DHL Express (from the tracking number)")
+        XCTAssertEqual(shopifyTrackingCompanyText(candidates[0]), "USPS", "how it was worked out goes in the help")
+        XCTAssertEqual(shopifyTrackingCompanyHelp(candidates[0]), "Worked out from the tracking number.")
         XCTAssertEqual(shopifyTrackingCompanyText(candidates[1]), "UPS")
+        XCTAssertEqual(shopifyTrackingCompanyHelp(candidates[1]), "The carrier Slant named.")
         let plan = ShopifyFulfilmentPlan(fulfillmentOrderID: "gid://shopify/FulfillmentOrder/5",
                                          lines: [ShopifyFulfilmentLine(id: "gid://shopify/FulfillmentOrderLineItem/51", quantity: 1)],
                                          items: [], remaining: [], matchedByAddress: false)
         let input = shopifyFulfillmentInput(plan, trackingNumbers: candidates[0].trackingNumbers, company: candidates[0].company, notifyCustomer: false)
-        XCTAssertEqual((input["trackingInfo"] as? [String: Any])?["company"] as? String, "DHL Express")
+        XCTAssertEqual((input["trackingInfo"] as? [String: Any])?["company"] as? String, "USPS")
         let message = shopifyTrackingConfirmationMessage(jobs: candidates, notifyCustomer: false)
-        XCTAssertTrue(message.contains("DHL Express for 1 order"))
-        XCTAssertTrue(message.contains("UPS for 1 order"))
-        XCTAssertTrue(message.contains("worked out from the tracking numbers"))
+        XCTAssertTrue(message.contains("Carrier sent: UPS for 1 order, USPS for 1 order."), message)
         XCTAssertTrue(message.contains("Customers aren’t emailed."))
         let blank = ShopifyTrackingCandidate(id: "B", orderName: "#9", trackingNumbers: ["X"], company: "")
         XCTAssertFalse(shopifyTrackingConfirmationMessage(jobs: [blank], notifyCustomer: true).contains("Carrier sent"))
+        XCTAssertEqual(shopifyTrackingCompanySentence([candidates[0], candidates[0], blank]),
+                       "Carrier sent: USPS for 2 orders; Shopify works out the rest.")
         XCTAssertNil(shopifyTrackingCompanyText(blank))
     }
 
@@ -283,11 +298,13 @@ final class CarrierTrackingDisplayTests: XCTestCase {
 
     func testDapiShippingPrefersItsCarrierAndLinksOnlyWhenTheNumberAgrees() {
         let none = DapiOrderShipping(tier: nil, carrier: nil, trackingNumber: "LS123456785US", shippedAt: nil)
-        XCTAssertEqual(dapiShippingCarrierText(none), "USPS (from the tracking number)")
+        XCTAssertEqual(dapiShippingCarrierText(none), "USPS")
+        XCTAssertEqual(dapiShippingCarrierHelp(none), "Worked out from the tracking number.")
         XCTAssertNotNil(dapiShippingDetectedCarrier(none)?.trackingURL)
         XCTAssertNil(dapiShippingTrackingNote(none), "Track Parcel covers it")
         let named = DapiOrderShipping(tier: nil, carrier: "USPS", trackingNumber: "LS123456785US", shippedAt: nil)
         XCTAssertEqual(dapiShippingCarrierText(named), "USPS")
+        XCTAssertNil(dapiShippingCarrierHelp(named), "3DAPI's own name needs no explanation")
         XCTAssertNotNil(dapiShippingDetectedCarrier(named))
         let other = DapiOrderShipping(tier: nil, carrier: "Royal Mail", trackingNumber: "LS123456785US", shippedAt: nil)
         XCTAssertEqual(dapiShippingCarrierText(other), "Royal Mail")
