@@ -58,6 +58,8 @@ struct DapiSuggestedMaterial: Equatable, Sendable {
     let fileFilamentType: String?
     /// "exact", "close" or "approximate", or nil.
     let match: String?
+    /// The suggested catalogue material's `mat_` ID (`suggested_materials[].material.id`), or nil when 3DAPI sent none.
+    var materialID: String? = nil
 }
 
 /// A quote (`POST /v2/quotes`, `GET /v2/quotes/{id}`, `GET /v2/quotes`).

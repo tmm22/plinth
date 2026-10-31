@@ -275,6 +275,9 @@ struct DapiOrderRequest: Equatable, Sendable {
     /// `^[A-Za-z0-9_-]{1,100}$`, always carrying Plinth's per-attempt marker.
     let reference: String
     let customerNotes: String?
+    /// Sends `use_sample_credit: true` (the seller ticked it): 3DAPI spends sample credit first, only on orders to the
+    /// seller's own country; otherwise the order is charged in full. Off unless the seller asks.
+    var useSampleCredit: Bool = false
 }
 
 /// Everything Plinth asks of 3DAPI for ordering, beside `DapiQuoting`. `DapiClient` conforms to both; tests stub it.
@@ -334,6 +337,25 @@ struct DapiUnconfirmedOrder: Equatable, Sendable, Identifiable {
     let sentAt: Date
 }
 
+/// A File menu command the 3DAPI Orders section performs (`DapiOrderSession.toolRequest`). Each only reads or opens
+/// a sheet; none sends a write.
+enum DapiOrderToolRequest: Equatable, Sendable {
+    case reload, spendingReport, exportOrders, trackingForYourShop
+}
+
+/// The seller's part of a reference Plinth sent (`dapiOrderReference`): the text before Plinth's "_pl<8 hex>" marker,
+/// or nil for Plinth's bare "plinth_<8 hex>" and for an empty reference. Any other reference (made outside Plinth) is
+/// returned as it is. Display only: lookups always use the full reference.
+func dapiOrderSellerReference(_ reference: String?) -> String? {
+    guard let reference = reference?.trimmingCharacters(in: .whitespacesAndNewlines), !reference.isEmpty else { return nil }
+    if reference.range(of: "^plinth_[0-9a-f]{8}$", options: .regularExpression) != nil { return nil }
+    if let marker = reference.range(of: "_pl[0-9a-f]{8}$", options: .regularExpression) {
+        let seller = String(reference[..<marker.lowerBound])
+        return seller.isEmpty ? nil : seller
+    }
+    return reference
+}
+
 /// What the Models section asks the 3DAPI composer to start with.
 struct DapiComposerPrefill: Equatable, Sendable {
     /// The library model to print (`LocalModel.id`), if any.
@@ -360,6 +382,11 @@ struct DapiComposerPrefill: Equatable, Sendable {
     @Published private(set) var cancelOutcomeUnknown: Set<String> = []
     /// Set by Models (Order with 3DAPI…, Order a Sample to Me); the Orders section consumes it and sets it back to nil.
     @Published var composerRequest: DapiComposerPrefill?
+    /// Set by a clicked 3DAPI order notification (a validated `ord_` ID): the Orders section reads that order by ID
+    /// (read-only), selects it and sets this back to nil.
+    @Published var orderToShow: String?
+    /// Set by the File menu while 3DAPI is the print service; the Orders section performs it and sets it back to nil.
+    @Published var toolRequest: DapiOrderToolRequest?
 
     func beginWrite(_ kind: SlantWriteKind) -> UUID {
         writesInFlight += 1

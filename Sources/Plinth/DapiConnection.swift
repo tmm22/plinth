@@ -138,7 +138,9 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
     /// File SHA-256 (hex, lower-case) → ready quote ID. Memory only, and for the saved key's account only.
     private var readyQuotes: [String: String] = [:]
     /// Bumped whenever the key is saved or removed, so a reply for an earlier key is never kept.
-    private var keyGeneration = 0
+    /// Bumped whenever the saved key is saved, replaced or removed: replies for an earlier key are dropped, and the
+    /// order screens and the order watch start over for the new key (it may belong to another account).
+    @Published private(set) var keyGeneration = 0
     private let defaults: UserDefaults
     private let keychain: any DapiKeyStore
     private let makeClient: @Sendable (String) -> any DapiQuoting
