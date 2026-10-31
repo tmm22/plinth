@@ -245,10 +245,10 @@ func listingPriceCheckUnavailableText(_ summary: ProductCostSummary) -> String? 
 /// How the delivery figure is described: an average of past orders, never a quote. Nil-safe for a missing hint.
 func listingPriceDeliveryNote(_ hint: ProductDeliveryHint?) -> String {
     guard let hint else {
-        return "Delivery isn’t included: no loaded orders with this product show what Slant charged for delivery, so the profit is before delivery."
+        return "Profit is before delivery: no past orders with this product show what delivery cost."
     }
     let orders = hint.orders == 1 ? "1 past order" : "\(hint.orders) past orders"
-    return "Delivery is the average Slant charged on \(orders) to \(spendReportCountryTitle(hint.countryCode)), not a quote. Slant prices delivery when a draft is created."
+    return "Delivery: average of \(orders) to \(spendReportCountryTitle(hint.countryCode)), not a quote."
 }
 
 /// "List at $18.40 a unit to keep a 30% margin." and the like, for the target margin row.
@@ -263,7 +263,12 @@ func listingPriceTargetText(_ target: ListingPriceTarget, targetPercent: Decimal
     }
 }
 
-let listingPriceCheckCaption = "Try a listing price to see what you’d keep, in US dollars. Nothing you type here is saved, and it clears when you close Check Cost. Only the fee preset and rates are remembered, shared with the Profit check."
+let listingPriceCheckCaption = "Try a listing price to see what you’d keep (USD)."
+/// The caption's help: what is and isn't remembered.
+let listingPriceCheckCaptionHelp = "Nothing you type here is saved, and it clears when you close Check Cost. Only the fee preset and rates are remembered, shared with the Profit check."
+/// One short line under the results; the detail is in its help.
+let listingPriceCheckFootnote = "Estimates only, before taxes, refunds, separate ads and currency conversion."
+let listingPriceCheckFootnoteHelp = "\(profitCheckExclusionsNote) Fee rates are assumptions, and Slant’s costs are estimates that can change."
 
 // MARK: - Runner
 
@@ -586,6 +591,7 @@ struct ProductCostCheckView: View {
             } else if let cost = listingPriceCheckCost(summary) {
                 Text(listingPriceCheckCaption).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .help(listingPriceCheckCaptionHelp)
                 moneyField(units == 1 ? "Listing price" : "Listing price per unit", text: $listingPriceText, prompt: "0.00")
                 moneyField("Shipping you charge per order", text: $shippingChargedText, prompt: "Optional")
                 ProfitFeeRatesEditor(preset: $feePreset, validRates: $feeRates, offsiteAds: $offsiteAds)
@@ -604,9 +610,10 @@ struct ProductCostCheckView: View {
                     }
                 }
                 targetMarginResult(cost: cost, units: units, delivery: deliveryHint?.average)
-                Text("\(profitCheckExclusionsNote) Fees are assumptions; costs are Slant’s estimates and can change.")
+                Text(listingPriceCheckFootnote)
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .help(listingPriceCheckFootnoteHelp)
             }
         }
         .labeledContentStyle(.receipt)

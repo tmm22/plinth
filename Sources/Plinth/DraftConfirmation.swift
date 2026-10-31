@@ -52,18 +52,24 @@ func orderMetadataAddingReprintOf(_ metadata: [String: Any], original: String?) 
     return result
 }
 
-/// What the reprint composer says about the link, from the reference fields typed so far: added, or why not. Nil
-/// when this isn't a reprint. Judged by the same two helpers Create Draft uses, so the note can't disagree with it.
+/// What the reprint composer says about the link, from the reference fields typed so far: normally just that it is
+/// marked, and the longer explanation only when the link can't go with the draft (the seller already uses the key,
+/// the reference fields are full, or the number can't be recorded). Nil when this isn't a reprint. Judged by the same
+/// two helpers Create Draft uses, so the note can't disagree with it. Visible text never names the key itself, except
+/// to point at a field the seller typed.
 func orderReprintLinkNote(original: String?, sellerMetadata: [String: Any]) -> String? {
     guard let number = original?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty else { return nil }
+    guard number.count <= orderReprintOfMaxLength, !number.contains(where: { $0.isNewline }) else {
+        return "The original order’s number can’t be recorded, so this draft won’t be marked as a reprint."
+    }
     if sellerMetadata[orderReprintOfKey] != nil {
-        return "You’ve typed a reference field named \(orderReprintOfKey), so Plinth won’t add its own link to order \(number)."
+        return "Your reference fields already include “\(orderReprintOfKey)”, so Plinth won’t mark this draft as a reprint of order \(number)."
     }
     let sent = orderMetadataAddingReprintOf(orderMetadataAddingDraftMarker(sellerMetadata, marker: "marker"), original: number)
     guard sent[orderReprintOfKey] != nil else {
-        return "The reference fields are full (Plinth’s draft reference uses one of the 10), so this draft won’t be linked to order \(number). Remove one under More options › Advanced to add the link."
+        return "The reference fields are full (Plinth uses one of the 10), so this draft won’t be marked as a reprint of order \(number). Remove one under More options › Advanced to mark it."
     }
-    return "Plinth links this draft to order \(number) (\(orderReprintOfKey) in its reference fields), so the order shows as a reprint and the Spending Report counts it."
+    return "Marked as a reprint of order \(number)."
 }
 
 /// The marker to remember for a draft body: Studio's generated one only. Nil when the body went without it, including

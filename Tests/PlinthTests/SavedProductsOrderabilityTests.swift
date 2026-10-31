@@ -73,6 +73,36 @@ extension SavedProductsTests {
         XCTAssertTrue(savedProductOrderability(big, localModels: [bracket], filaments: [pla], components: [], stationery: [slip]).canOrder)
     }
 
+    func testListWordingLeavesOutTheRowsNameAndOtherScreensInstructions() {
+        // The row already names the product, so its reasons don't repeat it.
+        let empty = savedProductOrderability(SavedProduct(name: "Shelf"), localModels: [], filaments: [], components: [], stationery: [])
+        XCTAssertEqual(empty.blockers, ["No items."])
+        XCTAssertEqual(savedProductCantOrderText(empty), "Can’t be ordered: No items.")
+        let noQuantity = SavedProduct(name: "Shelf", lines: [printLine(model: model(), quantity: 0)])
+        XCTAssertEqual(savedProductOrderability(noQuantity, localModels: [model()], filaments: [pla], components: [], stationery: []).blockers,
+                       ["An item has no quantity."])
+        // No "then try again": that is for the composer and Import Orders.
+        let notUploaded = model("Hook", remoteID: nil)
+        let hook = SavedProduct(name: "Hook kit", lines: [printLine(model: notUploaded)])
+        let state = savedProductOrderability(hook, localModels: [notUploaded], filaments: [pla], components: [], stationery: [])
+        XCTAssertEqual(state.blockers, ["“Hook” isn’t uploaded to Slant."])
+        XCTAssertFalse(state.blockers.joined().contains("try again"))
+        for product in [SavedProduct(name: "Shelf"), noQuantity, hook] {
+            XCTAssertFalse(savedProductOrderability(product, localModels: [model(), notUploaded], filaments: [pla], components: [],
+                                                    stationery: []).blockers.joined().contains("“\(product.name)”"))
+        }
+        // The composer and Import Orders keep their own wording, and both block on exactly the same reasons.
+        let composer = savedProductOrderLines(hook, units: 1, localModels: [notUploaded], filaments: [pla], components: [], stationery: [])
+        XCTAssertEqual(composer.blockers, ["“Hook” isn’t uploaded to Slant. Upload it from Models, then try again."])
+        XCTAssertEqual(composer.listBlockers.count, composer.blockers.count)
+        XCTAssertEqual(savedProductOrderLines(SavedProduct(name: "Shelf"), units: 1, localModels: [], filaments: [], components: [],
+                                              stationery: []).blockers, ["“Shelf” has no items."])
+        // Reasons without the product's name read the same in both places.
+        let red = SavedProduct(name: "Red", lines: [printLine(model: model(), filament: "petg-red")])
+        let redLines = savedProductOrderLines(red, units: 1, localModels: [model()], filaments: [pla, petgOut], components: [], stationery: [])
+        XCTAssertEqual(redLines.blockers, redLines.listBlockers)
+    }
+
     func testCountAndPickerTitles() {
         XCTAssertNil(savedProductsCantOrderCountText(0))
         XCTAssertEqual(savedProductsCantOrderCountText(1), "1 product can’t be ordered right now.")

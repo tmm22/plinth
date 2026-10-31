@@ -129,6 +129,37 @@ extension MarginTests {
                                                            preset: .none, rates: ProfitFeeRates(), offsiteAds: false)))
     }
 
+    /// With Offsite Ads on, a share that leaves nothing uncapped can still be reached once the fee hits its $100 cap.
+    func testOffsiteAdsCapMakesAHighTargetReachable() {
+        let etsy = ProfitFeePreset.etsyUS.defaultRates // 6.5% + 3% + $0.25, $0.20 a unit, 15% Offsite Ads.
+        // 6.5 + 3 + 15 + 80 = 104.5% uncapped; capped, 89.5% leaves 10.5% to cover $10 + $0.45 + $100.
+        guard case .price(let price) = listingPriceForTargetMargin(80, shippingCharged: 0, units: 1, productCost: 10, delivery: nil,
+                                                                   preset: .etsyUS, rates: etsy, offsiteAds: true) else {
+            return XCTFail("Expected a price past the Offsite Ads cap")
+        }
+        XCTAssertGreaterThan(price, 1_045)
+        XCTAssertLessThan(price, 1_060)
+        assertLowestPrice(80, shipping: 0, units: 1, cost: 10, delivery: nil, preset: .etsyUS, rates: etsy, ads: true)
+        // At that price the ads fee is the flat $100.
+        let check = listingPriceCheck(listingPricePerUnit: price, shippingCharged: 0, units: 1, productCost: 10, delivery: nil,
+                                      preset: .etsyUS, rates: etsy, offsiteAds: true)
+        XCTAssertTrue(check.lines.contains { $0.amount == -100 })
+        // With shipping and several units too.
+        assertLowestPrice(78, shipping: 5, units: 3, cost: 24, delivery: 7, preset: .etsyUS, rates: etsy, ads: true)
+        // Without Offsite Ads the same target is reachable the ordinary way.
+        assertLowestPrice(80, shipping: 0, units: 1, cost: 10, delivery: nil, preset: .etsyUS, rates: etsy, ads: false)
+
+        // Truly unreachable: the fees other than ads plus the margin reach 100%, capped or not.
+        func reason(_ target: ListingPriceTarget) -> String? { if case .unreachable(let text) = target { return text }; return nil }
+        let unreachable = reason(listingPriceForTargetMargin(91, shippingCharged: 0, units: 1, productCost: 10, delivery: nil,
+                                                             preset: .etsyUS, rates: etsy, offsiteAds: true))
+        XCTAssertEqual(unreachable, "Can’t reach 91%: fees of 9.5% of the sale plus that margin leave nothing to cover the cost.")
+        // And the cap never helps a preset that doesn't offer Offsite Ads.
+        XCTAssertNotNil(reason(listingPriceForTargetMargin(95, shippingCharged: 0, units: 1, productCost: 10, delivery: nil,
+                                                           preset: .custom, rates: ProfitFeeRates(transactionPercent: 6, offsiteAdsPercent: 15),
+                                                           offsiteAds: true)))
+    }
+
     func testShippingAloneCanKeepTheMargin() {
         XCTAssertEqual(listingPriceForTargetMargin(50, shippingCharged: 20, units: 1, productCost: 5, delivery: nil,
                                                    preset: .none, rates: ProfitFeeRates(), offsiteAds: false), .coveredByShipping)
@@ -148,6 +179,15 @@ extension MarginTests {
         XCTAssertTrue(hint.contains("average"))
         XCTAssertTrue(hint.contains("3 past orders"))
         XCTAssertTrue(hint.contains("not a quote"))
+        XCTAssertEqual(hint, "Delivery: average of 3 past orders to \(spendReportCountryTitle("US")), not a quote.")
+        XCTAssertEqual(listingPriceDeliveryNote(ProductDeliveryHint(countryCode: "US", orders: 1, average: 5)),
+                       "Delivery: average of 1 past order to \(spendReportCountryTitle("US")), not a quote.")
+        // The caption is short; what is and isn't remembered is in its help.
+        XCTAssertEqual(listingPriceCheckCaption, "Try a listing price to see what you’d keep (USD).")
+        XCTAssertTrue(listingPriceCheckCaptionHelp.contains("Nothing you type here is saved"))
+        XCTAssertTrue(listingPriceCheckFootnoteHelp.contains(profitCheckExclusionsNote))
+        XCTAssertEqual(listingPriceCostLineLabel, "Slant cost (estimate)")
+        XCTAssertEqual(listingPriceDeliveryLineLabel, "Delivery (average)")
         // Only a complete cost is used.
         let priced = ProductCostPart(id: 0, type: "PRINT", title: "A", quantity: 1, perOrder: false, state: .priced(total: 7, detail: ""))
         let failed = ProductCostPart(id: 1, type: "PRINT", title: "B", quantity: 1, perOrder: false, state: .failed("No"))
