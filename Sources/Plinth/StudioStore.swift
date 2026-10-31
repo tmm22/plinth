@@ -891,6 +891,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Slant files deleted this session, so restoring a removed library entry never relinks to one.
     private(set) var deletedCloudFileIDs: Set<String> = []
     @Published private(set) var unknownOutcomeOrderIDs: Set<String> = []
+    /// Drafts the seller hid from Orders on this Mac (HiddenDrafts.swift): order IDs only, oldest first, saved in
+    /// `hidden-drafts.json`. Change only through `hideDraft`, `unhideDraft` and `forgetHiddenDrafts`.
+    @Published var hiddenDraftIDs: [String] = []
+    /// Orders › Status › Show Hidden Drafts, for this session only.
+    @Published var showHiddenDrafts = false
     /// Earlier Create Draft attempts that didn’t confirm, so Slant may hold those drafts (recipient name and time, in
     /// memory only). Every composer shows a notice while any is listed, and asks for "Create Anyway" when the draft
     /// could repeat one (`draftCreateNeedsCreateAnyway`). An attempt is removed only by a confirmed creation for the
@@ -980,6 +985,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
         sellerAddress = loadSellerAddress(from: Self.sellerAddressURL)
         loadShopFollowUpDoneAtLaunch()
+        hiddenDraftIDs = loadHiddenDrafts()
         // Personalisation hook (Personalisation.swift): remove leftover OpenSCAD temp folders; stop local runs on quit.
         PersonalisationTempCleanup.startAtLaunch()
         printPreparationQueue.store = self
@@ -1335,6 +1341,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     var ordersOnDefaultPlatform: [Record] {
         ordersShownOnPlatform(orders, platformID: platformID, keeping: unknownOutcomeOrderIDs)
     }
+    /// Display only: `ordersOnDefaultPlatform` less the drafts hidden on this Mac unless Show Hidden Drafts is on
+    /// (HiddenDrafts.swift). Duplicate, draft-marker, lock and charge checks read the raw `orders`, never this.
+    var ordersShownInList: [Record] {
+        ordersShownWithoutHiddenDrafts(ordersOnDefaultPlatform, hidden: hiddenDraftIDSet, keeping: unknownOutcomeOrderIDs,
+                                       showHidden: showHiddenDrafts)
+    }
     /// Records one Create Draft press (the composer's or the API Workbench's `POST /orders`) in the session's
     /// unconfirmed-draft guard: an unknown outcome adds the attempt, a confirmed creation removes the attempts for the
     /// same `recipient` name (never another name's, nor the dropped-off flag; two customers with the same name share
@@ -1366,6 +1378,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             if keyChanged {
                 platformID = ""
                 fileID = ""; filamentID = ""
+                forgetHiddenDrafts()
                 cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""
             }
             apiKey = trimmed
@@ -1383,6 +1396,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         dismissError()
         apiKey = ""
         resetAccountDataPreservingKey()
+        forgetHiddenDrafts()
     }
     /// Re-fetches the live filament list without blocking other work, so new materials and colours appear without a manual refresh.
     func refreshFilamentsIfStale(maxAge: TimeInterval = 60) async {

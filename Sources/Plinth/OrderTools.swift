@@ -781,7 +781,12 @@ func postcodeFormatWarning(_ postcode: String, country: String, whileEditing: Bo
 let ordersCSVBaseColumns = [
     "Order number", "Created", "Status", "Item count", "Items",
     "Printing cost", "Delivery cost", "Total", "Currency", "Carrier", "Tracking numbers"
-]
+] + ordersCSVReferenceColumns
+/// Base columns after the tracking numbers: the marketplace reference from the order's metadata (`source` and
+/// `sourceOrderId`, which Import Orders writes; not customer data, so not behind the addresses opt-in), when it was
+/// paid (`processedAt`), the status Orders shows (`orderDisplayStatus`; "Status" stays Slant's own) and when Slant's
+/// shipping record was created (`fulfillment.createdAt`, about when the label was made).
+let ordersCSVReferenceColumns = ["Marketplace", "Marketplace order", "Paid", "Status shown", "Label created"]
 /// Opt-in columns: recipient, address and the order's metadata (which may hold customer references).
 let ordersCSVAddressColumns = [
     "Recipient", "Email", "Address line 1", "Address line 2", "City", "State", "Postal code", "Country", "Metadata"
@@ -819,6 +824,19 @@ private func csvText(_ value: Any?) -> String {
     guard let value, !(value is NSNull) else { return "" }
     if let text = value as? String { return text.trimmingCharacters(in: .whitespacesAndNewlines) }
     return String(describing: value)
+}
+
+/// The marketplace's proper name for the CSV's Marketplace column, as the orders table names it
+/// (`orderMarketplaceReferenceLabel`): "Etsy", "Shopify", "CSV import" for Plinth's template, another tool's value as
+/// written, blank when the order names none.
+func orderMarketplaceName(source: String?) -> String {
+    let trimmed = (source ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    switch trimmed.lowercased() {
+    case "etsy": return "Etsy"
+    case "shopify": return "Shopify"
+    case "csv": return "CSV import"
+    default: return trimmed
+    }
 }
 
 private let csvCreatedFormatter: ISO8601DateFormatter = {
@@ -864,6 +882,7 @@ func ordersCSVRow(_ record: Record, includeAddresses: Bool) -> [String] {
         orderNumber(order), created, csvText(order["status"]), itemCount, itemSummary,
         csvAmount(printing), csvAmount(delivery), csvAmount(total), currency, carrier, tracking
     ]
+    row += ordersCSVReferenceValues(order)
     if includeAddresses {
         let details = (order["customer"] as? [String: Any])?["details"] as? [String: Any] ?? [:]
         let address = details["address"] as? [String: Any] ?? [:]
@@ -874,6 +893,26 @@ func ordersCSVRow(_ record: Record, includeAddresses: Bool) -> [String] {
         ]
     }
     return row
+}
+
+/// The `ordersCSVReferenceColumns` values. Times are written like Created (UTC, ISO 8601), or as Slant sent them when
+/// they can't be read; anything Slant didn't return is blank.
+func ordersCSVReferenceValues(_ order: [String: Any]) -> [String] {
+    func timestamp(_ value: Any?) -> String {
+        let raw = csvText(value)
+        guard !raw.isEmpty, !(value is [Any]), !(value is [String: Any]) else { return "" }
+        return orderTimestamp(raw).map { csvCreatedFormatter.string(from: $0) } ?? raw
+    }
+    let reference = orderMarketplaceReference(order)
+    let fulfillment = order["fulfillment"] as? [String: Any]
+    let statusShown = order["status"] == nil ? "" : orderDisplayStatus(order).trimmingCharacters(in: .whitespacesAndNewlines)
+    return [
+        reference.map { orderMarketplaceName(source: $0.source) } ?? "",
+        reference?.id ?? "",
+        timestamp(order["processedAt"]),
+        statusShown,
+        timestamp(fulfillment?["createdAt"])
+    ]
 }
 
 /// Order metadata as compact JSON with sorted keys, or blank when there is none.
