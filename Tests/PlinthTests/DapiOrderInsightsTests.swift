@@ -356,7 +356,9 @@ final class DapiOrderInsightsTests: XCTestCase {
     func testPageSteps() {
         let order = insightOrder()
         XCTAssertEqual(dapiSpendPageStep(pagesLoaded: 1, page: DapiOrderPage(orders: [order], hasMore: false, nextCursor: "x")), .complete)
-        XCTAssertEqual(dapiSpendPageStep(pagesLoaded: 1, page: DapiOrderPage(orders: [], hasMore: true, nextCursor: "x")), .complete)
+        // Decided from has_more and the cursor only: an empty page that says there's more goes on.
+        XCTAssertEqual(dapiSpendPageStep(pagesLoaded: 1, page: DapiOrderPage(orders: [], hasMore: true, nextCursor: "x")), .next("x"))
+        XCTAssertEqual(dapiSpendPageStep(pagesLoaded: 1, page: DapiOrderPage(orders: [], hasMore: false, nextCursor: nil)), .complete)
         XCTAssertEqual(dapiSpendPageStep(pagesLoaded: 1, page: DapiOrderPage(orders: [order], hasMore: true, nextCursor: nil)), .noCursor)
         XCTAssertEqual(dapiSpendPageStep(pagesLoaded: 1, page: DapiOrderPage(orders: [order], hasMore: true, nextCursor: "c")), .next("c"))
         XCTAssertEqual(dapiSpendPageStep(pagesLoaded: 50, page: DapiOrderPage(orders: [order], hasMore: true, nextCursor: "c")), .capReached)
@@ -459,5 +461,33 @@ final class DapiOrderInsightsTests: XCTestCase {
         XCTAssertEqual(dapiTrackingCopyText(groups.withoutReference[0]), "2AP2 — T2")
         XCTAssertEqual(dapiTrackingCopyAllText(groups.listed), "ETSY-1 — DHL JD1\n2AP2 — T2\n2AP4 — T4")
         XCTAssertEqual(dapiTrackingTitle(groups.withoutReference[0]), "3DAPI order 2AP2")
+    }
+
+    // MARK: References without Plinth's code
+
+    func testReferencesAreShownWithoutPlinthsCode() {
+        let marked = insightOrder(id: "ord_1", number: "2AP1", reference: "ETSY-1_pldeadbeef", carrier: "DHL", tracking: "JD1",
+                                  created: date("2026-10-01T00:00:00Z"))
+        let bare = insightOrder(id: "ord_2", number: "2AP2", reference: "plinth_0badc0de", tracking: "T2",
+                                created: date("2026-10-02T00:00:00Z"))
+        let groups = dapiTrackingGroups([marked, bare], done: [])
+        XCTAssertEqual(groups.withReference.map(\.reference), ["ETSY-1"])
+        XCTAssertEqual(groups.withoutReference.map(\.id), ["ord_2"], "Plinth's bare code counts as no reference")
+        XCTAssertEqual(dapiTrackingCopyAllText(groups.listed), "ETSY-1 — DHL JD1\n2AP2 — T2")
+        XCTAssertEqual(dapiOrdersCSVRow(marked, includeCustomer: false)[4], "ETSY-1")
+        XCTAssertEqual(dapiOrdersCSVRow(bare, includeCustomer: false)[4], "")
+        let message = dapiProblemMessage(order: marked, problem: .lostParcel, details: "")
+        XCTAssertFalse(message.contains("_pl"))
+    }
+
+    // MARK: Copy
+
+    func testCostCopyForReplacementsAndRefundGuidance() {
+        guard case .unavailable(let text) = dapiOrderCost(insightOrder(status: .shipped, charges: insightCharges(paidBy: "dapi"))) else {
+            return XCTFail("No cost for an order 3DAPI covered")
+        }
+        XCTAssertEqual(text, "3DAPI covered this order (a replacement), so you weren’t charged.")
+        XCTAssertTrue(dapiProblemGuidance(.refund)!.contains("your customer’s card"))
+        XCTAssertTrue(DapiOrderAttention.notShipped(businessDays: 8).detail.contains("within 3–5 business days of payment"))
     }
 }

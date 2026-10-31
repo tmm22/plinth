@@ -77,12 +77,17 @@ struct DapiComposerAddress: Equatable {
     var phone = ""
 }
 
-private func dapiHasControlCharacters(_ text: String) -> Bool {
-    text.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+private func dapiHasControlCharacters(_ text: String, allowingLineBreaks: Bool = false) -> Bool {
+    text.unicodeScalars.contains { scalar in
+        if allowingLineBreaks, scalar == "\n" || scalar == "\r" || scalar == "\t" { return false }
+        return CharacterSet.controlCharacters.contains(scalar)
+    }
 }
 
-/// Each field's problem, mirroring 3DAPI's limits (name 1–200, a real email, street and city required, an ISO country
-/// code, optional notes ≤ 2,000). Nothing here invents a value: a missing email is a problem, never filled in.
+/// Each field's problem, mirroring 3DAPI's limits and the client's own check (`dapiOrderRequestProblem`): lengths in
+/// Unicode scalars (JSON Schema's count), name 1–200, an email `dapiEmailLooksValid` accepts, street and city required,
+/// a country 3DAPI delivers to, optional notes ≤ 2,000. Nothing here invents a value: a missing email is a problem,
+/// never filled in.
 func dapiRecipientProblems(_ address: DapiComposerAddress, notes: String = "") -> [DapiComposerField: String] {
     var problems: [DapiComposerField: String] = [:]
     let d = address.delivery
@@ -91,7 +96,7 @@ func dapiRecipientProblems(_ address: DapiComposerAddress, notes: String = "") -
         let text = trimmed(value)
         if text.isEmpty {
             if let required { problems[field] = required }
-        } else if text.count > max {
+        } else if text.unicodeScalars.count > max {
             problems[field] = "Use at most \(max) characters."
         } else if dapiHasControlCharacters(text) {
             problems[field] = "Remove the line breaks or tabs."
@@ -101,7 +106,7 @@ func dapiRecipientProblems(_ address: DapiComposerAddress, notes: String = "") -
     let email = trimmed(d.email)
     if email.isEmpty {
         problems[.email] = "3DAPI needs the recipient’s email."
-    } else if email.count > dapiEmailMaxLength || !isEmailAddress(email) {
+    } else if !dapiEmailLooksValid(email) {
         problems[.email] = "Enter an email like name@example.com."
     }
     check(.phone, address.phone, required: nil, max: dapiPhoneMaxLength)
@@ -116,17 +121,33 @@ func dapiRecipientProblems(_ address: DapiComposerAddress, notes: String = "") -
     } else if !dapiIsDeliveryCountry(country) {
         problems[.country] = "Choose a country from the list."
     }
-    if notes.trimmingCharacters(in: .whitespacesAndNewlines).count > dapiNotesMaxLength {
+    let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedNotes.unicodeScalars.count > dapiNotesMaxLength {
         problems[.notes] = "Notes can be at most 2,000 characters."
+    } else if dapiHasControlCharacters(trimmedNotes, allowingLineBreaks: true) {
+        problems[.notes] = "Remove the control characters from the notes."
     }
     return problems
 }
 
-/// An ISO alpha-2 country a parcel can go to (the composer's country list).
+/// Countries 3DAPI never delivers to (its shipping docs). Left out of the 3DAPI composer's country list.
+let dapiUnservedCountryCodes: Set<String> = ["RU", "BY", "IR", "SY"]
+let dapiUnservedCountriesNote = "3DAPI delivers worldwide except Russia, Belarus, Iran and Syria."
+
+/// An ISO alpha-2 country a 3DAPI parcel can go to (the composer's country list).
 func dapiIsDeliveryCountry(_ code: String) -> Bool {
     let upper = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    return isCountryCode(upper) && !orderNonCountryRegionCodes.contains(upper)
+    return isCountryCode(upper) && !orderNonCountryRegionCodes.contains(upper) && !dapiUnservedCountryCodes.contains(upper)
         && Locale.Region.isoRegions.contains { $0.identifier == upper }
+}
+
+/// The client's own pre-send check (`dapiOrderRequestProblem`) on the order as the composer would send it, with a
+/// placeholder reference of the right shape. Anything it refuses keeps Review Order… off, so nothing passes the
+/// composer and then fails as "Nothing was sent" after the review.
+func dapiComposerRequestProblem(lines: [DapiOrderLineRequest], recipient: DapiOrderRecipient, notes: String?) -> String? {
+    dapiOrderRequestProblem(DapiOrderRequest(lines: lines, recipient: recipient,
+                                             reference: dapiOrderReference(sellerReference: nil, token: "00000000"),
+                                             customerNotes: notes))
 }
 
 /// The recipient sent to 3DAPI: the typed values trimmed, empty optional fields as nil.
@@ -184,10 +205,19 @@ struct DapiComposerLine: Identifiable, Equatable {
     var quantity: Int? { printQuantity(quantityText) }
 }
 
-/// The quote names a catalogue material for every slot, so `use_suggested_materials` can be sent.
+/// The quote names a catalogue material (by name or ID) for every slot, so `use_suggested_materials` can be sent.
 func dapiQuoteHasSuggestions(_ quote: DapiQuote?) -> Bool {
     guard let quote, !quote.suggestedMaterials.isEmpty else { return false }
-    return quote.suggestedMaterials.allSatisfy { !($0.materialName ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
+    return quote.suggestedMaterials.allSatisfy {
+        !($0.materialName ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            || !($0.materialID ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+    }
+}
+
+/// A line chooses its own materials (not 3DAPI's suggestions), so 3DAPI's quoted price may not be what it charges.
+func dapiLineUsesChosenMaterials(_ request: DapiOrderLineRequest) -> Bool {
+    if case .slots = request.materials { return true }
+    return false
 }
 
 /// The extruder slots a line needs a material for: the quote's suggested slots, else slot 1.
@@ -196,10 +226,15 @@ func dapiLineSlots(_ quote: DapiQuote?) -> [Int] {
     return slots.isEmpty ? [1] : slots
 }
 
-/// The catalogue material 3DAPI suggested for a slot, matched by exact name (any case), if it is in the catalogue.
+/// The catalogue material 3DAPI suggested for a slot, if it is in the catalogue: by the suggestion's material ID when
+/// 3DAPI sent one, else by exact name (any case).
 func dapiSuggestedMaterialID(slot: Int, quote: DapiQuote?, catalogue: [DapiMaterial]) -> String? {
-    guard let name = quote?.suggestedMaterials.first(where: { $0.slot == slot })?.materialName?
-        .trimmingCharacters(in: .whitespaces).lowercased(), !name.isEmpty else { return nil }
+    guard let suggestion = quote?.suggestedMaterials.first(where: { $0.slot == slot }) else { return nil }
+    if let id = suggestion.materialID?.trimmingCharacters(in: .whitespaces), !id.isEmpty,
+       let match = catalogue.first(where: { $0.id == id }) {
+        return match.id
+    }
+    guard let name = suggestion.materialName?.trimmingCharacters(in: .whitespaces).lowercased(), !name.isEmpty else { return nil }
     return catalogue.first { $0.name.trimmingCharacters(in: .whitespaces).lowercased() == name }?.id
 }
 
@@ -254,9 +289,14 @@ func dapiOrderDraft(lines: [DapiComposerLine], address: DapiComposerAddress, ref
                                               materialsText: dapiLineMaterialsText(line, catalogue: catalogue)))
     }
     let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
-    return DapiOrderDraft(lines: draftLines, recipient: dapiOrderRecipient(address),
+    let recipient = dapiOrderRecipient(address)
+    let sentNotes = trimmedNotes.isEmpty ? nil : trimmedNotes
+    guard dapiComposerRequestProblem(lines: draftLines.map(\.request), recipient: recipient, notes: sentNotes) == nil else {
+        return nil
+    }
+    return DapiOrderDraft(lines: draftLines, recipient: recipient,
                           sellerReference: reference.trimmingCharacters(in: .whitespacesAndNewlines),
-                          notes: trimmedNotes.isEmpty ? nil : trimmedNotes)
+                          notes: sentNotes)
 }
 
 /// Why the lines can't be ordered yet, or nil.
@@ -401,7 +441,34 @@ func dapiOrderUpToTotal(lines: [(unitPrice: DapiMoney, quantity: Int)], shipping
     return total
 }
 
-let dapiWalletNote = "If your 3DAPI wallet is short, 3DAPI charges the rest to your saved card, with VAT on that top-up for EU and UK businesses."
+let dapiWalletNote = "If your 3DAPI wallet is short, 3DAPI charges the rest to your saved card, with VAT on that top-up for EU and UK businesses without a confirmed VAT number."
+/// Shown when any line uses chosen materials: 3DAPI's quote priced the file, not those materials.
+let dapiChosenMaterialsPriceNote = "3DAPI prices the file in its quote. Materials you chose yourself may change the price 3DAPI charges, which Plinth can’t check before ordering."
+
+/// What the "up to" total exceeds the wallet balance by (same currency only), or nil when the wallet covers it or the
+/// balance isn't known. Sample credit isn't counted: 3DAPI applies it only to orders to the seller's own country.
+func dapiWalletShortfall(upTo: DapiMoney?, wallet: DapiWallet?) -> DapiMoney? {
+    guard let upTo, let balance = wallet?.balance,
+          upTo.currency.lowercased() == balance.currency.lowercased(), upTo.amountMinor > balance.amountMinor else { return nil }
+    return DapiMoney(amountMinor: upTo.amountMinor - max(0, balance.amountMinor), currency: upTo.currency)
+}
+
+/// The review's line for a shortfall.
+func dapiWalletShortfallText(_ shortfall: DapiMoney) -> String {
+    "Your wallet may be up to \(dapiMoneyText(shortfall)) short for this order. 3DAPI charges any shortfall to your saved card, with VAT on that top-up for EU and UK businesses without a confirmed VAT number."
+}
+
+/// The review's sample-credit choice and its caption.
+let dapiSampleCreditToggleTitle = "Use My Sample Credit"
+let dapiSampleCreditCaption = "3DAPI uses it only for orders to your own country (your billing or sign-up country); otherwise the order is charged in full."
+
+/// Why the sample-credit choice stops a Place Order at the pre-send check, or nil: the seller changed it after pressing
+/// Place Order, or ticked it and the fresh wallet no longer shows sample credit.
+func dapiSampleCreditChange(pressed: Bool, current: Bool, available: Bool) -> String? {
+    if pressed != current { return "You changed Use My Sample Credit while Plinth was checking. Press Place Order again." }
+    if pressed, !available { return "Your 3DAPI wallet no longer shows sample credit, so it can’t be used." }
+    return nil
+}
 let dapiOrderChargeNote = "Place Order charges your 3DAPI wallet at once and sends the order to production. 3DAPI has no draft orders."
 let dapiOrderUpToNote = "3DAPI’s per-unit price falls with quantity, so the item amounts are upper bounds: the exact price comes only with the order."
 
@@ -473,8 +540,8 @@ func dapiPlaceFailure(_ error: Error, now: Date = Date()) -> DapiPlaceFailure {
         return .notCharged("Nothing was sent, so nothing was charged. \(dapiRedacted(detail, limit: 400))")
     case .rateLimited:
         return .notCharged("3DAPI is limiting requests and didn’t place the order, so nothing was charged. \(error.userMessage(now: now))")
-    case .refused(let status, let code, let message):
-        return .notCharged(dapiOrderRefusalMessage(status: status, code: code, message: message))
+    case .refused:
+        return .notCharged(dapiPlaceRefusalMessage(error, now: now))
     case .outcomeUnknown, .readFailed:
         return .unknown(dapiPlaceUnknownText)
     }
@@ -482,29 +549,10 @@ func dapiPlaceFailure(_ error: Error, now: Date = Date()) -> DapiPlaceFailure {
 
 let dapiPlaceUnknownText = "3DAPI didn’t answer clearly, so it may have charged your wallet and placed the order. Plinth won’t send it again. Press Look for Order on 3DAPI to check before placing it again."
 
-/// The seller's text for a definite refusal of an order or cancellation. Always says nothing was charged (for an order)
-/// because 3DAPI places nothing it refuses.
-func dapiOrderRefusalMessage(status: Int, code: String?, message: String?) -> String {
-    let reason: String
-    switch code {
-    case "payment_failed": reason = "3DAPI couldn’t take the payment (the wallet top-up from your card failed)."
-    case "insufficient_balance": reason = "Your 3DAPI wallet doesn’t hold enough, and no card could top it up."
-    case "compliance_blocked": reason = "3DAPI needs your business billing details first. Add them in 3DAPI’s dashboard."
-    case "quote_not_found": reason = "3DAPI has no such quote for this account."
-    case "production_unavailable": reason = "3DAPI has no production partner for this order at the moment."
-    case "quote_not_ready": reason = "A quote isn’t ready yet."
-    case "quote_rejected": reason = "3DAPI rejected one of the files in review."
-    case "quote_not_approved": reason = "3DAPI hasn’t approved your account for ordering yet."
-    case "material_not_allowed": reason = "A chosen material can’t be used for that model."
-    case "material_slots_mismatch": reason = "The materials don’t match the model’s slots."
-    case "suggestions_unavailable": reason = "3DAPI has no suggested materials for a model. Choose the materials yourself."
-    case "shipping_destination_not_served": reason = "3DAPI doesn’t deliver to that country."
-    case "missing_scope": reason = "This 3DAPI key can’t place or cancel orders. Make a key with orders:write in 3DAPI’s dashboard."
-    case "order_not_cancellable": reason = "3DAPI can no longer cancel this order: a production partner has started it. Email contact@dapi.digital."
-    case "idempotency_key_reused": reason = "3DAPI refused a repeated request that differed from the first."
-    default: reason = dapiRefusalMessage(status: status, code: code, message: message)
-    }
-    return reason
+/// A definite refusal of Place Order: the client's own copy (`DapiError.userMessage`, the single source for 3DAPI's
+/// error codes) and that nothing was charged, because 3DAPI places and charges nothing it refuses.
+func dapiPlaceRefusalMessage(_ error: DapiError, now: Date = Date()) -> String {
+    error.userMessage(now: now) + " Nothing was charged."
 }
 
 // MARK: - Place runner
@@ -517,7 +565,11 @@ struct DapiPlaceEnvironment {
     var unconfirmedOrders: @MainActor () -> [DapiUnconfirmedOrder]
     var beginWrite: @MainActor () -> UUID
     var endWrite: @MainActor (UUID) -> Void
+    /// Records an attempt as unconfirmed. Called just before the `POST` (like Slant's lock), so another composer's Place
+    /// asks Place Anyway while this one waits; it stays for an unknown outcome.
     var noteUnconfirmed: @MainActor (DapiUnconfirmedOrder) -> Void
+    /// Removes the attempt with this exact reference: a confirmed order, or a definite refusal (nothing charged).
+    var confirmUnconfirmed: @MainActor (String) -> Void
     var newIdempotencyKey: @MainActor () -> String
     var newReferenceToken: @MainActor () -> String
     var now: @MainActor () -> Date
@@ -530,6 +582,7 @@ struct DapiPlaceEnvironment {
             beginWrite: { DapiOrderSession.shared.beginWrite(.dapiOrder) },
             endWrite: { DapiOrderSession.shared.endWrite($0) },
             noteUnconfirmed: { DapiOrderSession.shared.noteUnconfirmedOrder($0) },
+            confirmUnconfirmed: { DapiOrderSession.shared.confirmUnconfirmedOrder(reference: $0) },
             newIdempotencyKey: { UUID().uuidString },
             newReferenceToken: { dapiOrderReferenceToken() },
             now: { Date() })
@@ -611,14 +664,23 @@ enum DapiPlacePhase: Equatable {
     @Published var askPlaceAnyway = false
     /// The unconfirmed record made by this sheet's attempt, for Look for Order on 3DAPI.
     @Published private(set) var unconfirmed: DapiUnconfirmedOrder?
+    /// Use My Sample Credit (off by default; shown only when the wallet shows sample credit). What was ticked when
+    /// Place Order was pressed is what is sent, and only while the fresh wallet still shows sample credit.
+    @Published var useSampleCredit = false
 
     let draft: DapiOrderDraft
     private let environment: DapiPlaceEnvironment
     private var checkTask: Task<Void, Never>?
     private var started = false
-    private var closed = false
+    private(set) var closed = false
+    /// Use My Sample Credit as it was when Place Order was pressed.
+    private var pressedSampleCredit = false
     /// Called once with the placed order (the list inserts and selects it).
     var onPlaced: ((DapiOrder) -> Void)?
+    /// Called just before the order request goes out, with its attempt (already recorded as unconfirmed).
+    var onSending: ((DapiUnconfirmedOrder) -> Void)?
+    /// Called when 3DAPI definitely didn't place an attempt, before its unconfirmed record is removed.
+    var onNotCharged: ((_ reference: String) -> Void)?
     var log: ((_ title: String, _ detail: String, _ success: Bool) -> Void)?
 
     init(draft: DapiOrderDraft, environment: DapiPlaceEnvironment) {
@@ -649,8 +711,9 @@ enum DapiPlacePhase: Equatable {
         runCheck()
     }
 
-    /// The sheet went away: stop any read (never the order request, which can't be in flight because the sheet can't
-    /// close while it is).
+    /// Go Back, Close or the sheet going away: stop any read, so a re-check that finishes afterwards never sends.
+    /// Never the order request itself: Go Back is refused while it is with 3DAPI (`canClose`), and a request whose
+    /// task hadn't started yet is dropped unsent (`send`).
     func close() {
         closed = true
         checkTask?.cancel()
@@ -723,6 +786,7 @@ enum DapiPlacePhase: Equatable {
             return
         }
         askPlaceAnyway = false
+        pressedSampleCredit = useSampleCredit
         phase = .rechecking
         checkTask = Task { [weak self] in
             guard let self else { return }
@@ -734,21 +798,27 @@ enum DapiPlacePhase: Equatable {
                 self.figures = nil
                 self.phase = .blocked(message)
             case .success(let fresh):
-                let changed = dapiReviewChanges(reviewed: reviewed.snapshot, current: fresh.snapshot, names: self.draft.quoteNames)
+                var changed = dapiReviewChanges(reviewed: reviewed.snapshot, current: fresh.snapshot, names: self.draft.quoteNames)
+                let creditAvailable = (fresh.wallet?.sampleCredit?.amountMinor ?? 0) > 0
+                if let credit = dapiSampleCreditChange(pressed: self.pressedSampleCredit, current: self.useSampleCredit,
+                                                       available: creditAvailable) {
+                    changed.append(credit)
+                    if !creditAvailable { self.useSampleCredit = false }
+                }
                 if !changed.isEmpty {
                     self.figures = fresh
                     self.changes = changed
                     self.phase = .ready
                     return
                 }
-                self.send(figures: fresh)
+                self.send(figures: fresh, useSampleCredit: self.pressedSampleCredit && creditAvailable)
             }
         }
     }
 
     func declinePlaceAnyway() { askPlaceAnyway = false }
 
-    private func send(figures: DapiOrderReviewFigures) {
+    private func send(figures: DapiOrderReviewFigures, useSampleCredit: Bool) {
         guard phase == .rechecking, !closed else { return }
         let client: any DapiOrderClient
         do { client = try environment.client() } catch {
@@ -756,20 +826,32 @@ enum DapiPlacePhase: Equatable {
             return
         }
         let reference = dapiOrderReference(sellerReference: draft.sellerReference, token: environment.newReferenceToken())
-        let request = DapiOrderRequest(lines: figures.snapshot.lines, recipient: draft.recipient, reference: reference,
+        var request = DapiOrderRequest(lines: figures.snapshot.lines, recipient: draft.recipient, reference: reference,
                                        customerNotes: draft.notes)
+        request.useSampleCredit = useSampleCredit
         let key = environment.newIdempotencyKey()
+        let environment = self.environment
         let token = environment.beginWrite()
         phase = .placing
-        let sentAt = environment.now()
         let record = DapiUnconfirmedOrder(id: UUID(), reference: reference, recipientName: draft.recipient.name,
-                                          countryCode: draft.recipient.countryCode, units: draft.units, sentAt: sentAt)
-        // Not stored in `checkTask`: nothing cancels the order request once it is sent.
-        Task { [weak self] in
+                                          countryCode: draft.recipient.countryCode, units: draft.units, sentAt: environment.now())
+        // Recorded before sending, like Slant's lock: until 3DAPI answers clearly, any other Place asks Place Anyway.
+        environment.noteUnconfirmed(record)
+        onSending?(record)
+        // Not stored in `checkTask`: nothing cancels the order request once it is sent. `self` is held strongly, so
+        // the write always ends and the outcome is always recorded, even if the sheet has gone.
+        Task { [self] in
+            if self.closed {
+                // The sheet went away before the request was handed over: nothing was sent.
+                environment.endWrite(token)
+                self.onNotCharged?(reference)
+                environment.confirmUnconfirmed(reference)
+                self.phase = .notCharged("Nothing was sent, so nothing was charged.")
+                return
+            }
             let result: Result<DapiOrder, Error>
             do { result = .success(try await client.placeOrder(request, idempotencyKey: key)) } catch { result = .failure(error) }
-            guard let self else { return }
-            self.environment.endWrite(token)
+            environment.endWrite(token)
             self.finish(result, record: record)
         }
     }
@@ -777,16 +859,19 @@ enum DapiPlacePhase: Equatable {
     private func finish(_ result: Result<DapiOrder, Error>, record: DapiUnconfirmedOrder) {
         switch result {
         case .success(let order):
+            environment.confirmUnconfirmed(record.reference)
             phase = .placed(order)
-            log?("3DAPI order", order.status.countsAsPlaced ? "Placed" : "Created, status \(order.status.isUnknown ? "unrecognised" : order.status.raw)", true)
+            log?("3DAPI order", order.status.countsAsPlaced ? "Placed" : "Created, status: \(order.status.label)", true)
             onPlaced?(order)
         case .failure(let error):
             switch dapiPlaceFailure(error, now: environment.now()) {
             case .notCharged(let message):
+                onNotCharged?(record.reference)
+                environment.confirmUnconfirmed(record.reference)
                 phase = .notCharged(message)
                 log?("3DAPI order", (error as? DapiError)?.activityDetail ?? "Not sent", false)
             case .unknown(let message):
-                environment.noteUnconfirmed(record)
+                // The record made before sending stays for the whole session.
                 unconfirmed = record
                 phase = .unknown(message)
                 log?("3DAPI order", "Outcome unknown", false)
@@ -836,6 +921,13 @@ enum DapiOrderLookupResult: Equatable {
     case failed(String)
     /// Not looked for: an earlier read was rate limited.
     case skipped
+}
+
+/// One of a composer's own attempts (sent, and not definitely refused) is no longer unconfirmed: 3DAPI has that order
+/// (placed, found by Look for Order on 3DAPI, or seen in a reload). The composer then closes as after a placed order.
+func dapiComposerOwnOrderSettled(sent: Set<String>, unconfirmed: [String]) -> Bool {
+    let open = Set(unconfirmed)
+    return sent.contains { !open.contains($0) }
 }
 
 /// The order whose reference is exactly `reference` (case-sensitive, as sent), if a page holds one.
@@ -903,9 +995,49 @@ func dapiCancelBlockedReason(order: DapiOrder, shownStatus: DapiOrderStatus, out
     }
     if order.status.isUnknown { return "3DAPI sent a status Plinth doesn’t recognise, so Plinth won’t cancel this order." }
     guard order.status.canRequestCancellation else {
-        return "3DAPI can’t cancel an order once a production partner has it. Email contact@dapi.digital."
+        return "3DAPI can’t cancel an order once a production partner has it. Email \(dapiProblemSupportAddress) about this one."
     }
     return nil
+}
+
+/// The order detail's one line when Cancel Order… isn't offered, or nil when it is (or an earlier cancel's outcome is
+/// unknown, which has its own note). Like Slant's `orderDetailCancelBlockedNote`.
+func dapiCancelUnavailableNote(_ order: DapiOrder, cancelUnknown: Bool) -> String? {
+    if cancelUnknown || order.status.canRequestCancellation { return nil }
+    switch order.status {
+    case .cancelled:
+        return "This order is already cancelled."
+    case .shipped, .completed, .returned:
+        return "This order has shipped, so it can’t be cancelled. Use Report a Problem… if something is wrong with it."
+    case .unknown:
+        return "Plinth doesn’t recognise this status, so it doesn’t offer Cancel. Email \(dapiProblemSupportAddress) about this one."
+    default:
+        return "3DAPI can cancel only while an order is Paid, before a production partner has it. Email \(dapiProblemSupportAddress) about this one."
+    }
+}
+
+/// Whether an order was placed through 3DAPI's checkout (the buyer paid 3DAPI), rather than from the seller's wallet.
+func dapiOrderIsCheckout(mode: String) -> Bool { mode.trimmingCharacters(in: .whitespaces).lowercased() == "checkout" }
+
+/// What cancelling does to the money, by how the order was paid and its status. Wallet orders are refunded to the
+/// wallet; paid checkout orders to the customer's card in 5–10 business days; an unpaid checkout order's link closes.
+func dapiCancelExplanation(mode: String, status: DapiOrderStatus) -> String {
+    if status == .awaitingPayment {
+        return "This order hasn’t been paid, so cancelling it closes its checkout link. Nothing is refunded because nothing was charged."
+    }
+    if dapiOrderIsCheckout(mode: mode) {
+        return "3DAPI refunds this order in full to your customer’s card, usually within 5–10 business days. It can’t cancel an order once a production partner has it."
+    }
+    return "3DAPI refunds this order in full to your 3DAPI wallet. It can’t cancel an order once a production partner has it."
+}
+
+/// The cancel review's line once 3DAPI returned the order cancelled.
+func dapiCancelledText(mode: String, status: DapiOrderStatus) -> String {
+    if status == .awaitingPayment { return "3DAPI cancelled the order and closed its checkout link." }
+    if dapiOrderIsCheckout(mode: mode) {
+        return "3DAPI cancelled the order. It refunds your customer’s card in full, usually within 5–10 business days."
+    }
+    return "3DAPI cancelled the order and refunds it in full to your 3DAPI wallet."
 }
 
 /// How a cancellation ended.
@@ -919,7 +1051,8 @@ enum DapiCancelOutcome: Equatable {
     /// The request may have reached 3DAPI.
     case unknown(String)
 
-    /// The cancel stays recorded as unknown (no second cancel) until a reload shows the order cancelled.
+    /// The cancel stays recorded as unknown (no second cancel) until a reload shows the order cancelled or in another
+    /// status than the one it was sent from (`dapiCancelLockLifted`).
     var recordsUnknown: Bool {
         switch self {
         case .notYetCancelled, .unknown: true
@@ -938,24 +1071,55 @@ func dapiCancelOutcome(_ result: Result<DapiOrder, Error>) -> DapiCancelOutcome 
         case .missingKey: return .refused("Add your 3DAPI key in Settings first. Nothing was sent.")
         case .notSent(let detail): return .refused("Nothing was sent. \(dapiRedacted(detail, limit: 400))")
         case .rateLimited: return .refused("3DAPI is limiting requests and didn’t cancel the order. \(error.userMessage)")
-        case .refused(let status, let code, let message):
-            return .refused(dapiOrderRefusalMessage(status: status, code: code, message: message))
+        case .refused: return .refused(error.userMessage)
         case .outcomeUnknown, .readFailed: return .unknown(dapiCancelUnknownText)
         }
     }
 }
 
 let dapiCancelUnknownText = "3DAPI didn’t answer clearly, so the order may or may not be cancelled. Plinth won’t send the cancellation again: refresh the order to see its status."
-let dapiCancelExplanation = "3DAPI refunds a paid order in full to your 3DAPI wallet. It can’t cancel an order once a production partner has started it."
+
+/// Whether a loaded order lifts the lock of a cancel whose outcome is unknown: it shows cancelled, or a status other
+/// than the one the cancel was sent from (that is the cancel's outcome either way). The same status keeps it, and
+/// so does any status when the sent-from status wasn't recorded.
+func dapiCancelLockLifted(order: DapiOrder, sentFrom: DapiOrderStatus?) -> Bool {
+    if order.status == .cancelled { return true }
+    guard let sentFrom else { return false }
+    return dapiOrderWatchStatusKey(order.status) != dapiOrderWatchStatusKey(sentFrom)
+}
 
 /// Session bookkeeping a loaded order settles: an unconfirmed attempt whose exact reference it carries is confirmed, and
-/// a cancel with an unknown outcome is cleared once the order shows cancelled. Nothing else clears either.
-func dapiSessionSettlements(_ orders: [DapiOrder], unconfirmed: [DapiUnconfirmedOrder],
-                            cancelUnknown: Set<String>) -> (confirmReferences: [String], clearCancelIDs: [String]) {
+/// a cancel with an unknown outcome is cleared by `dapiCancelLockLifted`. Nothing else clears either.
+func dapiSessionSettlements(_ orders: [DapiOrder], unconfirmed: [DapiUnconfirmedOrder], cancelUnknown: Set<String>,
+                            cancelSentFrom: [String: DapiOrderStatus] = [:]) -> (confirmReferences: [String], clearCancelIDs: [String]) {
     let references = Set(orders.compactMap(\.reference))
     let confirm = unconfirmed.map(\.reference).filter { references.contains($0) }
-    let clear = orders.filter { cancelUnknown.contains($0.id) && $0.status == .cancelled }.map(\.id)
-    return (Array(Set(confirm)).sorted(), clear)
+    let clear = orders.filter { cancelUnknown.contains($0.id) && dapiCancelLockLifted(order: $0, sentFrom: cancelSentFrom[$0.id]) }
+        .map(\.id)
+    return (Array(Set(confirm)).sorted(), Array(Set(clear)).sorted())
+}
+
+/// The 3DAPI cancel bookkeeping beside `DapiOrderSession.cancelOutcomeUnknown`, for the whole session, in memory only:
+/// the status each unknown-outcome cancel was sent from (what lifts its lock), and the orders this session cancelled
+/// through Plinth (the order watch doesn't tell the seller about their own cancellation).
+@MainActor final class DapiCancelSession {
+    static let shared = DapiCancelSession()
+
+    private(set) var sentFrom: [String: DapiOrderStatus] = [:]
+    private(set) var cancelledThroughPlinth: Set<String> = []
+
+    /// Locks further cancels of `orderID` until a reload shows the outcome.
+    func noteOutcomeUnknown(orderID: String, sentFrom status: DapiOrderStatus) {
+        sentFrom[orderID] = status
+        DapiOrderSession.shared.noteCancelOutcomeUnknown(orderID: orderID)
+    }
+
+    func clear(orderID: String) {
+        sentFrom[orderID] = nil
+        DapiOrderSession.shared.clearCancelOutcomeUnknown(orderID: orderID)
+    }
+
+    func noteCancelledThroughPlinth(orderID: String) { cancelledThroughPlinth.insert(orderID) }
 }
 
 /// What the cancel review talks to.
@@ -964,8 +1128,13 @@ struct DapiCancelEnvironment {
     var beginWrite: @MainActor () -> UUID
     var endWrite: @MainActor (UUID) -> Void
     var outcomeUnknown: @MainActor (String) -> Bool
-    var noteUnknown: @MainActor (String) -> Void
+    /// The status an unknown-outcome cancel of this order was sent from, if recorded.
+    var sentFrom: @MainActor (String) -> DapiOrderStatus?
+    /// Records an unknown outcome and the status the cancel was sent from.
+    var noteUnknown: @MainActor (String, DapiOrderStatus) -> Void
     var clearUnknown: @MainActor (String) -> Void
+    /// 3DAPI returned the order cancelled (the order watch stays quiet about it).
+    var noteCancelled: @MainActor (String) -> Void
     var newIdempotencyKey: @MainActor () -> String
 
     @MainActor static func live() -> DapiCancelEnvironment {
@@ -974,8 +1143,10 @@ struct DapiCancelEnvironment {
             beginWrite: { DapiOrderSession.shared.beginWrite(.dapiCancellation) },
             endWrite: { DapiOrderSession.shared.endWrite($0) },
             outcomeUnknown: { DapiOrderSession.shared.cancelOutcomeUnknown.contains($0) },
-            noteUnknown: { DapiOrderSession.shared.noteCancelOutcomeUnknown(orderID: $0) },
-            clearUnknown: { DapiOrderSession.shared.clearCancelOutcomeUnknown(orderID: $0) },
+            sentFrom: { DapiCancelSession.shared.sentFrom[$0] },
+            noteUnknown: { DapiCancelSession.shared.noteOutcomeUnknown(orderID: $0, sentFrom: $1) },
+            clearUnknown: { DapiCancelSession.shared.clear(orderID: $0) },
+            noteCancelled: { DapiCancelSession.shared.noteCancelledThroughPlinth(orderID: $0) },
             newIdempotencyKey: { UUID().uuidString })
     }
 }
@@ -997,7 +1168,7 @@ enum DapiCancelPhase: Equatable {
     private let environment: DapiCancelEnvironment
     private var readTask: Task<Void, Never>?
     private var started = false
-    private var closed = false
+    private(set) var closed = false
     /// Every order read or returned here (the list replaces its copy).
     var onOrder: ((DapiOrder) -> Void)?
     var log: ((_ title: String, _ detail: String, _ success: Bool) -> Void)?
@@ -1040,7 +1211,9 @@ enum DapiCancelPhase: Equatable {
             let client = try environment.client()
             let order = try await client.order(id: orderID)
             onOrder?(order)
-            if order.status == .cancelled, environment.outcomeUnknown(order.id) { environment.clearUnknown(order.id) }
+            if environment.outcomeUnknown(order.id), dapiCancelLockLifted(order: order, sentFrom: environment.sentFrom(order.id)) {
+                environment.clearUnknown(order.id)
+            }
             if let reason = dapiCancelBlockedReason(order: order, shownStatus: shownStatus,
                                                     outcomeUnknown: environment.outcomeUnknown(order.id)) {
                 return .failure(reason)
@@ -1069,24 +1242,34 @@ enum DapiCancelPhase: Equatable {
     }
 
     private func send(_ order: DapiOrder) {
+        guard !closed else { return }
         let client: any DapiOrdering
         do { client = try environment.client() } catch {
             phase = .done(dapiCancelOutcome(.failure(error)))
             return
         }
         let key = environment.newIdempotencyKey()
+        let environment = self.environment
         let token = environment.beginWrite()
         phase = .cancelling
         let id = order.id
-        Task { [weak self] in
+        let sentFrom = order.status
+        // `self` is held strongly: the write always ends and an unknown outcome is always recorded.
+        Task { [self] in
+            if self.closed {
+                // The sheet went away before the request was handed over: nothing was sent.
+                environment.endWrite(token)
+                self.phase = .done(.refused("Nothing was sent."))
+                return
+            }
             let result: Result<DapiOrder, Error>
             do { result = .success(try await client.cancelOrder(id: id, idempotencyKey: key)) } catch { result = .failure(error) }
-            guard let self else { return }
-            self.environment.endWrite(token)
+            environment.endWrite(token)
             let outcome = dapiCancelOutcome(result)
-            if outcome.recordsUnknown { self.environment.noteUnknown(id) }
+            if outcome.recordsUnknown { environment.noteUnknown(id, sentFrom) }
             switch outcome {
             case .cancelled(let order):
+                environment.noteCancelled(id)
                 self.onOrder?(order)
                 self.log?("3DAPI cancellation", "Cancelled", true)
             case .notYetCancelled(let order):
@@ -1150,9 +1333,23 @@ struct DapiComposerEnvironment {
     private var autoShippingDone = false
     /// The library model each model line came from (line ID → model), for Check Again.
     private var lineModels: [UUID: LocalModel] = [:]
+    /// The references of this composer's Place Order attempts that 3DAPI didn't definitely refuse. If one of them leaves
+    /// the session's unconfirmed list (Look for Order on 3DAPI, a reload or a placed order found it), 3DAPI has this
+    /// order, so the composer closes like after a placed order and never lets the same draft be placed again silently.
+    private(set) var sentReferences: Set<String> = []
 
     init(environment: DapiComposerEnvironment) {
         self.environment = environment
+    }
+
+    /// The review is about to send an attempt (already recorded as unconfirmed).
+    func noteSending(reference: String) { sentReferences.insert(reference) }
+    /// 3DAPI definitely didn't place an attempt (called before its record is removed).
+    func noteNotCharged(reference: String) { sentReferences.remove(reference) }
+
+    /// Whether one of this composer's attempts was found or placed: see `dapiComposerOwnOrderSettled`.
+    func ownOrderSettled(unconfirmedReferences: [String]) -> Bool {
+        dapiComposerOwnOrderSettled(sent: sentReferences, unconfirmed: unconfirmedReferences)
     }
 
     var isResolving: Bool { lines.contains { $0.state == .resolving } }
@@ -1276,9 +1473,20 @@ struct DapiComposerEnvironment {
         }
     }
 
-    /// Reads the catalogue once per sheet (for the per-slot pickers).
+    /// Reads the catalogue once per sheet (for the per-slot pickers). After a failure it isn't read again by itself:
+    /// only Try Again (`retryMaterials`) reads it again.
     func loadMaterialsIfNeeded() {
         guard !materialsRequested else { return }
+        startMaterialsRead()
+    }
+
+    /// Try Again after a failed materials read: one more read, only on the seller's press.
+    func retryMaterials() {
+        guard !materialsLoading, materials.isEmpty else { return }
+        startMaterialsRead()
+    }
+
+    private func startMaterialsRead() {
         materialsRequested = true
         materialsLoading = true
         materialsProblem = nil
@@ -1294,7 +1502,7 @@ struct DapiComposerEnvironment {
                 self.materials = list
                 self.fillSuggestedSlots()
             case .failure(let error):
-                self.materialsRequested = false
+                // `materialsRequested` stays set: a later change in the form never reads again by itself.
                 self.materialsProblem = "Couldn’t read 3DAPI’s materials: \(dapiFailureMessage(error))"
             }
         }

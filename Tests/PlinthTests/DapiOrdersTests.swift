@@ -21,6 +21,11 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     var walletResult: Result<DapiWallet, DapiError> = .failure(.refused(status: 403, code: "missing_scope", message: nil))
     var placeResult: Result<DapiOrder, DapiError> = .success(DapiOrdersTests.order("ord_new", status: .paid))
     var cancelResult: Result<DapiOrder, DapiError> = .success(DapiOrdersTests.order("ord_1", status: .cancelled))
+    /// Holds `placeOrder` this long before answering (a request waiting for 3DAPI).
+    var placeDelayNanoseconds: UInt64 = 0
+
+    /// Records an event in `calls` (to check the order of things around the requests).
+    func note(_ event: String) { record(event) }
 
     var calls: [String] { lock.withLock { _calls } }
     var queries: [DapiOrderListQuery] { lock.withLock { _queries } }
@@ -84,6 +89,7 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     func placeOrder(_ request: DapiOrderRequest, idempotencyKey: String) async throws -> DapiOrder {
         record("place")
         lock.withLock { _placed.append((request, idempotencyKey)) }
+        if placeDelayNanoseconds > 0 { try? await Task.sleep(nanoseconds: placeDelayNanoseconds) }
         return try placeResult.get()
     }
     func cancelOrder(id: String, idempotencyKey: String) async throws -> DapiOrder {
@@ -144,7 +150,11 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
             unconfirmedOrders: { harness.unconfirmed },
             beginWrite: { harness.begun += 1; return UUID() },
             endWrite: { _ in harness.ended += 1 },
-            noteUnconfirmed: { harness.unconfirmed.append($0) },
+            noteUnconfirmed: { harness.unconfirmed.append($0); stub.note("noted \($0.reference)") },
+            confirmUnconfirmed: { reference in
+                harness.unconfirmed.removeAll { $0.reference == reference }
+                stub.note("confirmed \(reference)")
+            },
             newIdempotencyKey: { harness.keys += 1; return "key-\(harness.keys)" },
             newReferenceToken: { "deadbeef" },
             now: { Date(timeIntervalSince1970: 1_793_000_000) })
@@ -249,6 +259,51 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertNotNil(dapiRecipientProblems(lineBreak)[.line2])
     }
 
+    func testComposerChecksMatchTheClientsPreSendCheck() {
+        // Lengths count Unicode scalars, as the client and 3DAPI's schema do: "é" written as e + U+0301 is two.
+        var decomposed = validAddress()
+        decomposed.delivery.name = String(repeating: "e\u{301}", count: 150)
+        XCTAssertEqual(decomposed.delivery.name.count, 150)
+        XCTAssertNotNil(dapiRecipientProblems(decomposed)[.name])
+        // The client's email rule: a dotted domain.
+        var email = validAddress()
+        email.delivery.email = "ada@localhost"
+        XCTAssertNotNil(dapiRecipientProblems(email)[.email])
+        XCTAssertFalse(dapiEmailLooksValid("ada@localhost"))
+        // Control characters in notes (other than line breaks and tabs) are refused here, as by the client.
+        XCTAssertNotNil(dapiRecipientProblems(validAddress(), notes: "Hi\u{7}")[.notes])
+        XCTAssertNil(dapiRecipientProblems(validAddress(), notes: "Line one\nLine two")[.notes])
+        // Whatever passes the composer passes the client's own check.
+        for address in [validAddress()] {
+            let draft = dapiOrderDraft(lines: [readyLine()], address: address, reference: "ETSY 1", notes: "Gift\nwrap",
+                                       catalogue: [])
+            XCTAssertNotNil(draft)
+            if let draft {
+                XCTAssertNil(dapiOrderRequestProblem(DapiOrderRequest(
+                    lines: draft.lines.map(\.request), recipient: draft.recipient,
+                    reference: dapiOrderReference(sellerReference: draft.sellerReference, token: "deadbeef"),
+                    customerNotes: draft.notes)))
+            }
+        }
+        // A line the client would refuse (a quote ID 3DAPI doesn't issue) never makes a draft.
+        let badQuote = readyLine(quote: DapiOrdersTests.quote("q-1"))
+        XCTAssertNil(dapiOrderDraft(lines: [badQuote], address: validAddress(), reference: "", notes: "", catalogue: []))
+        XCTAssertNotNil(dapiComposerRequestProblem(lines: [DapiOrderLineRequest(quoteID: "q-1", quantity: 1, materials: .suggested)],
+                                                   recipient: recipient(), notes: nil))
+    }
+
+    func testUnservedCountriesAreLeftOut() {
+        for code in ["RU", "BY", "IR", "SY", "ru"] {
+            XCTAssertFalse(dapiIsDeliveryCountry(code), code)
+            var address = validAddress()
+            address.delivery = deliveryApplyingCountryPick(code.uppercased(), to: address.delivery)
+            XCTAssertNotNil(dapiRecipientProblems(address)[.country])
+        }
+        XCTAssertTrue(dapiIsDeliveryCountry("GB"))
+        XCTAssertTrue(dapiIsDeliveryCountry("UA"))
+        XCTAssertTrue(dapiUnservedCountriesNote.contains("Russia"))
+    }
+
     func testRecipientIsTrimmedWithEmptyOptionalsAsNil() {
         var address = validAddress()
         address.delivery.name = "  Ada Lovelace "
@@ -313,6 +368,46 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         ]
         XCTAssertEqual(dapiMaterialGroups(materials).map(\.title), ["PLA", "PETG", "TPU", "Other"])
         XCTAssertEqual(dapiSuggestedMaterialID(slot: 1, quote: DapiOrdersTests.quote("q"), catalogue: materials), "1")
+    }
+
+    func testSuggestedMaterialPrefersItsIDThenTheName() {
+        let materials = [
+            DapiMaterial(id: "mat_red1", name: "PLA Red", color: nil, colorHex: nil, filamentType: "pla"),
+            DapiMaterial(id: "mat_red2", name: "PLA Red Matte", color: nil, colorHex: nil, filamentType: "pla"),
+        ]
+        func quote(name: String?, id: String?) -> DapiQuote {
+            DapiOrdersTests.quote("qte_1", suggestions: [
+                DapiSuggestedMaterial(slot: 1, materialName: name, fileFilamentType: nil, match: nil, materialID: id)
+            ])
+        }
+        XCTAssertEqual(dapiSuggestedMaterialID(slot: 1, quote: quote(name: "PLA Red", id: "mat_red2"), catalogue: materials),
+                       "mat_red2", "The ID wins over the name")
+        XCTAssertEqual(dapiSuggestedMaterialID(slot: 1, quote: quote(name: "PLA Red", id: "mat_gone"), catalogue: materials),
+                       "mat_red1", "An ID not in the catalogue falls back to the name")
+        XCTAssertEqual(dapiSuggestedMaterialID(slot: 1, quote: quote(name: nil, id: "mat_red1"), catalogue: materials), "mat_red1")
+        XCTAssertNil(dapiSuggestedMaterialID(slot: 2, quote: quote(name: "PLA Red", id: nil), catalogue: materials))
+        XCTAssertTrue(dapiQuoteHasSuggestions(quote(name: nil, id: "mat_red1")))
+        XCTAssertFalse(dapiQuoteHasSuggestions(quote(name: nil, id: nil)))
+    }
+
+    func testMaterialsReadFailureWaitsForTryAgain() async {
+        let stub = ScriptedDapiOrders()
+        stub.materialsResult = .failure(.readFailed("down"))
+        let state = DapiComposerState(environment: DapiComposerEnvironment(
+            client: { stub }, readyQuoteID: { _ in nil }, rememberReadyQuote: { _, _ in },
+            hashFile: { _ in "" }, noteHash: { _, _ in }))
+        state.loadMaterialsIfNeeded()
+        await waitUntil { !state.materialsLoading && state.materialsProblem != nil }
+        // Later changes in the form ask again; nothing is read by itself.
+        state.loadMaterialsIfNeeded()
+        state.loadMaterialsIfNeeded()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(stub.count("materials"), 1)
+        stub.materialsResult = .success([DapiMaterial(id: "mat_a", name: "PLA Red", color: nil, colorHex: nil, filamentType: "pla")])
+        state.retryMaterials()
+        await waitUntil { !state.materialsLoading }
+        XCTAssertEqual(stub.count("materials"), 2)
+        XCTAssertEqual(state.materials.map(\.id), ["mat_a"])
     }
 
     func testDuplicateCopiesQuotesQuantitiesAndSlotsButNoAddress() {
@@ -536,6 +631,136 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(stub.count("place"), 0)
         XCTAssertEqual(harness.begun, 0)
+        XCTAssertTrue(harness.unconfirmed.isEmpty)
+    }
+
+    func testTheAttemptIsRecordedBeforeSendingAndRemovedOnSuccess() async {
+        let stub = scriptedReady()
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        var sending: [String] = []
+        runner.onSending = { sending.append($0.reference) }
+        runner.placeOrder()
+        await settled(runner)
+        let events = stub.calls.filter { $0 != "read" && $0 != "shipping" && $0 != "wallet" }
+        XCTAssertEqual(events, ["noted ETSY-123_pldeadbeef", "place", "confirmed ETSY-123_pldeadbeef"])
+        XCTAssertEqual(sending, ["ETSY-123_pldeadbeef"])
+        XCTAssertTrue(harness.unconfirmed.isEmpty)
+    }
+
+    func testARefusalRemovesTheAttemptAfterTellingTheComposer() async {
+        let stub = scriptedReady()
+        stub.placeResult = .failure(.refused(status: 402, code: "insufficient_balance", message: nil))
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        var notCharged: [String] = []
+        runner.onNotCharged = { reference in
+            // Told before the record goes, so a composer never mistakes the removal for a found order.
+            XCTAssertEqual(harness.unconfirmed.map(\.reference), [reference])
+            notCharged.append(reference)
+        }
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(notCharged, ["ETSY-123_pldeadbeef"])
+        XCTAssertTrue(harness.unconfirmed.isEmpty)
+        guard case .notCharged(let text) = runner.phase else { return XCTFail("\(runner.phase)") }
+        XCTAssertEqual(text, DapiError.refused(status: 402, code: "insufficient_balance", message: nil).userMessage
+                       + " Nothing was charged.", "The client's copy is the single source")
+    }
+
+    func testAnOrderInFlightMakesAnotherPlaceAskButNotItself() async {
+        let stub = scriptedReady()
+        stub.placeDelayNanoseconds = 300_000_000
+        let harness = PlaceHarness()
+        let first = await readyRunner(stub, harness)
+        let second = await readyRunner(stub, harness)
+        first.placeOrder()
+        await waitUntil { first.phase == .placing }
+        XCTAssertEqual(harness.unconfirmed.count, 1, "Recorded while 3DAPI hasn't answered")
+        first.placeOrder() // A second press while placing does nothing and asks nothing.
+        XCTAssertFalse(first.askPlaceAnyway)
+        second.placeOrder()
+        XCTAssertTrue(second.askPlaceAnyway, "Another composer's Place asks Place Anyway while an order is in flight")
+        second.declinePlaceAnyway()
+        await settled(first)
+        XCTAssertEqual(stub.count("place"), 1)
+        XCTAssertTrue(harness.unconfirmed.isEmpty)
+        XCTAssertEqual(harness.begun, harness.ended)
+    }
+
+    func testOwnAttemptSettledOnlyWhenItLeavesTheUnconfirmedList() {
+        XCTAssertFalse(dapiComposerOwnOrderSettled(sent: [], unconfirmed: []))
+        XCTAssertFalse(dapiComposerOwnOrderSettled(sent: ["a"], unconfirmed: ["a", "b"]))
+        XCTAssertTrue(dapiComposerOwnOrderSettled(sent: ["a"], unconfirmed: ["b"]), "Found by Look for Order, or placed")
+        let state = DapiComposerState(environment: DapiComposerEnvironment(
+            client: { ScriptedDapiOrders() }, readyQuoteID: { _ in nil }, rememberReadyQuote: { _, _ in },
+            hashFile: { _ in "" }, noteHash: { _, _ in }))
+        state.noteSending(reference: "ref_1")
+        XCTAssertFalse(state.ownOrderSettled(unconfirmedReferences: ["ref_1"]))
+        state.noteNotCharged(reference: "ref_1")
+        XCTAssertFalse(state.ownOrderSettled(unconfirmedReferences: []), "A refused attempt isn't a found order")
+        state.noteSending(reference: "ref_2")
+        XCTAssertTrue(state.ownOrderSettled(unconfirmedReferences: []))
+    }
+
+    func sampleCreditWallet(_ cents: Int) -> DapiWallet {
+        DapiWallet(balance: DapiOrdersTests.usd(10_000), sampleCredit: DapiOrdersTests.usd(cents), sampleCreditExpiresAt: nil)
+    }
+
+    func testSampleCreditIsSentOnlyWhenTicked() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(sampleCreditWallet(2_000))
+        let harness = PlaceHarness()
+        let off = await readyRunner(stub, harness)
+        XCTAssertFalse(off.useSampleCredit, "Off by default")
+        off.placeOrder()
+        await settled(off)
+        XCTAssertEqual(stub.placed.last?.0.useSampleCredit, false)
+        let on = await readyRunner(stub, harness)
+        on.useSampleCredit = true
+        on.placeOrder()
+        await settled(on)
+        XCTAssertEqual(stub.placed.last?.0.useSampleCredit, true)
+        XCTAssertEqual(stub.count("place"), 2)
+    }
+
+    func testSampleCreditChangedOrGoneStopsBeforeSending() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(sampleCreditWallet(2_000))
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        runner.useSampleCredit = true
+        runner.placeOrder()
+        runner.useSampleCredit = false // Changed while the figures are checked again.
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertFalse(runner.changes.isEmpty)
+        XCTAssertEqual(stub.count("place"), 0)
+        // Ticked, but the fresh wallet shows no sample credit any more.
+        stub.walletResult = .success(sampleCreditWallet(0))
+        runner.useSampleCredit = true
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertFalse(runner.useSampleCredit)
+        XCTAssertEqual(stub.count("place"), 0)
+        XCTAssertNil(dapiSampleCreditChange(pressed: false, current: false, available: false))
+        XCTAssertNil(dapiSampleCreditChange(pressed: true, current: true, available: true))
+        XCTAssertNotNil(dapiSampleCreditChange(pressed: true, current: false, available: true))
+        XCTAssertNotNil(dapiSampleCreditChange(pressed: true, current: true, available: false))
+    }
+
+    func testWalletShortfallAndNotes() {
+        let wallet = DapiWallet(balance: DapiOrdersTests.usd(1_000), sampleCredit: nil, sampleCreditExpiresAt: nil)
+        XCTAssertEqual(dapiWalletShortfall(upTo: DapiOrdersTests.usd(1_500), wallet: wallet), DapiOrdersTests.usd(500))
+        XCTAssertNil(dapiWalletShortfall(upTo: DapiOrdersTests.usd(1_000), wallet: wallet))
+        XCTAssertNil(dapiWalletShortfall(upTo: DapiOrdersTests.usd(1_500), wallet: nil))
+        XCTAssertNil(dapiWalletShortfall(upTo: DapiMoney(amountMinor: 1_500, currency: "eur"), wallet: wallet))
+        XCTAssertTrue(dapiWalletShortfallText(DapiOrdersTests.usd(500)).contains("without a confirmed VAT number"))
+        XCTAssertTrue(dapiWalletNote.contains("without a confirmed VAT number"))
+        XCTAssertTrue(dapiLineUsesChosenMaterials(DapiOrderLineRequest(quoteID: "qte_1", quantity: 1,
+                                                                      materials: .slots([DapiMaterialSlot(slot: 1, materialID: "mat_a")]))))
+        XCTAssertFalse(dapiLineUsesChosenMaterials(DapiOrderLineRequest(quoteID: "qte_1", quantity: 1, materials: .suggested)))
     }
 
     // MARK: Look for Order on 3DAPI
@@ -605,6 +830,8 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
 
     final class CancelHarness {
         var unknown: Set<String> = []
+        var sentFrom: [String: DapiOrderStatus] = [:]
+        var cancelled: Set<String> = []
         var begun = 0
         var ended = 0
     }
@@ -615,8 +842,10 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
             beginWrite: { harness.begun += 1; return UUID() },
             endWrite: { _ in harness.ended += 1 },
             outcomeUnknown: { harness.unknown.contains($0) },
-            noteUnknown: { harness.unknown.insert($0) },
-            clearUnknown: { harness.unknown.remove($0) },
+            sentFrom: { harness.sentFrom[$0] },
+            noteUnknown: { harness.unknown.insert($0); harness.sentFrom[$0] = $1 },
+            clearUnknown: { harness.unknown.remove($0); harness.sentFrom[$0] = nil },
+            noteCancelled: { harness.cancelled.insert($0) },
             newIdempotencyKey: { "cancel-key" }))
     }
 
@@ -639,6 +868,7 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(harness.ended, 1)
         XCTAssertEqual(updates.last, .cancelled)
         XCTAssertTrue(harness.unknown.isEmpty)
+        XCTAssertEqual(harness.cancelled, ["ord_1"], "The order watch stays quiet about the seller's own cancellation")
     }
 
     func testCancelRunnerStopsWhenTheStatusMoved() async {
@@ -664,12 +894,85 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         runner.cancelOrder()
         await waitUntil { if case .done = runner.phase { true } else { false } }
         XCTAssertEqual(harness.unknown, ["ord_1"])
-        // A second review refuses to send while the outcome is unknown.
+        XCTAssertEqual(harness.sentFrom, ["ord_1": .paid], "The status the cancel was sent from is recorded")
+        XCTAssertTrue(harness.cancelled.isEmpty)
+        // A second review refuses to send while the outcome is unknown (the order still shows Paid).
         let second = cancelRunner(stub, harness)
         second.start()
         await waitUntil { second.phase != .loading }
         XCTAssertFalse(second.canCancel)
         XCTAssertEqual(stub.count("cancel"), 1)
+        XCTAssertEqual(harness.unknown, ["ord_1"], "A reload still showing the sent-from status keeps the lock")
+        // A reload showing another status lifts it.
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_1", status: .assigned))])
+        let third = cancelRunner(stub, harness, shown: .assigned)
+        third.start()
+        await waitUntil { third.phase != .loading }
+        XCTAssertTrue(harness.unknown.isEmpty)
+        XCTAssertFalse(third.canCancel, "Assigned can't be cancelled anyway")
+    }
+
+    func testCancelLockLiftsOnCancelledOrAnotherStatusOnly() {
+        let paid = DapiOrdersTests.order("ord_1", status: .paid)
+        XCTAssertFalse(dapiCancelLockLifted(order: paid, sentFrom: .paid))
+        XCTAssertFalse(dapiCancelLockLifted(order: DapiOrdersTests.order("ord_1", status: DapiOrderStatus(raw: " PAID ")), sentFrom: .paid))
+        XCTAssertTrue(dapiCancelLockLifted(order: DapiOrdersTests.order("ord_1", status: .cancelled), sentFrom: .paid))
+        XCTAssertTrue(dapiCancelLockLifted(order: DapiOrdersTests.order("ord_1", status: .assigned), sentFrom: .paid))
+        XCTAssertTrue(dapiCancelLockLifted(order: DapiOrdersTests.order("ord_1", status: .cancelled), sentFrom: nil))
+        XCTAssertFalse(dapiCancelLockLifted(order: DapiOrdersTests.order("ord_1", status: .assigned), sentFrom: nil),
+                       "Without a recorded status only cancelled lifts it")
+        let orders = [DapiOrdersTests.order("ord_1", status: .paid), DapiOrdersTests.order("ord_2", status: .inProduction),
+                      DapiOrdersTests.order("ord_3", status: .cancelled)]
+        let settled = dapiSessionSettlements(orders, unconfirmed: [], cancelUnknown: ["ord_1", "ord_2", "ord_3"],
+                                             cancelSentFrom: ["ord_1": .paid, "ord_2": .paid])
+        XCTAssertEqual(settled.clearCancelIDs, ["ord_2", "ord_3"])
+    }
+
+    func testCancelRefusalUsesTheClientsCopyAndRecordsNothing() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_1", status: .paid))])
+        stub.cancelResult = .failure(.refused(status: 409, code: "order_not_cancellable", message: nil))
+        let harness = CancelHarness()
+        let runner = cancelRunner(stub, harness)
+        runner.start()
+        await waitUntil { runner.phase != .loading }
+        runner.cancelOrder()
+        await waitUntil { if case .done = runner.phase { true } else { false } }
+        guard case .done(.refused(let text)) = runner.phase else { return XCTFail("\(runner.phase)") }
+        XCTAssertEqual(text, DapiError.refused(status: 409, code: "order_not_cancellable", message: nil).userMessage)
+        XCTAssertTrue(harness.unknown.isEmpty)
+        XCTAssertEqual(harness.ended, 1)
+    }
+
+    func testClosingTheCancelReviewDuringTheRecheckSendsNothing() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_1", status: .paid))])
+        let harness = CancelHarness()
+        let runner = cancelRunner(stub, harness)
+        runner.start()
+        await waitUntil { runner.phase != .loading }
+        runner.cancelOrder()
+        runner.close() // Go Back during the re-read.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(stub.count("cancel"), 0)
+        XCTAssertEqual(harness.begun, 0)
+    }
+
+    func testCancelCopyFollowsTheModeAndStatus() {
+        XCTAssertTrue(dapiCancelExplanation(mode: "wallet", status: .paid).contains("your 3DAPI wallet"))
+        XCTAssertTrue(dapiCancelExplanation(mode: "checkout", status: .paid).contains("your customer’s card"))
+        XCTAssertTrue(dapiCancelExplanation(mode: "checkout", status: .paid).contains("5–10 business days"))
+        XCTAssertTrue(dapiCancelExplanation(mode: "checkout", status: .awaitingPayment).contains("checkout link"))
+        for mode in ["wallet", "checkout"] {
+            XCTAssertTrue(dapiCancelExplanation(mode: mode, status: .paid).contains("once a production partner has it"))
+        }
+        XCTAssertNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .paid), cancelUnknown: false))
+        XCTAssertNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .assigned), cancelUnknown: true))
+        XCTAssertTrue(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .assigned), cancelUnknown: false)!
+            .contains("only while an order is Paid"))
+        XCTAssertNotNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .cancelled), cancelUnknown: false))
+        XCTAssertNotNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .shipped), cancelUnknown: false))
+        XCTAssertNotNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .unknown("x")), cancelUnknown: false))
     }
 
     // MARK: List
@@ -755,6 +1058,144 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         list.insertAndSelect(DapiOrdersTests.order("new", status: .paid))
         XCTAssertEqual(list.selection, "new")
         XCTAssertEqual(list.selectedOrder?.id, "new")
+    }
+
+    func listState(_ stub: ScriptedDapiOrders) -> DapiOrderListState {
+        DapiOrderListState(environment: DapiOrderListEnvironment(
+            client: { stub }, unconfirmedOrders: { [] }, cancelOutcomeUnknown: { [] },
+            confirmUnconfirmed: { _ in }, clearCancelUnknown: { _ in }))
+    }
+
+    func item(_ id: String, quantity: Int = 1) -> DapiOrderItem {
+        DapiOrderItem(id: id, quoteID: "qte_1", quoteName: nil, materials: [], quantity: quantity, unitPrice: nil,
+                      productionUnitPrice: nil, total: nil)
+    }
+
+    func testANewerCopyWithoutLinesKeepsTheLoadedLines() {
+        let withLines = DapiOrdersTests.order("ord_a", status: .paid, items: [item("itm_1", quantity: 3)])
+        let cancelReply = DapiOrdersTests.order("ord_a", status: .cancelled, items: nil)
+        let merged = dapiMergeOrders([withLines], with: [cancelReply])
+        XCTAssertEqual(merged[0].status, .cancelled)
+        XCTAssertEqual(merged[0].items?.map(\.id), ["itm_1"])
+        XCTAssertEqual(dapiReplacingOrder(cancelReply, in: [withLines])[0].items?.count, 1)
+        XCTAssertEqual(dapiInsertingOrder(cancelReply, into: [withLines])[0].items?.count, 1)
+        // A newer copy with lines (even none) replaces them.
+        let emptyLines = DapiOrdersTests.order("ord_a", status: .paid, items: [])
+        XCTAssertEqual(dapiMergeOrders([withLines], with: [emptyLines])[0].items?.count, 0)
+    }
+
+    func testAKeyChangeForgetsTheOrdersAndDropsLateReplies() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_old", status: .paid)], hasMore: true, nextCursor: "c2"))])
+        let list = listState(stub)
+        list.keyChanged(generation: 1, configured: true)
+        await waitUntil { list.loaded && !list.loading }
+        XCTAssertEqual(list.orders.map(\.id), ["ord_old"])
+        list.selection = "ord_old"
+        // The same generation again does nothing.
+        list.keyChanged(generation: 1, configured: true)
+        XCTAssertEqual(list.orders.map(\.id), ["ord_old"])
+        XCTAssertEqual(stub.count("orders"), 1)
+        // A read for the earlier key is on its way when the key changes: its reply is dropped.
+        list.reload()
+        list.keyChanged(generation: 2, configured: false)
+        XCTAssertTrue(list.orders.isEmpty)
+        XCTAssertNil(list.selection)
+        XCTAssertFalse(list.hasMore)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(list.orders.isEmpty)
+        XCTAssertFalse(list.loaded)
+        // A new key reads again.
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_new", status: .paid)], hasMore: false, nextCursor: nil))])
+        list.keyChanged(generation: 3, configured: true)
+        await waitUntil { list.loaded && !list.loading }
+        XCTAssertEqual(list.orders.map(\.id), ["ord_new"])
+    }
+
+    func testTheRefreshSpinnerClearsWhenAReloadOverlaps() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_a", status: .paid)], hasMore: false, nextCursor: nil))])
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_a", status: .shipped))])
+        let list = listState(stub)
+        list.reload()
+        await waitUntil { list.loaded && !list.loading }
+        list.refreshOrder(id: "ord_a")
+        XCTAssertEqual(list.refreshingOrderID, "ord_a")
+        list.reload() // Bumps the list's generation while the refresh waits.
+        await waitUntil { list.refreshingOrderID == nil && !list.loading }
+        XCTAssertNil(list.refreshingOrderID)
+    }
+
+    func testARefreshFailureBelongsToItsOrder() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_a", status: .paid),
+                                                          DapiOrdersTests.order("ord_b", status: .paid)], hasMore: false, nextCursor: nil))])
+        stub.scriptOrderReads([.failure(.readFailed("down"))])
+        let list = listState(stub)
+        list.reload()
+        await waitUntil { list.loaded && !list.loading }
+        list.refreshOrder(id: "ord_a")
+        await waitUntil { list.refreshingOrderID == nil }
+        XCTAssertNotNil(list.orderRefreshError(for: "ord_a"))
+        XCTAssertNil(list.orderRefreshError(for: "ord_b"))
+    }
+
+    func testAFilterChangeNeverLeavesTheEarlierFiltersRows() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptPages([
+            .success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_a", status: .paid)], hasMore: true, nextCursor: "c2")),
+            .failure(.readFailed("down")),
+        ])
+        let list = listState(stub)
+        list.reload()
+        await waitUntil { list.loaded && !list.loading }
+        XCTAssertTrue(list.canUseRowsForTools)
+        // Refresh with the same filter fails: the rows and their Load More stay usable.
+        list.reload()
+        await waitUntil { !list.loading && list.loadError != nil }
+        XCTAssertEqual(list.orders.map(\.id), ["ord_a"])
+        XCTAssertTrue(list.hasMore)
+        XCTAssertTrue(list.canUseRowsForTools)
+        // Another status whose read fails: the earlier rows are gone, with no dead Load More.
+        list.applyStatus(.shipped)
+        XCTAssertTrue(list.orders.isEmpty)
+        XCTAssertFalse(list.hasMore)
+        await waitUntil { !list.loading }
+        XCTAssertTrue(list.orders.isEmpty)
+        XCTAssertFalse(list.hasMore)
+        XCTAssertTrue(list.canUseRowsForTools)
+    }
+
+    func testShowingAnOrderReadsItByIDAndSelectsIt() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_z", status: .shipped))])
+        let list = listState(stub)
+        list.show(orderID: "ord_z")
+        await waitUntil { list.refreshingOrderID == nil }
+        XCTAssertEqual(list.selection, "ord_z")
+        XCTAssertEqual(list.orders.map(\.id), ["ord_z"])
+        XCTAssertEqual(stub.count("order"), 1)
+        XCTAssertEqual(stub.count("orders"), 0)
+    }
+
+    func testEmptyStateOffersEveryWayBack() {
+        XCTAssertNil(dapiOrdersEmptyText(status: nil, search: "2AP"))
+        XCTAssertEqual(dapiOrdersEmptyActions(status: nil, search: "2AP"), [.clearSearch])
+        XCTAssertNotNil(dapiOrdersEmptyText(status: .shipped, search: "2AP"))
+        XCTAssertEqual(dapiOrdersEmptyActions(status: .shipped, search: "2AP"), [.clearSearch, .showAll])
+        XCTAssertEqual(dapiOrdersEmptyActions(status: .shipped, search: " "), [.showAll])
+        XCTAssertEqual(dapiOrdersEmptyActions(status: nil, search: ""), [])
+    }
+
+    func testSellerReferenceIsShownWithoutPlinthsCode() {
+        XCTAssertEqual(dapiOrderSellerReference("ETSY-123_pldeadbeef"), "ETSY-123")
+        XCTAssertNil(dapiOrderSellerReference("plinth_deadbeef"))
+        XCTAssertEqual(dapiOrderSellerReference("SHOP-9"), "SHOP-9")
+        XCTAssertNil(dapiOrderSellerReference(nil))
+        // The full reference stays for lookups.
+        let order = DapiOrdersTests.order("ord_1", status: .paid, reference: "ETSY-123_pldeadbeef")
+        XCTAssertEqual(dapiOrderMatching(reference: "ETSY-123_pldeadbeef", in: [order])?.id, "ord_1")
+        XCTAssertNil(dapiOrderMatching(reference: "ETSY-123", in: [order]))
     }
 
     func testAccountNotice() {

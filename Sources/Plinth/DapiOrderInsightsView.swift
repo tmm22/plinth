@@ -8,32 +8,31 @@ import UniformTypeIdentifiers
 
 // MARK: - Detail sections
 
-/// The order detail's extra sections: attention reason, Profit check, Report a Problem.
+/// The order detail's extra section: the Profit check. (The attention reason is in the detail's header, and Report a
+/// Problem… in its action row, `DapiReportProblemButton`.)
 struct DapiOrderInsightsSection: View {
+    let order: DapiOrder
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // `.id` so typed amounts never carry over to another order.
+            DapiProfitCheckPanel(order: order).id(order.id)
+        }
+    }
+}
+
+/// Report a Problem… for the order detail's action row: opens the Copy-only message sheet; Plinth sends nothing.
+/// Offer it only where `dapiOffersProblemReport` allows.
+struct DapiReportProblemButton: View {
     let order: DapiOrder
     @State private var reportingProblem = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let attention = dapiOrderAttentionReason(order) {
-                Label {
-                    Text(attention.detail).fixedSize(horizontal: false, vertical: true)
-                } icon: {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                }
-                .font(.callout)
-                .accessibilityLabel("Needs attention: \(attention.detail)")
+        Button("Report a Problem…") { reportingProblem = true }
+            .help("Put together a message about this order to send to 3DAPI. Nothing is sent by Plinth.")
+            .sheet(isPresented: $reportingProblem) {
+                DapiProblemReportSheet(order: order)
             }
-            // `.id` so typed amounts never carry over to another order.
-            DapiProfitCheckPanel(order: order).id(order.id)
-            if dapiOffersProblemReport(status: order.status) {
-                Button("Report a Problem…") { reportingProblem = true }
-                    .help("Put together a message about this order to send to 3DAPI. Nothing is sent by Plinth.")
-            }
-        }
-        .sheet(isPresented: $reportingProblem) {
-            DapiProblemReportSheet(order: order)
-        }
     }
 }
 
@@ -324,63 +323,59 @@ struct DapiProblemReportSheet: View {
 
 // MARK: - Tools menu
 
-/// The Orders toolbar's Tools menu for 3DAPI: Spending Report…, Export Orders…, Tracking for Your Shop….
+/// The Orders toolbar's Tools menu for 3DAPI: Spending Report…, Export Orders…, Tracking for Your Shop…. The sheets
+/// and the export live in `DapiOrdersView`, so the File menu's requests open the same ones.
 struct DapiOrdersToolsMenu: View {
-    /// The orders loaded in the list (every page read so far).
-    let orders: [DapiOrder]
-    @State private var showSpendingReport = false
-    @State private var showTracking = false
-    @State private var exportError: String?
+    /// Rows are loaded and match the filter shown (`DapiOrderListState.canUseRowsForTools`).
+    let hasOrders: Bool
+    @Binding var showSpendingReport: Bool
+    @Binding var showTracking: Bool
+    let onExport: () -> Void
 
     var body: some View {
         Menu {
             Button("Spending Report…") { showSpendingReport = true }
-            Button("Export Orders…") { exportOrders() }
-                .disabled(orders.isEmpty)
+            Button("Export Orders…") { onExport() }
+                .disabled(!hasOrders)
             Button("Tracking for Your Shop…") { showTracking = true }
-                .disabled(orders.isEmpty)
+                .disabled(!hasOrders)
         } label: {
             Label("Tools", systemImage: "chart.bar.doc.horizontal")
         }
         .help("Spending report, export and tracking for the loaded 3DAPI orders")
-        .sheet(isPresented: $showSpendingReport) { DapiSpendingReportSheet(orders: orders) }
-        .sheet(isPresented: $showTracking) { DapiTrackingSheet(orders: orders) }
-        .alert("Couldn’t export the orders", isPresented: Binding(get: { exportError != nil }, set: { if !$0 { exportError = nil } })) {
-            Button("OK", role: .cancel) { exportError = nil }
-        } message: {
-            Text(exportError ?? "")
-        }
     }
+}
 
-    /// The save panel with Include customer details (off). Nothing goes to Activity or anywhere but the chosen file.
-    private func exportOrders() {
-        guard !orders.isEmpty, !appIsPresentingModalUI() else { return }
-        let panel = NSSavePanel()
-        panel.title = "Export Orders"
-        panel.message = orders.count == 1 ? "Exports the loaded 3DAPI order." : "Exports the \(orders.count) loaded 3DAPI orders."
-        panel.nameFieldStringValue = dapiDatedFileName("3DAPI orders")
-        panel.allowedContentTypes = [.commaSeparatedText]
-        panel.canCreateDirectories = true
-        let checkbox = NSButton(checkboxWithTitle: "Include customer details", target: nil, action: nil)
-        checkbox.state = .off
-        let note = NSTextField(wrappingLabelWithString: "Customer names, emails and addresses are left out unless you include them. The file isn’t protected once saved.")
-        note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        note.textColor = .secondaryLabelColor
-        note.preferredMaxLayoutWidth = 360
-        let stack = NSStackView(views: [checkbox, note])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 4
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        panel.accessoryView = stack
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        // A UTF-8 byte order mark lets spreadsheet apps read non-ASCII names correctly.
-        let data = Data([0xEF, 0xBB, 0xBF]) + Data(dapiOrdersCSV(orders, includeCustomer: checkbox.state == .on).utf8)
-        do {
-            try data.write(to: destination, options: .atomic)
-        } catch {
-            exportError = error.localizedDescription
-        }
+/// Export Orders…: the save panel with Include customer details (off). Nothing goes to Activity or anywhere but the
+/// chosen file. Returns the failure to show, or nil (saved, or the panel was cancelled).
+@MainActor func dapiExportOrders(_ orders: [DapiOrder]) -> String? {
+    guard !orders.isEmpty, !appIsPresentingModalUI() else { return nil }
+    let panel = NSSavePanel()
+    panel.title = "Export Orders"
+    panel.message = orders.count == 1 ? "Exports the loaded 3DAPI order." : "Exports the \(orders.count) loaded 3DAPI orders."
+    panel.nameFieldStringValue = dapiDatedFileName("3DAPI orders")
+    panel.allowedContentTypes = [.commaSeparatedText]
+    panel.canCreateDirectories = true
+    let checkbox = NSButton(checkboxWithTitle: "Include customer details", target: nil, action: nil)
+    checkbox.state = .off
+    let note = NSTextField(wrappingLabelWithString: "Customer names, emails and addresses are left out unless you include them. The file isn’t protected once saved.")
+    note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    note.textColor = .secondaryLabelColor
+    note.preferredMaxLayoutWidth = 360
+    let stack = NSStackView(views: [checkbox, note])
+    stack.orientation = .vertical
+    stack.alignment = .leading
+    stack.spacing = 4
+    stack.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+    panel.accessoryView = stack
+    guard panel.runModal() == .OK, let destination = panel.url else { return nil }
+    // A UTF-8 byte order mark lets spreadsheet apps read non-ASCII names correctly.
+    let data = Data([0xEF, 0xBB, 0xBF]) + Data(dapiOrdersCSV(orders, includeCustomer: checkbox.state == .on).utf8)
+    do {
+        try data.write(to: destination, options: .atomic)
+        return nil
+    } catch {
+        return error.localizedDescription
     }
 }
 
@@ -612,6 +607,7 @@ struct DapiTrackingSheet: View {
     @Environment(\.dismiss) private var dismiss
     let orders: [DapiOrder]
     @ObservedObject private var tools = DapiOrderToolsState.shared
+    @ObservedObject private var shopify = ShopifyConnection.shared
     @State private var showDone = false
     @State private var copiedAll = false
 
@@ -623,8 +619,11 @@ struct DapiTrackingSheet: View {
                 Text("Tracking for your shop").font(.title2.bold())
                 Text("Orders 3DAPI has shipped, with their carrier and tracking number, to copy into Etsy or Shopify. 3DAPI gives no tracking link. Mark an order as done once you’ve added its tracking in your shop; marks last until you quit Plinth. Only loaded orders are listed.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Text(dapiTrackingNoShopifyNote)
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                // Only when Shopify is connected: otherwise there's nothing it could have offered.
+                if shopify.isConfigured {
+                    Text(dapiTrackingNoShopifyNote)
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if groups.listed.isEmpty {
