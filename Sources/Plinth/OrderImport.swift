@@ -1725,8 +1725,10 @@ struct OrderImportSheet: View {
                                 set: { choose($0, for: key, parse: parse) })) {
                                 Text("Choose a product…").tag(OrderImportProductChoice?.none)
                                 ForEach(products) { product in
-                                    let sku = product.sku.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    Text(sku.isEmpty ? savedProductDisplayName(product) : "\(savedProductDisplayName(product)) (\(sku))")
+                                    // Marked when it can't be ordered now; the order's own row says why.
+                                    Text(savedProductPickerTitle(product, canOrder: savedProductOrderability(
+                                        product, localModels: store.localModels, filaments: store.filaments,
+                                        components: store.components, stationery: store.stationery).canOrder))
                                         .tag(OrderImportProductChoice?.some(.product(product.id)))
                                 }
                                 Divider()

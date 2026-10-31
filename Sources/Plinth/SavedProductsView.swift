@@ -239,6 +239,13 @@ struct SavedProductsSheet: View {
     @State private var costCheckProduct: SavedProduct?
 
     var sortedProducts: [SavedProduct] { savedProductsSorted(store.savedProducts) }
+    /// Whether each product could be added to a draft now, from the loaded catalogs and library (read-only).
+    var orderability: [UUID: SavedProductOrderability] {
+        Dictionary(store.savedProducts.map { product in
+            (product.id, savedProductOrderability(product, localModels: store.localModels, filaments: store.filaments,
+                                                  components: store.components, stationery: store.stationery))
+        }, uniquingKeysWith: { first, _ in first })
+    }
     var selectedProduct: SavedProduct? { store.savedProducts.first { $0.id == selection } }
     var editorHasChanges: Bool { editing != nil && editing != editingBaseline }
     var neededLineTypes: Set<String> {
@@ -294,6 +301,7 @@ struct SavedProductsSheet: View {
                 Text("Products you sell often, ready to add to an order draft in one step. A product keeps its items, materials and SKU on this Mac — never prices or customer details.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                orderabilitySummary
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
@@ -351,8 +359,27 @@ struct SavedProductsSheet: View {
         }
     }
 
+    /// How many products can't be ordered now, and which catalogs couldn't be checked (never implying all is well).
+    @ViewBuilder
+    private var orderabilitySummary: some View {
+        let states = orderability
+        if let count = savedProductsCantOrderCountText(states.values.filter { !$0.canOrder }.count) {
+            Label(count, systemImage: "exclamationmark.triangle.fill")
+                .font(.callout).foregroundStyle(.orange)
+        }
+        if catalogsLoading {
+            Text("Loading the catalog to check stock…").font(.caption).foregroundStyle(.secondary)
+        } else if let unchecked = savedProductsUncheckedCatalogsText(
+            Array(Set(states.values.flatMap(\.uncheckedCatalogs))), loaded: store.loadedCatalogs) {
+            Text(unchecked).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func productRow(_ product: SavedProduct) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let state = savedProductOrderability(product, localModels: store.localModels, filaments: store.filaments,
+                                             components: store.components, stationery: store.stationery)
+        return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 Text(savedProductDisplayName(product)).fontWeight(.medium).lineLimit(1)
                 let sku = product.sku.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -363,6 +390,11 @@ struct SavedProductsSheet: View {
             Text(savedProductItemsSummary(product, localModels: store.localModels, filaments: store.filaments,
                                           components: store.components, stationery: store.stationery))
                 .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            if let reason = savedProductCantOrderText(state) {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    .help(state.blockers.joined(separator: "\n"))
+            }
         }
         .padding(.vertical, 3)
     }
@@ -689,6 +721,10 @@ struct AddSavedProductPopover: View {
                                       components: store.components, stationery: store.stationery)
     }
     var canAdd: Bool { resolution.map { $0.blockers.isEmpty && !$0.lines.isEmpty } ?? false }
+    func orderability(_ product: SavedProduct) -> SavedProductOrderability {
+        savedProductOrderability(product, localModels: store.localModels, filaments: store.filaments,
+                                 components: store.components, stationery: store.stationery)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -700,10 +736,14 @@ struct AddSavedProductPopover: View {
             } else {
                 Picker("Product", selection: $productID) {
                     ForEach(products) { product in
-                        let sku = product.sku.trimmingCharacters(in: .whitespacesAndNewlines)
-                        Text(sku.isEmpty ? savedProductDisplayName(product) : "\(savedProductDisplayName(product)) (\(sku))")
+                        Text(savedProductPickerTitle(product, canOrder: orderability(product).canOrder))
                             .tag(UUID?.some(product.id))
                     }
+                }
+                if let product, let unchecked = savedProductsUncheckedCatalogsText(
+                    orderability(product).uncheckedCatalogs, loaded: store.loadedCatalogs) {
+                    Label(unchecked, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 8) {
                     Text("Units sold")
