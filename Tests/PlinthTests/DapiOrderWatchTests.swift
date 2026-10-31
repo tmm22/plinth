@@ -108,6 +108,7 @@ final class DapiOrderWatchTests: XCTestCase {
         var notices: [[DapiOrderWatchNotice]] = []
         var sleeps: [TimeInterval] = []
         var duringSleep: (() -> Void)?
+        var cancelledByPlinth: Set<String> = []
         lazy var watch: DapiOrderWatch = DapiOrderWatch(environment: DapiOrderWatchEnvironment(
             makeClient: { [unowned self] in
                 guard self.hasClient else { throw DapiError.missingKey }
@@ -121,7 +122,8 @@ final class DapiOrderWatchTests: XCTestCase {
                     self.duringSleep?()
                 }
             },
-            notify: { [unowned self] in self.notices.append($0) }), startsLoop: false)
+            notify: { [unowned self] in self.notices.append($0) },
+            cancelledThroughPlinth: { [unowned self] in self.cancelledByPlinth }), startsLoop: false)
     }
 
     @MainActor
@@ -273,6 +275,60 @@ final class DapiOrderWatchTests: XCTestCase {
         await watch.tick()
         XCTAssertEqual(watch.badgeCount, 0)
         XCTAssertTrue(harness.notices.isEmpty)
+    }
+
+    @MainActor
+    func testTheSellersOwnCancellationIsNoNews() async {
+        var state = DapiOrderWatchState()
+        _ = dapiOrderWatchApply([o("ord_1", .paid), o("ord_2", .paid)], to: &state)
+        let notices = dapiOrderWatchApply([o("ord_1", .cancelled), o("ord_2", .cancelled)], to: &state,
+                                          cancelledThroughPlinth: ["ord_1"])
+        XCTAssertEqual(notices.map(\.orderID), ["ord_2"])
+        XCTAssertEqual(state.unseen, ["ord_2": .cancelled])
+        XCTAssertEqual(state.orders["ord_1"]?.status, .cancelled, "Recorded silently")
+        // Through tick(): the by-ID read finds it cancelled; no badge, no notification.
+        let harness = Harness()
+        let watch = harness.watch
+        watch.setActive(true)
+        harness.client.scriptPages([page([o("ord_1", .paid)])])
+        await watch.tick()
+        harness.cancelledByPlinth = ["ord_1"]
+        harness.client.scriptPages([page([])])
+        harness.client.scriptOrder("ord_1", .success(o("ord_1", .cancelled)))
+        await watch.tick()
+        XCTAssertEqual(watch.badgeCount, 0)
+        XCTAssertTrue(harness.notices.isEmpty)
+    }
+
+    @MainActor
+    func testAKeyChangeForgetsTheSnapshotAndLiftsAPause() async {
+        let harness = Harness()
+        let watch = harness.watch
+        watch.keyChanged(generation: 1) // Inactive: only noted.
+        watch.setActive(true)
+        harness.client.scriptPages([page([o("ord_1", .paid)])])
+        await watch.tick()
+        harness.client.scriptPages([page([o("ord_1", .shipped)])])
+        await watch.tick()
+        XCTAssertEqual(watch.badgeCount, 1)
+        harness.client.scriptPages([.failure(.refused(status: 401, code: "invalid_api_key", message: nil))])
+        await watch.tick()
+        XCTAssertTrue(watch.paused)
+        // The same generation again changes nothing.
+        watch.keyChanged(generation: 1)
+        XCTAssertTrue(watch.paused)
+        XCTAssertEqual(watch.badgeCount, 1)
+        // A new key (even one that looks like the same account): snapshot and badge forgotten, pause lifted.
+        watch.keyChanged(generation: 2)
+        XCTAssertFalse(watch.paused)
+        XCTAssertEqual(watch.badgeCount, 0)
+        XCTAssertTrue(watch.state.orders.isEmpty)
+        // The new key's orders are recorded silently.
+        harness.client.scriptPages([page([o("ord_1", .cancelled)])])
+        await watch.tick()
+        XCTAssertEqual(watch.badgeCount, 0)
+        XCTAssertEqual(harness.notices.count, 1, "Only the earlier key's shipped notice")
+        XCTAssertEqual(watch.state.orders["ord_1"]?.status, .cancelled)
     }
 
     @MainActor

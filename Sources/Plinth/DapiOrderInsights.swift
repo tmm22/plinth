@@ -8,11 +8,12 @@ import Foundation
 
 // MARK: - Needs attention
 
-/// 3DAPI says production takes 3–5 business days after a partner takes an order. A paid order that hasn't reached
-/// production after this many business days since it was placed looks stuck waiting for a partner.
+/// 3DAPI's Business guide says orders ship within 3–5 business days of payment (a wallet order is paid when it is
+/// placed). A paid order that hasn't reached production after this many business days looks stuck waiting for a
+/// partner.
 let dapiAttentionNotStartedBusinessDays = 3
-/// An order still not shipped this many business days after it was placed: 3DAPI's 5 business days of production
-/// plus 2 for assignment and dispatch.
+/// An order still not shipped this many business days after it was placed: the guide's 5 business days from payment
+/// to shipping, plus 2 days' margin.
 let dapiAttentionNotShippedBusinessDays = 7
 /// Business days are counted at most this far (a year of weekdays); older orders count as this many.
 let dapiAttentionBusinessDayCountLimit = 260
@@ -52,7 +53,7 @@ enum DapiOrderAttention: Equatable {
         case .notStarted(let days):
             return "Production hasn’t started \(dapiBusinessDaysText(days)) after it was placed."
         case .notShipped(let days):
-            return "Not shipped \(dapiBusinessDaysText(days)) after it was placed; 3DAPI says production takes 3–5 business days."
+            return "Not shipped \(dapiBusinessDaysText(days)) after it was placed; 3DAPI says orders ship within 3–5 business days of payment."
         case .unrecognisedStatus(let word):
             return "3DAPI sent a status Plinth doesn’t recognise (\(dapiOrderStatusWordForDisplay(word)))."
         }
@@ -142,7 +143,11 @@ func dapiOrderCost(_ order: DapiOrder) -> DapiOrderCost {
     guard let charges = order.charges else {
         return .unavailable("3DAPI hasn’t returned this order’s charges. Reload it to try again.")
     }
-    guard charges.paidBy.trimmingCharacters(in: .whitespaces).lowercased() == "you" else {
+    let paidBy = charges.paidBy.trimmingCharacters(in: .whitespaces).lowercased()
+    if paidBy == "dapi" {
+        return .unavailable("3DAPI covered this order (a replacement), so you weren’t charged.")
+    }
+    guard paidBy == "you" else {
         return .unavailable("This order wasn’t paid from your 3DAPI balance (3DAPI says it was paid by “\(dapiOrderStatusWordForDisplay(charges.paidBy))”), so there’s no cost to you to check.")
     }
     var amounts = [charges.total]
@@ -248,7 +253,7 @@ func dapiProblemGuidance(_ kind: DapiProblemKind) -> String? {
     case .cancel:
         return "Once a production partner has the order, 3DAPI can cancel it only by email, and may not be able to."
     case .refund:
-        return "3DAPI refunds to your balance, or to your card within 5–10 business days."
+        return "3DAPI refunds wallet orders to your 3DAPI wallet, and checkout orders to your customer’s card within 5–10 business days."
     case .missingItem, .late, .other:
         return nil
     }
@@ -390,7 +395,8 @@ func dapiOrdersCSVRow(_ order: DapiOrder, includeCustomer: Bool) -> [String] {
         order.number, order.status.raw,
         order.createdAt.map { dapiCSVDateFormatter.string(from: $0) } ?? "",
         order.updatedAt.map { dapiCSVDateFormatter.string(from: $0) } ?? "",
-        order.reference ?? "", order.countryCode?.uppercased() ?? "",
+        // The seller's part only, without Plinth's per-attempt code (`dapiOrderSellerReference`).
+        dapiOrderSellerReference(order.reference) ?? "", order.countryCode?.uppercased() ?? "",
         dapiOrderUnits(order).map(String.init) ?? "",
         dapiCSVAmount(sameCurrency(charges?.items)), dapiCSVAmount(sameCurrency(charges?.shipping)),
         dapiCSVAmount(sameCurrency(charges?.vat)), dapiCSVAmount(sameCurrency(charges?.sampleCredit)), refunds,
@@ -721,8 +727,9 @@ enum DapiSpendPageStep: Equatable {
     case noCursor
 }
 
+/// The next step after a page, decided from 3DAPI's `has_more` and `next_cursor` only (never from an empty page).
 func dapiSpendPageStep(pagesLoaded: Int, page: DapiOrderPage, maxPages: Int = dapiSpendPeriodMaxPages) -> DapiSpendPageStep {
-    guard page.hasMore, !page.orders.isEmpty else { return .complete }
+    guard page.hasMore else { return .complete }
     guard let cursor = page.nextCursor, !cursor.isEmpty else { return .noCursor }
     return pagesLoaded >= maxPages ? .capReached : .next(cursor)
 }
@@ -925,7 +932,8 @@ struct DapiTrackingGroups: Equatable {
 
 func dapiTrackingEntry(_ order: DapiOrder) -> DapiTrackingEntry? {
     guard let tracking = dapiNonEmpty(order.shipping.trackingNumber) else { return nil }
-    return DapiTrackingEntry(id: order.id, number: order.number, reference: dapiNonEmpty(order.reference),
+    // The seller's own reference only: Plinth's bare "plinth_…" code counts as none (`dapiOrderSellerReference`).
+    return DapiTrackingEntry(id: order.id, number: order.number, reference: dapiOrderSellerReference(order.reference),
                              carrier: dapiNonEmpty(order.shipping.carrier), trackingNumber: tracking,
                              status: order.status, created: order.createdAt)
 }

@@ -12,11 +12,18 @@ struct DapiPlaceOrderSheet: View {
     @State private var registered = false
     let onPlaced: (DapiOrder) -> Void
     let onFound: (DapiOrder) -> Void
+    let onSending: (DapiUnconfirmedOrder) -> Void
+    let onNotCharged: (String) -> Void
 
-    init(draft: DapiOrderDraft, onPlaced: @escaping (DapiOrder) -> Void, onFound: @escaping (DapiOrder) -> Void) {
+    /// `onSending` runs just before the order request goes out and `onNotCharged` when 3DAPI definitely didn't place an
+    /// attempt (before its record is removed), so the composer knows its own attempts (`DapiComposerState`).
+    init(draft: DapiOrderDraft, onPlaced: @escaping (DapiOrder) -> Void, onFound: @escaping (DapiOrder) -> Void,
+         onSending: @escaping (DapiUnconfirmedOrder) -> Void = { _ in }, onNotCharged: @escaping (String) -> Void = { _ in }) {
         _runner = StateObject(wrappedValue: DapiPlaceOrderRunner(draft: draft, environment: .live()))
         self.onPlaced = onPlaced
         self.onFound = onFound
+        self.onSending = onSending
+        self.onNotCharged = onNotCharged
     }
 
     private var draft: DapiOrderDraft { runner.draft }
@@ -74,6 +81,8 @@ struct DapiPlaceOrderSheet: View {
             }
             runner.log = dapiOrderActivityLogger(store)
             runner.onPlaced = onPlaced
+            runner.onSending = onSending
+            runner.onNotCharged = onNotCharged
             runner.start()
         }
         .onDisappear {
@@ -166,11 +175,30 @@ struct DapiPlaceOrderSheet: View {
                     GridRow {
                         Text("Total").fontWeight(.semibold)
                         Text(""); Text(""); Text("")
-                        Text(upToTotal(figures).map { "Up to " + dapiMoneyText($0) } ?? "Not added (different currencies, or too large)")
+                        Text(upToTotal(figures).map { "Up to " + dapiMoneyText($0) + " before VAT" } ?? "Not added (different currencies, or too large)")
                             .fontWeight(.semibold).monospacedDigit()
                     }
                 }
                 .font(.callout)
+                if let shortfall = dapiWalletShortfall(upTo: upToTotal(figures), wallet: figures.wallet) {
+                    Label(dapiWalletShortfallText(shortfall), systemImage: "creditcard")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if draft.lines.contains(where: { dapiLineUsesChosenMaterials($0.request) }) {
+                    Label(dapiChosenMaterialsPriceNote, systemImage: "info.circle")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if hasSampleCredit(figures) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        // Off by default; what is ticked when Place Order is pressed is what is sent.
+                        Toggle(dapiSampleCreditToggleTitle, isOn: $runner.useSampleCredit)
+                            .disabled(runner.phase != .ready)
+                        Text(dapiSampleCreditCaption).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(dapiOrderUpToNote)
                     Text(dapiVATNote)
@@ -184,6 +212,10 @@ struct DapiPlaceOrderSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func hasSampleCredit(_ figures: DapiOrderReviewFigures) -> Bool {
+        (figures.wallet?.sampleCredit?.amountMinor ?? 0) > 0
     }
 
     private func upToTotal(_ figures: DapiOrderReviewFigures) -> DapiMoney? {
@@ -228,7 +260,12 @@ struct DapiPlaceOrderSheet: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Button(runner.phase.isPlacedOrUnknown ? "Close" : "Go Back", role: .cancel) { dismiss() }
+            Button(runner.phase.isPlacedOrUnknown ? "Close" : "Go Back", role: .cancel) {
+                // Closed before dismissing, so a re-check that finishes during the dismissal never sends.
+                guard runner.canClose else { return }
+                runner.close()
+                dismiss()
+            }
                 .keyboardShortcut(.cancelAction)
                 .disabled(!runner.canClose)
             Spacer()
@@ -281,12 +318,17 @@ struct DapiCancelOrderSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Cancel 3DAPI order").font(.title2.weight(.bold))
             Text("Order \(request.number) · \(request.shownStatus.label)").font(.callout).foregroundStyle(.secondary)
-            Text(dapiCancelExplanation).font(.callout)
+            Text(dapiCancelExplanation(mode: request.mode, status: request.shownStatus)).font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             status
             Spacer(minLength: 0)
             HStack(spacing: 12) {
-                Button(isDone ? "Close" : "Go Back", role: .cancel) { dismiss() }
+                Button(isDone ? "Close" : "Go Back", role: .cancel) {
+                    // Closed before dismissing, so a re-check that finishes during the dismissal never sends.
+                    guard !runner.isWriting else { return }
+                    runner.close()
+                    dismiss()
+                }
                     .keyboardShortcut(.cancelAction)
                     .disabled(runner.isWriting)
                 Spacer()
@@ -294,7 +336,7 @@ struct DapiCancelOrderSheet: View {
                     // Never the default button and no shortcut.
                     Button("Cancel Order", role: .destructive) { runner.cancelOrder() }
                         .disabled(!runner.canCancel)
-                        .help("Ask 3DAPI to cancel this order and refund it to your wallet")
+                        .help("Ask 3DAPI to cancel this order")
                 }
             }
         }
@@ -342,8 +384,9 @@ struct DapiCancelOrderSheet: View {
         case .done(let outcome):
             switch outcome {
             case .cancelled:
-                Label("3DAPI cancelled the order. A paid order is refunded in full to your wallet.", systemImage: "checkmark.circle")
+                Label(dapiCancelledText(mode: request.mode, status: request.shownStatus), systemImage: "checkmark.circle")
                     .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
             case .notYetCancelled(let order):
                 Label("3DAPI answered, but the order shows “\(order.status.label)”, not cancelled. Refresh it later to see whether the cancellation went through; Plinth won’t send another meanwhile.",
                       systemImage: "questionmark.circle")

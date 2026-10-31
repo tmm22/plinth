@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import UserNotifications
 
@@ -79,8 +80,11 @@ func dapiOrderWatchNotificationOrderID(_ userInfo: [AnyHashable: Any]) -> String
 
 /// Records what a check saw. An order seen for the first time is recorded silently; a change to a notable status is
 /// added to `unseen` and returned as a notice (once: the same status again is no change); a change away from a
-/// notable status removes it from `unseen`. Orders with unsafe IDs are ignored.
-func dapiOrderWatchApply(_ observed: [DapiOrder], to state: inout DapiOrderWatchState) -> [DapiOrderWatchNotice] {
+/// notable status removes it from `unseen`. A change to cancelled for an order in `cancelledThroughPlinth` (the seller
+/// cancelled it in Plinth this session) is recorded silently: the seller isn't told about their own action. Orders
+/// with unsafe IDs are ignored.
+func dapiOrderWatchApply(_ observed: [DapiOrder], to state: inout DapiOrderWatchState,
+                         cancelledThroughPlinth: Set<String> = []) -> [DapiOrderWatchNotice] {
     var notices: [DapiOrderWatchNotice] = []
     for order in observed where dapiOrderIDIsSafe(order.id) {
         let number = String(order.number.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
@@ -93,7 +97,9 @@ func dapiOrderWatchApply(_ observed: [DapiOrder], to state: inout DapiOrderWatch
         if !number.isEmpty { entry.number = number }
         state.orders[order.id] = entry
         guard changed else { continue }
-        if dapiOrderWatchNotableStatuses.contains(order.status) {
+        if order.status == .cancelled, cancelledThroughPlinth.contains(order.id) {
+            state.unseen[order.id] = nil
+        } else if dapiOrderWatchNotableStatuses.contains(order.status) {
             state.unseen[order.id] = order.status
             notices.append(DapiOrderWatchNotice(orderID: order.id, number: entry.number, status: order.status))
         } else {
@@ -166,6 +172,8 @@ struct DapiOrderWatchEnvironment {
     var sleep: @Sendable (TimeInterval) async throws -> Void
     /// Posts notices when the seller allowed notifications (never asks for permission).
     var notify: @MainActor ([DapiOrderWatchNotice]) -> Void
+    /// Orders the seller cancelled through Plinth this session (`DapiCancelSession`): their cancellation is no news.
+    var cancelledThroughPlinth: @MainActor () -> Set<String> = { [] }
 
     @MainActor static var live: DapiOrderWatchEnvironment {
         DapiOrderWatchEnvironment(
@@ -177,7 +185,8 @@ struct DapiOrderWatchEnvironment {
             },
             now: Date.init,
             sleep: { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
-            notify: { dapiOrderWatchPostNotifications($0) })
+            notify: { dapiOrderWatchPostNotifications($0) },
+            cancelledThroughPlinth: { DapiCancelSession.shared.cancelledThroughPlinth })
     }
 }
 
@@ -215,19 +224,49 @@ struct DapiOrderWatchEnvironment {
     private var generation = 0
     private var inFlight = false
     private let environment: DapiOrderWatchEnvironment?
+    /// The last `DapiConnection.keyGeneration` seen (`keyChanged(generation:)`).
+    private(set) var keyGeneration: Int?
+    private var keySubscription: AnyCancellable?
 
-    /// `environment` nil uses the app's (`DapiOrderWatchEnvironment.live`); `startsLoop` false lets tests call `tick()`.
+    /// `environment` nil uses the app's (`DapiOrderWatchEnvironment.live`) and follows `DapiConnection.keyGeneration`
+    /// by itself; `startsLoop` false lets tests call `tick()`.
     init(environment: DapiOrderWatchEnvironment? = nil, startsLoop: Bool = true) {
         self.environment = environment
         self.startsLoop = startsLoop
+        if environment == nil {
+            // Every key save, replacement or removal, even to a key that looks like the same account.
+            keySubscription = DapiConnection.shared.$keyGeneration.sink { [weak self] generation in
+                MainActor.assumeIsolated { self?.keyChanged(generation: generation) }
+            }
+        }
     }
     private let startsLoop: Bool
 
     private var env: DapiOrderWatchEnvironment { environment ?? .live }
 
+    /// The saved 3DAPI key changed (`DapiConnection.keyGeneration`). While active: the earlier key's snapshot and badge
+    /// are forgotten (the new key's orders are then recorded silently), a pause after a refused key and any 429 wait
+    /// are lifted, a check in flight is dropped, and checking starts over. While inactive it only notes the
+    /// generation. Idempotent: a second call with the same generation does nothing. The shared watch calls it itself;
+    /// calling it again from elsewhere (or `setActive(true)`) is harmless.
+    func keyChanged(generation newGeneration: Int) {
+        guard keyGeneration != newGeneration else { return }
+        keyGeneration = newGeneration
+        guard active else { return }
+        generation += 1
+        loop?.cancel()
+        loop = nil
+        inFlight = false
+        paused = false
+        backoffUntil = nil
+        state = DapiOrderWatchState()
+        if startsLoop { startLoop() }
+    }
+
     /// Starts (true) or stops (false) watching; called when 3DAPI becomes or stops being the print service, and
     /// when the key is saved or removed. Stopping forgets everything (the next start records orders silently again);
-    /// starting again while active lifts a pause after a refused key.
+    /// starting again while active lifts a pause after a refused key and keeps what was recorded. Safe to call
+    /// repeatedly with the same value.
     func setActive(_ active: Bool) {
         generation += 1
         loop?.cancel()
@@ -287,7 +326,7 @@ struct DapiOrderWatchEnvironment {
         }
         guard runGeneration == generation else { return dapiOrderWatchInterval }
         var working = state
-        var notices = dapiOrderWatchApply(page.orders, to: &working)
+        var notices = dapiOrderWatchApply(page.orders, to: &working, cancelledThroughPlinth: env.cancelledThroughPlinth())
         state = working
 
         // Orders that were open and aren't listed any more changed status (or the list was longer than a page).
@@ -304,7 +343,9 @@ struct DapiOrderWatchEnvironment {
                 var updated = state
                 updated.orders[id]?.lastFetched = env.now()
                 // Only the order asked for: a reply naming another ID is ignored.
-                if order.id == id { notices += dapiOrderWatchApply([order], to: &updated) }
+                if order.id == id {
+                    notices += dapiOrderWatchApply([order], to: &updated, cancelledThroughPlinth: env.cancelledThroughPlinth())
+                }
                 state = updated
             } catch {
                 guard runGeneration == generation else { return dapiOrderWatchInterval }

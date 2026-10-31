@@ -25,8 +25,9 @@ func dapiOrderDateTimeText(_ date: Date?) -> String {
     date?.formatted(date: .abbreviated, time: .shortened) ?? "—"
 }
 
-/// Units in the order: the lines' quantities when they were read, else 3DAPI's item count.
-func dapiOrderUnits(_ order: DapiOrder) -> Int {
+/// Units shown in the list: the lines' quantities when they were read, else 3DAPI's item count. (`dapiOrderUnits` is
+/// the strict count, nil without lines.)
+func dapiOrderListUnits(_ order: DapiOrder) -> Int {
     guard let items = order.items, !items.isEmpty else { return order.itemCount }
     return items.reduce(0) { $0 + max(0, $1.quantity) }
 }
@@ -77,6 +78,20 @@ struct DapiCancelRequest: Identifiable, Equatable {
     let orderID: String
     let number: String
     let shownStatus: DapiOrderStatus
+    /// "wallet" or "checkout": where a refund goes (`dapiCancelExplanation`).
+    var mode: String = "wallet"
+}
+
+/// The empty list's way back when a typed search and a status filter together left it empty.
+enum DapiOrdersEmptyAction: Equatable { case clearSearch, showAll }
+
+/// The ways back the empty list offers: Clear Search for a search, Show All Orders for a status filter (both when
+/// both are applied). None for an unfiltered empty list.
+func dapiOrdersEmptyActions(status: DapiOrderStatus?, search: String) -> [DapiOrdersEmptyAction] {
+    var actions: [DapiOrdersEmptyAction] = []
+    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { actions.append(.clearSearch) }
+    if status != nil { actions.append(.showAll) }
+    return actions
 }
 
 /// Shown by `StudioView` for `.orders` while `PrintServiceChoice.shared.service == .dapi`.
@@ -91,6 +106,10 @@ struct DapiOrdersView: View {
     @State private var cancelRequest: DapiCancelRequest?
     @State private var accountChecked = false
     @State private var accountCheckFailure: String?
+    // The Tools menu's sheets, here so the File menu's requests (`DapiOrderSession.toolRequest`) open the same ones.
+    @State private var showSpendingReport = false
+    @State private var showTracking = false
+    @State private var exportError: String?
 
     private var accountNotice: String? {
         dapiOrdersAccountNotice(configured: connection.isConfigured, checked: accountChecked, account: connection.account,
@@ -101,6 +120,7 @@ struct DapiOrdersView: View {
         if composer != nil || cancelRequest != nil { return "Close the open 3DAPI order sheet first." }
         return nil
     }
+    private var anySheetShown: Bool { composer != nil || cancelRequest != nil || showSpendingReport || showTracking }
 
     var body: some View {
         Group {
@@ -134,16 +154,26 @@ struct DapiOrdersView: View {
             list.log = dapiOrderActivityLogger(store)
             // The seller is looking at Orders: the sidebar badge has done its job (DapiOrderWatch.swift).
             DapiOrderWatch.shared.ordersViewed()
-            if connection.isConfigured, !list.loaded, !list.loading { list.reload() }
+            if list.keyGeneration != connection.keyGeneration {
+                // The key changed while Orders wasn't shown: the earlier key's orders aren't this one's.
+                list.keyChanged(generation: connection.keyGeneration, configured: connection.isConfigured)
+            } else if connection.isConfigured, !list.loaded, !list.loading {
+                list.reload()
+            }
             checkAccountIfNeeded()
             consumeComposerRequest()
+            consumeOrderToShow()
+            consumeToolRequest()
         }
         // Reads stop when the screen goes away; loaded orders stay for when it comes back.
         .onDisappear { list.cancel() }
-        .onChange(of: connection.isConfigured) { _, configured in
-            list.forgetAll()
+        // Saved, replaced or removed: the earlier key's orders go, and replies for it are dropped, even when the new
+        // key looks like the same account.
+        .onChange(of: connection.keyGeneration) { _, generation in
+            list.keyChanged(generation: generation, configured: connection.isConfigured)
             accountChecked = false
-            if configured { list.reload(); checkAccountIfNeeded() }
+            accountCheckFailure = nil
+            checkAccountIfNeeded()
         }
         .onChange(of: connection.account) { old, new in
             // Another account's key: its orders aren't this one's.
@@ -151,6 +181,8 @@ struct DapiOrdersView: View {
             if new != nil { accountChecked = true; accountCheckFailure = nil }
         }
         .onChange(of: session.composerRequest) { _, _ in consumeComposerRequest() }
+        .onChange(of: session.orderToShow) { _, _ in consumeOrderToShow() }
+        .onChange(of: session.toolRequest) { _, _ in consumeToolRequest() }
         .onChange(of: composer) { _, new in if new == nil { consumeComposerRequest() } }
         .sheet(item: $composer) { seed in
             DapiOrderComposerView(seed: seed, onPlaced: { order in list.insertAndSelect(order) },
@@ -161,6 +193,46 @@ struct DapiOrdersView: View {
             DapiCancelOrderSheet(request: request) { order in list.apply(order) }
                 .environmentObject(store)
         }
+        // Only rows read with the filter shown (`canUseRowsForTools`) reach the tools.
+        .sheet(isPresented: $showSpendingReport) { DapiSpendingReportSheet(orders: list.canUseRowsForTools ? list.orders : []) }
+        .sheet(isPresented: $showTracking) { DapiTrackingSheet(orders: list.canUseRowsForTools ? list.orders : []) }
+        .alert("Couldn’t export the orders", isPresented: Binding(get: { exportError != nil }, set: { if !$0 { exportError = nil } })) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
+    }
+
+    /// A clicked 3DAPI order notification: read that order by ID (read-only), show it first in the list and select it.
+    /// Ignored without a key.
+    private func consumeOrderToShow() {
+        guard let id = session.orderToShow else { return }
+        session.orderToShow = nil
+        guard connection.isConfigured, dapiOrderIDIsSafe(id) else { return }
+        list.show(orderID: id)
+    }
+
+    /// The File menu's 3DAPI commands: the same actions as the toolbar's Refresh and Tools menu. Ignored without a key
+    /// or while a sheet is shown (menu commands never act over a sheet).
+    private func consumeToolRequest() {
+        guard let request = session.toolRequest else { return }
+        session.toolRequest = nil
+        guard connection.isConfigured, !anySheetShown, !appIsPresentingModalUI() else { return }
+        switch request {
+        case .reload:
+            if !list.loading { list.reload() }
+        case .spendingReport:
+            showSpendingReport = true
+        case .exportOrders:
+            exportOrders()
+        case .trackingForYourShop:
+            showTracking = true
+        }
+    }
+
+    private func exportOrders() {
+        guard list.canUseRowsForTools, !list.orders.isEmpty else { return }
+        exportError = dapiExportOrders(list.orders)
     }
 
     private func checkAccountIfNeeded() {
@@ -175,7 +247,10 @@ struct DapiOrdersView: View {
 
     /// Opens the composer for Models' request (Order with 3DAPI…, Order a Sample to Me) when no sheet is open.
     private func consumeComposerRequest() {
-        guard let request = session.composerRequest, composer == nil, cancelRequest == nil, connection.isConfigured else { return }
+        guard let request = session.composerRequest else { return }
+        // Without a key the request is dropped, so a composer never pops up later unasked.
+        guard connection.isConfigured else { session.composerRequest = nil; return }
+        guard composer == nil, cancelRequest == nil, !showSpendingReport, !showTracking else { return }
         session.composerRequest = nil
         composer = DapiComposerSeed(prefill: request)
     }
@@ -247,7 +322,10 @@ struct DapiOrdersView: View {
             .help("Read the newest 3DAPI orders again")
         }
         ToolbarItem(placement: .automatic) {
-            DapiOrdersToolsMenu(orders: list.orders)
+            DapiOrdersToolsMenu(hasOrders: list.canUseRowsForTools && !list.orders.isEmpty,
+                                showSpendingReport: $showSpendingReport, showTracking: $showTracking,
+                                onExport: { exportOrders() })
+                .disabled(!connection.isConfigured)
         }
     }
 
@@ -278,7 +356,7 @@ struct DapiOrdersView: View {
                 }
                 .width(min: 84, ideal: 96, max: 130)
                 TableColumn("Units") { (order: DapiOrder) in
-                    Text("\(dapiOrderUnits(order))").monospacedDigit()
+                    Text("\(dapiOrderListUnits(order))").monospacedDigit()
                 }
                 .width(min: 36, ideal: 44, max: 70)
                 TableColumn("Country") { (order: DapiOrder) in
@@ -291,8 +369,9 @@ struct DapiOrdersView: View {
                 }
                 .width(min: 56, ideal: 72, max: 120)
                 TableColumn("Reference") { (order: DapiOrder) in
-                    Text(order.reference ?? "—").foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        .help(order.reference ?? "")
+                    let reference = dapiOrderSellerReference(order.reference)
+                    Text(reference ?? "—").foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .help(reference ?? "")
                 }
                 .width(min: 60, ideal: 120)
             }
@@ -333,18 +412,23 @@ struct DapiOrdersView: View {
     @ViewBuilder
     private var emptyOverlay: some View {
         if list.loaded, list.orders.isEmpty, !list.loading, list.loadError == nil {
-            if !list.appliedSearch.isEmpty {
-                ContentUnavailableView.search(text: list.appliedSearch)
-            } else if let text = dapiOrdersEmptyText(status: list.status, search: "") {
+            if let text = dapiOrdersEmptyText(status: list.status, search: list.appliedSearch) {
+                let actions = dapiOrdersEmptyActions(status: list.status, search: list.appliedSearch)
                 ContentUnavailableView {
-                    Label(text.title, systemImage: "shippingbox")
+                    Label(text.title, systemImage: list.appliedSearch.isEmpty ? "shippingbox" : "magnifyingglass")
                 } description: {
                     Text(text.detail)
                 } actions: {
-                    if list.status != nil {
+                    if actions.contains(.clearSearch) {
+                        Button("Clear Search") { searchText = ""; list.applySearch("") }
+                    }
+                    if actions.contains(.showAll) {
                         Button("Show All Orders") { searchText = ""; list.showAll() }
                     }
                 }
+            } else {
+                // A typed search alone.
+                ContentUnavailableView.search(text: list.appliedSearch)
             }
         }
     }
@@ -357,13 +441,16 @@ struct DapiOrdersView: View {
             DapiOrderDetailView(
                 order: order,
                 refreshing: list.refreshingOrderID == order.id,
-                refreshError: list.refreshingOrderID == nil ? list.orderRefreshError : nil,
+                refreshError: list.refreshingOrderID == order.id ? nil : list.orderRefreshError(for: order.id),
                 cancelUnknown: session.cancelOutcomeUnknown.contains(order.id),
                 modelNames: nameIndex.names,
                 onRefresh: { list.refreshOrder(id: order.id) },
                 onDuplicate: { composer = DapiComposerSeed(duplicateOf: order) },
                 duplicateBlockedReason: newOrderBlockedReason,
-                onCancel: { cancelRequest = DapiCancelRequest(orderID: order.id, number: order.number, shownStatus: order.status) })
+                onCancel: {
+                    cancelRequest = DapiCancelRequest(orderID: order.id, number: order.number, shownStatus: order.status,
+                                                      mode: order.mode)
+                })
             .id(order.id)
             .task(id: order.id) {
                 // Names lines quoted from library models ("Plinth <hex>"), hashing files in the background.
@@ -401,6 +488,10 @@ struct DapiOrderDetailView: View {
                     Label("A cancellation of this order didn’t get a clear answer, so it may or may not be cancelled. Refresh this order to see its status; Plinth won’t send another cancellation meanwhile.",
                           systemImage: "questionmark.circle")
                         .font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let note = dapiCancelUnavailableNote(order, cancelUnknown: cancelUnknown) {
+                    Text(note).font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let refreshError {
@@ -446,10 +537,22 @@ struct DapiOrderDetailView: View {
                     Text("Updated").foregroundStyle(.secondary)
                     Text(dapiOrderDateTimeText(order.updatedAt))
                 }
-                if let reference = order.reference, !reference.isEmpty {
+                if let reference = dapiOrderSellerReference(order.reference) {
                     GridRow {
                         Text("Reference").foregroundStyle(.secondary)
                         Text(reference).textSelection(.enabled)
+                    }
+                }
+                // The full reference as 3DAPI holds it (with Plinth's code): 3DAPI support may ask for it.
+                if let full = dapiNonEmpty(order.reference) {
+                    GridRow {
+                        Text("3DAPI reference").foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text(full).foregroundStyle(.secondary).textSelection(.enabled)
+                            Button("Copy") { copyToPasteboard(full) }
+                                .controlSize(.small)
+                                .help("Copy the reference exactly as 3DAPI holds it")
+                        }
                     }
                 }
             }
@@ -472,12 +575,15 @@ struct DapiOrderDetailView: View {
                 .help(duplicateBlockedReason ?? ((order.items ?? []).isEmpty
                       ? "This order’s lines weren’t read, so they can’t be copied."
                       : "Start a new order with the same models, quantities and materials. The address isn’t copied."))
-            Button("Copy Number") { copyToPasteboard(order.number) }
+            Button("Copy Order Number") { copyToPasteboard(order.number) }
+            if dapiOffersProblemReport(status: order.status) {
+                DapiReportProblemButton(order: order)
+            }
             Spacer()
             // Last, and only while 3DAPI still lets the order be cancelled. It opens the cancel review only.
             if canOfferCancel {
                 Button("Cancel Order…", role: .destructive) { onCancel() }
-                    .help("Review cancelling this order. 3DAPI refunds a paid order in full to your wallet.")
+                    .help("Review cancelling this order. " + dapiCancelExplanation(mode: order.mode, status: order.status))
             }
         }
     }
@@ -496,7 +602,7 @@ struct DapiOrderDetailView: View {
                 Text(place.isEmpty ? "—" : place)
             }
             if order.formattedAddress == nil, order.customerName == nil {
-                Text("3DAPI shows the full address and customer only to keys with orders:read_customer, which Plinth doesn’t need.")
+                Text("Your key doesn’t include orders:read_customer, so 3DAPI hides the customer and address.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -680,13 +786,17 @@ struct DapiUnconfirmedOrdersNotice: View {
         looking = true
         summary = nil
         task = Task {
+            // Found attempts are confirmed together once every read is done, right after `onFound`: a composer whose
+            // own attempt was found closes then, without cutting the lookup of the others short.
+            var found: [String] = []
             let results = await dapiLookForOrders(attempts, client: client,
                                                   pause: { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
-                                                  confirm: { DapiOrderSession.shared.confirmUnconfirmedOrder(reference: $0) })
+                                                  confirm: { found.append($0) })
             looking = false
             task = nil
             let ordered = attempts.compactMap { results[$0.id] }
             for case .found(let order) in ordered.reversed() { onFound(order) }
+            for reference in found { DapiOrderSession.shared.confirmUnconfirmedOrder(reference: reference) }
             summary = dapiOrderLookupSummary(ordered)
         }
     }

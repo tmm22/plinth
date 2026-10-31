@@ -48,6 +48,13 @@ struct DapiOrderComposerView: View {
         if let linesProblem { return linesProblem }
         let order: [DapiComposerField] = [.country, .name, .email, .line1, .city, .line2, .state, .postcode, .phone, .notes]
         for field in order { if let problem = problems[field] { return problem } }
+        // The client's own pre-send check, so nothing passes here and fails as "Nothing was sent" after the review.
+        let requests = state.lines.compactMap(dapiLineRequest)
+        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let problem = dapiComposerRequestProblem(lines: requests, recipient: dapiOrderRecipient(address),
+                                                    notes: trimmedNotes.isEmpty ? nil : trimmedNotes) {
+            return problem
+        }
         return nil
     }
     private var shippingKey: DapiOrderShippingKey? {
@@ -97,8 +104,18 @@ struct DapiOrderComposerView: View {
             DapiPlaceOrderSheet(draft: request.draft, onPlaced: { order in
                 placed = true
                 onPlaced(order)
-            }, onFound: onFound)
+            }, onFound: onFound,
+            onSending: { attempt in state.noteSending(reference: attempt.reference) },
+            onNotCharged: { reference in state.noteNotCharged(reference: reference) })
             .environmentObject(store)
+        }
+        // One of this composer's own attempts was found (or placed): 3DAPI has the order, so close exactly as after a
+        // placed order (the list selects it through `onFound`/`onPlaced`). The same draft is never left open to be
+        // placed again without the Place Anyway question.
+        .onChange(of: session.unconfirmedOrders.map(\.reference)) { _, references in
+            guard state.ownOrderSettled(unconfirmedReferences: references) else { return }
+            placed = true
+            if review != nil { review = nil } else { close() }
         }
         .onAppear {
             if !registered {
@@ -175,7 +192,7 @@ struct DapiOrderComposerView: View {
             }
             if let order = seed.duplicateOf {
                 Section("Copied from order \(order.number)") {
-                    Text("The same models, quantities and materials were copied. 3DAPI doesn’t return the address in a form Plinth can copy, so enter it below.")
+                    Text("The same models, quantities and materials were copied. The address isn’t copied; enter it below.")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if (order.items ?? []).count > dapiOrderMaxLines {
@@ -220,8 +237,15 @@ struct DapiOrderComposerView: View {
                 lineEditor($line)
             }
             if let problem = state.materialsProblem {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline) {
+                    Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    // Never read again by itself: only this press reads the materials again.
+                    Button("Try Again") { state.retryMaterials() }
+                        .controlSize(.small)
+                        .disabled(state.materialsLoading)
+                }
             }
             Menu {
                 if availableModels.isEmpty {
@@ -336,7 +360,7 @@ struct DapiOrderComposerView: View {
                             }
                         }
                     }
-                } else {
+                } else if state.materialsProblem == nil {
                     Button("Load Materials") { state.loadMaterialsIfNeeded() }.controlSize(.small)
                 }
             }
@@ -361,7 +385,9 @@ struct DapiOrderComposerView: View {
             fieldWithProblem(.email) {
                 TextField("Email", text: $address.delivery.email, prompt: Text("Required: 3DAPI needs it"))
             }
-            fieldWithProblem(.phone) { TextField("Phone", text: $address.phone, prompt: Text("Optional")) }
+            fieldWithProblem(.phone) {
+                TextField("Phone", text: $address.phone, prompt: Text("Optional, e.g. +44 20 7946 0000"))
+            }
             fieldWithProblem(.line1) { TextField("Street address", text: $address.delivery.line1, prompt: Text("Required")) }
             fieldWithProblem(.line2) { TextField("Apartment, suite, etc.", text: $address.delivery.line2, prompt: Text("Optional")) }
             fieldWithProblem(.city) { TextField("City", text: $address.delivery.city, prompt: Text("Required")) }
@@ -421,10 +447,11 @@ struct DapiOrderComposerView: View {
         }
     }
 
-    /// Country first: shortlist, then every other country; "Choose a country" when the Mac's region is unknown.
+    /// Country first: shortlist, then every other country 3DAPI delivers to; "Choose a country" when the Mac's region
+    /// is unknown.
     private var countryPicker: some View {
         let picked = orderCountryPickerValue(address.delivery)
-        let others = orderOtherCountryChoicesForCurrentLocale
+        let others = orderOtherCountryChoicesForCurrentLocale.filter { !dapiUnservedCountryCodes.contains($0.code) }
         return VStack(alignment: .leading, spacing: 4) {
             Picker("Country", selection: Binding(
                 get: { picked },
@@ -435,7 +462,9 @@ struct DapiOrderComposerView: View {
             )) {
                 Text("Choose a country").tag("")
                 Divider()
-                ForEach(orderCountryChoices, id: \.code) { Text($0.name).tag($0.code) }
+                ForEach(orderCountryChoices.filter { !dapiUnservedCountryCodes.contains($0.code) }, id: \.code) {
+                    Text($0.name).tag($0.code)
+                }
                 Divider()
                 if !picked.isEmpty, !orderCountryChoices.contains(where: { $0.code == picked }),
                    !others.contains(where: { $0.code == picked }) {
@@ -444,6 +473,7 @@ struct DapiOrderComposerView: View {
                 ForEach(others, id: \.code) { Text($0.name).tag($0.code) }
             }
             if let problem = problems[.country], !picked.isEmpty { fieldProblem(problem) }
+            Text(dapiUnservedCountriesNote).font(.caption).foregroundStyle(.secondary)
         }
     }
 
