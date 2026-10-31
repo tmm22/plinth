@@ -73,6 +73,9 @@ struct SavedProductResolution {
     var notes: [String] = []
     /// Problems that would make the draft wrong or fail; callers must not create a draft while any remain.
     var blockers: [String] = []
+    /// Parallel to `blockers`: the same reasons worded for the Saved Products list, whose row already names the
+    /// product, so they leave out its name and instructions meant for the composer or Import Orders.
+    var listBlockers: [String] = []
 }
 
 func normalizedSKU(_ sku: String) -> String {
@@ -102,12 +105,16 @@ func savedProductOrderLines(
     filaments: [Record], components: [Record], stationery: [Record]
 ) -> SavedProductResolution {
     var result = SavedProductResolution()
+    func block(_ text: String, list: String? = nil) {
+        result.blockers.append(text)
+        result.listBlockers.append(list ?? text)
+    }
     guard units > 0 else {
-        result.blockers.append("Choose a quantity of at least 1.")
+        block("Choose a quantity of at least 1.")
         return result
     }
     guard !product.lines.isEmpty else {
-        result.blockers.append("“\(product.name)” has no items.")
+        block("“\(product.name)” has no items.", list: "No items.")
         return result
     }
     for saved in product.lines {
@@ -121,12 +128,12 @@ func savedProductOrderLines(
         let trimmedName = saved.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let label = trimmedName.isEmpty ? itemTypeLabel(saved.type) : trimmedName
         guard saved.quantity > 0 else {
-            result.blockers.append("An item of “\(product.name)” has no quantity. Edit the product to set one.")
+            block("An item of “\(product.name)” has no quantity. Edit the product to set one.", list: "An item has no quantity.")
             return result
         }
         let (quantity, overflow) = saved.perOrder ? (saved.quantity, false) : saved.quantity.multipliedReportingOverflow(by: units)
         guard !overflow, quantity > 0, quantity <= 10_000 else {
-            result.blockers.append("“\(product.name)” would need more than 10,000 of one item.")
+            block("“\(product.name)” would need more than 10,000 of one item.", list: "Would need more than 10,000 of one item.")
             return result
         }
         line.quantity = quantity
@@ -138,46 +145,47 @@ func savedProductOrderLines(
                 if let model = localModels.first(where: { $0.id == modelID }) {
                     let current = model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     if current.isEmpty {
-                        result.blockers.append("“\(model.name)” isn’t uploaded to Slant. Upload it from Models, then try again.")
+                        block("“\(model.name)” isn’t uploaded to Slant. Upload it from Models, then try again.",
+                              list: "“\(model.name)” isn’t uploaded to Slant.")
                         modelBlocked = true
                     } else if current != reference {
                         if !reference.isEmpty { result.notes.append("Using the latest upload of “\(model.name)”.") }
                         reference = current
                     }
                 } else if reference.isEmpty {
-                    result.blockers.append("The model for “\(label)” is no longer in your library.")
+                    block("The model for “\(label)” is no longer in your library.")
                     modelBlocked = true
                 } else {
                     result.notes.append("The model for “\(label)” is no longer in your library; using its last uploaded file.")
                 }
             }
-            if reference.isEmpty, !modelBlocked { result.blockers.append("Choose a model for “\(label)”.") }
+            if reference.isEmpty, !modelBlocked { block("Choose a model for “\(label)”.") }
             let filamentID = saved.filamentID.trimmingCharacters(in: .whitespacesAndNewlines)
             line.filamentID = filamentID
             if filamentID.isEmpty {
-                result.blockers.append("Choose a material for “\(label)”.")
+                block("Choose a material for “\(label)”.")
             } else if !filaments.isEmpty {
                 if let filament = filaments.first(where: { $0.id == filamentID }) {
-                    if filamentAvailability(filament) == false { result.blockers.append("\(filament.name) is out of stock.") }
+                    if filamentAvailability(filament) == false { block("\(filament.name) is out of stock.") }
                 } else {
-                    result.blockers.append("The material for “\(label)” is no longer offered.")
+                    block("The material for “\(label)” is no longer offered.")
                 }
             }
         case "COMPONENT":
-            if reference.isEmpty { result.blockers.append("Choose a component for “\(label)”.") }
+            if reference.isEmpty { block("Choose a component for “\(label)”.") }
             else if !components.isEmpty, !components.contains(where: { $0.id == reference }) {
-                result.blockers.append("The component “\(label)” is no longer offered.")
+                block("The component “\(label)” is no longer offered.")
             }
         case "STATIONERY":
-            if reference.isEmpty { result.blockers.append("Choose stationery for “\(label)”.") }
+            if reference.isEmpty { block("Choose stationery for “\(label)”.") }
             else if !stationery.isEmpty, !stationery.contains(where: { $0.id == reference }) {
-                result.blockers.append("The stationery “\(label)” is no longer offered.")
+                block("The stationery “\(label)” is no longer offered.")
             }
             if !isHTTPSImageURL(saved.imageURL) {
-                result.blockers.append("The image link for “\(label)” must be an https:// address.")
+                block("The image link for “\(label)” must be an https:// address.")
             }
         default:
-            result.blockers.append("“\(label)” has an unknown item type.")
+            block("“\(label)” has an unknown item type.")
         }
         line.reference = reference
         result.lines.append(line)
@@ -187,9 +195,10 @@ func savedProductOrderLines(
 }
 
 /// Whether a saved product could be added to a draft now, from what Plinth has loaded. Read-only: it uses the same
-/// resolver as the composer and Import Orders, for one unit, so its reasons are the ones they would give.
+/// resolver as the composer and Import Orders, for one unit, so it blocks exactly when they would; its reasons are the
+/// resolver's list wording (`listBlockers`).
 struct SavedProductOrderability: Equatable {
-    /// The resolver's blockers for one unit sold, in its order.
+    /// The resolver's blockers for one unit sold, in its order, worded for the Saved Products list.
     var blockers: [String] = []
     /// Catalogs this product's items need that Plinth holds no entries for, in a fixed order (materials, components,
     /// stationery). The resolver never blocks on an empty catalog, so their stock and availability weren't checked.
@@ -209,7 +218,7 @@ func savedProductOrderability(
     if filaments.isEmpty, needs("PRINT", \.filamentID) { unchecked.append(.materials) }
     if components.isEmpty, needs("COMPONENT", \.reference) { unchecked.append(.components) }
     if stationery.isEmpty, needs("STATIONERY", \.reference) { unchecked.append(.stationery) }
-    return SavedProductOrderability(blockers: resolution.blockers, uncheckedCatalogs: unchecked)
+    return SavedProductOrderability(blockers: resolution.listBlockers, uncheckedCatalogs: unchecked)
 }
 
 /// The row's reason, e.g. "Can’t be ordered: PLA Black is out of stock." with "(+1 more)" when there are others.

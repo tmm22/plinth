@@ -340,8 +340,8 @@ struct ListingPriceCheckResult: Equatable {
     let feesPerUnit: Decimal
 }
 
-let listingPriceCostLineLabel = "Slant cost (Check Cost estimate)"
-let listingPriceDeliveryLineLabel = "Delivery (average of past orders)"
+let listingPriceCostLineLabel = "Slant cost (estimate)"
+let listingPriceDeliveryLineLabel = "Delivery (average)"
 
 /// Listing price × units plus the shipping charged per order, less the Profit check's fees (units sold = `units`, so
 /// Etsy's per-unit listing fee counts each), Check Cost's estimate and, when known, the average delivery of past
@@ -392,8 +392,10 @@ private func roundedUpToCents(_ value: Decimal) -> Decimal {
 
 /// The lowest listing price per unit whose `listingPriceCheck` margin is at least `targetPercent`, solved with the
 /// percentage fees (on item + shipping), the fixed processing fee, the per-unit listing fee and Etsy's $100 Offsite Ads
-/// cap, then confirmed with the same cent-rounded fee maths the check shows. Unreachable when the percentage fees and
-/// the margin add up to 100% or more, or the price would pass `profitMoneyInputLimit`.
+/// cap, then confirmed with the same cent-rounded fee maths the check shows. With Offsite Ads, a share that leaves
+/// nothing uncapped is tried again with the fee at its $100 cap, since past the cap it no longer grows with the price.
+/// Unreachable when the percentage fees (other than capped Offsite Ads) and the margin add up to 100% or more, or the
+/// price would pass `profitMoneyInputLimit`.
 func listingPriceForTargetMargin(_ targetPercent: Decimal, shippingCharged: Decimal, units: Int, productCost: Decimal,
                                  delivery: Decimal?, preset: ProfitFeePreset, rates: ProfitFeeRates,
                                  offsiteAds: Bool) -> ListingPriceTarget {
@@ -411,13 +413,23 @@ func listingPriceForTargetMargin(_ targetPercent: Decimal, shippingCharged: Deci
         return share > 0 ? (fixed + cost) / share : nil
     }
     let feeShare = percentFees + (ads ? rates.offsiteAdsPercent : 0)
-    guard var revenue = revenueNeeded(percent: feeShare, fixed: fixed) else {
-        return .unreachable("Can’t reach \(profitPercentText(targetPercent)): fees of \(profitPercentText(feeShare)) of the sale plus that margin leave nothing to cover the cost.")
-    }
-    if ads, revenue * rates.offsiteAdsPercent / 100 > etsyOffsiteAdsCap {
-        // Past the cap the Offsite Ads fee is a flat $100.
+    var revenue: Decimal
+    if let uncapped = revenueNeeded(percent: feeShare, fixed: fixed) {
+        revenue = uncapped
+        if ads, revenue * rates.offsiteAdsPercent / 100 > etsyOffsiteAdsCap {
+            // Past the cap the Offsite Ads fee is a flat $100.
+            fixed += etsyOffsiteAdsCap
+            if let capped = revenueNeeded(percent: percentFees, fixed: fixed) { revenue = capped }
+        }
+    } else if ads, let capped = revenueNeeded(percent: percentFees, fixed: fixed + etsyOffsiteAdsCap),
+              capped * rates.offsiteAdsPercent / 100 >= etsyOffsiteAdsCap {
+        // The uncapped Offsite Ads share leaves nothing, but once the fee reaches its $100 cap it stops growing with
+        // the price, so a high enough price can still keep the margin.
         fixed += etsyOffsiteAdsCap
-        if let capped = revenueNeeded(percent: percentFees, fixed: fixed) { revenue = capped }
+        revenue = capped
+    } else {
+        let share = ads ? percentFees : feeShare
+        return .unreachable("Can’t reach \(profitPercentText(targetPercent)): fees of \(profitPercentText(share)) of the sale plus that margin leave nothing to cover the cost.")
     }
     let itemTotal = revenue - shipping
     func keepsMargin(_ price: Decimal) -> Bool {

@@ -425,7 +425,7 @@ func orderOffersProblemReport(status: String) -> Bool {
 /// Reprint as New Draft…'s help: what opens, and that the draft names the order it reprints.
 func orderReprintButtonHelp(orderNumber: String) -> String {
     let number = orderNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-    let link = number.isEmpty ? "" : " The draft is marked as a reprint of order \(number) (reprintOf in its reference fields)."
+    let link = number.isEmpty ? "" : " The draft is marked as a reprint of order \(number)."
     return "Close this and open a new draft with this order’s items and delivery details for review." + link
         + " Nothing is created until you choose Create Draft."
 }

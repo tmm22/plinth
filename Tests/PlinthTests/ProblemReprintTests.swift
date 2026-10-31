@@ -165,10 +165,22 @@ final class ProblemReprintTests: XCTestCase {
 
     func testReprintLinkNoteAgreesWithCreateDraft() throws {
         XCTAssertNil(orderReprintLinkNote(original: nil, sellerMetadata: [:]))
-        XCTAssertTrue(try XCTUnwrap(orderReprintLinkNote(original: "SLANT_TEST1", sellerMetadata: [:])).contains("links this draft to order SLANT_TEST1"))
-        XCTAssertTrue(try XCTUnwrap(orderReprintLinkNote(original: "SLANT_TEST1", sellerMetadata: fields(8))).contains("links this draft"))
-        XCTAssertTrue(try XCTUnwrap(orderReprintLinkNote(original: "SLANT_TEST1", sellerMetadata: fields(9))).contains("won’t be linked"))
-        XCTAssertTrue(try XCTUnwrap(orderReprintLinkNote(original: "SLANT_TEST1", sellerMetadata: ["reprintOf": "x"])).contains("You’ve typed"))
+        // Normally one short line, with no internal key names.
+        XCTAssertEqual(orderReprintLinkNote(original: "SLANT_TEST1", sellerMetadata: [:]), "Marked as a reprint of order SLANT_TEST1.")
+        XCTAssertEqual(orderReprintLinkNote(original: " SLANT_TEST1 ", sellerMetadata: fields(8)), "Marked as a reprint of order SLANT_TEST1.")
+        // The longer explanation only when the link can't go with the draft.
+        let full = try XCTUnwrap(orderReprintLinkNote(original: "SLANT_TEST1", sellerMetadata: fields(9)))
+        XCTAssertTrue(full.contains("full") && full.contains("won’t be marked"), full)
+        XCTAssertFalse(full.contains(orderReprintOfKey), full)
+        let own = try XCTUnwrap(orderReprintLinkNote(original: "SLANT_TEST1", sellerMetadata: ["reprintOf": "x"]))
+        XCTAssertTrue(own.contains("already include") && own.contains("won’t mark"), own)
+        for unusable in [String(repeating: "9", count: 101), "A\nB"] {
+            let note = try XCTUnwrap(orderReprintLinkNote(original: unusable, sellerMetadata: [:]))
+            XCTAssertTrue(note.contains("can’t be recorded"), note)
+            XCTAssertFalse(note.contains(unusable))
+            // It agrees with Create Draft, which adds no link either.
+            XCTAssertNil(orderMetadataAddingReprintOf([:], original: unusable)[orderReprintOfKey])
+        }
     }
 
     func testDuplicatePrefillCopiesNoMetadataAndOnlyAReprintNamesItsOriginal() throws {
@@ -211,6 +223,7 @@ final class ProblemReprintTests: XCTestCase {
         XCTAssertNil(orderReprintOriginal(of: selfLinked, loaded: [Record(values: selfLinked)]))
         XCTAssertTrue(orderReprintButtonHelp(orderNumber: "SLANT_TEST1").contains("reprint of order SLANT_TEST1"))
         XCTAssertFalse(orderReprintButtonHelp(orderNumber: "").contains("reprint of order"))
+        XCTAssertFalse(orderReprintButtonHelp(orderNumber: "SLANT_TEST1").contains(orderReprintOfKey))
     }
 
     // MARK: Spending Report reprints
