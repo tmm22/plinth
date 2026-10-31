@@ -911,7 +911,8 @@ enum DapiPlacePhase: Equatable {
             }
         }
         askPlaceAnyway = false
-        pressedSampleCredit = useSampleCredit
+        // Only what the review on screen showed: a tick hidden because the last read had no wallet is never sent.
+        pressedSampleCredit = useSampleCredit && dapiWalletShowsSampleCredit(reviewed.wallet)
         phase = .rechecking
         startRead { [weak self] result in
             guard let self else { return }

@@ -682,14 +682,22 @@ struct OrderWatchSwitchQuestion: Equatable {
 /// "Show this 3DAPI order?" / "Plinth is set to Slant 3D. Switch the print service to 3DAPI to see order 1042?".
 /// `number` is the order number the notification showed, when Plinth still knows it this session; otherwise "this
 /// order". Nothing else about the order is named.
-func orderWatchSwitchQuestion(to service: PrintService, number: String?) -> OrderWatchSwitchQuestion {
+func orderWatchSwitchQuestion(to service: PrintService, number: String?, summary: Bool = false) -> OrderWatchSwitchQuestion {
     let current: PrintService = service == .slant ? .dapi : .slant
     let shown = number?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let order = shown.isEmpty ? "this order" : "order \(shown)"
+    let order = summary ? "your orders" : (shown.isEmpty ? "this order" : "order \(shown)")
+    let title = summary ? (service == .slant ? "Show your Slant orders?" : "Show your 3DAPI orders?")
+        : (service == .slant ? "Show this Slant order?" : "Show this 3DAPI order?")
     return OrderWatchSwitchQuestion(
-        title: service == .slant ? "Show this Slant order?" : "Show this 3DAPI order?",
+        title: title,
         message: "Plinth is set to \(current.displayName). Switch the print service to \(service.displayName) to see \(order)?",
         switchButton: "Switch to \(service.displayName)")
+}
+
+/// Whether a switch asked for from a notification should wait rather than be refused: a Slant write, a 3DAPI request
+/// or a quote write still running finishes by itself, so the click isn't lost to it.
+func orderWatchSwitchShouldWait(slantWritesInFlight: Bool, dapiRequestsRunning: Int, dapiQuoteWritesInFlight: Int) -> Bool {
+    slantWritesInFlight || dapiRequestsRunning > 0 || dapiQuoteWritesInFlight > 0
 }
 
 /// What the main window shows for a clicked notification from the other service: the question, or, after Switch,
@@ -999,6 +1007,7 @@ private struct PendingNotificationOpen {
         if case .slant? = pendingOpen?.target { pendingOpen = nil }
         if case .slant? = pendingSwitch?.target { pendingSwitch = nil }
         if case .slant? = servicePrompt?.target { servicePrompt = nil }
+        notifiedNumbers = notifiedNumbers.filter { !$0.key.hasPrefix("slant:") }
         selectionRequest = nil
     }
 
@@ -1134,6 +1143,14 @@ private struct PendingNotificationOpen {
                 scheduleOpenDrain()
                 return
             }
+            // A request or write that will finish by itself only delays the switch; refuse only for what lasts.
+            let dapi = DapiConnection.shared
+            if orderWatchSwitchShouldWait(slantWritesInFlight: !SlantWritesInFlight.shared.kinds.isEmpty,
+                                          dapiRequestsRunning: dapi.activeRequests,
+                                          dapiQuoteWritesInFlight: dapi.quoteWritesInFlight.count) {
+                scheduleOpenDrain()
+                return
+            }
             pendingSwitch = nil
             if let reason = PrintServiceChoice.shared.select(switching.service, blockedReason: printServiceChangeBlockedNow(store: store)) {
                 var refused = switching
@@ -1154,7 +1171,8 @@ private struct PendingNotificationOpen {
         if case .askToSwitch(let service) = route {
             // Never switched by itself: the seller answers the question (StudioView shows it).
             let number = notifiedNumbers[notifiedNumberKey(pending.target)]
-            let prompt = OrderWatchServicePrompt(target: pending.target, question: orderWatchSwitchQuestion(to: service, number: number))
+            let prompt = OrderWatchServicePrompt(target: pending.target, question: orderWatchSwitchQuestion(
+                to: service, number: number, summary: pending.target == .slant(orderID: nil)))
             askedPromptID = prompt.id
             servicePrompt = prompt
             return

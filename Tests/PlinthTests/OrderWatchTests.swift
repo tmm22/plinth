@@ -335,6 +335,19 @@ final class OrderWatchTests: XCTestCase {
                        "Plinth is set to Slant 3D. Switch the print service to 3DAPI to see this order?")
     }
 
+    func testSummarySwitchQuestionAsksAboutYourOrders() {
+        let summary = orderWatchSwitchQuestion(to: .slant, number: nil, summary: true)
+        XCTAssertEqual(summary.title, "Show your Slant orders?")
+        XCTAssertEqual(summary.message, "Plinth is set to 3DAPI. Switch the print service to Slant 3D to see your orders?")
+    }
+
+    func testASwitchWaitsForRunningWorkInsteadOfBeingRefused() {
+        XCTAssertFalse(orderWatchSwitchShouldWait(slantWritesInFlight: false, dapiRequestsRunning: 0, dapiQuoteWritesInFlight: 0))
+        XCTAssertTrue(orderWatchSwitchShouldWait(slantWritesInFlight: true, dapiRequestsRunning: 0, dapiQuoteWritesInFlight: 0))
+        XCTAssertTrue(orderWatchSwitchShouldWait(slantWritesInFlight: false, dapiRequestsRunning: 1, dapiQuoteWritesInFlight: 0))
+        XCTAssertTrue(orderWatchSwitchShouldWait(slantWritesInFlight: false, dapiRequestsRunning: 0, dapiQuoteWritesInFlight: 2))
+    }
+
     func testNotifiedNumbersAreBoundedAndClean() {
         var numbers: [String: String] = [:]
         numbers = orderWatchNotedNumbers(numbers, adding: " 1042 ", for: "slant:S1")

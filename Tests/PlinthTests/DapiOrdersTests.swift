@@ -807,6 +807,38 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(stub.count("place"), 0, "Nothing is sent when the credit is gone at the press")
     }
 
+    func testAPreTickHiddenByAMissingWalletIsNeverSent() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(sampleCreditWallet(1_500))
+        let harness = PlaceHarness()
+        var own = draft()
+        own.addressIsSellersOwn = true
+        let runner = await readyRunner(stub, harness, draft: own)
+        XCTAssertTrue(runner.useSampleCredit)
+        // Check Again reads no wallet, so the review hides the toggle (still ticked underneath).
+        stub.walletResult = .failure(.readFailed("offline"))
+        stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1")), .success(DapiOrdersTests.quote("qte_1"))])
+        stub.scriptShipping([.success(DapiOrdersTests.shipping(699)), .success(DapiOrdersTests.shipping(699))])
+        runner.checkAgain()
+        await waitUntil { runner.phase != .checking }
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertNil(runner.figures?.wallet)
+        // The wallet reads again by the press: the credit wasn't on screen, so the order stops for a fresh look.
+        stub.walletResult = .success(sampleCreditWallet(1_500))
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(stub.count("place"), 0, "Never spent while the review hid it")
+        XCTAssertNotNil(runner.figures?.wallet, "The review now shows the credit and the tick")
+        // Pressed again with the credit shown, it goes as ticked.
+        stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1"))])
+        stub.scriptShipping([.success(DapiOrdersTests.shipping(699))])
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(stub.placed.last?.0.useSampleCredit, runner.useSampleCredit)
+        XCTAssertEqual(stub.count("place"), 1)
+    }
+
     func scriptedReadyWithCredit() -> ScriptedDapiOrders {
         let stub = scriptedReady()
         stub.walletResult = .success(sampleCreditWallet(1_500))

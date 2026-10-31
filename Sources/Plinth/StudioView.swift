@@ -86,9 +86,10 @@ struct StudioView: View {
                                     set: { if !$0, orderWatch.servicePrompt != nil { orderWatch.dismissServicePrompt() } }),
                presenting: orderWatch.servicePrompt) { prompt in
             if prompt.blockedReason == nil {
+                // It can appear by itself once a sheet closes, so Return mustn't switch: Not Now is the default.
                 Button(prompt.question.switchButton) { orderWatch.confirmServiceSwitch(prompt) }
-                    .keyboardShortcut(.defaultAction)
                 Button("Not Now", role: .cancel) { orderWatch.dismissServicePrompt() }
+                    .keyboardShortcut(.defaultAction)
             } else {
                 Button("OK", role: .cancel) { orderWatch.dismissServicePrompt() }
             }
