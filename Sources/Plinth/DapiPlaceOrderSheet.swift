@@ -1,6 +1,7 @@
 import SwiftUI
 
-// "Review 3DAPI order" (from the composer's Review Order…) and "Cancel 3DAPI order" (from the detail's Cancel Order…).
+// "Review order" (from the composer's Review Order…) and "Cancel order" (from the detail's Cancel Order…): sheet titles
+// match their commands minus the ellipsis (`dapiPlaceReviewTitle`, `dapiCancelReviewTitle`).
 // The flows and their rules live in DapiOrderComposer.swift. Place Order and Cancel Order are never the default
 // button and have no shortcut; Go Back takes Escape. Neither sheet can close while its request waits for 3DAPI.
 
@@ -35,7 +36,7 @@ struct DapiPlaceOrderSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Review 3DAPI order").font(.title2.weight(.bold))
+                Text(dapiPlaceReviewTitle).font(.title2.weight(.bold))
                 Text(dapiOrderChargeNote).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -76,7 +77,8 @@ struct DapiPlaceOrderSheet: View {
             Button("Don’t Place", role: .cancel) { runner.declinePlaceAnyway() }
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text(dapiPlaceAnywayMessage(session.unconfirmedOrders))
+            // Only the attempts that may be this order (`dapiPlaceNeedsPlaceAnyway`); the notices list every one.
+            Text(dapiPlaceAnywayMessage(runner.placeAnywayAttempts))
         }
         .onAppear {
             if !registered {
@@ -201,7 +203,8 @@ struct DapiPlaceOrderSheet: View {
                 }
                 if hasSampleCredit(figures) {
                     VStack(alignment: .leading, spacing: 2) {
-                        // Off by default; what is ticked when Place Order is pressed is what is sent.
+                        // Ticked to start with only for the seller's own unedited address (`dapiSampleCreditDefault`);
+                        // what is ticked when Place Order is pressed is what is sent.
                         Toggle(dapiSampleCreditToggleTitle, isOn: $runner.useSampleCredit)
                             .disabled(runner.phase != .ready)
                         Text(dapiSampleCreditCaption).font(.caption).foregroundStyle(.secondary)
@@ -325,7 +328,7 @@ struct DapiCancelOrderSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Cancel 3DAPI order").font(.title2.weight(.bold))
+            Text(dapiCancelReviewTitle).font(.title2.weight(.bold))
             Text("Order \(request.number) · \(request.shownStatus.label)").font(.callout).foregroundStyle(.secondary)
             Text(dapiCancelExplanation(mode: request.mode, status: request.shownStatus)).font(.callout)
                 .fixedSize(horizontal: false, vertical: true)

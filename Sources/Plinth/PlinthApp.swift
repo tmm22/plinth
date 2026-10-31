@@ -253,8 +253,10 @@ let studioHelpSections: [StudioHelpSection] = [
         print service (the key then needs orders:write). **New 3DAPI Order…** (⌘N) or **Order with 3DAPI…** opens \
         an order to fill in; 3DAPI has no drafts, so nothing is charged until **Review Order…** and **Place Order**, \
         which charges your 3DAPI wallet at once. If Plinth can’t tell whether an order was placed, it asks before you \
-        place another and offers **Look for Order on 3DAPI**. **Cancel Order…** is offered only while an order is \
-        Paid. Import Orders and Pay Several Drafts are for Slant only.
+        place another for the same customer or reference, asks before you quit, and offers **Look for Order on \
+        3DAPI**. **Cancel Order…** is offered only while an order is Paid. Import Orders and Pay Several Drafts are \
+        for Slant only. Slant’s order updates keep running while 3DAPI is chosen, and the Dock count shows Slant \
+        orders; clicking a notification from the service you aren’t using asks before switching to it.
         """),
     StudioHelpSection(title: "What Plinth never does by itself", body: """
         No menu item or keyboard shortcut uploads, pays, places, cancels or sends anything. When Plinth can’t tell \
@@ -368,11 +370,55 @@ func slantWritesQuitQuestion(_ kinds: [SlantWriteKind]) -> (title: String, messa
             + "went through, so it can’t warn you before you send it again. Wait for it to finish, then quit.")
 }
 
+/// The quit question while 3DAPI orders or cancellations have an unknown outcome (owner decision, delegated, 31 Oct
+/// 2026), or nil. Those records last only for the session, so quitting loses the warnings that stop the seller placing
+/// or cancelling the same order again. Slant's lock and unconfirmed drafts don't ask (unchanged).
+func dapiUnclearOrdersQuitQuestion(unconfirmedOrders: Int, unknownCancels: Int) -> (title: String, message: String)? {
+    let orders = max(0, unconfirmedOrders), cancels = max(0, unknownCancels)
+    guard orders + cancels > 0 else { return nil }
+    func count(_ n: Int) -> String { n == 1 ? "1 order" : "\(n) orders" }
+    var sentences: [String] = []
+    if orders > 0 { sentences.append("3DAPI may have placed \(count(orders)) Plinth couldn’t confirm.") }
+    if cancels > 0 {
+        sentences.append("Plinth couldn’t confirm whether 3DAPI cancelled \(count(cancels)).")
+    }
+    let what: String
+    let advice: String
+    switch (orders > 0, cancels > 0) {
+    case (true, false):
+        what = "placing the same order again"
+        advice = "Use Look for Order on 3DAPI first."
+    case (false, true):
+        what = "cancelling the same order again"
+        advice = "Refresh the order in Orders first."
+    default:
+        what = "placing or cancelling the same order again"
+        advice = "Use Look for Order on 3DAPI and refresh Orders first."
+    }
+    let warnings = orders + cancels == 1 ? "this warning" : "these warnings"
+    sentences.append("Plinth forgets \(warnings) when it quits, so it can’t stop you \(what). \(advice)")
+    return ("Quit with unclear 3DAPI orders?", sentences.joined(separator: " "))
+}
+
+/// The quit question, or nil to quit at once: writes still waiting for a reply come first (`slantWritesQuitQuestion`,
+/// unchanged), then 3DAPI orders or cancellations whose outcome is unknown (`dapiUnclearOrdersQuitQuestion`).
+func plinthQuitQuestion(writes: [SlantWriteKind], dapiUnconfirmedOrders: Int,
+                        dapiUnknownCancels: Int) -> (title: String, message: String)? {
+    slantWritesQuitQuestion(writes)
+        ?? dapiUnclearOrdersQuitQuestion(unconfirmedOrders: dapiUnconfirmedOrders, unknownCancels: dapiUnknownCancels)
+}
+
 extension PlinthAppDelegate {
-    /// Asks before quitting while a Slant write is in flight, with Don't Quit as the default; quits at once otherwise.
+    /// Asks before quitting while a write is in flight, or while a 3DAPI order or cancellation has an unknown outcome,
+    /// with Don't Quit as the default; quits at once otherwise.
     @objc func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            guard let question = slantWritesQuitQuestion(SlantWritesInFlight.shared.kinds) else { return .terminateNow }
+            let session = DapiOrderSession.shared
+            guard let question = plinthQuitQuestion(writes: SlantWritesInFlight.shared.kinds,
+                                                    dapiUnconfirmedOrders: session.unconfirmedOrders.count,
+                                                    dapiUnknownCancels: session.cancelOutcomeUnknown.count) else {
+                return .terminateNow
+            }
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = question.title

@@ -195,6 +195,10 @@ struct DapiOrderWatchEnvironment {
 @MainActor func dapiOrderWatchPostNotifications(_ notices: [DapiOrderWatchNotice]) {
     guard !notices.isEmpty, UserDefaults.standard.bool(forKey: orderWatchNotifyDefaultsKey),
           orderWatchNotificationsAvailable() else { return }
+    // The numbers shown, in memory only, so a click after switching to Slant 3D can name the order in its question.
+    for notice in notices where dapiOrderIDIsSafe(notice.orderID) {
+        OrderWatch.shared.noteNotifiedNumber(notice.number, for: .dapi(orderID: notice.orderID))
+    }
     UNUserNotificationCenter.current().getNotificationSettings { settings in
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
         for notice in notices where dapiOrderIDIsSafe(notice.orderID) {

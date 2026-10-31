@@ -289,18 +289,17 @@ final class OrderWatchTests: XCTestCase {
 
     // MARK: With 3DAPI as the print service
 
-    func testChecksPauseWhile3DAPIIsThePrintService() {
-        XCTAssertEqual(orderWatchSkipReason(OrderWatchConditions(slantIsPrintService: false)), .otherPrintService)
-        XCTAssertEqual(orderWatchSkipReason(OrderWatchConditions(enabled: false, slantIsPrintService: false)), .disabled)
-        XCTAssertNil(orderWatchSkipReason(OrderWatchConditions(now: Date(), slantIsPrintService: true)))
-        // Looked at again soon, without a request, so choosing Slant again resumes promptly.
-        XCTAssertEqual(orderWatchNextDelay(after: .otherPrintService, now: Date()), orderWatchRecheckDelay)
-    }
-
-    func testDockShowsSlantCountOnlyWhileSlantIsChosen() {
-        XCTAssertEqual(orderWatchDockBadgeCount(slantBadgeCount: 4, service: .slant), 4)
-        XCTAssertEqual(orderWatchDockBadgeCount(slantBadgeCount: 4, service: .dapi), 0)
-        XCTAssertNil(orderWatchDockBadgeLabel(count: orderWatchDockBadgeCount(slantBadgeCount: 4, service: .dapi), showOnDock: true))
+    func testChecksDontDependOnThePrintService() {
+        // Owner decision (delegated, 31 Oct 2026): Slant's watch keeps running while 3DAPI is chosen, so the
+        // conditions have no print-service input and the skip rules are the ones from before the pause.
+        XCTAssertNil(orderWatchSkipReason(OrderWatchConditions(now: Date())))
+        XCTAssertEqual(orderWatchSkipReason(OrderWatchConditions(enabled: false)), .disabled)
+        XCTAssertEqual(orderWatchSkipReason(OrderWatchConditions(modalUIShown: true)), .modalUI)
+        XCTAssertEqual(orderWatchSkipReason(OrderWatchConditions(busy: true)), .busy)
+        // The sidebar shows the chosen service's count; the Dock (`orderWatchDockBadgeLabel`) shows Slant's always.
+        XCTAssertEqual(ordersSidebarBadgeCount(service: .dapi, slantCount: 4, dapiCount: 1), 1)
+        XCTAssertEqual(ordersSidebarBadgeCount(service: .slant, slantCount: 4, dapiCount: 1), 4)
+        XCTAssertEqual(orderWatchDockBadgeLabel(count: 4, showOnDock: true), "4")
     }
 
     func testNotificationClickTargetsAndRoutes() {
@@ -314,10 +313,43 @@ final class OrderWatchTests: XCTestCase {
 
         XCTAssertEqual(orderWatchNotificationRoute(.dapi(orderID: "ord_A"), service: .dapi), .dapiOrder(orderID: "ord_A"))
         XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: "S1"), service: .slant), .slantOrders(orderID: "S1"))
-        // The other service's notification only raises the window; the service never switches.
-        XCTAssertEqual(orderWatchNotificationRoute(.dapi(orderID: "ord_A"), service: .slant), .windowOnly)
-        XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: "S1"), service: .dapi), .windowOnly)
-        XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: nil), service: .dapi), .windowOnly)
+        // The other service's notification asks before switching to that service; it never switches by itself.
+        XCTAssertEqual(orderWatchNotificationRoute(.dapi(orderID: "ord_A"), service: .slant), .askToSwitch(to: .dapi))
+        XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: "S1"), service: .dapi), .askToSwitch(to: .slant))
+        XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: nil), service: .dapi), .askToSwitch(to: .slant))
+        // After the switch, the same click takes that service's own path.
+        XCTAssertEqual(orderWatchNotificationRoute(.slant(orderID: "S1"), service: .slant), .slantOrders(orderID: "S1"))
+        XCTAssertEqual(orderWatchNotificationRoute(.dapi(orderID: "ord_A"), service: .dapi), .dapiOrder(orderID: "ord_A"))
+    }
+
+    func testSwitchQuestionNamesTheServiceAndTheNumberOnly() {
+        let slant = orderWatchSwitchQuestion(to: .slant, number: "1042")
+        XCTAssertEqual(slant.title, "Show this Slant order?")
+        XCTAssertEqual(slant.message, "Plinth is set to 3DAPI. Switch the print service to Slant 3D to see order 1042?")
+        XCTAssertEqual(slant.switchButton, "Switch to Slant 3D")
+        let dapi = orderWatchSwitchQuestion(to: .dapi, number: nil)
+        XCTAssertEqual(dapi.title, "Show this 3DAPI order?")
+        XCTAssertEqual(dapi.message, "Plinth is set to Slant 3D. Switch the print service to 3DAPI to see this order?")
+        XCTAssertEqual(dapi.switchButton, "Switch to 3DAPI")
+        XCTAssertEqual(orderWatchSwitchQuestion(to: .dapi, number: "  ").message,
+                       "Plinth is set to Slant 3D. Switch the print service to 3DAPI to see this order?")
+    }
+
+    func testNotifiedNumbersAreBoundedAndClean() {
+        var numbers: [String: String] = [:]
+        numbers = orderWatchNotedNumbers(numbers, adding: " 1042 ", for: "slant:S1")
+        XCTAssertEqual(numbers["slant:S1"], "1042")
+        // Nothing for an empty number or ID, or text with control characters.
+        XCTAssertEqual(orderWatchNotedNumbers(numbers, adding: "", for: "slant:S2"), numbers)
+        XCTAssertEqual(orderWatchNotedNumbers(numbers, adding: "7", for: ""), numbers)
+        XCTAssertEqual(orderWatchNotedNumbers(numbers, adding: "7\u{0}8", for: "slant:S3"), numbers)
+        XCTAssertEqual(orderWatchNotedNumbers(numbers, adding: String(repeating: "9", count: 80), for: "slant:S4")["slant:S4"]?.count, 40)
+        // Capped: a new entry past the limit starts over (memory only, numbers only).
+        var full: [String: String] = [:]
+        for i in 0..<3 { full = orderWatchNotedNumbers(full, adding: "\(i)", for: "dapi:ord_\(i)", limit: 3) }
+        XCTAssertEqual(full.count, 3)
+        XCTAssertEqual(orderWatchNotedNumbers(full, adding: "9", for: "dapi:ord_2", limit: 3).count, 3, "An update isn't a new entry")
+        XCTAssertEqual(orderWatchNotedNumbers(full, adding: "9", for: "dapi:ord_9", limit: 3), ["dapi:ord_9": "9"])
     }
 
     func testNotificationClickWaitsForModalUIAndRequests() {
@@ -337,13 +369,27 @@ final class OrderWatchTests: XCTestCase {
         XCTAssertFalse(canOpen(dapiRoute, writes: 1), "a 3DAPI order write waits for its reply")
         XCTAssertFalse(canOpen(dapiRoute, sheets: 1))
         XCTAssertTrue(canOpen(.slantOrders(orderID: "S1"), writes: 1), "Slant's rule is unchanged")
+        // The switch question waits like any click, and also for 3DAPI's writes and order sheets, which would refuse
+        // the switch anyway.
+        for service in PrintService.allCases {
+            let ask = OrderWatchNotificationRoute.askToSwitch(to: service)
+            XCTAssertTrue(canOpen(ask))
+            XCTAssertFalse(canOpen(ask, sheet: true))
+            XCTAssertFalse(canOpen(ask, modal: true), "an open sheet, alert or dialog in any window")
+            XCTAssertFalse(canOpen(ask, error: true))
+            XCTAssertFalse(canOpen(ask, busy: true))
+            XCTAssertFalse(canOpen(ask, writes: 1))
+            XCTAssertFalse(canOpen(ask, sheets: 1))
+        }
     }
 
     func testSettingsNoteFor3DAPI() {
         XCTAssertTrue(orderWatchDapiServiceNote.contains("every 4 minutes"))
         XCTAssertTrue(orderWatchDapiServiceNote.contains("nothing about them is saved"))
         XCTAssertTrue(orderWatchDapiServiceNote.contains("order number and status only"))
-        XCTAssertTrue(orderWatchDapiServiceNote.contains("The Dock count shows Slant orders only"))
+        XCTAssertTrue(orderWatchDapiServiceNote.contains("keeps checking your Slant orders"))
+        XCTAssertTrue(orderWatchDapiServiceNote.contains("the Dock count still shows Slant orders"))
+        XCTAssertFalse(orderWatchDapiServiceNote.contains("aren’t checked"))
     }
 
     func testNotificationsUnavailableOutsideAnAppBundle() {

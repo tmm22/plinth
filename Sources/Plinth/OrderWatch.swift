@@ -389,12 +389,6 @@ func orderWatchDockBadgeLabel(count: Int, showOnDock: Bool) -> String? {
     return String(count)
 }
 
-/// The Dock tile's count: Slant's order watch only, and nothing while 3DAPI is the print service (the watch is paused
-/// then, and the sidebar shows 3DAPI's own count).
-func orderWatchDockBadgeCount(slantBadgeCount: Int, service: PrintService) -> Int {
-    service == .slant ? slantBadgeCount : 0
-}
-
 /// "2 shipped · 1 payment problem · 1 printing".
 func orderWatchSummaryText(_ changes: [OrderWatchChange]) -> String {
     orderWatchSummaryGroups(changes).map { "\($0.count) \(orderStatusTitle($0.status).lowercased())" }.joined(separator: " · ")
@@ -470,9 +464,6 @@ func orderWatchNotificationTexts(_ transitions: [OrderWatchTransition]) -> [Orde
 
 enum OrderWatchSkip: Equatable {
     case disabled, noKey, noPlatform, busy, modalUI, inFlight, accountPaused
-    /// 3DAPI is the print service: Slant's orders aren't checked (its own watch runs), so no Slant change is
-    /// notified into the 3DAPI Orders screen. The saved statuses stay, so choosing Slant again reports what changed.
-    case otherPrintService
     /// Wait until this time (nil: until the next scheduled check).
     case rateLimited(until: Date?)
 }
@@ -490,16 +481,14 @@ struct OrderWatchConditions {
     var rateLimitAlreadyWaitedFor: RateLimitInfo?
     var backoffUntil: Date?
     var now = Date()
-    /// Slant is the print service (`PrintServiceChoice`); false while 3DAPI is chosen.
-    var slantIsPrintService = true
 }
 
 /// Why a scheduled check doesn't run now, or nil to run it. Checks never run while a request is running (`busy`) or a
 /// sheet, alert or dialog is shown in any window (the review, import and estimate sheets send their own requests), and
-/// they leave the rate-limit allowance to the seller. While 3DAPI is the print service they don't run at all.
+/// they leave the rate-limit allowance to the seller. They run whichever print service is chosen (owner decision,
+/// delegated, 31 Oct 2026): with 3DAPI chosen, Slant's orders still ship and the Dock count still shows them.
 func orderWatchSkipReason(_ c: OrderWatchConditions) -> OrderWatchSkip? {
     if !c.enabled { return .disabled }
-    if !c.slantIsPrintService { return .otherPrintService }
     if !c.hasKey { return .noKey }
     if !c.hasPlatform { return .noPlatform }
     if c.accountPaused { return .accountPaused }
@@ -638,33 +627,96 @@ enum OrderWatchNotificationTarget: Equatable {
     }
 }
 
-/// What a click does once nothing modal is shown and no request runs. The window is always raised at once; a
-/// notification from the service that isn't the print service now only raises it (the service is never switched, and
-/// a Slant notification never opens the 3DAPI Orders screen, nor the reverse).
+extension OrderWatchNotificationTarget {
+    /// The service whose order watch posted the notification.
+    var service: PrintService {
+        switch self {
+        case .slant: .slant
+        case .dapi: .dapi
+        }
+    }
+}
+
+/// What a click does once nothing modal is shown and no request runs. The window is always raised at once. A
+/// notification from the service that isn't the print service asks whether to switch to that service first (owner
+/// decision, delegated, 31 Oct 2026); it never switches by itself, and a Slant notification never opens the 3DAPI
+/// Orders screen, nor the reverse.
 enum OrderWatchNotificationRoute: Equatable {
-    case windowOnly
     /// Slant's Orders, selecting the order (read by ID through `store.run` if it isn't loaded).
     case slantOrders(orderID: String?)
     /// 3DAPI's Orders, which reads the order by ID (read-only) and selects it (`DapiOrderSession.orderToShow`).
     case dapiOrder(orderID: String)
+    /// Ask "Show this … order?" (`orderWatchSwitchQuestion`); only the seller's Switch changes the print service.
+    case askToSwitch(to: PrintService)
 }
 
 func orderWatchNotificationRoute(_ target: OrderWatchNotificationTarget, service: PrintService) -> OrderWatchNotificationRoute {
     switch (target, service) {
     case (.slant(let id), .slant): return .slantOrders(orderID: id)
     case (.dapi(let id), .dapi): return .dapiOrder(orderID: id)
-    default: return .windowOnly
+    default: return .askToSwitch(to: target.service)
     }
 }
 
-/// Whether a waiting click may be applied now: no sheet, alert or dialog in any window, no error alert, no Slant
-/// request running (`busy`), and for a 3DAPI order no 3DAPI order write waiting for its reply or order sheet open.
+/// Whether a waiting click (or a confirmed switch) may be applied now: no sheet, alert or dialog in any window, no
+/// error alert, no Slant request running (`busy`), and for a 3DAPI order or a switch of service no 3DAPI order write
+/// waiting for its reply and no 3DAPI order sheet open (either would refuse the switch anyway).
 func orderWatchNotificationCanOpen(_ route: OrderWatchNotificationRoute, storeSheetPresented: Bool, appModalUIPresented: Bool,
                                    errorShown: Bool, busy: Bool, dapiWritesInFlight: Int, dapiOrderSheetsOpen: Int) -> Bool {
     guard externalOpenCanImport(storeSheetPresented: storeSheetPresented, appModalUIPresented: appModalUIPresented,
                                 errorShown: errorShown, busy: busy) else { return false }
-    if case .dapiOrder = route { return dapiWritesInFlight == 0 && dapiOrderSheetsOpen == 0 }
-    return true
+    switch route {
+    case .dapiOrder, .askToSwitch: return dapiWritesInFlight == 0 && dapiOrderSheetsOpen == 0
+    case .slantOrders: return true
+    }
+}
+
+/// The alert for a clicked notification from the service that isn't the print service.
+struct OrderWatchSwitchQuestion: Equatable {
+    let title: String
+    let message: String
+    /// "Switch to Slant 3D" or "Switch to 3DAPI". The other button is Not Now (Escape).
+    let switchButton: String
+}
+
+/// "Show this 3DAPI order?" / "Plinth is set to Slant 3D. Switch the print service to 3DAPI to see order 1042?".
+/// `number` is the order number the notification showed, when Plinth still knows it this session; otherwise "this
+/// order". Nothing else about the order is named.
+func orderWatchSwitchQuestion(to service: PrintService, number: String?) -> OrderWatchSwitchQuestion {
+    let current: PrintService = service == .slant ? .dapi : .slant
+    let shown = number?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let order = shown.isEmpty ? "this order" : "order \(shown)"
+    return OrderWatchSwitchQuestion(
+        title: service == .slant ? "Show this Slant order?" : "Show this 3DAPI order?",
+        message: "Plinth is set to \(current.displayName). Switch the print service to \(service.displayName) to see \(order)?",
+        switchButton: "Switch to \(service.displayName)")
+}
+
+/// What the main window shows for a clicked notification from the other service: the question, or, after Switch,
+/// why the print service can't change now (`printServiceChangeBlockedReason`).
+struct OrderWatchServicePrompt: Identifiable, Equatable {
+    let id = UUID()
+    let target: OrderWatchNotificationTarget
+    let question: OrderWatchSwitchQuestion
+    /// Set when the switch was refused: the alert then shows this reason with OK only.
+    var blockedReason: String?
+
+    var service: PrintService { target.service }
+}
+
+/// Order numbers shown in this session's notifications, by order ID, so the switch question can name one. Memory only,
+/// numbers only (never customer details), at most `orderWatchNotifiedNumberLimit`.
+let orderWatchNotifiedNumberLimit = 200
+
+func orderWatchNotedNumbers(_ numbers: [String: String], adding number: String, for id: String,
+                            limit: Int = orderWatchNotifiedNumberLimit) -> [String: String] {
+    let trimmed = String(number.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+    guard !trimmed.isEmpty, !id.isEmpty, !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+    else { return numbers }
+    var result = numbers
+    if result[id] == nil, result.count >= limit { result = [:] }
+    result[id] = trimmed
+    return result
 }
 
 private struct PendingNotificationOpen {
@@ -724,12 +776,21 @@ private struct PendingNotificationOpen {
     /// never the platform), so they are forgotten when it changes.
     private var watchedPlatformID: String?
     private var accountObservers: Set<AnyCancellable> = []
-    private var serviceObserver: AnyCancellable?
     /// False once Slant refused `sortBy=updatedAt` or answered it unsorted; the second read then stops for the session.
     private var updatedReadAvailable = true
     /// A clicked notification waiting until no sheet, alert or request is shown: the order to select (nil: just Orders).
     private var pendingOpen: PendingNotificationOpen?
+    /// The seller pressed Switch in the "Show this … order?" alert: applied once the alert has gone and nothing modal
+    /// is shown and no request runs, with the blocked reason computed then.
+    private var pendingSwitch: OrderWatchServicePrompt?
     private var openDrainScheduled = false
+    /// The question (or the refusal) for a clicked notification from the service that isn't the print service; the
+    /// main window shows it as an alert (StudioView).
+    @Published private(set) var servicePrompt: OrderWatchServicePrompt?
+    /// The question shown last (never a refusal), which Switch may still answer.
+    private var askedPromptID: UUID?
+    /// Order numbers shown in this session's notifications, keyed "slant:<id>" or "dapi:<id>" (`noteNotifiedNumber`).
+    private var notifiedNumbers: [String: String] = [:]
 
     var unseenChanges: [OrderWatchChange] { enabled ? orderWatchUnseenChanges(snapshot) : [] }
     var badgeCount: Int { orderWatchBadgeCount(unseenChanges) }
@@ -746,13 +807,6 @@ private struct PendingNotificationOpen {
             }
         }
         observeAccount(store)
-        // While 3DAPI is the print service the checks skip (`OrderWatchSkip.otherPrintService`) and the Dock count is
-        // cleared; it comes back, with any changes the next check finds, once Slant is chosen again.
-        serviceObserver = PrintServiceChoice.shared.$service
-            .removeDuplicates()
-            .sink { [weak self] service in
-                MainActor.assumeIsolated { self?.updateDockBadge(service: service) }
-            }
         if orderWatchNotificationsAvailable() {
             UNUserNotificationCenter.current().delegate = OrderWatchNotificationDelegate.shared
             if notify { refreshNotificationPermission() }
@@ -829,11 +883,8 @@ private struct PendingNotificationOpen {
         let client = store.client
         inFlight = true
         defer { inFlight = false }
-        // A key or platform change, Forget, turning the watch off or choosing 3DAPI as the print service while a read
-        // was in flight discards it (nothing is recorded or notified; the next check under Slant reports it).
-        func stillCurrent() -> Bool {
-            runGeneration == generation && enabled && accountToken(store) == token && PrintServiceChoice.shared.service == .slant
-        }
+        // A key or platform change, Forget or turning the watch off while a read was in flight discards it.
+        func stillCurrent() -> Bool { runGeneration == generation && enabled && accountToken(store) == token }
         // 1. The newest created orders, as before.
         let newest: [OrderWatchObservation]
         do {
@@ -886,8 +937,7 @@ private struct PendingNotificationOpen {
         OrderWatchConditions(
             enabled: enabled, hasKey: store.hasKey, hasPlatform: !store.platformID.isEmpty, busy: store.busy,
             modalUIShown: store.menuCommandsBlockedByModalUI, inFlight: countInFlight && inFlight, accountPaused: pausedAccount == token,
-            rateLimit: store.rateLimit, rateLimitAlreadyWaitedFor: rateLimitWaitedFor, backoffUntil: backoffUntil, now: now,
-            slantIsPrintService: PrintServiceChoice.shared.service == .slant
+            rateLimit: store.rateLimit, rateLimitAlreadyWaitedFor: rateLimitWaitedFor, backoffUntil: backoffUntil, now: now
         )
     }
 
@@ -915,7 +965,14 @@ private struct PendingNotificationOpen {
         let applied = orderWatchApplying(observations, to: snapshot, now: now)
         snapshot = orderWatchPruned(applied.snapshot, now: now)
         save()
-        if notify { post(orderWatchNotificationTexts(applied.transitions)) }
+        if notify {
+            // The numbers the notifications show, in memory only, so a click while 3DAPI is the print service can
+            // name the order in its switch question.
+            for transition in applied.transitions where orderWatchShouldNotify(transition) {
+                noteNotifiedNumber(transition.number, for: .slant(orderID: transition.id))
+            }
+            post(orderWatchNotificationTexts(applied.transitions))
+        }
     }
 
     private func save() {
@@ -940,17 +997,19 @@ private struct PendingNotificationOpen {
         // A waiting notification click named an order of the platform (or account) just forgotten. A 3DAPI click
         // waiting belongs to 3DAPI's account, which this doesn't change, so it stays.
         if case .slant? = pendingOpen?.target { pendingOpen = nil }
+        if case .slant? = pendingSwitch?.target { pendingSwitch = nil }
+        if case .slant? = servicePrompt?.target { servicePrompt = nil }
         selectionRequest = nil
     }
 
     // MARK: Dock
 
-    /// `service` is the print service about to be current (a `$service` sink runs before the property changes).
-    private func updateDockBadge(service: PrintService? = nil) {
+    /// Slant's count whichever print service is chosen (owner decision, delegated, 31 Oct 2026); the sidebar's Orders
+    /// badge shows the chosen service's (`ordersSidebarBadgeCount`).
+    private func updateDockBadge() {
         // Tests and other hosts without an application object have no Dock tile.
         guard let app = NSApp else { return }
-        let count = orderWatchDockBadgeCount(slantBadgeCount: badgeCount, service: service ?? PrintServiceChoice.shared.service)
-        let label = orderWatchDockBadgeLabel(count: count, showOnDock: dockBadge)
+        let label = orderWatchDockBadgeLabel(count: badgeCount, showOnDock: dockBadge)
         if app.dockTile.badgeLabel != label { app.dockTile.badgeLabel = label }
     }
 
@@ -1017,7 +1076,7 @@ private struct PendingNotificationOpen {
     }
 
     private func scheduleOpenDrain() {
-        guard pendingOpen != nil, !openDrainScheduled else { return }
+        guard pendingOpen != nil || pendingSwitch != nil, !openDrainScheduled else { return }
         openDrainScheduled = true
         Task { @MainActor in
             // Like Finder opens: a sheet closing while another opens is not mistaken for an idle window.
@@ -1027,21 +1086,79 @@ private struct PendingNotificationOpen {
         }
     }
 
+    /// Remembers the order number a notification showed (memory only) for the switch question.
+    func noteNotifiedNumber(_ number: String, for target: OrderWatchNotificationTarget) {
+        notifiedNumbers = orderWatchNotedNumbers(notifiedNumbers, adding: number, for: notifiedNumberKey(target))
+    }
+
+    private func notifiedNumberKey(_ target: OrderWatchNotificationTarget) -> String {
+        switch target {
+        case .slant(let id): id.map { "slant:\($0)" } ?? ""
+        case .dapi(let id): "dapi:\(id)"
+        }
+    }
+
+    /// The seller's Switch in the "Show this … order?" alert. Applied once the alert has gone and nothing modal is
+    /// shown and no request runs (the click's own wait rules), through `PrintServiceChoice.select` with the reason
+    /// Settings computes (`printServiceChangeBlockedNow`); a refusal is shown instead, and nothing switches.
+    func confirmServiceSwitch(_ prompt: OrderWatchServicePrompt) {
+        // The alert may report its dismissal before or after the button's action, so the question shown last is
+        // matched by ID rather than by `servicePrompt`, which the dismissal may already have cleared.
+        guard askedPromptID == prompt.id, prompt.blockedReason == nil else { return }
+        askedPromptID = nil
+        servicePrompt = nil
+        pendingSwitch = prompt
+        scheduleOpenDrain()
+    }
+
+    /// Not Now (or OK after a refusal): nothing changes.
+    func dismissServicePrompt() {
+        servicePrompt = nil
+        scheduleOpenDrain()
+    }
+
     private func drainPendingOpen() {
         // Before a window (and so the store) exists, `attach` drains it.
-        guard let pending = pendingOpen, let store else { return }
-        let route = orderWatchNotificationRoute(pending.target, service: PrintServiceChoice.shared.service)
-        // The window was raised on the click; another service's notification does nothing more.
-        if route == .windowOnly { pendingOpen = nil; return }
+        guard let store else { return }
+        // The question (or a refusal) is still shown: wait for the seller's answer.
+        guard servicePrompt == nil else { return }
         let dapiSession = DapiOrderSession.shared
-        guard orderWatchNotificationCanOpen(route, storeSheetPresented: store.isPresentingSheet,
-                                            appModalUIPresented: appIsPresentingModalUI(), errorShown: store.error != nil,
-                                            busy: store.busy, dapiWritesInFlight: dapiSession.writesInFlight,
-                                            dapiOrderSheetsOpen: dapiSession.openSheets) else {
+        func canApply(_ route: OrderWatchNotificationRoute) -> Bool {
+            orderWatchNotificationCanOpen(route, storeSheetPresented: store.isPresentingSheet,
+                                          appModalUIPresented: appIsPresentingModalUI(), errorShown: store.error != nil,
+                                          busy: store.busy, dapiWritesInFlight: dapiSession.writesInFlight,
+                                          dapiOrderSheetsOpen: dapiSession.openSheets)
+        }
+        if let switching = pendingSwitch {
+            guard canApply(.askToSwitch(to: switching.service)) else {
+                scheduleOpenDrain()
+                return
+            }
+            pendingSwitch = nil
+            if let reason = PrintServiceChoice.shared.select(switching.service, blockedReason: printServiceChangeBlockedNow(store: store)) {
+                var refused = switching
+                refused.blockedReason = reason
+                servicePrompt = refused
+                return
+            }
+            // Now that service's order: opened exactly as its own click path does. A later click replaces it.
+            if pendingOpen == nil { pendingOpen = PendingNotificationOpen(target: switching.target) }
+        }
+        guard let pending = pendingOpen else { return }
+        let route = orderWatchNotificationRoute(pending.target, service: PrintServiceChoice.shared.service)
+        guard canApply(route) else {
             scheduleOpenDrain()
             return
         }
         pendingOpen = nil
+        if case .askToSwitch(let service) = route {
+            // Never switched by itself: the seller answers the question (StudioView shows it).
+            let number = notifiedNumbers[notifiedNumberKey(pending.target)]
+            let prompt = OrderWatchServicePrompt(target: pending.target, question: orderWatchSwitchQuestion(to: service, number: number))
+            askedPromptID = prompt.id
+            servicePrompt = prompt
+            return
+        }
         if case .dapiOrder(let dapiID) = route {
             // The 3DAPI Orders screen reads it by ID (read-only) and selects it; `store.orders` is never touched.
             store.destination = .orders

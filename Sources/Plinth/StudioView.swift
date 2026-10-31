@@ -6,6 +6,7 @@ struct StudioView: View {
     @ObservedObject private var openQueue = ExternalModelOpenQueue.shared
     /// Slant 3D or 3DAPI (PrintService.swift): which Orders and Catalog screens show.
     @ObservedObject private var printChoice = PrintServiceChoice.shared
+    @ObservedObject private var orderWatch = OrderWatch.shared
     @Environment(\.openSettings) private var openSettings
     var body: some View {
         NavigationSplitView {
@@ -78,6 +79,22 @@ struct StudioView: View {
             }
             Button("OK", role: .cancel) { store.dismissError() }
         } message: { Text(store.error ?? "") }
+        // A clicked order notification from the service that isn't the print service (OrderWatch.swift): asks before
+        // switching, shown only once nothing modal is shown and no request runs. Switching sends nothing.
+        .alert(orderWatch.servicePrompt.map { $0.blockedReason == nil ? $0.question.title : "Can’t switch the print service" } ?? "",
+               isPresented: Binding(get: { orderWatch.servicePrompt != nil },
+                                    set: { if !$0, orderWatch.servicePrompt != nil { orderWatch.dismissServicePrompt() } }),
+               presenting: orderWatch.servicePrompt) { prompt in
+            if prompt.blockedReason == nil {
+                Button(prompt.question.switchButton) { orderWatch.confirmServiceSwitch(prompt) }
+                    .keyboardShortcut(.defaultAction)
+                Button("Not Now", role: .cancel) { orderWatch.dismissServicePrompt() }
+            } else {
+                Button("OK", role: .cancel) { orderWatch.dismissServicePrompt() }
+            }
+        } message: { prompt in
+            Text(prompt.blockedReason ?? prompt.question.message)
+        }
         .sheet(isPresented: $store.showOrderComposer) { OrderComposerView().environmentObject(store) }
         .sheet(isPresented: $store.showPlatformComposer) { PlatformComposerView().environmentObject(store) }
         .sheet(isPresented: $store.showImportFromURL) { ImportFromURLSheet().environmentObject(store) }

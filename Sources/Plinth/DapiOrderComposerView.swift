@@ -30,6 +30,9 @@ struct DapiOrderComposerView: View {
     @State private var addressPasteText = ""
     @State private var addressPasteSkippedClipboard = false
     @State private var sellerAddressMissing = false
+    /// The delivery details were filled from the seller's saved address (Order a Sample to Me or Use My Address). The
+    /// review's sample-credit default also needs them unedited (`dapiAddressIsSellersOwn`).
+    @State private var filledFromSellerAddress = false
     @State private var review: DapiReviewRequest?
     @State private var placed = false
     /// Look for Order on 3DAPI, started from this sheet's notice, is reading.
@@ -38,7 +41,11 @@ struct DapiOrderComposerView: View {
     private var problems: [DapiComposerField: String] { dapiRecipientProblems(address, notes: notes) }
     private var linesProblem: String? { dapiComposerLinesProblem(state.lines) }
     private var draft: DapiOrderDraft? {
-        dapiOrderDraft(lines: state.lines, address: address, reference: reference, notes: notes, catalogue: state.materials)
+        guard var draft = dapiOrderDraft(lines: state.lines, address: address, reference: reference, notes: notes,
+                                         catalogue: state.materials) else { return nil }
+        draft.addressIsSellersOwn = dapiAddressIsSellersOwn(address.delivery, filledFromSellerAddress: filledFromSellerAddress,
+                                                            seller: store.sellerAddress)
+        return draft
     }
     private var orderingProblem: String? {
         guard let account = connection.account else { return nil }
@@ -167,6 +174,7 @@ struct DapiOrderComposerView: View {
             if prefill.useSellerAddress {
                 if let seller = store.sellerAddress {
                     start.delivery = deliveryDetails(fromSellerAddress: seller)
+                    filledFromSellerAddress = true
                 } else {
                     sellerAddressMissing = true
                 }
@@ -519,6 +527,7 @@ struct DapiOrderComposerView: View {
     private func applyMyAddress() {
         guard let seller = store.sellerAddress else { return }
         address.delivery = deliveryDetails(fromSellerAddress: seller)
+        filledFromSellerAddress = true
         sellerAddressMissing = false
     }
 

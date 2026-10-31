@@ -260,6 +260,33 @@ final class MoneyPathRound14Tests: XCTestCase {
         let several = try XCTUnwrap(slantWritesQuitQuestion([.payDrafts, .draft, .payment, .payment, .upload]))
         XCTAssertTrue(several.message.contains("a payment, a new draft, an upload and a Pay Several Drafts payment"), several.message)
     }
+
+    func testQuitAsksWhile3DAPIOrdersAreUnclear() throws {
+        // Nothing waiting and nothing unclear: quit at once.
+        XCTAssertNil(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 0, dapiUnknownCancels: 0))
+        XCTAssertNil(dapiUnclearOrdersQuitQuestion(unconfirmedOrders: 0, unknownCancels: 0))
+        // Writes in flight keep the existing question, word for word.
+        let inFlight = try XCTUnwrap(plinthQuitQuestion(writes: [.payment], dapiUnconfirmedOrders: 2, dapiUnknownCancels: 1))
+        XCTAssertEqual(inFlight.title, try XCTUnwrap(slantWritesQuitQuestion([.payment])).title)
+        XCTAssertEqual(inFlight.message, try XCTUnwrap(slantWritesQuitQuestion([.payment])).message)
+
+        let one = try XCTUnwrap(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 1, dapiUnknownCancels: 0))
+        XCTAssertEqual(one.title, "Quit with unclear 3DAPI orders?")
+        XCTAssertEqual(one.message, "3DAPI may have placed 1 order Plinth couldn’t confirm. Plinth forgets this warning when it quits, "
+                       + "so it can’t stop you placing the same order again. Use Look for Order on 3DAPI first.")
+        let two = try XCTUnwrap(dapiUnclearOrdersQuitQuestion(unconfirmedOrders: 2, unknownCancels: 0))
+        XCTAssertTrue(two.message.hasPrefix("3DAPI may have placed 2 orders Plinth couldn’t confirm."), two.message)
+        XCTAssertTrue(two.message.contains("these warnings"))
+        // Only a cancel whose outcome is unknown.
+        let cancel = try XCTUnwrap(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 0, dapiUnknownCancels: 1))
+        XCTAssertTrue(cancel.message.contains("couldn’t confirm whether 3DAPI cancelled 1 order"), cancel.message)
+        XCTAssertTrue(cancel.message.contains("cancelling the same order again"))
+        XCTAssertFalse(cancel.message.contains("placed"))
+        let both = try XCTUnwrap(dapiUnclearOrdersQuitQuestion(unconfirmedOrders: 1, unknownCancels: 1))
+        XCTAssertTrue(both.message.contains("placing or cancelling the same order again"), both.message)
+        // Slant's own unconfirmed drafts and locks don't add a question (unchanged): only the 3DAPI counts are inputs.
+        XCTAssertNil(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 0, dapiUnknownCancels: 0))
+    }
 }
 
 /// Round 14 review fixes: quoted Slant messages never carry a credential, and Pay Several Drafts' Activity line never

@@ -65,7 +65,7 @@ struct OrderWatchFocusBar: View {
 // MARK: - Settings › Advanced
 
 /// Settings › Advanced › Order updates, while 3DAPI is the print service.
-let orderWatchDapiServiceNote = "While 3DAPI is your print service, Slant’s orders aren’t checked; Plinth checks them again, and reports what changed meanwhile, when you choose Slant 3D. 3DAPI orders are checked every 4 minutes in memory only: nothing about them is saved on this Mac. Their notifications use the switch above and show the order number and status only. The Dock count shows Slant orders only."
+let orderWatchDapiServiceNote = "While 3DAPI is your print service, Plinth keeps checking your Slant orders as above, and the Dock count still shows Slant orders; the sidebar’s Orders badge shows 3DAPI orders. 3DAPI orders are checked every 4 minutes in memory only: nothing about them is saved on this Mac. Notifications from both use the switch above and show the order number and status only. Clicking a Slant notification asks before switching the print service to Slant 3D."
 
 struct OrderWatchSettingsSection: View {
     @ObservedObject private var watch = OrderWatch.shared
@@ -79,7 +79,7 @@ struct OrderWatchSettingsSection: View {
                 .disabled(!watch.enabled || watch.requestingPermission || !orderWatchNotificationsAvailable())
             Toggle("Show count on Dock icon", isOn: $watch.dockBadge)
                 .disabled(!watch.enabled)
-                .help("The Dock icon shows the same count as Orders in the sidebar: payment problems, reviews, cancellations and shipments you haven’t looked at")
+                .help("The Dock icon shows your Slant orders’ count, as Orders in the sidebar does while Slant 3D is the print service: payment problems, reviews, cancellations and shipments you haven’t looked at")
             if watch.notificationsDenied {
                 HStack {
                     Text("Notifications are turned off for Plinth in System Settings.")

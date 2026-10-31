@@ -483,6 +483,31 @@ func dapiSampleCreditChange(pressed: Bool, current: Bool, available: Bool) -> St
     if pressed, !available { return "Your 3DAPI wallet no longer shows sample credit, so it can’t be used." }
     return nil
 }
+
+/// Whether the wallet read shows sample credit (the review shows Use My Sample Credit only then).
+func dapiWalletShowsSampleCredit(_ wallet: DapiWallet?) -> Bool {
+    (wallet?.sampleCredit?.amountMinor ?? 0) > 0
+}
+
+/// Use My Sample Credit's starting value (owner decision, delegated, 31 Oct 2026): ticked only when the wallet shows
+/// sample credit and the order goes to the seller's own saved address, unedited (`dapiAddressIsSellersOwn`), as for
+/// Order a Sample to Me. Otherwise off. It stays a visible toggle, and what is ticked at the press is what is sent.
+func dapiSampleCreditDefault(wallet: DapiWallet?, addressIsSellersOwn: Bool) -> Bool {
+    addressIsSellersOwn && dapiWalletShowsSampleCredit(wallet)
+}
+
+/// Whether the composer's delivery details are the seller's own saved address: filled from it (Order a Sample to Me
+/// or Use My Address) and still exactly what that filled in, so any edit to the address fields counts as another
+/// address.
+func dapiAddressIsSellersOwn(_ delivery: DeliveryDetails, filledFromSellerAddress: Bool, seller: SellerAddress?) -> Bool {
+    guard filledFromSellerAddress, let seller else { return false }
+    return delivery == deliveryDetails(fromSellerAddress: seller)
+}
+
+/// The reviews' sheet titles: their commands (Review Order…, Cancel Order…) minus the ellipsis, in sentence case.
+let dapiPlaceReviewTitle = "Review order"
+let dapiCancelReviewTitle = "Cancel order"
+
 let dapiOrderChargeNote = "Place Order charges your 3DAPI wallet at once and sends the order to production. 3DAPI has no draft orders."
 let dapiOrderUpToNote = "3DAPI’s per-unit price falls with quantity, so the item amounts are upper bounds: the exact price comes only with the order."
 
@@ -610,7 +635,7 @@ struct DapiPlaceEnvironment {
     var beginWrite: @MainActor () -> UUID
     var endWrite: @MainActor (UUID) -> Void
     /// Records an attempt as unconfirmed. Called just before the `POST` (like Slant's lock), so another composer's Place
-    /// asks Place Anyway while this one waits; it stays for an unknown outcome.
+    /// for the same name or reference asks Place Anyway while this one waits; it stays for an unknown outcome.
     var noteUnconfirmed: @MainActor (DapiUnconfirmedOrder) -> Void
     /// Removes the attempt with this exact reference: a confirmed order, or a definite refusal (nothing charged).
     var confirmUnconfirmed: @MainActor (String) -> Void
@@ -665,6 +690,9 @@ struct DapiOrderDraft: Equatable {
     /// The seller's own reference as typed (sanitised when sent), or empty.
     let sellerReference: String
     let notes: String?
+    /// The delivery details are the seller's own saved address, unedited (`dapiAddressIsSellersOwn`): the review then
+    /// starts with Use My Sample Credit ticked when the wallet shows sample credit (`dapiSampleCreditDefault`).
+    var addressIsSellersOwn = false
 
     var units: Int { lines.reduce(0) { $0 + $1.request.quantity } }
     var quoteNames: [String: String] {
@@ -704,12 +732,16 @@ enum DapiPlacePhase: Equatable {
     @Published private(set) var figures: DapiOrderReviewFigures?
     /// What changed when the pre-send check found different figures (shown above the new ones).
     @Published private(set) var changes: [String] = []
-    /// Place Order was pressed while earlier orders are unconfirmed: the view asks Place Anyway / Don't Place.
+    /// Place Order was pressed while an unconfirmed attempt may be this order (`dapiPlaceNeedsPlaceAnyway`): the view
+    /// asks Place Anyway / Don't Place.
     @Published var askPlaceAnyway = false
+    /// The unconfirmed attempts the Place Anyway question names: only those that may be this order.
+    @Published private(set) var placeAnywayAttempts: [DapiUnconfirmedOrder] = []
     /// The unconfirmed record made by this sheet's attempt, for Look for Order on 3DAPI.
     @Published private(set) var unconfirmed: DapiUnconfirmedOrder?
-    /// Use My Sample Credit (off by default; shown only when the wallet shows sample credit). What was ticked when
-    /// Place Order was pressed is what is sent, and only while the fresh wallet still shows sample credit.
+    /// Use My Sample Credit (shown only when the wallet shows sample credit). Ticked to start with only for an order to
+    /// the seller's own saved address, unedited (`dapiSampleCreditDefault`); otherwise off. What was ticked when Place
+    /// Order was pressed is what is sent, and only while the fresh wallet still shows sample credit.
     @Published var useSampleCredit = false
 
     let draft: DapiOrderDraft
@@ -723,6 +755,9 @@ enum DapiPlacePhase: Equatable {
     private(set) var closed = false
     /// Use My Sample Credit as it was when Place Order was pressed.
     private var pressedSampleCredit = false
+    /// The sample-credit default has been applied (once, the first time a review read shows sample credit), so a
+    /// later Check Again never overrides the seller's own choice.
+    private var sampleCreditDefaultApplied = false
     /// Called once with the placed order (the list inserts and selects it).
     var onPlaced: ((DapiOrder) -> Void)?
     /// Called just before the order request goes out, with its attempt (already recorded as unconfirmed).
@@ -799,6 +834,12 @@ enum DapiPlacePhase: Equatable {
             switch result {
             case .success(let figures):
                 self.figures = figures
+                // Only a review read (never the pre-send re-check) sets the starting choice, once.
+                if !self.sampleCreditDefaultApplied, dapiWalletShowsSampleCredit(figures.wallet) {
+                    self.sampleCreditDefaultApplied = true
+                    self.useSampleCredit = dapiSampleCreditDefault(wallet: figures.wallet,
+                                                                   addressIsSellersOwn: self.draft.addressIsSellersOwn)
+                }
                 self.phase = .ready
             case .failure(let message):
                 self.figures = nil
@@ -856,13 +897,18 @@ enum DapiPlacePhase: Equatable {
         return .success(DapiOrderReviewFigures(snapshot: snapshot, quotes: quotes, shipping: shipping, wallet: wallet))
     }
 
-    /// Place Order. With unconfirmed orders this session it first asks (`askPlaceAnyway`); then it re-checks every
-    /// figure, stops if any changed, and only then sends the order once.
+    /// Place Order. When an unconfirmed attempt this session may be this order (`dapiPlaceNeedsPlaceAnyway`: the same
+    /// recipient name or seller reference, or no name on either side) it first asks (`askPlaceAnyway`), naming only
+    /// those attempts; then it re-checks every figure, stops if any changed, and only then sends the order once.
     func placeOrder(confirmedAnyway: Bool = false) {
         guard phase == .ready, let reviewed = figures, !closed else { return }
-        if !confirmedAnyway, !environment.unconfirmedOrders().isEmpty {
-            askPlaceAnyway = true
-            return
+        if !confirmedAnyway {
+            let matching = dapiPlaceNeedsPlaceAnyway(draft: draft, attempts: environment.unconfirmedOrders())
+            if !matching.isEmpty {
+                placeAnywayAttempts = matching
+                askPlaceAnyway = true
+                return
+            }
         }
         askPlaceAnyway = false
         pressedSampleCredit = useSampleCredit
@@ -911,7 +957,8 @@ enum DapiPlacePhase: Equatable {
         phase = .placing
         let record = DapiUnconfirmedOrder(id: UUID(), reference: reference, recipientName: draft.recipient.name,
                                           countryCode: draft.recipient.countryCode, units: draft.units, sentAt: environment.now())
-        // Recorded before sending, like Slant's lock: until 3DAPI answers clearly, any other Place asks Place Anyway.
+        // Recorded before sending, like Slant's lock: until 3DAPI answers clearly, another Place for the same name or
+        // reference (or without a name) asks Place Anyway.
         environment.noteUnconfirmed(record)
         onSending?(record)
         // Not stored in `checkTask`: nothing cancels the order request once it is sent. `self` is held strongly, so
@@ -971,10 +1018,33 @@ func dapiPlaceFailureText(_ failure: DapiPlaceFailure) -> String {
     }
 }
 
-/// The Place Anyway question's text, naming each unconfirmed attempt (name, units, country, time). Memory only.
+/// The unconfirmed attempts that may be the same order as `draft`, so Place Order asks Place Anyway first (owner
+/// decision, delegated, 31 Oct 2026: asking about every unconfirmed attempt trains the seller to click through it). An
+/// attempt matches when its recipient name is the draft's under Slant's rule (`draftAttemptRecipientKey`: trimmed,
+/// spacing collapsed, any case), when both carry the same seller reference (`dapiOrderSellerReference` of the
+/// reference sent, against the draft's as `send` would build it; any case), or when either has no usable name.
+/// Attempts for other customers stay listed by every notice; they just don't stop this order.
+func dapiPlaceNeedsPlaceAnyway(draft: DapiOrderDraft, attempts: [DapiUnconfirmedOrder]) -> [DapiUnconfirmedOrder] {
+    let draftName = draftAttemptRecipientKey(draft.recipient.name)
+    // The seller's part exactly as `send` would put it into the reference (sanitised, shortened to fit).
+    let draftReference = dapiOrderSellerReference(dapiOrderReference(sellerReference: draft.sellerReference,
+                                                                     token: "00000000"))?.lowercased()
+    return attempts.filter { attempt in
+        let name = draftAttemptRecipientKey(attempt.recipientName)
+        if draftName.isEmpty || name.isEmpty || name == draftName { return true }
+        if let draftReference, let reference = dapiOrderSellerReference(attempt.reference)?.lowercased(),
+           reference == draftReference { return true }
+        return false
+    }
+}
+
+/// The Place Anyway question's text, naming each matching unconfirmed attempt (name, units, country, time). Memory only.
 func dapiPlaceAnywayMessage(_ attempts: [DapiUnconfirmedOrder], now: Date = Date()) -> String {
     let lines = attempts.map { dapiUnconfirmedOrderLine($0) }
-    return "These orders were sent this session without a clear answer, so 3DAPI may have charged and placed them:\n"
+    let lead = attempts.count == 1
+        ? "An order that may be this one was sent this session without a clear answer, so 3DAPI may have charged and placed it:\n"
+        : "Orders that may be this one were sent this session without a clear answer, so 3DAPI may have charged and placed them:\n"
+    return lead
         + lines.joined(separator: "\n")
         + "\nPlacing this order may charge you twice for the same customer. Use Look for Order on 3DAPI in Orders first if you’re unsure."
 }
@@ -1235,7 +1305,7 @@ enum DapiCancelPhase: Equatable {
     case done(DapiCancelOutcome)
 }
 
-/// Cancel 3DAPI order: re-reads the order, checks it can still be cancelled in the status shown, re-reads it again just
+/// The "Cancel order" review: re-reads the order, checks it can still be cancelled in the status shown, re-reads it again just
 /// before sending, then sends the cancel once.
 @MainActor final class DapiCancelOrderRunner: ObservableObject {
     @Published private(set) var phase: DapiCancelPhase = .loading

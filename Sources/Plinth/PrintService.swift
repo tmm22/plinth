@@ -123,6 +123,18 @@ func printServiceChangeBlockedReason(dapiOrderSessionReason: String?, writesInFl
     return nil
 }
 
+/// `printServiceChangeBlockedReason` from the live state, at the moment of a change: Settings' picker and the order
+/// notification's "Switch to …" (OrderWatch.swift) both use it.
+@MainActor func printServiceChangeBlockedNow(store: StudioStore) -> String? {
+    let dapi = DapiConnection.shared
+    return printServiceChangeBlockedReason(
+        dapiOrderSessionReason: DapiOrderSession.shared.changeBlockedReason,
+        writesInFlight: SlantWritesInFlight.shared.kinds, slantBusy: store.busy,
+        modalUIShown: store.isPresentingSheet || appIsPresentingModalUI(),
+        dapiRequestsRunning: dapi.activeRequests, dapiQuoteSheetsOpen: dapi.openSheets,
+        dapiQuoteWritesInFlight: dapi.quoteWritesInFlight.count)
+}
+
 /// Settings › Account › Print service's footer.
 let printServiceSettingsFooter = "Choose who prints your orders. This changes Models’ next steps, the Orders section and Catalog’s materials; your model library and Get 3DAPI Quote… stay as they are. The two services never share data: no price, ID or file from one is sent to the other."
 
@@ -148,14 +160,7 @@ struct PrintServiceSettingsSection: View {
             dapiQuoteWritesInFlight: dapi.quoteWritesInFlight.count)
     }
 
-    private var blockedNow: String? {
-        printServiceChangeBlockedReason(
-            dapiOrderSessionReason: DapiOrderSession.shared.changeBlockedReason,
-            writesInFlight: SlantWritesInFlight.shared.kinds, slantBusy: store.busy,
-            modalUIShown: store.isPresentingSheet || appIsPresentingModalUI(),
-            dapiRequestsRunning: dapi.activeRequests, dapiQuoteSheetsOpen: dapi.openSheets,
-            dapiQuoteWritesInFlight: dapi.quoteWritesInFlight.count)
-    }
+    private var blockedNow: String? { printServiceChangeBlockedNow(store: store) }
 
     var body: some View {
         Section {

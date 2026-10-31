@@ -681,18 +681,136 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     func testUnconfirmedOrdersAskBeforePlacing() async {
         let stub = scriptedReady()
         let harness = PlaceHarness()
-        harness.unconfirmed = [DapiUnconfirmedOrder(id: UUID(), reference: "r", recipientName: "Bob", countryCode: "US",
-                                                    units: 1, sentAt: Date())]
+        // The same customer as the draft (Ada Lovelace), spelled differently, plus another customer's attempt.
+        let same = DapiUnconfirmedOrder(id: UUID(), reference: "r", recipientName: "  ada   LOVELACE ", countryCode: "US",
+                                        units: 1, sentAt: Date())
+        let other = DapiUnconfirmedOrder(id: UUID(), reference: "plinth_0badf00d", recipientName: "Bob", countryCode: "US",
+                                         units: 1, sentAt: Date())
+        harness.unconfirmed = [same, other]
         let runner = await readyRunner(stub, harness)
         runner.placeOrder()
         XCTAssertTrue(runner.askPlaceAnyway)
+        XCTAssertEqual(runner.placeAnywayAttempts, [same], "The question names only the attempt that may be this order")
         XCTAssertEqual(runner.phase, .ready)
         runner.declinePlaceAnyway()
         XCTAssertEqual(stub.count("place"), 0)
         runner.placeOrder(confirmedAnyway: true)
         await settled(runner)
         XCTAssertEqual(stub.count("place"), 1)
-        XCTAssertTrue(dapiPlaceAnywayMessage(harness.unconfirmed).contains("Bob · 1 unit · US"))
+        let message = dapiPlaceAnywayMessage(runner.placeAnywayAttempts)
+        XCTAssertTrue(message.contains("ada   LOVELACE · 1 unit · US") || message.contains("ada LOVELACE"), message)
+        XCTAssertFalse(message.contains("Bob"), "Another customer's attempt isn't named in the question")
+        XCTAssertTrue(dapiPlaceAnywayMessage([other]).contains("Bob · 1 unit · US"))
+    }
+
+    func testAnotherCustomersUnconfirmedOrderDoesntAsk() async {
+        let stub = scriptedReady()
+        let harness = PlaceHarness()
+        harness.unconfirmed = [DapiUnconfirmedOrder(id: UUID(), reference: "ETSY-999_pl0badf00d", recipientName: "Bob",
+                                                    countryCode: "US", units: 1, sentAt: Date())]
+        let runner = await readyRunner(stub, harness)
+        runner.placeOrder()
+        XCTAssertFalse(runner.askPlaceAnyway, "A different name and reference is another order")
+        await settled(runner)
+        XCTAssertEqual(stub.count("place"), 1)
+        XCTAssertEqual(harness.unconfirmed.map(\.recipientName), ["Bob"], "Its warning stays")
+    }
+
+    func testPlaceAnywayMatchesNameReferenceOrMissingName() {
+        func attempt(_ name: String, _ reference: String) -> DapiUnconfirmedOrder {
+            DapiUnconfirmedOrder(id: UUID(), reference: reference, recipientName: name, countryCode: "GB", units: 1, sentAt: Date())
+        }
+        let order = draft() // Ada Lovelace, reference "ETSY 123" (sent as ETSY-123_pl…)
+        // Same name under Slant's rule: trimmed, spacing collapsed, any case.
+        let sameName = attempt("ADA  lovelace", "plinth_0badf00d")
+        // Same seller reference with another name (any case), as sent by Plinth.
+        let sameReference = attempt("Grace Hopper", "etsy-123_pl12345678")
+        // No usable name on the attempt.
+        let noName = attempt("   ", "plinth_0badf00d")
+        // Different name and reference: another order.
+        let other = attempt("Bob", "ETSY-124_pl12345678")
+        // Plinth's bare reference carries no seller part, so it never matches by reference.
+        let bare = attempt("Carol", "plinth_12345678")
+        XCTAssertEqual(dapiPlaceNeedsPlaceAnyway(draft: order, attempts: [sameName, sameReference, noName, other, bare]),
+                       [sameName, sameReference, noName])
+        XCTAssertEqual(dapiPlaceNeedsPlaceAnyway(draft: order, attempts: []), [])
+        // Two unconfirmed attempts with different names: only the matching one.
+        XCTAssertEqual(dapiPlaceNeedsPlaceAnyway(draft: order, attempts: [other, sameName]), [sameName])
+        // A draft without a usable name matches every attempt.
+        let unnamed = DapiOrderDraft(lines: order.lines, recipient: DapiOrderRecipient(
+            name: " ", email: "a@example.com", phone: nil, line1: "1 Street", line2: nil, city: "London", state: nil,
+            postalCode: nil, countryCode: "GB"), sellerReference: "", notes: nil)
+        XCTAssertEqual(dapiPlaceNeedsPlaceAnyway(draft: unnamed, attempts: [other, bare]), [other, bare])
+        // Without a seller reference on the draft, only names decide.
+        let plain = DapiOrderDraft(lines: order.lines, recipient: order.recipient, sellerReference: "", notes: nil)
+        XCTAssertEqual(dapiPlaceNeedsPlaceAnyway(draft: plain, attempts: [sameReference, bare, sameName]), [sameName])
+        // The reference is compared as it would be sent: "Etsy #123" and "etsy-123" are the same.
+        let typed = DapiOrderDraft(lines: order.lines, recipient: DapiOrderRecipient(
+            name: "Someone Else", email: "a@example.com", phone: nil, line1: "1 Street", line2: nil, city: "London",
+            state: nil, postalCode: nil, countryCode: "GB"), sellerReference: "Etsy #123", notes: nil)
+        XCTAssertEqual(dapiPlaceNeedsPlaceAnyway(draft: typed, attempts: [sameReference, other]), [sameReference])
+    }
+
+    func testSampleCreditStartsTickedOnlyForTheSellersOwnAddress() {
+        let credit = sampleCreditWallet(1_500)
+        XCTAssertTrue(dapiSampleCreditDefault(wallet: credit, addressIsSellersOwn: true))
+        XCTAssertFalse(dapiSampleCreditDefault(wallet: credit, addressIsSellersOwn: false))
+        XCTAssertFalse(dapiSampleCreditDefault(wallet: sampleCreditWallet(0), addressIsSellersOwn: true))
+        XCTAssertFalse(dapiSampleCreditDefault(wallet: nil, addressIsSellersOwn: true), "No wallet:read: no toggle, nothing ticked")
+
+        let seller = SellerAddress(name: "Sam Seller", email: "sam@example.com", country: "GB", line1: "2 Road", line2: "",
+                                   city: "Leeds", state: "", zip: "LS1 1AA")
+        let filled = deliveryDetails(fromSellerAddress: seller)
+        XCTAssertTrue(dapiAddressIsSellersOwn(filled, filledFromSellerAddress: true, seller: seller))
+        XCTAssertFalse(dapiAddressIsSellersOwn(filled, filledFromSellerAddress: false, seller: seller), "Not filled from it")
+        XCTAssertFalse(dapiAddressIsSellersOwn(filled, filledFromSellerAddress: true, seller: nil))
+        var edited = filled
+        edited.line1 = "3 Road"
+        XCTAssertFalse(dapiAddressIsSellersOwn(edited, filledFromSellerAddress: true, seller: seller), "Edited afterwards")
+        var renamed = filled
+        renamed.name = "A Customer"
+        XCTAssertFalse(dapiAddressIsSellersOwn(renamed, filledFromSellerAddress: true, seller: seller))
+    }
+
+    func testSampleCreditDefaultIsAppliedOnceAndStaysTheSellersChoice() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(sampleCreditWallet(1_500))
+        let harness = PlaceHarness()
+        var own = draft()
+        own.addressIsSellersOwn = true
+        let runner = await readyRunner(stub, harness, draft: own)
+        XCTAssertTrue(runner.useSampleCredit, "Pre-ticked for the seller's own address with credit shown")
+        runner.useSampleCredit = false
+        stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1"))])
+        stub.scriptShipping([.success(DapiOrdersTests.shipping(699))])
+        runner.checkAgain()
+        await waitUntil { runner.phase != .checking }
+        XCTAssertFalse(runner.useSampleCredit, "Check Again never overrides the seller's choice")
+        // A customer's address: off.
+        let customer = await readyRunner(scriptedReadyWithCredit(), harness)
+        XCTAssertFalse(customer.useSampleCredit)
+    }
+
+    func testSampleCreditGoneBeforeSendingStopsAPreTickedOrder() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(sampleCreditWallet(1_500))
+        let harness = PlaceHarness()
+        var own = draft()
+        own.addressIsSellersOwn = true
+        let runner = await readyRunner(stub, harness, draft: own)
+        XCTAssertTrue(runner.useSampleCredit)
+        stub.walletResult = .success(sampleCreditWallet(0))
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertFalse(runner.useSampleCredit)
+        XCTAssertEqual(stub.count("place"), 0, "Nothing is sent when the credit is gone at the press")
+    }
+
+    func scriptedReadyWithCredit() -> ScriptedDapiOrders {
+        let stub = scriptedReady()
+        stub.walletResult = .success(sampleCreditWallet(1_500))
+        return stub
     }
 
     func testChangedFiguresStopBeforeSending() async {
