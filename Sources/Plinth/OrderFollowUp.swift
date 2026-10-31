@@ -69,9 +69,14 @@ let orderAttentionDraftDays = 2
 /// Drafts older than this are left alone: Slant can't cancel or remove a draft, so an abandoned or duplicate draft
 /// would otherwise be flagged for ever. A month is well past any marketplace's dispatch window.
 let orderAttentionDraftIgnoredAfterDays = 30
-/// A placed order not shipped after this long looks stuck. Slant doesn't document a turnaround, so five days is a
-/// conservative stand-in that leaves room for printing and finishing before flagging.
-let orderAttentionProductionDays = 5
+/// A placed order not shipped after this many business days (weekdays in the Mac's time zone; `orderBusinessDays`)
+/// looks stuck. Slant says parts ship in under 5 days, and the seller's shipped orders read on 1 Nov 2026 got their
+/// shipping record 2.8–3.8 days after payment, so 5 business days is past both without flagging over a weekend.
+let orderAttentionNotShippedBusinessDays = 5
+/// A placed order Slant still lists as SUBMITTED (paid, waiting to print) after this many business days hasn't been
+/// moved to PRINTING in time to ship within 5 days, so it gets an earlier look than Not shipped. Only Slant's raw
+/// SUBMITTED counts: older waiting words aren't sent any more.
+let orderAttentionNotStartedBusinessDays = 3
 
 /// Placed and being made, not yet shipped: Slant's live SUBMITTED (paid, waiting to print) and PRINTING, and the
 /// earlier statuses between payment and SHIPPED (still read from old replies).
@@ -111,7 +116,8 @@ func orderDisplayStatus(_ order: [String: Any]) -> String {
 /// Whether Studio shows the shipping record's word instead of Slant's order status (`orderDisplayStatus`).
 func orderStatusLagsShippingRecord(_ order: [String: Any]) -> Bool {
     let raw = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    return orderDisplayStatus(order).uppercased() != raw
+    // Both sides trimmed: a padded status (" printing ") without a shipping record doesn't lag.
+    return orderDisplayStatus(order).trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != raw
 }
 
 /// The title Studio shows for an order's status: `orderStatusTitle` of `orderDisplayStatus`. Display only.
@@ -165,8 +171,11 @@ func orderStatusFilterLagHintText(status: String?, loaded: [Record]) -> String? 
 enum OrderAttention: Equatable {
     case paymentProblem
     case pastArriveBy(Date)
-    /// `sincePlaced` is false when Slant returned no `processedAt` and the age is counted from creation.
+    /// `days` are business days (`orderBusinessDays`). `sincePlaced` is false when Slant returned no `processedAt` and
+    /// the age is counted from creation.
     case notShipped(days: Int, sincePlaced: Bool)
+    /// Still SUBMITTED (Slant's paid, waiting to print) `days` business days after it was placed (or created).
+    case notStarted(days: Int, sincePlaced: Bool)
     case draftNotPlaced(days: Int)
 
     /// Short text for the table's marker.
@@ -175,6 +184,7 @@ enum OrderAttention: Equatable {
         case .paymentProblem: return "Payment problem"
         case .pastArriveBy: return "Late"
         case .notShipped: return "Not shipped"
+        case .notStarted: return "Waiting to print"
         case .draftNotPlaced: return "Draft not placed"
         }
     }
@@ -187,7 +197,9 @@ enum OrderAttention: Equatable {
         case .pastArriveBy(let date):
             return "Past its arrive-by date (\(orderArriveByLabel(date))) and not shipped yet."
         case .notShipped(let days, let sincePlaced):
-            return "Not shipped \(orderAttentionDays(days)) after it was \(sincePlaced ? "placed" : "created")."
+            return "Not shipped \(orderBusinessDaysText(days)) after it was \(sincePlaced ? "placed" : "created")."
+        case .notStarted(let days, let sincePlaced):
+            return "\(sincePlaced ? "Paid" : "Created") \(orderBusinessDaysText(days)) ago and Slant still lists it as Submitted, waiting to print."
         case .draftNotPlaced(let days):
             return "A draft for \(orderAttentionDays(days)) and not placed yet."
         }
@@ -197,7 +209,8 @@ enum OrderAttention: Equatable {
 func orderAttentionDays(_ days: Int) -> String { days == 1 ? "1 day" : "\(days) days" }
 
 /// The most pressing reason the order needs a look, or nil. Payment problems first, then a missed arrive-by date,
-/// then an order not shipped in time, then a draft left unplaced. Cancelled and delivered orders never need one;
+/// then an order not shipped in time, then one still waiting to print, then a draft left unplaced. Business days are
+/// weekdays in `timeZone` (the Mac's). Cancelled and delivered orders never need one;
 /// unknown statuses aren't guessed at. A shipped order is never late here (it's on its way, also when only Slant's
 /// shipping record says so: `orderStatusLagsShippingRecord`), and neither is a draft
 /// past the `orderAttentionDraftIgnoredAfterDays` window (or with no creation date), which Slant can't remove.
@@ -225,8 +238,12 @@ func orderAttention(_ order: [String: Any], now: Date, timeZone: TimeZone = .cur
     let day: TimeInterval = 86_400
     if orderAttentionProductionStatuses.contains(status) {
         let placed = (order["processedAt"] as? String).flatMap(orderTimestamp)
-        if let interval = age(from: placed ?? orderCreatedDate(order)), interval > Double(orderAttentionProductionDays) * day {
-            return .notShipped(days: Int(interval / day), sincePlaced: placed != nil)
+        if let start = placed ?? orderCreatedDate(order), age(from: start) != nil {
+            let days = orderBusinessDays(from: start, to: now, calendar: orderBusinessDayCalendar(timeZone: timeZone))
+            if days >= orderAttentionNotShippedBusinessDays { return .notShipped(days: days, sincePlaced: placed != nil) }
+            if status == "SUBMITTED", days >= orderAttentionNotStartedBusinessDays {
+                return .notStarted(days: days, sincePlaced: placed != nil)
+            }
         }
     }
     if status == "DRAFT", let interval = age(from: orderCreatedDate(order)),
@@ -245,7 +262,8 @@ func orderAttentionFiltered(_ records: [Record], enabled: Bool, now: Date) -> [R
 /// Under the list while Needs Attention is on: what it checks, and that only loaded orders are checked.
 func orderAttentionFilterHint(moreOnServer: Bool) -> String {
     let base = "Showing loaded orders that need attention: payment problems, past their arrive-by date, not shipped "
-        + "\(orderAttentionProductionDays) days after being placed, or drafts not placed after \(orderAttentionDraftDays) days."
+        + "\(orderAttentionNotShippedBusinessDays) business days after being placed, still waiting to print after "
+        + "\(orderAttentionNotStartedBusinessDays) business days, or drafts not placed after \(orderAttentionDraftDays) days."
     return moreOnServer ? base + " Load more to check older orders." : base
 }
 

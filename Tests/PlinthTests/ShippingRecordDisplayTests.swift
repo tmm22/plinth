@@ -28,6 +28,8 @@ final class ShippingRecordDisplayTests: XCTestCase {
         XCTAssertEqual(orderStatusLagNote(order("submitted", fulfillment: ["status": "delivered"])),
                        "Slant’s shipping record says Shipped, but Slant hasn’t yet updated this order’s status from Submitted.")
         XCTAssertNil(orderStatusLagNote(order(fulfillment: NSNull())))
+        XCTAssertNil(orderStatusLagNote(order(" printing ")), "padding alone isn't a lag")
+        XCTAssertFalse(orderStatusLagsShippingRecord(order(" submitted ", fulfillment: NSNull())))
         XCTAssertNil(orderStatusLagNote(order("SHIPPED", fulfillment: shipped)))
         let note = orderStatusLagNote(order(fulfillment: shipped)) ?? ""
         XCTAssertFalse(note.lowercased().contains("carrier"))
@@ -92,7 +94,8 @@ final class ShippingRecordDisplayTests: XCTestCase {
     // MARK: Read-only advice
 
     func testAShippedPerRecordOrderIsNeverLateOrStuck() throws {
-        let now = try XCTUnwrap(orderTimestamp("2026-01-11T12:00:00Z"))
+        // Six business days after the Monday it was placed.
+        let now = try XCTUnwrap(orderTimestamp("2026-01-13T12:00:00Z"))
         var late = order(fulfillment: shipped)
         late["arriveByDate"] = "2026-01-07"
         XCTAssertNil(orderAttention(late, now: now))
