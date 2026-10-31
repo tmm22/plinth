@@ -203,24 +203,6 @@ func dapiSuggestedMaterialID(slot: Int, quote: DapiQuote?, catalogue: [DapiMater
     return catalogue.first { $0.name.trimmingCharacters(in: .whitespaces).lowercased() == name }?.id
 }
 
-/// The catalogue grouped for the slot pickers: PLA, then PETG, then any other type, then untyped; by name within.
-func dapiMaterialGroups(_ materials: [DapiMaterial]) -> [(title: String, materials: [DapiMaterial])] {
-    var groups: [String: [DapiMaterial]] = [:]
-    for material in materials {
-        let type = (material.filamentType ?? "").trimmingCharacters(in: .whitespaces).uppercased()
-        groups[type.isEmpty ? "Other" : type, default: []].append(material)
-    }
-    let order = ["PLA", "PETG"]
-    let keys = groups.keys.sorted { lhs, rhs in
-        let l = order.firstIndex(of: lhs) ?? (lhs == "Other" ? Int.max : order.count)
-        let r = order.firstIndex(of: rhs) ?? (rhs == "Other" ? Int.max : order.count)
-        return l != r ? l < r : lhs < rhs
-    }
-    return keys.map { key in
-        (title: key, materials: (groups[key] ?? []).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
-    }
-}
-
 /// Why a line can't be ordered yet, or nil.
 func dapiLineProblem(_ line: DapiComposerLine) -> String? {
     switch line.state {

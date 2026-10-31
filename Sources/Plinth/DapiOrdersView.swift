@@ -132,6 +132,8 @@ struct DapiOrdersView: View {
         .toolbar { toolbarContent }
         .onAppear {
             list.log = dapiOrderActivityLogger(store)
+            // The seller is looking at Orders: the sidebar badge has done its job (DapiOrderWatch.swift).
+            DapiOrderWatch.shared.ordersViewed()
             if connection.isConfigured, !list.loaded, !list.loading { list.reload() }
             checkAccountIfNeeded()
             consumeComposerRequest()

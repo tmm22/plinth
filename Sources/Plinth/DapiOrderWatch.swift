@@ -71,9 +71,6 @@ struct DapiOrderWatchNotice: Equatable, Sendable {
     var identifier: String { "dapi-order-\(orderID)-\(dapiOrderWatchStatusKey(status))" }
 }
 
-/// A 3DAPI order ID fit for a notification's `userInfo`: `ord_` then letters and digits.
-func dapiOrderIDIsSafe(_ id: String) -> Bool { dapiIDIsSafe(id, prefix: "ord_") }
-
 /// The order ID a clicked notification carries, validated; nil for anything else.
 func dapiOrderWatchNotificationOrderID(_ userInfo: [AnyHashable: Any]) -> String? {
     guard let id = userInfo[dapiOrderWatchNotificationOrderIDKey] as? String, dapiOrderIDIsSafe(id) else { return nil }
