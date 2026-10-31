@@ -389,6 +389,12 @@ func orderWatchDockBadgeLabel(count: Int, showOnDock: Bool) -> String? {
     return String(count)
 }
 
+/// The Dock tile's count: Slant's order watch only, and nothing while 3DAPI is the print service (the watch is paused
+/// then, and the sidebar shows 3DAPI's own count).
+func orderWatchDockBadgeCount(slantBadgeCount: Int, service: PrintService) -> Int {
+    service == .slant ? slantBadgeCount : 0
+}
+
 /// "2 shipped · 1 payment problem · 1 printing".
 func orderWatchSummaryText(_ changes: [OrderWatchChange]) -> String {
     orderWatchSummaryGroups(changes).map { "\($0.count) \(orderStatusTitle($0.status).lowercased())" }.joined(separator: " · ")
@@ -464,6 +470,9 @@ func orderWatchNotificationTexts(_ transitions: [OrderWatchTransition]) -> [Orde
 
 enum OrderWatchSkip: Equatable {
     case disabled, noKey, noPlatform, busy, modalUI, inFlight, accountPaused
+    /// 3DAPI is the print service: Slant's orders aren't checked (its own watch runs), so no Slant change is
+    /// notified into the 3DAPI Orders screen. The saved statuses stay, so choosing Slant again reports what changed.
+    case otherPrintService
     /// Wait until this time (nil: until the next scheduled check).
     case rateLimited(until: Date?)
 }
@@ -481,13 +490,16 @@ struct OrderWatchConditions {
     var rateLimitAlreadyWaitedFor: RateLimitInfo?
     var backoffUntil: Date?
     var now = Date()
+    /// Slant is the print service (`PrintServiceChoice`); false while 3DAPI is chosen.
+    var slantIsPrintService = true
 }
 
 /// Why a scheduled check doesn't run now, or nil to run it. Checks never run while a request is running (`busy`) or a
 /// sheet, alert or dialog is shown in any window (the review, import and estimate sheets send their own requests), and
-/// they leave the rate-limit allowance to the seller.
+/// they leave the rate-limit allowance to the seller. While 3DAPI is the print service they don't run at all.
 func orderWatchSkipReason(_ c: OrderWatchConditions) -> OrderWatchSkip? {
     if !c.enabled { return .disabled }
+    if !c.slantIsPrintService { return .otherPrintService }
     if !c.hasKey { return .noKey }
     if !c.hasPlatform { return .noPlatform }
     if c.accountPaused { return .accountPaused }
@@ -610,8 +622,53 @@ func orderWatchNotificationsAvailable(bundle: Bundle = .main) -> Bool {
 
 // MARK: - The watcher
 
+/// What a clicked order notification names: a Slant order (`orderID`; nil just opens Orders) or a 3DAPI order
+/// (`dapiOrderWatchNotificationOrderID`, a validated `ord_` ID).
+enum OrderWatchNotificationTarget: Equatable {
+    case slant(orderID: String?)
+    case dapi(orderID: String)
+
+    /// The 3DAPI key first (a 3DAPI notification carries only that), then Slant's.
+    init(userInfo: [AnyHashable: Any]) {
+        if let id = dapiOrderWatchNotificationOrderID(userInfo) {
+            self = .dapi(orderID: id)
+        } else {
+            self = .slant(orderID: orderWatchNotificationOrderID(userInfo))
+        }
+    }
+}
+
+/// What a click does once nothing modal is shown and no request runs. The window is always raised at once; a
+/// notification from the service that isn't the print service now only raises it (the service is never switched, and
+/// a Slant notification never opens the 3DAPI Orders screen, nor the reverse).
+enum OrderWatchNotificationRoute: Equatable {
+    case windowOnly
+    /// Slant's Orders, selecting the order (read by ID through `store.run` if it isn't loaded).
+    case slantOrders(orderID: String?)
+    /// 3DAPI's Orders, which reads the order by ID (read-only) and selects it (`DapiOrderSession.orderToShow`).
+    case dapiOrder(orderID: String)
+}
+
+func orderWatchNotificationRoute(_ target: OrderWatchNotificationTarget, service: PrintService) -> OrderWatchNotificationRoute {
+    switch (target, service) {
+    case (.slant(let id), .slant): return .slantOrders(orderID: id)
+    case (.dapi(let id), .dapi): return .dapiOrder(orderID: id)
+    default: return .windowOnly
+    }
+}
+
+/// Whether a waiting click may be applied now: no sheet, alert or dialog in any window, no error alert, no Slant
+/// request running (`busy`), and for a 3DAPI order no 3DAPI order write waiting for its reply or order sheet open.
+func orderWatchNotificationCanOpen(_ route: OrderWatchNotificationRoute, storeSheetPresented: Bool, appModalUIPresented: Bool,
+                                   errorShown: Bool, busy: Bool, dapiWritesInFlight: Int, dapiOrderSheetsOpen: Int) -> Bool {
+    guard externalOpenCanImport(storeSheetPresented: storeSheetPresented, appModalUIPresented: appModalUIPresented,
+                                errorShown: errorShown, busy: busy) else { return false }
+    if case .dapiOrder = route { return dapiWritesInFlight == 0 && dapiOrderSheetsOpen == 0 }
+    return true
+}
+
 private struct PendingNotificationOpen {
-    let orderID: String?
+    let target: OrderWatchNotificationTarget
 }
 
 /// Checks the newest and the most recently updated orders every few minutes while the app is open, and remembers the
@@ -667,6 +724,7 @@ private struct PendingNotificationOpen {
     /// never the platform), so they are forgotten when it changes.
     private var watchedPlatformID: String?
     private var accountObservers: Set<AnyCancellable> = []
+    private var serviceObserver: AnyCancellable?
     /// False once Slant refused `sortBy=updatedAt` or answered it unsorted; the second read then stops for the session.
     private var updatedReadAvailable = true
     /// A clicked notification waiting until no sheet, alert or request is shown: the order to select (nil: just Orders).
@@ -688,6 +746,13 @@ private struct PendingNotificationOpen {
             }
         }
         observeAccount(store)
+        // While 3DAPI is the print service the checks skip (`OrderWatchSkip.otherPrintService`) and the Dock count is
+        // cleared; it comes back, with any changes the next check finds, once Slant is chosen again.
+        serviceObserver = PrintServiceChoice.shared.$service
+            .removeDuplicates()
+            .sink { [weak self] service in
+                MainActor.assumeIsolated { self?.updateDockBadge(service: service) }
+            }
         if orderWatchNotificationsAvailable() {
             UNUserNotificationCenter.current().delegate = OrderWatchNotificationDelegate.shared
             if notify { refreshNotificationPermission() }
@@ -764,8 +829,11 @@ private struct PendingNotificationOpen {
         let client = store.client
         inFlight = true
         defer { inFlight = false }
-        // A key or platform change, Forget or turning the watch off while a read was in flight discards it.
-        func stillCurrent() -> Bool { runGeneration == generation && enabled && accountToken(store) == token }
+        // A key or platform change, Forget, turning the watch off or choosing 3DAPI as the print service while a read
+        // was in flight discards it (nothing is recorded or notified; the next check under Slant reports it).
+        func stillCurrent() -> Bool {
+            runGeneration == generation && enabled && accountToken(store) == token && PrintServiceChoice.shared.service == .slant
+        }
         // 1. The newest created orders, as before.
         let newest: [OrderWatchObservation]
         do {
@@ -818,7 +886,8 @@ private struct PendingNotificationOpen {
         OrderWatchConditions(
             enabled: enabled, hasKey: store.hasKey, hasPlatform: !store.platformID.isEmpty, busy: store.busy,
             modalUIShown: store.menuCommandsBlockedByModalUI, inFlight: countInFlight && inFlight, accountPaused: pausedAccount == token,
-            rateLimit: store.rateLimit, rateLimitAlreadyWaitedFor: rateLimitWaitedFor, backoffUntil: backoffUntil, now: now
+            rateLimit: store.rateLimit, rateLimitAlreadyWaitedFor: rateLimitWaitedFor, backoffUntil: backoffUntil, now: now,
+            slantIsPrintService: PrintServiceChoice.shared.service == .slant
         )
     }
 
@@ -868,17 +937,20 @@ private struct PendingNotificationOpen {
         generation += 1
         snapshot = OrderWatchSnapshot()
         try? FileManager.default.removeItem(at: fileURL)
-        // A waiting notification click named an order of the platform (or account) just forgotten.
-        pendingOpen = nil
+        // A waiting notification click named an order of the platform (or account) just forgotten. A 3DAPI click
+        // waiting belongs to 3DAPI's account, which this doesn't change, so it stays.
+        if case .slant? = pendingOpen?.target { pendingOpen = nil }
         selectionRequest = nil
     }
 
     // MARK: Dock
 
-    private func updateDockBadge() {
+    /// `service` is the print service about to be current (a `$service` sink runs before the property changes).
+    private func updateDockBadge(service: PrintService? = nil) {
         // Tests and other hosts without an application object have no Dock tile.
         guard let app = NSApp else { return }
-        let label = orderWatchDockBadgeLabel(count: badgeCount, showOnDock: dockBadge)
+        let count = orderWatchDockBadgeCount(slantBadgeCount: badgeCount, service: service ?? PrintServiceChoice.shared.service)
+        let label = orderWatchDockBadgeLabel(count: count, showOnDock: dockBadge)
         if app.dockTile.badgeLabel != label { app.dockTile.badgeLabel = label }
     }
 
@@ -925,9 +997,15 @@ private struct PendingNotificationOpen {
     /// a sheet, alert or dialog is shown in any window, or a request is running, only the window is raised: the click
     /// waits and is applied once they have closed, so it never replaces a review behind it. A later click replaces it.
     func openFromNotification(orderID: String?) {
+        openFromNotification(.slant(orderID: orderID))
+    }
+
+    /// The same for a Slant or a 3DAPI notification (`OrderWatchNotificationTarget`); where it leads is decided when
+    /// it is applied (`orderWatchNotificationRoute`), from the print service then.
+    func openFromNotification(_ target: OrderWatchNotificationTarget) {
         NSApp.activate()
         ExternalModelOpenQueue.shared.revealMainWindow()
-        pendingOpen = PendingNotificationOpen(orderID: orderID)
+        pendingOpen = PendingNotificationOpen(target: target)
         scheduleOpenDrain()
     }
 
@@ -952,14 +1030,27 @@ private struct PendingNotificationOpen {
     private func drainPendingOpen() {
         // Before a window (and so the store) exists, `attach` drains it.
         guard let pending = pendingOpen, let store else { return }
-        guard externalOpenCanImport(storeSheetPresented: store.isPresentingSheet, appModalUIPresented: appIsPresentingModalUI(),
-                                    errorShown: store.error != nil, busy: store.busy) else {
+        let route = orderWatchNotificationRoute(pending.target, service: PrintServiceChoice.shared.service)
+        // The window was raised on the click; another service's notification does nothing more.
+        if route == .windowOnly { pendingOpen = nil; return }
+        let dapiSession = DapiOrderSession.shared
+        guard orderWatchNotificationCanOpen(route, storeSheetPresented: store.isPresentingSheet,
+                                            appModalUIPresented: appIsPresentingModalUI(), errorShown: store.error != nil,
+                                            busy: store.busy, dapiWritesInFlight: dapiSession.writesInFlight,
+                                            dapiOrderSheetsOpen: dapiSession.openSheets) else {
             scheduleOpenDrain()
             return
         }
         pendingOpen = nil
+        if case .dapiOrder(let dapiID) = route {
+            // The 3DAPI Orders screen reads it by ID (read-only) and selects it; `store.orders` is never touched.
+            store.destination = .orders
+            if DapiConnection.shared.isConfigured { dapiSession.orderToShow = dapiID }
+            return
+        }
+        guard case .slantOrders(let orderID) = route else { return }
         store.destination = .orders
-        guard let id = pending.orderID, store.hasKey else { return }
+        guard let id = orderID, store.hasKey else { return }
         if store.orders.contains(where: { $0.id == id }) {
             requestSelection(id)
             return
@@ -1039,8 +1130,9 @@ final class OrderWatchNotificationDelegate: NSObject, UNUserNotificationCenterDe
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         // Only a click on the notification itself opens anything.
         guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { completionHandler(); return }
-        let orderID = orderWatchNotificationOrderID(response.notification.request.content.userInfo)
-        Task { @MainActor in OrderWatch.shared.openFromNotification(orderID: orderID) }
+        // A 3DAPI notification (DapiOrderWatch) carries only its own key; Slant's carries `orderID`.
+        let target = OrderWatchNotificationTarget(userInfo: response.notification.request.content.userInfo)
+        Task { @MainActor in OrderWatch.shared.openFromNotification(target) }
         completionHandler()
     }
 }

@@ -209,7 +209,8 @@ final class DapiClientTests: XCTestCase {
         XCTAssertEqual(quote.price, DapiMoney(amountMinor: 1245, currency: "usd"))
         XCTAssertEqual(quote.price?.usd, Decimal(string: "12.45"))
         XCTAssertNil(quote.failureReason)
-        XCTAssertEqual(quote.suggestedMaterials, [DapiSuggestedMaterial(slot: 1, materialName: "PLA Red", fileFilamentType: "PLA", match: "exact")])
+        XCTAssertEqual(quote.suggestedMaterials, [DapiSuggestedMaterial(slot: 1, materialName: "PLA Red", fileFilamentType: "PLA", match: "exact",
+                                                                        materialID: "mat_x")])
         XCTAssertEqual(quote.createdAt?.timeIntervalSince1970 ?? 0, 1_793_396_533.55, accuracy: 0.001)
     }
 

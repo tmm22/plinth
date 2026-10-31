@@ -40,6 +40,7 @@ enum PrintService: String, CaseIterable, Identifiable, Sendable {
     private let defaults: UserDefaults
     /// Set once the main window starts coordinating the 3DAPI order watch (`startCoordinatingDapiOrderWatch`).
     private var orderWatchSubscription: AnyCancellable?
+    private var lastOrderWatchCoordination: DapiOrderWatchCoordination?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -58,22 +59,49 @@ enum PrintService: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// Keeps the 3DAPI order watch running exactly while 3DAPI is the print service and a 3DAPI key is saved: at
-    /// launch (the first call), whenever the service changes and whenever the key is saved or removed. Idempotent;
-    /// called once the main window appears, so preferences are read only after the move from Slant Studio.
+    /// launch (the first call), whenever the service changes and whenever the key is saved, replaced or removed (a
+    /// replaced key restarts it from nothing, since the new key may belong to another account; see
+    /// `dapiOrderWatchActivations`). Idempotent; called once the main window appears, so preferences are read only
+    /// after the move from Slant Studio.
     func startCoordinatingDapiOrderWatch() {
         guard orderWatchSubscription == nil else { return }
         let connection = DapiConnection.shared
         let watch = DapiOrderWatch.shared
-        orderWatchSubscription = $service.combineLatest(connection.$isConfigured)
-            .map { dapiOrderWatchShouldBeActive(service: $0, dapiKeySaved: $1) }
+        // @Published sends each new value before the property changes, so only the values passed in are used.
+        orderWatchSubscription = $service.combineLatest(connection.$isConfigured, connection.$keyGeneration)
+            .map { DapiOrderWatchCoordination(active: dapiOrderWatchShouldBeActive(service: $0, dapiKeySaved: $1), keyGeneration: $2) }
             .removeDuplicates()
-            .sink { active in MainActor.assumeIsolated { watch.setActive(active) } }
+            .sink { [weak self] next in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let calls = dapiOrderWatchActivations(from: self.lastOrderWatchCoordination, to: next)
+                    self.lastOrderWatchCoordination = next
+                    for active in calls { watch.setActive(active) }
+                }
+            }
     }
 }
 
 /// Whether the 3DAPI order watch should run: only while 3DAPI is the print service and its key is saved.
 func dapiOrderWatchShouldBeActive(service: PrintService, dapiKeySaved: Bool) -> Bool {
     service == .dapi && dapiKeySaved
+}
+
+/// What the 3DAPI order watch coordination last saw: whether the watch should run, and the key generation
+/// (`DapiConnection.keyGeneration`).
+struct DapiOrderWatchCoordination: Equatable {
+    let active: Bool
+    let keyGeneration: Int
+}
+
+/// The `setActive` calls for a change, in order: the first value sets the watch's state; a change of `active` sets
+/// it; a new key generation while the watch stays active stops it (forgetting the earlier key's orders and any pause
+/// after a refused key) and starts it again; anything else changes nothing.
+func dapiOrderWatchActivations(from previous: DapiOrderWatchCoordination?, to next: DapiOrderWatchCoordination) -> [Bool] {
+    guard let previous else { return [next.active] }
+    if previous.active != next.active { return [next.active] }
+    if next.active, previous.keyGeneration != next.keyGeneration { return [false, true] }
+    return []
 }
 
 // MARK: - Switching services
@@ -181,8 +209,10 @@ func slantRefreshAvailable(service: PrintService, destination: Destination) -> B
     service == .slant || destination.isDeveloperDestination
 }
 
-/// Whether the Slant-only commands in the File menu (Upload from URL…, Import Orders…, Export Orders…, Tracking for
-/// Your Shop…, Spending Report…) are offered: only while Slant is the print service.
+/// Whether the File menu's Slant order commands are Slant's: only while Slant is the print service. With 3DAPI,
+/// Upload from URL… and Import Orders… are disabled (3DAPI has no URL import, and every 3DAPI order is charged when
+/// placed), while Export Orders…, Tracking for Your Shop… and Spending Report… do 3DAPI's versions
+/// (`dapiOrderToolMenuEnabled`). The Models toolbar's Upload from URL… follows the same rule.
 func slantOrderMenuCommandsAvailable(service: PrintService) -> Bool { service == .slant }
 
 /// File › New Order Draft…'s title: 3DAPI has no drafts, so with 3DAPI it opens the order composer.
@@ -229,6 +259,33 @@ func dapiModelsNextStep(hasSelection: Bool, selectedIsLocal: Bool, localFileExis
     return .ready
 }
 
+/// Which button the ready bar makes prominent, mirroring Slant's step order (estimate, then order): Get 3DAPI Quote…
+/// until this session knows a ready quote for the model's file, then Order with 3DAPI…, unless the last account check
+/// says ordering is blocked (then no button is prominent; Order with 3DAPI…'s help says why).
+enum DapiModelsPrimaryAction: Equatable {
+    case getQuote, order, none
+}
+
+func dapiModelsPrimaryAction(hasReadyQuote: Bool, orderingProblem: String?) -> DapiModelsPrimaryAction {
+    guard hasReadyQuote else { return .getQuote }
+    return orderingProblem == nil ? .order : .none
+}
+
+/// Order with 3DAPI…'s help: why ordering is blocked, when the account check says so.
+func dapiOrderButtonHelp(orderingProblem: String?) -> String {
+    if let orderingProblem { return orderingProblem }
+    return "Opens the 3DAPI order composer in Orders. Nothing is charged until you review the order and press Place Order."
+}
+
+/// The ready bar's status line once the file's quote state is known (`hasReadyQuote`); `orderingProblem` comes first.
+func dapiModelsReadyStatus(hasReadyQuote: Bool, orderingProblem: String?) -> String {
+    if let orderingProblem { return orderingProblem }
+    if hasReadyQuote {
+        return "3DAPI has quoted this model. Order it with 3DAPI: nothing is charged until you review the order and press Place Order."
+    }
+    return "Get a 3DAPI quote first, then order it with 3DAPI. Nothing is charged until you review the order and press Place Order."
+}
+
 /// The bar's status line for a 3DAPI step. `orderingProblem` (from the last account check) replaces the ready line;
 /// Get 3DAPI Quote… still works without ordering.
 func dapiModelsNextStepStatus(_ step: DapiModelsNextStep, orderingProblem: String?) -> String {
@@ -254,12 +311,56 @@ func dapiSampleOrderPrefill(modelID: UUID) -> DapiComposerPrefill {
     DapiComposerPrefill(modelID: modelID, quantity: 1, countryCode: nil, useSellerAddress: true)
 }
 
+/// What asking for the 3DAPI composer does (New 3DAPI Order…, Order with 3DAPI…, Order a Sample to Me…).
+enum DapiComposerOpening: Equatable {
+    /// Nothing: Slant is the print service, or something modal is shown.
+    case ignore
+    /// No 3DAPI key is saved: Settings › Account opens instead, and no composer request is left waiting.
+    case openSettings
+    case openComposer
+}
+
+func dapiComposerOpening(service: PrintService, keySaved: Bool, modalUIShown: Bool) -> DapiComposerOpening {
+    guard service == .dapi, !modalUIShown else { return .ignore }
+    return keySaved ? .openComposer : .openSettings
+}
+
+/// Whether File › Export Orders…, Tracking for Your Shop…, Spending Report… (and Refresh, on Orders only) perform their
+/// 3DAPI versions: only while 3DAPI is the print service with a key saved and nothing modal is shown. Each only reads
+/// or opens a sheet in 3DAPI's Orders (`DapiOrderToolRequest`); none sends a write.
+func dapiOrderToolMenuEnabled(_ tool: DapiOrderToolRequest, service: PrintService, keySaved: Bool, destination: Destination,
+                              modalUIShown: Bool) -> Bool {
+    guard service == .dapi, keySaved, !modalUIShown else { return false }
+    // Refresh reloads what is shown: on Models and Catalog there is no 3DAPI list to reload (and the developer screens
+    // keep Slant's Refresh, `slantRefreshAvailable`).
+    if tool == .reload { return destination == .orders }
+    return true
+}
+
 extension StudioStore {
     /// Opens the 3DAPI order composer in Orders with `prefill`. Only while 3DAPI is the print service and nothing modal
-    /// is shown; nothing is sent (the composer reviews the order, and only Place Order there sends it).
+    /// is shown; nothing is sent (the composer reviews the order, and only Place Order there sends it). Without a saved
+    /// 3DAPI key it opens Settings › Account instead, so no request is left queued for a composer that can't open.
     func openDapiComposer(_ prefill: DapiComposerPrefill) {
-        guard PrintServiceChoice.shared.service == .dapi, !isPresentingSheet, !appIsPresentingModalUI() else { return }
-        DapiOrderSession.shared.composerRequest = prefill
+        switch dapiComposerOpening(service: PrintServiceChoice.shared.service, keySaved: DapiConnection.shared.isConfigured,
+                                   modalUIShown: isPresentingSheet || appIsPresentingModalUI()) {
+        case .ignore:
+            return
+        case .openSettings:
+            requestSettings(.account)
+        case .openComposer:
+            DapiOrderSession.shared.composerRequest = prefill
+            destination = .orders
+        }
+    }
+
+    /// File › Export Orders…, Tracking for Your Shop…, Spending Report… and Refresh while 3DAPI is the print service:
+    /// shows Orders and asks 3DAPI's Orders section to do it (`DapiOrderSession.toolRequest`). Nothing while anything
+    /// modal is shown.
+    func performDapiOrderToolFromMenu(_ tool: DapiOrderToolRequest) {
+        guard dapiOrderToolMenuEnabled(tool, service: PrintServiceChoice.shared.service, keySaved: DapiConnection.shared.isConfigured,
+                                       destination: destination, modalUIShown: menuCommandsBlockedByModalUI) else { return }
         destination = .orders
+        DapiOrderSession.shared.toolRequest = tool
     }
 }

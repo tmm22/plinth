@@ -2,8 +2,10 @@ import Foundation
 
 // 3DAPI (dapi.digital): the types shared by the client (DapiClient.swift), the key and session state
 // (DapiConnection.swift) and the quote sheet (DapiQuote.swift, DapiQuoteView.swift). See docs/3DAPI_REFERENCE.md.
-// Plinth uses 3DAPI only to price a library model for comparison with Slant: an upload, a quote, reads and a
-// shipping estimate. It never orders or pays through 3DAPI.
+// Plinth uses 3DAPI to quote a library model (an upload, a quote, reads and a shipping estimate; compared with Slant's
+// price in the Get 3DAPI quote sheet) and, when the seller chooses 3DAPI as the print service, to place and cancel
+// wallet-mode orders (DapiOrderTypes.swift): each charge only after a review and an explicit Place Order, sent once and
+// never retried. 3DAPI's prices, IDs and files never reach Slant.
 
 /// The only host that ever receives the 3DAPI key.
 let dapiAPIHost = "public-api.dapi.digital"

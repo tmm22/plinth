@@ -8,6 +8,8 @@ struct PlinthApp: App {
     @StateObject private var modalPresentation = ModalPresentationMonitor()
     /// Slant 3D or 3DAPI (PrintService.swift): the File menu's order commands follow it. Read after `init()`'s migration.
     @StateObject private var printChoice = PrintServiceChoice.shared
+    /// Whether a 3DAPI key is saved: the File menu's 3DAPI order commands need one.
+    @StateObject private var dapiConnection = DapiConnection.shared
     init() {
         // First, before the store or anything else reads preferences, the Keychain or the support folder: the one-time
         // move from Slant Studio (LegacyMigration.swift). It does nothing outside the packaged Plinth app.
@@ -34,6 +36,23 @@ struct PlinthApp: App {
             let slantOrderCommands = slantOrderMenuCommandsAvailable(service: service)
             let slantOnly: (@escaping @MainActor () -> Void) -> Void = { action in
                 inMainWindow { if slantOrderMenuCommandsAvailable(service: PrintServiceChoice.shared.service) { action() } }
+            }
+            // Export Orders…, Tracking for Your Shop… and Spending Report…: Slant's, or with 3DAPI chosen, 3DAPI's
+            // versions in its Orders section (each only reads or opens a sheet). The service is checked again when the
+            // command runs.
+            let dapiKeySaved = dapiConnection.isConfigured
+            let orderTool: (DapiOrderToolRequest, @escaping @MainActor () -> Void) -> Void = { tool, slantAction in
+                inMainWindow {
+                    if slantOrderMenuCommandsAvailable(service: PrintServiceChoice.shared.service) {
+                        slantAction()
+                    } else {
+                        store.performDapiOrderToolFromMenu(tool)
+                    }
+                }
+            }
+            let dapiToolEnabled: (DapiOrderToolRequest) -> Bool = { tool in
+                dapiOrderToolMenuEnabled(tool, service: service, keySaved: dapiKeySaved, destination: store.destination,
+                                         modalUIShown: modalUIShown)
             }
             CommandGroup(replacing: .newItem) {
                 // Like the Go menu, these do nothing over a sheet, alert or dialog: opening the composer or importing
@@ -69,28 +88,35 @@ struct PlinthApp: App {
                     .disabled(!modelFileEnabled || store.selectedLocal?.supportsMeshPreview != true)
                 Divider()
                 // Orders. None of these sends a request.
-                // Opens the Import Orders sheet only; drafts are created there after an explicit confirmation.
+                // Opens the Import Orders sheet only; drafts are created there after an explicit confirmation. Slant
+                // only: with 3DAPI every order is charged when placed, so a batch import would be a batch of charges.
                 Button("Import Orders…") { slantOnly { store.importOrdersFromMenu() } }
                     .disabled(!slantOrderCommands || store.orderImportBlockedReason != nil || modalUIShown)
                 // Saves a CSV of the loaded orders shown in the list; no request is made.
-                Button("Export Orders…") { slantOnly { store.exportOrdersFromMenu() } }
-                    .disabled(!slantOrderCommands || !ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
-                                                       sheetPresented: modalUIShown))
+                Button("Export Orders…") { orderTool(.exportOrders) { store.exportOrdersFromMenu() } }
+                    .disabled(slantOrderCommands
+                              ? !ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
+                                                         sheetPresented: modalUIShown)
+                              : !dapiToolEnabled(.exportOrders))
                 // Opens a local list of loaded orders' tracking only; nothing is sent.
-                Button("Tracking for Your Shop…") { slantOnly { store.openShopFollowUpFromMenu() } }
-                    .disabled(!slantOrderCommands || store.orders.isEmpty || modalUIShown)
+                Button("Tracking for Your Shop…") { orderTool(.trackingForYourShop) { store.openShopFollowUpFromMenu() } }
+                    .disabled(slantOrderCommands ? (store.orders.isEmpty || modalUIShown) : !dapiToolEnabled(.trackingForYourShop))
                 // Opens the spending report for the loaded orders; no request is made.
-                Button("Spending Report…") { slantOnly { store.openSpendingReportFromMenu() } }
-                    .disabled(!slantOrderCommands || !ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
-                                                       sheetPresented: modalUIShown))
+                Button("Spending Report…") { orderTool(.spendingReport) { store.openSpendingReportFromMenu() } }
+                    .disabled(slantOrderCommands
+                              ? !ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
+                                                         sheetPresented: modalUIShown)
+                              : !dapiToolEnabled(.spendingReport))
                 // Opens the Saved Products sheet only (a local list; nothing is sent).
                 Button("Saved Products…") { inMainWindow { store.openSavedProductsFromMenu() } }
                     .disabled(modalUIShown)
                 Divider()
+                // Slant's Refresh, or with 3DAPI chosen, a reload of 3DAPI's Orders list while it is shown.
                 Button("Refresh") { inMainWindow { store.refreshFromMenu() } }
                     .keyboardShortcut("r")
-                    .disabled(!store.connected || store.busy || modalUIShown
-                              || !slantRefreshAvailable(service: service, destination: store.destination))
+                    .disabled(slantRefreshAvailable(service: service, destination: store.destination)
+                              ? (!store.connected || store.busy || modalUIShown)
+                              : !dapiToolEnabled(.reload))
             }
             SidebarCommands()
             CommandMenu("Go") {
