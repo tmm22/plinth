@@ -2720,17 +2720,34 @@ func decimalAmount(_ value: Any?) -> Decimal? {
     if let number = value as? NSNumber { return number.decimalValue }
     return Decimal(string: String(describing: value), locale: Locale(identifier: "en_US_POSIX"))
 }
+/// Slant's `fulfillment.provider` (or a legacy `carrier`), trimmed, as sent; nil when absent or blank. Live, it names
+/// the label service (SHIPPO) rather than the carrier.
+func fulfillmentProvider(_ fulfillment: Any?) -> String? {
+    guard let object = fulfillment as? [String: Any] else { return nil }
+    for key in ["provider", "carrier"] {
+        if let value = stringValue(object[key])?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty { return value }
+    }
+    return nil
+}
+
+/// The shipping record's facts as Slant sent them (values unchanged, for copies and CSVs): "Label service" when the
+/// provider is a label service (`carrierLabelServiceName`: SHIPPO, SHIPSTATION), else "Carrier"; "Service";
+/// "Shipment status" (`fulfillment.status`); "Carrier status" (`providerStatus`, when Slant sends one); each
+/// "Tracking number"; and "Tracking link" when Slant sends one.
 func trackingFacts(_ fulfillment: Any?) -> [(String, String)] {
     guard let object = fulfillment as? [String: Any] else { return [] }
     var rows: [(String, String)] = []
-    if let provider = stringValue(object["provider"]) ?? stringValue(object["carrier"]), !provider.isEmpty {
-        rows.append(("Carrier", provider))
+    if let provider = fulfillmentProvider(object) {
+        rows.append((carrierLabelServiceName(provider) != nil ? "Label service" : "Carrier", provider))
     }
     if let method = stringValue(object["deliveryMethod"]) ?? stringValue(object["service"]), !method.isEmpty {
         rows.append(("Service", method))
     }
-    if let shipmentStatus = stringValue(object["status"]) ?? stringValue(object["providerStatus"]), !shipmentStatus.isEmpty {
+    if let shipmentStatus = stringValue(object["status"]), !shipmentStatus.isEmpty {
         rows.append(("Shipment status", shipmentStatus))
+    }
+    if let carrierStatus = stringValue(object["providerStatus"]), !carrierStatus.isEmpty {
+        rows.append(("Carrier status", carrierStatus))
     }
     if let numbers = object["trackingNumbers"] as? [String] {
         for number in numbers where !number.isEmpty { rows.append(("Tracking number", number)) }
@@ -2755,6 +2772,61 @@ func trackingFacts(_ fulfillment: Any?) -> [(String, String)] {
     }
     return rows
 }
+/// One row of the order detail's Tracking section.
+struct OrderTrackingDisplayRow: Equatable {
+    enum Kind: Equatable { case fact, number, link }
+    let label: String
+    /// The text shown (readable words for Slant's constants).
+    let value: String
+    /// Hover text: Slant's own value, or how the carrier was worked out.
+    var help: String? = nil
+    var kind: Kind = .fact
+    /// Number rows: the carrier's tracking page, opened only by Track Parcel.
+    var trackURL: URL? = nil
+    var trackCarrier: String? = nil
+}
+
+/// The detail's Tracking rows. A label service is named as one ("Label service: Shippo"), never as the carrier; when
+/// Slant names no carrier, the carrier the tracking numbers agree on is shown as worked out from them; a shipment
+/// status that only repeats the order status in the header is left out. Display only: copies and CSVs read
+/// `trackingFacts`, and nothing here sends a request.
+func orderTrackingDisplayRows(_ order: [String: Any]) -> [OrderTrackingDisplayRow] {
+    let facts = trackingFacts(order["fulfillment"])
+    let provider = fulfillmentProvider(order["fulfillment"])
+    let numbers = facts.filter { $0.0 == "Tracking number" }.map(\.1)
+    var rows: [OrderTrackingDisplayRow] = []
+    for (label, value) in facts {
+        switch label {
+        case "Label service":
+            rows.append(OrderTrackingDisplayRow(label: label, value: carrierLabelServiceName(value) ?? orderAPIValueTitle(value),
+                                                help: "The service that made the shipping label (\(value)); it isn’t the carrier."))
+        case "Shipment status":
+            // The header already shows this word (`orderDisplayStatus`), so the row only adds something when it differs.
+            if orderStatusTitle(value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()) == orderDisplayStatusTitle(order) { continue }
+            rows.append(OrderTrackingDisplayRow(label: label, value: orderAPIValueTitle(value), help: value))
+        case "Carrier", "Service", "Carrier status":
+            rows.append(OrderTrackingDisplayRow(label: label, value: orderAPIValueTitle(value), help: value))
+        case "Tracking number":
+            let carrier = carrierDetected(forNumber: value, namedCarrier: provider)
+            rows.append(OrderTrackingDisplayRow(label: label, value: value, kind: .number,
+                                                trackURL: carrier?.trackingURL, trackCarrier: carrier?.name))
+        case "Tracking link":
+            rows.append(OrderTrackingDisplayRow(label: label, value: value, kind: .link))
+        default:
+            rows.append(OrderTrackingDisplayRow(label: label, value: value))
+        }
+    }
+    if !facts.contains(where: { $0.0 == "Carrier" }), let detected = carrierDetected(forNumbers: numbers, namedCarrier: provider) {
+        let index = (rows.firstIndex { $0.label == "Label service" }).map { $0 + 1 } ?? 0
+        rows.insert(OrderTrackingDisplayRow(label: "Carrier", value: "\(detected.name) (from the tracking number)",
+                                            help: carrierDetectedHelp), at: index)
+    }
+    return rows
+}
+
+/// Hover text for a carrier worked out from a tracking number.
+let carrierDetectedHelp = "Worked out by Plinth from the tracking number’s pattern and check digit. Slant names only the label service."
+
 func stringValue(_ value: Any?) -> String? {
     guard let value, !(value is NSNull) else { return nil }
     if let text = value as? String { return text }
@@ -3103,6 +3175,7 @@ struct OrderSummary: View {
     let order: [String: Any]
     var status: String { order["status"] as? String ?? "" }
     var tracking: [(String, String)] { trackingFacts(order["fulfillment"]) }
+    var trackingRows: [OrderTrackingDisplayRow] { orderTrackingDisplayRows(order) }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let items = order["items"] as? [[String: Any]], !items.isEmpty {
@@ -3193,21 +3266,27 @@ struct OrderSummary: View {
             if tracking.isEmpty {
                 Text("No tracking yet.").font(.callout).foregroundStyle(.secondary)
             } else {
-                ForEach(Array(tracking.enumerated()), id: \.offset) { _, row in
+                ForEach(Array(trackingRows.enumerated()), id: \.offset) { _, row in
                     HStack {
-                        Text(row.0).foregroundStyle(.secondary)
+                        Text(row.label).foregroundStyle(.secondary)
                         Spacer()
-                        if row.0 == "Tracking link", let url = URL(string: row.1) {
-                            Link(row.1, destination: url)
-                        } else if ["Carrier", "Service", "Shipment status"].contains(row.0) {
-                            // Readable words for Slant's constants (SHIPPO, INTERNATIONAL); display only.
-                            Text(orderAPIValueTitle(row.1)).textSelection(.enabled).help(row.1)
-                        } else {
-                            Text(row.1).textSelection(.enabled)
-                        }
-                        if row.0 == "Tracking number" {
-                            Button { copyToPasteboard(row.1) } label: { Image(systemName: "doc.on.doc") }
+                        switch row.kind {
+                        case .link:
+                            if let url = URL(string: row.value) { Link(row.value, destination: url) } else { Text(row.value).textSelection(.enabled) }
+                        case .number:
+                            Text(row.value).textSelection(.enabled)
+                            Button { copyToPasteboard(row.value) } label: { Image(systemName: "doc.on.doc") }
                                 .accessibilityLabel("Copy tracking number").help("Copy tracking number")
+                            // Opens the carrier's page in the browser only on this click; Plinth itself sends nothing.
+                            if let url = row.trackURL, let carrier = row.trackCarrier {
+                                Button("Track Parcel") { NSWorkspace.shared.open(url) }
+                                    .controlSize(.small)
+                                    .accessibilityLabel("Track parcel \(row.value) on \(carrier)’s website")
+                                    .help("Open \(carrier)’s tracking page for this number in your browser")
+                            }
+                        case .fact:
+                            // Readable words for Slant's constants (SHIPPO, INTERNATIONAL); display only.
+                            Text(row.value).textSelection(.enabled).help(row.help ?? "")
                         }
                     }
                 }

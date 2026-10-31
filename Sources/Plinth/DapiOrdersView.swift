@@ -723,7 +723,7 @@ struct DapiOrderDetailView: View {
                 Text("Shipping").font(.headline)
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                     if let tier = ship.tier { row("Parcel size", tier.capitalized) }
-                    if let carrier = ship.carrier { row("Carrier", carrier) }
+                    if let carrier = dapiShippingCarrierText(ship) { row("Carrier", carrier) }
                     if let shippedAt = ship.shippedAt { row("Shipped", dapiOrderDateTimeText(shippedAt)) }
                     if let tracking = ship.trackingNumber, !tracking.isEmpty {
                         GridRow {
@@ -731,14 +731,20 @@ struct DapiOrderDetailView: View {
                             HStack(spacing: 8) {
                                 Text(tracking).textSelection(.enabled).monospaced()
                                 Button("Copy") { copyToPasteboard(tracking) }.controlSize(.small)
+                                // Opens the carrier's page in the browser only on this click; Plinth sends nothing.
+                                if let carrier = dapiShippingDetectedCarrier(ship), let url = carrier.trackingURL {
+                                    Button("Track Parcel") { NSWorkspace.shared.open(url) }
+                                        .controlSize(.small)
+                                        .accessibilityLabel("Track parcel \(tracking) on \(carrier.name)’s website")
+                                        .help("Open \(carrier.name)’s tracking page for this number in your browser")
+                                }
                             }
                         }
                     }
                 }
                 .font(.callout)
-                if ship.trackingNumber != nil {
-                    Text("3DAPI gives no tracking link: look the number up on the carrier’s site.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if let note = dapiShippingTrackingNote(ship) {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -750,6 +756,27 @@ struct DapiOrderDetailView: View {
             Text(value).monospacedDigit().fontWeight(bold ? .semibold : .regular).textSelection(.enabled)
         }
     }
+}
+
+/// The carrier recognised from a 3DAPI order's tracking number: only when 3DAPI names no carrier or names the same one
+/// (`carrierDetected`), so the link never points at a different carrier than 3DAPI's.
+func dapiShippingDetectedCarrier(_ shipping: DapiOrderShipping) -> DetectedCarrier? {
+    guard let number = shipping.trackingNumber?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty else { return nil }
+    return carrierDetected(forNumber: number, namedCarrier: shipping.carrier)
+}
+
+/// The Carrier row: 3DAPI's own name when it gives one, else the carrier worked out from the number ("USPS (from the
+/// tracking number)"), else nil.
+func dapiShippingCarrierText(_ shipping: DapiOrderShipping) -> String? {
+    if let named = shipping.carrier?.trimmingCharacters(in: .whitespacesAndNewlines), !named.isEmpty { return named }
+    return dapiShippingDetectedCarrier(shipping).map { "\($0.name) (from the tracking number)" }
+}
+
+/// The caption under the shipping facts, or nil when there's no tracking number or Track Parcel covers it.
+func dapiShippingTrackingNote(_ shipping: DapiOrderShipping) -> String? {
+    guard let number = shipping.trackingNumber, !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    if dapiShippingDetectedCarrier(shipping)?.trackingURL != nil { return nil }
+    return "3DAPI gives no tracking link: look the number up on the carrier’s site."
 }
 
 /// "You (wallet)", "Buyer", "3DAPI", or as sent.

@@ -838,8 +838,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var importedSaleAmounts: [String: ImportedSaleAmounts] = [:]
     /// Tracking for Your Shop sheet (OrderFollowUp.swift). Counted in `isPresentingSheet`.
     @Published var showShopFollowUp = false
-    /// Orders ticked "done in shop" in that sheet: order IDs in memory only, for this session.
-    @Published var shopFollowUpDoneIDs: Set<String> = []
+    /// Orders ticked "done in shop" in that sheet (ShopFollowUpDone.swift): order IDs only, saved in
+    /// `shop-tracking-done.json` through `shopFollowUpDoneIDs`, forgotten on Disconnect or a key change.
+    @Published var shopFollowUpDone = ShopFollowUpDoneRecord()
     @Published var accountLoaded = false
     @Published var filesLoaded = false
     @Published var ordersLoaded = false
@@ -978,6 +979,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         }
         savedProducts = loadSavedProducts(from: Self.supportDirectory.appendingPathComponent(savedProductsFileName))
         sellerAddress = loadSellerAddress(from: Self.sellerAddressURL)
+        loadShopFollowUpDoneAtLaunch()
         // Personalisation hook (Personalisation.swift): remove leftover OpenSCAD temp folders; stop local runs on quit.
         PersonalisationTempCleanup.startAtLaunch()
         printPreparationQueue.store = self
@@ -1295,6 +1297,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
         disabledPlatformsThisSession = []; webhookSecretUncertainPlatformIDs = []; deadWebhooks = [:]; componentCategories = []
         importedSaleAmounts = [:]
+        forgetShopFollowUpDone()
     }
     // The pay/cancel lock, the unconfirmed draft-create notice and the import ledger are deliberately NOT cleared
     // by a key change or Disconnect: Studio can't tell whether a new key belongs to the same Slant account, and a
