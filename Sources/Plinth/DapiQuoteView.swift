@@ -155,10 +155,10 @@ struct DapiQuoteSheet: View {
         }
         .task(id: model.url) {
             // Only needed to disable Get Quote while an earlier quote write is still waiting; the run hashes the
-            // file itself and checks again, so a large file isn't read on every opening.
+            // file itself and checks again, so a large file isn't read on every opening. The session's hash cache
+            // (shared with the Models bar) saves reading an unchanged file again.
             guard !connection.quoteWritesInFlight.isEmpty else { return }
-            let url = model.url
-            fileHash = try? await Task.detached(priority: .utility) { try dapiFileSHA256(at: url) }.value
+            fileHash = await connection.fileHash(at: model.url)
         }
         .onDisappear {
             runner.close()

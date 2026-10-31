@@ -286,18 +286,16 @@ func dapiModelsReadyStatus(hasReadyQuote: Bool, orderingProblem: String?) -> Str
     return "Get a 3DAPI quote first, then order it with 3DAPI. Nothing is charged until you review the order and press Place Order."
 }
 
-/// The bar's status line for a 3DAPI step. `orderingProblem` (from the last account check) replaces the ready line;
-/// Get 3DAPI Quote… still works without ordering.
-func dapiModelsNextStepStatus(_ step: DapiModelsNextStep, orderingProblem: String?) -> String {
+/// The bar's status line for a 3DAPI step: the ready line is `dapiModelsReadyStatus` (where `orderingProblem`, from
+/// the last account check, replaces it; Get 3DAPI Quote… still works without ordering).
+func dapiModelsNextStepStatus(_ step: DapiModelsNextStep, hasReadyQuote: Bool = false, orderingProblem: String?) -> String {
     switch step {
     case .needsModel: return "Import a model to quote and order it with 3DAPI."
     case .needsLocalCopy: return "3DAPI prints models from this Mac. Download this model into the library first."
     case .fileMissing: return "This model’s file is missing from the library, so 3DAPI can’t quote or print it. Import it again."
     case .needsKey: return "Add your 3DAPI integrator key in Settings › Account to quote and order with 3DAPI."
     case .invalidQuantity: return "Enter a whole-number quantity from 1 to 10,000."
-    case .ready:
-        if let orderingProblem { return orderingProblem }
-        return "Get a 3DAPI quote, or order it with 3DAPI. Nothing is charged until you review the order and press Place Order."
+    case .ready: return dapiModelsReadyStatus(hasReadyQuote: hasReadyQuote, orderingProblem: orderingProblem)
     }
 }
 
@@ -325,16 +323,25 @@ func dapiComposerOpening(service: PrintService, keySaved: Bool, modalUIShown: Bo
     return keySaved ? .openComposer : .openSettings
 }
 
-/// Whether File › Export Orders…, Tracking for Your Shop…, Spending Report… (and Refresh, on Orders only) perform their
-/// 3DAPI versions: only while 3DAPI is the print service with a key saved and nothing modal is shown. Each only reads
-/// or opens a sheet in 3DAPI's Orders (`DapiOrderToolRequest`); none sends a write.
+/// Whether File › Export Orders…, Tracking for Your Shop…, Spending Report… (and Refresh) perform their 3DAPI versions:
+/// only while 3DAPI is the print service with a key saved and nothing modal is shown. Each only reads or opens a sheet
+/// in 3DAPI's Orders (`DapiOrderToolRequest`); none sends a write. `ordersLoaded` is
+/// `DapiOrderListState.hasRowsForTools` (rows read for the filter shown).
 func dapiOrderToolMenuEnabled(_ tool: DapiOrderToolRequest, service: PrintService, keySaved: Bool, destination: Destination,
-                              modalUIShown: Bool) -> Bool {
+                              modalUIShown: Bool, ordersLoaded: Bool) -> Bool {
     guard service == .dapi, keySaved, !modalUIShown else { return false }
-    // Refresh reloads what is shown: on Models and Catalog there is no 3DAPI list to reload (and the developer screens
-    // keep Slant's Refresh, `slantRefreshAvailable`).
-    if tool == .reload { return destination == .orders }
-    return true
+    switch tool {
+    case .reload:
+        // Refresh reloads what is shown: on Models and Catalog there is no 3DAPI list to reload (and the developer
+        // screens keep Slant's Refresh, `slantRefreshAvailable`).
+        return destination == .orders
+    case .exportOrders, .trackingForYourShop:
+        // Like the Orders toolbar's Tools menu: they work on the orders listed, so only with Orders shown and rows read.
+        return destination == .orders && ordersLoaded
+    case .spendingReport:
+        // Reads its own period (Load the Whole Period), so it opens from anywhere.
+        return true
+    }
 }
 
 extension StudioStore {
@@ -359,7 +366,8 @@ extension StudioStore {
     /// modal is shown.
     func performDapiOrderToolFromMenu(_ tool: DapiOrderToolRequest) {
         guard dapiOrderToolMenuEnabled(tool, service: PrintServiceChoice.shared.service, keySaved: DapiConnection.shared.isConfigured,
-                                       destination: destination, modalUIShown: menuCommandsBlockedByModalUI) else { return }
+                                       destination: destination, modalUIShown: menuCommandsBlockedByModalUI,
+                                       ordersLoaded: DapiOrderListState.shared.hasRowsForTools) else { return }
         destination = .orders
         DapiOrderSession.shared.toolRequest = tool
     }

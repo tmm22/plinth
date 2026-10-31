@@ -94,13 +94,39 @@ func dapiOrdersEmptyActions(status: DapiOrderStatus?, search: String) -> [DapiOr
     return actions
 }
 
+/// Counts a 3DAPI order sheet in `DapiOrderSession.openSheets` while it is shown (once per appearance, released on every
+/// disappearance), so the 3DAPI key and the print service can't change under it.
+struct DapiOrderSheetCounted: ViewModifier {
+    @State private var registered = false
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                guard !registered else { return }
+                registered = true
+                DapiOrderSession.shared.sheetOpened()
+            }
+            .onDisappear {
+                guard registered else { return }
+                registered = false
+                DapiOrderSession.shared.sheetClosed()
+            }
+    }
+}
+
+extension View {
+    /// See `DapiOrderSheetCounted`.
+    func dapiOrderSheetCounted() -> some View { modifier(DapiOrderSheetCounted()) }
+}
+
 /// Shown by `StudioView` for `.orders` while `PrintServiceChoice.shared.service == .dapi`.
 struct DapiOrdersView: View {
     @EnvironmentObject var store: StudioStore
     @ObservedObject private var connection = DapiConnection.shared
     @ObservedObject private var session = DapiOrderSession.shared
     @ObservedObject private var nameIndex = DapiModelNameIndex.shared
-    @StateObject private var list = DapiOrderListState(environment: .live())
+    /// Shared, so the loaded orders outlive a visit to another section; forgotten on a new key (`keyGeneration`).
+    @ObservedObject private var list = DapiOrderListState.shared
     @State private var searchText = ""
     @State private var composer: DapiComposerSeed?
     @State private var cancelRequest: DapiCancelRequest?
@@ -152,14 +178,13 @@ struct DapiOrdersView: View {
         .toolbar { toolbarContent }
         .onAppear {
             list.log = dapiOrderActivityLogger(store)
+            // The search the list holds from an earlier visit.
+            if searchText != list.appliedSearch { searchText = list.appliedSearch }
             // The seller is looking at Orders: the sidebar badge has done its job (DapiOrderWatch.swift).
             DapiOrderWatch.shared.ordersViewed()
-            if list.keyGeneration != connection.keyGeneration {
-                // The key changed while Orders wasn't shown: the earlier key's orders aren't this one's.
-                list.keyChanged(generation: connection.keyGeneration, configured: connection.isConfigured)
-            } else if connection.isConfigured, !list.loaded, !list.loading {
-                list.reload()
-            }
+            // The key changed while Orders wasn't shown: the earlier key's orders aren't this one's. Otherwise the
+            // orders loaded on an earlier visit stay, and only a list never read (or whose read was stopped) is read.
+            list.keyChanged(generation: connection.keyGeneration, configured: connection.isConfigured)
             checkAccountIfNeeded()
             consumeComposerRequest()
             consumeOrderToShow()
@@ -168,17 +193,20 @@ struct DapiOrdersView: View {
         // Reads stop when the screen goes away; loaded orders stay for when it comes back.
         .onDisappear { list.cancel() }
         // Saved, replaced or removed: the earlier key's orders go, and replies for it are dropped, even when the new
-        // key looks like the same account.
+        // key looks like the same account. (A different account always comes with a new key, so the account itself
+        // isn't compared: an approval or scope change keeps the orders.)
         .onChange(of: connection.keyGeneration) { _, generation in
             list.keyChanged(generation: generation, configured: connection.isConfigured)
             accountChecked = false
             accountCheckFailure = nil
             checkAccountIfNeeded()
         }
-        .onChange(of: connection.account) { old, new in
-            // Another account's key: its orders aren't this one's.
-            if let old, let new, old != new { list.forgetAll(); list.reload() }
+        .onChange(of: connection.account) { _, new in
             if new != nil { accountChecked = true; accountCheckFailure = nil }
+        }
+        // Showing a specific order clears a filter it doesn't match (`DapiOrderListState.show`): the field follows.
+        .onChange(of: list.appliedSearch) { _, applied in
+            if applied.isEmpty, !searchText.isEmpty { searchText = "" }
         }
         .onChange(of: session.composerRequest) { _, _ in consumeComposerRequest() }
         .onChange(of: session.orderToShow) { _, _ in consumeOrderToShow() }
@@ -193,9 +221,14 @@ struct DapiOrdersView: View {
             DapiCancelOrderSheet(request: request) { order in list.apply(order) }
                 .environmentObject(store)
         }
-        // Only rows read with the filter shown (`canUseRowsForTools`) reach the tools.
-        .sheet(isPresented: $showSpendingReport) { DapiSpendingReportSheet(orders: list.canUseRowsForTools ? list.orders : []) }
-        .sheet(isPresented: $showTracking) { DapiTrackingSheet(orders: list.canUseRowsForTools ? list.orders : []) }
+        // Only rows read with the filter shown (`canUseRowsForTools`) reach the tools. Both sheets count as 3DAPI order
+        // sheets, so the key and the print service can't change under them.
+        .sheet(isPresented: $showSpendingReport) {
+            DapiSpendingReportSheet(orders: list.canUseRowsForTools ? list.orders : []).dapiOrderSheetCounted()
+        }
+        .sheet(isPresented: $showTracking) {
+            DapiTrackingSheet(orders: list.canUseRowsForTools ? list.orders : []).dapiOrderSheetCounted()
+        }
         .alert("Couldn’t export the orders", isPresented: Binding(get: { exportError != nil }, set: { if !$0 { exportError = nil } })) {
             Button("OK", role: .cancel) { exportError = nil }
         } message: {
@@ -322,7 +355,7 @@ struct DapiOrdersView: View {
             .help("Read the newest 3DAPI orders again")
         }
         ToolbarItem(placement: .automatic) {
-            DapiOrdersToolsMenu(hasOrders: list.canUseRowsForTools && !list.orders.isEmpty,
+            DapiOrdersToolsMenu(hasOrders: list.hasRowsForTools,
                                 showSpendingReport: $showSpendingReport, showTracking: $showTracking,
                                 onExport: { exportOrders() })
                 .disabled(!connection.isConfigured)
@@ -736,6 +769,8 @@ struct DapiUnconfirmedOrdersNotice: View {
     /// Only these attempts (the review's own), or every unconfirmed attempt when nil.
     var only: Set<UUID>? = nil
     let onFound: (DapiOrder) -> Void
+    /// Told when a lookup starts and ends (the composer keeps Review Order… off meanwhile).
+    var onLookingChange: ((Bool) -> Void)? = nil
     @State private var looking = false
     @State private var summary: String?
     @State private var task: Task<Void, Never>?
@@ -772,17 +807,27 @@ struct DapiUnconfirmedOrdersNotice: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onDisappear { task?.cancel(); task = nil; looking = false }
+            .onChange(of: looking) { _, value in onLookingChange?(value) }
+            .onDisappear {
+                task?.cancel()
+                task = nil
+                if looking { looking = false }
+                onLookingChange?(false)
+            }
         }
     }
 
     private func lookFor(_ attempts: [DapiUnconfirmedOrder]) {
         guard !looking else { return }
+        let connection = DapiConnection.shared
         let client: any DapiOrdering
-        do { client = try DapiConnection.shared.currentOrderingClient() } catch {
+        do { client = try connection.currentOrderingClient() } catch {
             summary = dapiFailureMessage(error)
             return
         }
+        // Counted as a 3DAPI request, so the key can't change mid-lookup; results for an earlier key are dropped.
+        let generation = connection.keyGeneration
+        connection.beginRequest()
         looking = true
         summary = nil
         task = Task {
@@ -792,8 +837,14 @@ struct DapiUnconfirmedOrdersNotice: View {
             let results = await dapiLookForOrders(attempts, client: client,
                                                   pause: { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
                                                   confirm: { found.append($0) })
+            connection.endRequest()
             looking = false
             task = nil
+            guard generation == connection.keyGeneration else {
+                // The key changed meanwhile (its Keychain item went): nothing found with it is applied.
+                summary = nil
+                return
+            }
             let ordered = attempts.compactMap { results[$0.id] }
             for case .found(let order) in ordered.reversed() { onFound(order) }
             for reference in found { DapiOrderSession.shared.confirmUnconfirmedOrder(reference: reference) }

@@ -141,20 +141,33 @@ final class PrintServiceTests: XCTestCase {
     }
 
     func testDapiOrderToolsInTheFileMenu() {
-        for tool in [DapiOrderToolRequest.exportOrders, .trackingForYourShop, .spendingReport] {
-            for destination in [Destination.models, .orders, .catalog] {
-                XCTAssertTrue(dapiOrderToolMenuEnabled(tool, service: .dapi, keySaved: true, destination: destination, modalUIShown: false),
-                              "\(tool) from \(destination)")
+        func enabled(_ tool: DapiOrderToolRequest, service: PrintService = .dapi, keySaved: Bool = true,
+                     destination: Destination = .orders, modal: Bool = false, loaded: Bool = true) -> Bool {
+            dapiOrderToolMenuEnabled(tool, service: service, keySaved: keySaved, destination: destination,
+                                     modalUIShown: modal, ordersLoaded: loaded)
+        }
+        for tool in [DapiOrderToolRequest.exportOrders, .trackingForYourShop, .spendingReport, .reload] {
+            XCTAssertTrue(enabled(tool), "\(tool) on Orders with rows loaded")
+            XCTAssertFalse(enabled(tool, modal: true))
+            XCTAssertFalse(enabled(tool, keySaved: false))
+            XCTAssertFalse(enabled(tool, service: .slant))
+        }
+        // Export Orders… and Tracking for Your Shop… work on the listed orders, like the Orders toolbar's Tools menu:
+        // only with Orders shown and rows read for the filter shown, so they never do nothing visible.
+        for tool in [DapiOrderToolRequest.exportOrders, .trackingForYourShop] {
+            XCTAssertFalse(enabled(tool, loaded: false), "\(tool) with no rows")
+            for destination in [Destination.models, .catalog] {
+                XCTAssertFalse(enabled(tool, destination: destination), "\(tool) from \(destination)")
             }
-            XCTAssertFalse(dapiOrderToolMenuEnabled(tool, service: .dapi, keySaved: true, destination: .orders, modalUIShown: true))
-            XCTAssertFalse(dapiOrderToolMenuEnabled(tool, service: .dapi, keySaved: false, destination: .orders, modalUIShown: false))
-            XCTAssertFalse(dapiOrderToolMenuEnabled(tool, service: .slant, keySaved: true, destination: .orders, modalUIShown: false))
+        }
+        // Spending Report… reads its own period, so it opens from anywhere, rows or not.
+        for destination in [Destination.models, .orders, .catalog] {
+            XCTAssertTrue(enabled(.spendingReport, destination: destination, loaded: false), "Spending Report from \(destination)")
         }
         // Refresh reloads 3DAPI's Orders only while it is shown.
-        XCTAssertTrue(dapiOrderToolMenuEnabled(.reload, service: .dapi, keySaved: true, destination: .orders, modalUIShown: false))
-        XCTAssertFalse(dapiOrderToolMenuEnabled(.reload, service: .dapi, keySaved: true, destination: .models, modalUIShown: false))
-        XCTAssertFalse(dapiOrderToolMenuEnabled(.reload, service: .dapi, keySaved: true, destination: .catalog, modalUIShown: false))
-        XCTAssertFalse(dapiOrderToolMenuEnabled(.reload, service: .dapi, keySaved: true, destination: .orders, modalUIShown: true))
+        XCTAssertTrue(enabled(.reload, loaded: false))
+        XCTAssertFalse(enabled(.reload, destination: .models))
+        XCTAssertFalse(enabled(.reload, destination: .catalog))
     }
 
     func testModelsBarLeadsWithTheQuoteThenTheOrder() {
@@ -250,6 +263,11 @@ final class PrintServiceTests: XCTestCase {
         XCTAssertEqual(dapiModelsNextStepStatus(.needsKey, orderingProblem: nil),
                        "Add your 3DAPI integrator key in Settings › Account to quote and order with 3DAPI.")
         XCTAssertTrue(dapiModelsNextStepStatus(.ready, orderingProblem: nil).contains("press Place Order"))
+        // One ready line, whichever way the bar asks for it.
+        for ready in [false, true] {
+            XCTAssertEqual(dapiModelsNextStepStatus(.ready, hasReadyQuote: ready, orderingProblem: nil),
+                           dapiModelsReadyStatus(hasReadyQuote: ready, orderingProblem: nil))
+        }
         XCTAssertEqual(dapiModelsNextStepStatus(.ready, orderingProblem: "Add your business billing details in 3DAPI’s dashboard before ordering."),
                        "Add your business billing details in 3DAPI’s dashboard before ordering.")
         XCTAssertEqual(dapiModelsNextStepStatus(.needsKey, orderingProblem: "anything"),

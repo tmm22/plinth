@@ -10,6 +10,8 @@ struct PlinthApp: App {
     @StateObject private var printChoice = PrintServiceChoice.shared
     /// Whether a 3DAPI key is saved: the File menu's 3DAPI order commands need one.
     @StateObject private var dapiConnection = DapiConnection.shared
+    /// 3DAPI's Orders list: File › Export Orders… and Tracking for Your Shop… need rows loaded, as its Tools menu does.
+    @StateObject private var dapiOrderList = DapiOrderListState.shared
     init() {
         // First, before the store or anything else reads preferences, the Keychain or the support folder: the one-time
         // move from Slant Studio (LegacyMigration.swift). It does nothing outside the packaged Plinth app.
@@ -52,7 +54,7 @@ struct PlinthApp: App {
             }
             let dapiToolEnabled: (DapiOrderToolRequest) -> Bool = { tool in
                 dapiOrderToolMenuEnabled(tool, service: service, keySaved: dapiKeySaved, destination: store.destination,
-                                         modalUIShown: modalUIShown)
+                                         modalUIShown: modalUIShown, ordersLoaded: dapiOrderList.hasRowsForTools)
             }
             CommandGroup(replacing: .newItem) {
                 // Like the Go menu, these do nothing over a sheet, alert or dialog: opening the composer or importing

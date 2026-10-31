@@ -1115,8 +1115,7 @@ struct ModelsView: View {
         return HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(selectedModelName).font(.headline).lineLimit(1)
-                Text(step == .ready ? dapiModelsReadyStatus(hasReadyQuote: hasReadyQuote, orderingProblem: orderingProblem)
-                                    : dapiModelsNextStepStatus(step, orderingProblem: orderingProblem))
+                Text(dapiModelsNextStepStatus(step, hasReadyQuote: hasReadyQuote, orderingProblem: orderingProblem))
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

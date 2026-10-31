@@ -19,10 +19,10 @@ private final class ScriptedOrderTransport: DapiTransport, @unchecked Sendable {
     init(_ steps: [Step]) { self.steps = steps }
 
     func send(_ request: URLRequest) async throws -> DapiHTTPReply {
-        lock.lock()
-        requests.append(request)
-        let step = steps.isEmpty ? nil : steps.removeFirst()
-        lock.unlock()
+        let step: Step? = lock.withLock {
+            requests.append(request)
+            return steps.isEmpty ? nil : steps.removeFirst()
+        }
         switch step {
         case .reply(let status, let body)?:
             return DapiHTTPReply(status: status, headers: [:], body: Data(body.utf8))
@@ -30,14 +30,12 @@ private final class ScriptedOrderTransport: DapiTransport, @unchecked Sendable {
             throw error
         case .wait(let status, let body)?:
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                lock.lock()
-                if released {
-                    lock.unlock()
-                    continuation.resume()
-                } else {
+                let resumeNow: Bool = lock.withLock {
+                    if released { return true }
                     waiting = continuation
-                    lock.unlock()
+                    return false
                 }
+                if resumeNow { continuation.resume() }
             }
             return DapiHTTPReply(status: status, headers: [:], body: Data(body.utf8))
         case nil:
@@ -51,16 +49,16 @@ private final class ScriptedOrderTransport: DapiTransport, @unchecked Sendable {
     }
 
     func release() {
-        lock.lock()
-        released = true
-        let continuation = waiting
-        waiting = nil
-        lock.unlock()
+        let continuation: CheckedContinuation<Void, Never>? = lock.withLock {
+            released = true
+            defer { waiting = nil }
+            return waiting
+        }
         continuation?.resume()
     }
 
-    var count: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
-    var sentRequests: [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
+    var count: Int { lock.withLock { requests.count } }
+    var sentRequests: [URLRequest] { lock.withLock { requests } }
 }
 
 private let orderTestKey = "sk_0000000000test0000000000000000000000000000000000000000000000000"

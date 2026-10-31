@@ -264,11 +264,16 @@ func dapiLineRequest(_ line: DapiComposerLine) -> DapiOrderLineRequest? {
     return DapiOrderLineRequest(quoteID: quoteID, quantity: quantity, materials: .slots(slots))
 }
 
+/// "3DAPI’s suggestion: PLA Red, PLA White": a quote's suggested materials, by slot.
+func dapiSuggestedMaterialsText(_ quote: DapiQuote?) -> String {
+    let names = (quote?.suggestedMaterials ?? []).sorted { $0.slot < $1.slot }.compactMap(\.materialName)
+    return "3DAPI’s suggestion" + (names.isEmpty ? "" : ": " + names.joined(separator: ", "))
+}
+
 /// The materials as the review lists them: the suggestions (with their names), or the chosen material per slot.
 func dapiLineMaterialsText(_ line: DapiComposerLine, catalogue: [DapiMaterial]) -> String {
     if line.useSuggested, dapiQuoteHasSuggestions(line.quote) {
-        let names = (line.quote?.suggestedMaterials ?? []).sorted { $0.slot < $1.slot }.compactMap(\.materialName)
-        return "3DAPI’s suggestion" + (names.isEmpty ? "" : ": " + names.joined(separator: ", "))
+        return dapiSuggestedMaterialsText(line.quote)
     }
     let slots = dapiLineSlots(line.quote)
     return slots.map { slot in
@@ -326,6 +331,15 @@ func dapiComposerLines(duplicating order: DapiOrder) -> [DapiComposerLine] {
 /// The lines as the seller shaped them (which lines, and their quantities), for the discard check.
 func dapiComposerLineSignature(_ lines: [DapiComposerLine]) -> [String] {
     lines.map { "\($0.id.uuidString)|\($0.quantityText)" }
+}
+
+/// The composer's Discard Order question: "Nothing was sent" only while no Place Order from this sheet is still
+/// unconfirmed (`DapiComposerState.sentReferences`); otherwise that order may have been placed and charged.
+func dapiComposerDiscardMessage(hasUnconfirmedAttempt: Bool) -> String {
+    if hasUnconfirmedAttempt {
+        return "An order from this sheet may have been placed and charged. Plinth keeps the warning; use Look for Order on 3DAPI. The lines and details you entered are discarded."
+    }
+    return "Nothing was sent to 3DAPI. The lines and details you entered are discarded."
 }
 
 func dapiComposerHasInput(lineSignature: [String], initialLineSignature: [String], address: DapiComposerAddress,
@@ -486,6 +500,27 @@ struct DapiOrderReviewSnapshot: Equatable, Sendable {
     var shippingTotal: DapiMoney
     /// `dapiOrderingProblem`'s answer (nil when the account can order).
     var orderingProblem: String?
+    /// Quote ID → its suggested materials (`dapiSuggestionSignature`), for the quotes of lines sent with
+    /// `use_suggested_materials`: 3DAPI prints what the quote suggests when the order is placed, so a change counts.
+    var suggestedMaterials: [String: [String]] = [:]
+}
+
+/// A quote's suggested materials as compared before sending: "slot|material ID|name" per slot, sorted.
+func dapiSuggestionSignature(_ quote: DapiQuote) -> [String] {
+    quote.suggestedMaterials.map { suggestion in
+        let id = suggestion.materialID?.trimmingCharacters(in: .whitespaces) ?? ""
+        let name = suggestion.materialName?.trimmingCharacters(in: .whitespaces) ?? ""
+        return "\(suggestion.slot)|\(id)|\(name)"
+    }.sorted()
+}
+
+/// The materials shown for a line in the review: for a line sent with 3DAPI's suggestions, the suggestions of the quote
+/// as just read (what 3DAPI will print); otherwise the materials chosen in the composer.
+func dapiReviewMaterialsText(_ line: DapiOrderDraft.Line, quotes: [String: DapiQuote]) -> String {
+    if case .suggested = line.request.materials, let quote = quotes[line.request.quoteID] {
+        return dapiSuggestedMaterialsText(quote)
+    }
+    return line.materialsText
 }
 
 /// What changed between the reviewed figures and the fresh ones, in the seller's words; empty when nothing did.
@@ -510,6 +545,10 @@ func dapiReviewChanges(reviewed: DapiOrderReviewSnapshot, current: DapiOrderRevi
     }
     for quoteID in current.unitPrices.keys.sorted() where reviewed.unitPrices[quoteID] == nil {
         changes.append("\(names[quoteID] ?? "A model"): a new price.")
+    }
+    for quoteID in Set(reviewed.suggestedMaterials.keys).union(current.suggestedMaterials.keys).sorted()
+    where reviewed.suggestedMaterials[quoteID] != current.suggestedMaterials[quoteID] {
+        changes.append("\(names[quoteID] ?? "A model"): 3DAPI’s suggested materials changed.")
     }
     if reviewed.shippingTotal != current.shippingTotal {
         changes.append("Shipping: \(dapiMoneyText(reviewed.shippingTotal)) → \(dapiMoneyText(current.shippingTotal)).")
@@ -549,10 +588,15 @@ func dapiPlaceFailure(_ error: Error, now: Date = Date()) -> DapiPlaceFailure {
 
 let dapiPlaceUnknownText = "3DAPI didn’t answer clearly, so it may have charged your wallet and placed the order. Plinth won’t send it again. Press Look for Order on 3DAPI to check before placing it again."
 
-/// A definite refusal of Place Order: the client's own copy (`DapiError.userMessage`, the single source for 3DAPI's
-/// error codes) and that nothing was charged, because 3DAPI places and charges nothing it refuses.
+/// A definite refusal of Place Order: the client's own copy (`dapiRefusalMessage` with `placingOrder`, the single
+/// source for 3DAPI's error codes), which says exactly once that nothing was charged, because 3DAPI places and charges
+/// nothing it refuses.
 func dapiPlaceRefusalMessage(_ error: DapiError, now: Date = Date()) -> String {
-    error.userMessage(now: now) + " Nothing was charged."
+    if case .refused(let status, let code, let message) = error {
+        return dapiRefusalMessage(status: status, code: code, message: message, placingOrder: true)
+    }
+    let text = error.userMessage(now: now)
+    return text.contains("charged") ? text : "\(text) \(dapiNothingChargedSentence)"
 }
 
 // MARK: - Place runner
@@ -671,6 +715,10 @@ enum DapiPlacePhase: Equatable {
     let draft: DapiOrderDraft
     private let environment: DapiPlaceEnvironment
     private var checkTask: Task<Void, Never>?
+    /// The running read's own token: a read cut short by `close()` (or replaced) never touches the phase afterwards.
+    private var checkToken: UUID?
+    /// The latest read's task, kept after `close()`, so tests can wait for it to end.
+    private(set) var lastCheckTask: Task<Void, Never>?
     private var started = false
     private(set) var closed = false
     /// Use My Sample Credit as it was when Place Order was pressed.
@@ -694,12 +742,16 @@ enum DapiPlacePhase: Equatable {
     /// Go Back and closing are refused only while the order is with 3DAPI.
     var canClose: Bool { !isWriting }
 
-    /// First appearance: read everything once.
+    /// First appearance: read everything once. Shown again after going away while a read ran (closing stopped it):
+    /// the checks start over from the beginning, so a Place Order pressed before then needs another press. Never sends.
     func start() {
         closed = false
-        guard !started else { return }
-        started = true
-        runCheck()
+        guard started else {
+            started = true
+            runCheck()
+            return
+        }
+        if checkTask == nil, phase == .checking || phase == .rechecking { runCheck() }
     }
 
     func checkAgain() {
@@ -718,16 +770,32 @@ enum DapiPlacePhase: Equatable {
         closed = true
         checkTask?.cancel()
         checkTask = nil
+        checkToken = nil
+    }
+
+    /// Starts `readFigures` as the one running read; its result reaches `finish` only if it is still that read and the
+    /// sheet hasn't closed.
+    private func startRead(_ finish: @escaping @MainActor (CheckResult) -> Void) {
+        let token = UUID()
+        checkToken = token
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let result = await self.readFigures()
+            guard self.checkToken == token else { return }
+            self.checkToken = nil
+            self.checkTask = nil
+            guard !Task.isCancelled, !self.closed else { return }
+            finish(result)
+        }
+        checkTask = task
+        lastCheckTask = task
     }
 
     private func runCheck() {
         phase = .checking
         changes = []
-        checkTask = Task { [weak self] in
+        startRead { [weak self] result in
             guard let self else { return }
-            let result = await self.readFigures()
-            self.checkTask = nil
-            guard !Task.isCancelled, !self.closed else { return }
             switch result {
             case .success(let figures):
                 self.figures = figures
@@ -760,6 +828,16 @@ enum DapiPlacePhase: Equatable {
                 return .failure("Couldn’t read the quote for \(line.name): \(dapiFailureMessage(error)) Nothing was sent.")
             }
         }
+        // A line sent with `use_suggested_materials` gets what the quote suggests now: it needs suggestions 3DAPI can
+        // print, and they are compared before sending like the prices.
+        var suggestions: [String: [String]] = [:]
+        for line in draft.lines {
+            guard case .suggested = line.request.materials, let quote = quotes[line.request.quoteID] else { continue }
+            guard dapiQuoteHasSuggestions(quote) else {
+                return .failure("\(line.name): 3DAPI no longer suggests materials for this model. Go back and choose them. Nothing was sent.")
+            }
+            suggestions[line.request.quoteID] = dapiSuggestionSignature(quote)
+        }
         let requests = draft.lines.map(\.request)
         let shipping: DapiShippingEstimate
         do {
@@ -773,7 +851,8 @@ enum DapiPlacePhase: Equatable {
         if Task.isCancelled { return .failure("Stopped.") }
         let snapshot = DapiOrderReviewSnapshot(
             countryCode: draft.recipient.countryCode, lines: requests,
-            unitPrices: quotes.compactMapValues(\.price), shippingTotal: shipping.total, orderingProblem: nil)
+            unitPrices: quotes.compactMapValues(\.price), shippingTotal: shipping.total, orderingProblem: nil,
+            suggestedMaterials: suggestions)
         return .success(DapiOrderReviewFigures(snapshot: snapshot, quotes: quotes, shipping: shipping, wallet: wallet))
     }
 
@@ -788,11 +867,8 @@ enum DapiPlacePhase: Equatable {
         askPlaceAnyway = false
         pressedSampleCredit = useSampleCredit
         phase = .rechecking
-        checkTask = Task { [weak self] in
+        startRead { [weak self] result in
             guard let self else { return }
-            let result = await self.readFigures()
-            self.checkTask = nil
-            guard !Task.isCancelled, !self.closed else { return }
             switch result {
             case .failure(let message):
                 self.figures = nil
@@ -1167,6 +1243,10 @@ enum DapiCancelPhase: Equatable {
     let shownStatus: DapiOrderStatus
     private let environment: DapiCancelEnvironment
     private var readTask: Task<Void, Never>?
+    /// The running read's own token: a read cut short by `close()` (or replaced) never touches the phase afterwards.
+    private var readToken: UUID?
+    /// The latest read's task, kept after `close()`, so tests can wait for it to end.
+    private(set) var lastReadTask: Task<Void, Never>?
     private var started = false
     private(set) var closed = false
     /// Every order read or returned here (the list replaces its copy).
@@ -1182,15 +1262,29 @@ enum DapiCancelPhase: Equatable {
     var isWriting: Bool { phase == .cancelling }
     var canCancel: Bool { if case .ready = phase { true } else { false } }
 
+    /// First appearance: read the order once. Shown again after going away while a read ran (closing stopped it): the
+    /// opening read starts over, so a Cancel Order pressed before then needs another press. Never sends.
     func start() {
         closed = false
-        guard !started else { return }
-        started = true
-        readTask = Task { [weak self] in
+        guard started else {
+            started = true
+            readOnOpening()
+            return
+        }
+        if readTask == nil, phase == .loading { readOnOpening() }
+    }
+
+    func close() {
+        closed = true
+        readTask?.cancel()
+        readTask = nil
+        readToken = nil
+    }
+
+    private func readOnOpening() {
+        phase = .loading
+        startRead { [weak self] result in
             guard let self else { return }
-            let result = await self.fetchAndGate()
-            self.readTask = nil
-            guard !Task.isCancelled, !self.closed else { return }
             switch result {
             case .success(let order): self.phase = .ready(order)
             case .failure(let message): self.phase = .blocked(message)
@@ -1198,10 +1292,22 @@ enum DapiCancelPhase: Equatable {
         }
     }
 
-    func close() {
-        closed = true
-        readTask?.cancel()
-        readTask = nil
+    /// Starts `fetchAndGate` as the one running read; its result reaches `finish` only if it is still that read and the
+    /// sheet hasn't closed.
+    private func startRead(_ finish: @escaping @MainActor (Gate) -> Void) {
+        let token = UUID()
+        readToken = token
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let result = await self.fetchAndGate()
+            guard self.readToken == token else { return }
+            self.readToken = nil
+            self.readTask = nil
+            guard !Task.isCancelled, !self.closed else { return }
+            finish(result)
+        }
+        readTask = task
+        lastReadTask = task
     }
 
     enum Gate { case success(DapiOrder), failure(String) }
@@ -1229,11 +1335,8 @@ enum DapiCancelPhase: Equatable {
     func cancelOrder() {
         guard case .ready = phase, !closed else { return }
         phase = .loading
-        readTask = Task { [weak self] in
+        startRead { [weak self] gate in
             guard let self else { return }
-            let gate = await self.fetchAndGate()
-            self.readTask = nil
-            guard !Task.isCancelled, !self.closed else { return }
             switch gate {
             case .failure(let message): self.phase = .blocked(message)
             case .success(let order): self.send(order)
@@ -1254,11 +1357,16 @@ enum DapiCancelPhase: Equatable {
         phase = .cancelling
         let id = order.id
         let sentFrom = order.status
+        // Locked before sending, like Place's unconfirmed attempt (and Slant's lock): until 3DAPI answers clearly, no
+        // other review can send a second cancel of this order. Only a returned cancelled order, a definite refusal or a
+        // failure before sending lifts it here.
+        environment.noteUnknown(id, sentFrom)
         // `self` is held strongly: the write always ends and an unknown outcome is always recorded.
         Task { [self] in
             if self.closed {
                 // The sheet went away before the request was handed over: nothing was sent.
                 environment.endWrite(token)
+                environment.clearUnknown(id)
                 self.phase = .done(.refused("Nothing was sent."))
                 return
             }
@@ -1266,7 +1374,8 @@ enum DapiCancelPhase: Equatable {
             do { result = .success(try await client.cancelOrder(id: id, idempotencyKey: key)) } catch { result = .failure(error) }
             environment.endWrite(token)
             let outcome = dapiCancelOutcome(result)
-            if outcome.recordsUnknown { environment.noteUnknown(id, sentFrom) }
+            // Recorded again for an unclear outcome (a read meanwhile may have lifted the lock made before sending).
+            if outcome.recordsUnknown { environment.noteUnknown(id, sentFrom) } else { environment.clearUnknown(id) }
             switch outcome {
             case .cancelled(let order):
                 environment.noteCancelled(id)
@@ -1336,7 +1445,7 @@ struct DapiComposerEnvironment {
     /// The references of this composer's Place Order attempts that 3DAPI didn't definitely refuse. If one of them leaves
     /// the session's unconfirmed list (Look for Order on 3DAPI, a reload or a placed order found it), 3DAPI has this
     /// order, so the composer closes like after a placed order and never lets the same draft be placed again silently.
-    private(set) var sentReferences: Set<String> = []
+    @Published private(set) var sentReferences: Set<String> = []
 
     init(environment: DapiComposerEnvironment) {
         self.environment = environment
