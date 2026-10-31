@@ -610,7 +610,7 @@ struct DapiOrderDetailView: View {
                       : "Start a new order with the same models, quantities and materials. The address isn’t copied."))
             Button("Copy Order Number") { copyToPasteboard(order.number) }
             if dapiOffersProblemReport(status: order.status) {
-                DapiReportProblemButton(order: order)
+                DapiReportProblemButton(order: order, reprintBlockedReason: duplicateBlockedReason, onReprint: onDuplicate)
             }
             Spacer()
             // Last, and only while 3DAPI still lets the order be cancelled. It opens the cancel review only.

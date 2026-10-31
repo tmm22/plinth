@@ -25,16 +25,41 @@ struct DapiOrderInsightsSection: View {
 /// Offer it only where `dapiOffersProblemReport` allows.
 struct DapiReportProblemButton: View {
     let order: DapiOrder
+    /// Why Duplicate as New Order… can't open now (the detail's own reason), or nil.
+    var reprintBlockedReason: String? = nil
+    /// The detail's Duplicate as New Order… path, run once this sheet has closed. Nil hides Reprint as New Order….
+    var onReprint: (() -> Void)? = nil
     @State private var reportingProblem = false
+    @State private var reprintRequested = false
 
     var body: some View {
         Button("Report a Problem…") { reportingProblem = true }
             .help("Put together a message about this order to send to 3DAPI. Nothing is sent by Plinth.")
-            .sheet(isPresented: $reportingProblem) {
-                DapiProblemReportSheet(order: order).dapiOrderSheetCounted()
+            .sheet(isPresented: $reportingProblem, onDismiss: {
+                // Only after this sheet has gone, so the composer never opens over it.
+                guard reprintRequested else { return }
+                reprintRequested = false
+                onReprint?()
+            }) {
+                DapiProblemReportSheet(order: order, reprintBlockedReason: reprintBlockedReason,
+                                       onReprint: onReprint == nil ? nil : {
+                                           reprintRequested = true
+                                           reportingProblem = false
+                                       })
+                    .dapiOrderSheetCounted()
             }
     }
 }
+
+/// Reprint as New Order…'s state in 3DAPI's Report a Problem: the detail's Duplicate reason, else lines unread.
+func dapiReprintBlockedReason(_ order: DapiOrder, duplicateBlockedReason: String?) -> String? {
+    if let duplicateBlockedReason { return duplicateBlockedReason }
+    if (order.items ?? []).isEmpty { return "This order’s lines weren’t read, so they can’t be copied." }
+    return nil
+}
+
+/// Reprint as New Order…'s help: it only opens the composer, like Duplicate as New Order….
+let dapiReprintButtonHelp = "Close this and start a new 3DAPI order with this order’s models, quantities and materials. The address isn’t copied, and nothing is charged until you review the order and press Place Order."
 
 /// Collapsed-by-default profit check for one 3DAPI order: Margin.swift's parsing, fee presets and maths with 3DAPI's
 /// cost (`dapiOrderCost`). Only the preset and rates are saved (as Margin.swift already saves them); what the buyer
@@ -251,6 +276,9 @@ struct DapiProfitCheckPanel: View {
 struct DapiProblemReportSheet: View {
     @Environment(\.dismiss) private var dismiss
     let order: DapiOrder
+    var reprintBlockedReason: String? = nil
+    /// Closes this sheet and then opens the existing Duplicate as New Order… composer. Nil hides the button.
+    var onReprint: (() -> Void)? = nil
     @State private var problem: DapiProblemKind?
     @State private var details = ""
     @State private var copied = false
@@ -271,7 +299,7 @@ struct DapiProblemReportSheet: View {
                 ForEach(dapiProblemKinds(status: order.status)) { Text($0.title).tag(DapiProblemKind?.some($0)) }
             }
             .fixedSize()
-            if let guidance = problem.flatMap(dapiProblemGuidance) {
+            if let guidance = problem.flatMap({ dapiProblemGuidance($0, order: order) }) {
                 Label(guidance, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -302,6 +330,12 @@ struct DapiProblemReportSheet: View {
             HStack {
                 Button("Close", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                if let onReprint {
+                    let blocked = dapiReprintBlockedReason(order, duplicateBlockedReason: reprintBlockedReason)
+                    Button("Reprint as New Order…") { onReprint() }
+                        .disabled(blocked != nil)
+                        .help(blocked ?? dapiReprintButtonHelp)
+                }
                 Spacer()
                 if copied { Text("Copied.").font(.caption).foregroundStyle(.secondary) }
                 Button("Copy Message") {

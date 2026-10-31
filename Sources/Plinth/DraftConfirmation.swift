@@ -34,6 +34,38 @@ func orderMetadataAddingDraftMarker(_ metadata: [String: Any], marker: String) -
     return result
 }
 
+/// The metadata key that links a reprint draft to the order it reprints (Report a Problem's Reprint as New Draft…).
+let orderReprintOfKey = "reprintOf"
+/// A Slant order number longer than this isn't one, so no link is added.
+let orderReprintOfMaxLength = 100
+
+/// The draft's metadata with `reprintOf` set to the original order's Slant number, when there is room for one more
+/// field and the seller hasn't used the key themselves; otherwise unchanged (the draft is still created, just without
+/// the link). Call it after `orderMetadataAddingDraftMarker`, so the marker that guards against a duplicate create
+/// always comes first. The value is the order number only: never anything about the customer.
+func orderMetadataAddingReprintOf(_ metadata: [String: Any], original: String?) -> [String: Any] {
+    guard let number = original?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty,
+          number.count <= orderReprintOfMaxLength, !number.contains(where: { $0.isNewline }),
+          metadata[orderReprintOfKey] == nil, metadata.count < orderMetadataFieldLimit else { return metadata }
+    var result = metadata
+    result[orderReprintOfKey] = number
+    return result
+}
+
+/// What the reprint composer says about the link, from the reference fields typed so far: added, or why not. Nil
+/// when this isn't a reprint. Judged by the same two helpers Create Draft uses, so the note can't disagree with it.
+func orderReprintLinkNote(original: String?, sellerMetadata: [String: Any]) -> String? {
+    guard let number = original?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty else { return nil }
+    if sellerMetadata[orderReprintOfKey] != nil {
+        return "You’ve typed a reference field named \(orderReprintOfKey), so Plinth won’t add its own link to order \(number)."
+    }
+    let sent = orderMetadataAddingReprintOf(orderMetadataAddingDraftMarker(sellerMetadata, marker: "marker"), original: number)
+    guard sent[orderReprintOfKey] != nil else {
+        return "The reference fields are full (Plinth’s draft reference uses one of the 10), so this draft won’t be linked to order \(number). Remove one under More options › Advanced to add the link."
+    }
+    return "Plinth links this draft to order \(number) (\(orderReprintOfKey) in its reference fields), so the order shows as a reprint and the Spending Report counts it."
+}
+
 /// The marker to remember for a draft body: Studio's generated one only. Nil when the body went without it, including
 /// when the seller typed their own value under the key, which could match another order.
 func orderDraftMarkerSent(_ body: [String: Any], generated: String) -> String? {

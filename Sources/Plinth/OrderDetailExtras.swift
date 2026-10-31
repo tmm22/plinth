@@ -272,10 +272,100 @@ enum OrderProblemKind: String, CaseIterable, Identifiable {
 let orderProblemSupportAddress = "support@slant3d.com"
 let orderProblemReportCaption = "Plinth puts together a message with this order’s details for you to send to Slant support (\(orderProblemSupportAddress)). It doesn’t send anything itself: copy the message and paste it into your email or support request. Names and addresses aren’t included."
 
+/// Where a late order is held up, from Slant's own data (read-only advice; the Late delivery problem only).
+enum OrderLateStage: Equatable {
+    /// Being made, with no tracking number: Slant hasn't made a shipping label, so the delay is at Slant.
+    case atSlant
+    /// Slant's shipping record says it shipped, or a label (tracking number) exists: most likely with the carrier.
+    case withCarrier
+}
+
+/// Where a late order is: with the carrier once the shipping record says SHIPPED or DELIVERED (`orderDisplayStatus`,
+/// so a lagging order status still counts as shipped) or any tracking number exists; at Slant while the status is a
+/// production status with no tracking number. Nil for drafts, cancelled orders and statuses Plinth doesn't know.
+/// Slant sends `fulfillment` as null until a label is made (live, Oct 2026). Display and advice only.
+func orderLateStage(_ order: [String: Any]) -> OrderLateStage? {
+    let shown = orderDisplayStatus(order).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    let raw = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    if orderFulfillmentShippedStatuses.contains(shown) { return .withCarrier }
+    guard orderAttentionProductionStatuses.contains(raw) else { return nil }
+    return orderTrackingNumbers(order).isEmpty ? .atSlant : .withCarrier
+}
+
+/// What Plinth says under the problem picker; nil when there's nothing particular. Only Late delivery has advice,
+/// and it depends on whether the order has left Slant (`orderLateStage`). Never a claim window or a promise.
+func orderProblemGuidance(_ kind: OrderProblemKind, order: [String: Any]) -> String? {
+    guard kind == .late, let stage = orderLateStage(order) else { return nil }
+    switch stage {
+    case .atSlant:
+        return "Slant hasn’t made a shipping label for this order yet, so the delay is at Slant, not with the carrier. Send this message to Slant support; it says when the order was paid for."
+    case .withCarrier:
+        let shipped = orderFulfillmentShippedStatuses.contains(orderDisplayStatus(order).uppercased())
+        let lead = shipped
+            ? "Slant’s shipping record says this order has shipped, so this is most likely a carrier delay."
+            : "Slant has made a shipping label for this order, so it may be with the carrier."
+        guard !orderTrackingNumbers(order).isEmpty else {
+            return lead + " Slant hasn’t listed a tracking number, so send this message to Slant support and ask for it."
+        }
+        return lead + " Check the tracking first. If the carrier hasn’t scanned the parcel, or the tracking has stopped moving, send this message to Slant support; it includes the tracking number."
+    }
+}
+
+/// "31 October 2026" in the Mac's time zone, in English (the message is written in English).
+func orderProblemDateText(_ date: Date, timeZone: TimeZone = .current) -> String {
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_GB")
+    formatter.timeZone = timeZone
+    formatter.dateFormat = "d MMMM yyyy"
+    return formatter.string(from: date)
+}
+
+/// "today", "yesterday" or "5 days ago", by calendar days in `calendar`'s time zone; nil for a date after `now`.
+/// Shared by Slant's and 3DAPI's problem messages.
+func problemReportDaysAgoText(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String? {
+    let start = calendar.startOfDay(for: date)
+    let end = calendar.startOfDay(for: now)
+    guard let days = calendar.dateComponents([.day], from: start, to: end).day, days >= 0 else { return nil }
+    switch days {
+    case 0: return "today"
+    case 1: return "yesterday"
+    default: return "\(days) days ago"
+    }
+}
+
+/// "29 October 2026 (3 days ago)", or just the date when the days can't be counted.
+func problemReportDateWithAge(_ date: Date, now: Date, calendar: Calendar) -> String {
+    let text = orderProblemDateText(date, timeZone: calendar.timeZone)
+    return problemReportDaysAgoText(date, now: now, calendar: calendar).map { "\(text) (\($0))" } ?? text
+}
+
+/// The extra message lines for Late delivery: when it was paid for (Slant's `processedAt`) and that there's no
+/// shipping label yet, or when Slant's shipping record was made (`fulfillment.createdAt`, about when the label was
+/// made). Only dates Slant sent; a missing or unreadable one is left out, never guessed.
+func orderLateProblemLines(_ order: [String: Any], now: Date = Date(), calendar: Calendar = .current) -> [String] {
+    guard let stage = orderLateStage(order) else { return [] }
+    var lines: [String] = []
+    switch stage {
+    case .atSlant:
+        if let raw = order["processedAt"] as? String, let paid = orderTimestamp(raw) {
+            lines.append("Paid: \(problemReportDateWithAge(paid, now: now, calendar: calendar))")
+        }
+        lines.append("Shipping label: not made yet")
+    case .withCarrier:
+        if let raw = (order["fulfillment"] as? [String: Any])?["createdAt"] as? String, let made = orderTimestamp(raw) {
+            lines.append("Shipping record created: \(problemReportDateWithAge(made, now: now, calendar: calendar))")
+        }
+    }
+    return lines
+}
+
 /// The support message: order number, status, created date, tracking numbers, items with quantities and materials,
-/// the problem and the seller's description. No recipient name, email or address.
+/// the problem and the seller's description. No recipient name, email or address. A late order also gets
+/// `orderLateProblemLines`.
 func orderProblemMessage(order: [String: Any], problem: OrderProblemKind, details: String,
-                         modelNames: [String: String] = [:], filaments: [Record] = []) -> String {
+                         modelNames: [String: String] = [:], filaments: [Record] = [],
+                         now: Date = Date(), calendar: Calendar = .current) -> String {
     let number = orderNumber(order)
     let reference = number.isEmpty ? "my order" : "order \(number)"
     var lines = ["Hello Slant team,", "", "I’d like to report a problem with \(reference): \(problem.title.lowercased()).", ""]
@@ -293,6 +383,7 @@ func orderProblemMessage(order: [String: Any], problem: OrderProblemKind, detail
     for (label, value) in trackingFacts(order["fulfillment"]) where label == "Tracking number" {
         lines.append("Tracking number: \(value)")
     }
+    if problem == .late { lines += orderLateProblemLines(order, now: now, calendar: calendar) }
     lines.append("Problem: \(problem.title)")
     let items = order["items"] as? [[String: Any]] ?? []
     if !items.isEmpty {
@@ -331,6 +422,14 @@ func orderOffersProblemReport(status: String) -> Bool {
     return !normalized.isEmpty && normalized != "DRAFT"
 }
 
+/// Reprint as New Draft…'s help: what opens, and that the draft names the order it reprints.
+func orderReprintButtonHelp(orderNumber: String) -> String {
+    let number = orderNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+    let link = number.isEmpty ? "" : " The draft is marked as a reprint of order \(number) (reprintOf in its reference fields)."
+    return "Close this and open a new draft with this order’s items and delivery details for review." + link
+        + " Nothing is created until you choose Create Draft."
+}
+
 struct OrderProblemReportRequest: Identifiable {
     let id: String
     let order: [String: Any]
@@ -340,7 +439,8 @@ struct OrderProblemReportSheet: View {
     @EnvironmentObject var store: StudioStore
     @Environment(\.dismiss) var dismiss
     let order: [String: Any]
-    /// Closes this sheet and then opens the normal Duplicate as New Draft path for the order.
+    /// Closes this sheet and then opens Duplicate as New Draft's path for the order as a reprint: the same composer,
+    /// whose draft also carries `metadata.reprintOf` (`orderMetadataAddingReprintOf`).
     let onReprint: () -> Void
     @State private var problem: OrderProblemKind?
     @State private var details = ""
@@ -369,6 +469,11 @@ struct OrderProblemReportSheet: View {
                 ForEach(orderProblemKinds(status: orderDisplayStatus(order))) { Text($0.title).tag(OrderProblemKind?.some($0)) }
             }
             .fixedSize()
+            // Late delivery: whether the delay is at Slant or with the carrier (`orderLateStage`).
+            if let guidance = problem.flatMap({ orderProblemGuidance($0, order: order) }) {
+                Label(guidance, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text("What happened")
                 TextEditor(text: $details)
@@ -399,7 +504,7 @@ struct OrderProblemReportSheet: View {
                 let reprintBlocked = store.duplicateOrderBlockedReason(orderID: orderID)
                 Button("Reprint as New Draft…") { onReprint() }
                     .disabled(reprintBlocked != nil || orderID.isEmpty)
-                    .help(reprintBlocked ?? "Close this and open a new draft with this order’s items and delivery details for review. Nothing is created until you choose Create Draft.")
+                    .help(reprintBlocked ?? orderReprintButtonHelp(orderNumber: orderNumber(order)))
                 Spacer()
                 if copied { Text("Copied.").font(.caption).foregroundStyle(.secondary) }
                 Button("Copy Message") {
@@ -413,7 +518,7 @@ struct OrderProblemReportSheet: View {
             }
         }
         .padding(24)
-        .frame(width: 540, height: 580)
+        .frame(width: 540, height: 640)
         .onChange(of: problem) { copied = false }
         .onChange(of: details) { copied = false }
     }

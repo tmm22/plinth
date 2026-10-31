@@ -259,9 +259,39 @@ func dapiProblemGuidance(_ kind: DapiProblemKind) -> String? {
     }
 }
 
+/// Where a late 3DAPI order is held up: not shipped yet (paid and still with 3DAPI or its production partner), or
+/// shipped (most likely with the carrier). Nil for other statuses, including unrecognised ones. Advice only.
+enum DapiLateStage: Equatable { case notShipped, withCarrier }
+
+func dapiLateStage(_ order: DapiOrder) -> DapiLateStage? {
+    if order.status.hasShipped { return .withCarrier }
+    if order.status.isBeforeShipping { return .notShipped }
+    return nil
+}
+
+/// The guidance for this problem on this order: Late order's depends on whether 3DAPI has shipped it; every other
+/// kind is `dapiProblemGuidance(_:)`. Never a claim window or a promise.
+func dapiProblemGuidance(_ kind: DapiProblemKind, order: DapiOrder) -> String? {
+    guard kind == .late, let stage = dapiLateStage(order) else { return dapiProblemGuidance(kind) }
+    switch stage {
+    case .notShipped:
+        return "3DAPI hasn’t shipped this order yet, so the delay is with 3DAPI and its production partner, not the carrier. Send this message to 3DAPI; it says how long ago the order was placed."
+    case .withCarrier:
+        guard dapiNonEmpty(order.shipping.trackingNumber) != nil else {
+            return "3DAPI says this order has shipped but hasn’t given a tracking number, so send this message to 3DAPI and ask for it."
+        }
+        return "3DAPI says this order has shipped, so this is most likely a carrier delay. Check the tracking first. If the carrier hasn’t scanned the parcel, or the tracking has stopped moving, send this message to 3DAPI; it includes the tracking number."
+    }
+}
+
 /// The support message: order number, status, created date, carrier and tracking, items with quantities and
 /// materials, the problem and the seller's description. Never the customer's name, email or address, or the reference.
-func dapiProblemMessage(order: DapiOrder, problem: DapiProblemKind, details: String, timeZone: TimeZone = .current) -> String {
+/// A late order also says how long ago it was created and, once shipped, how long ago it shipped (3DAPI's dates only).
+func dapiProblemMessage(order: DapiOrder, problem: DapiProblemKind, details: String, timeZone: TimeZone = .current,
+                        now: Date = Date()) -> String {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    let lateStage = problem == .late ? dapiLateStage(order) : nil
     let number = order.number.trimmingCharacters(in: .whitespacesAndNewlines)
     let subject = number.isEmpty ? "my order" : "order \(number)"
     var lines = ["Hello 3DAPI team,", "", "I’d like to report a problem with \(subject): \(problem.title.lowercased()).", ""]
@@ -270,7 +300,14 @@ func dapiProblemMessage(order: DapiOrder, problem: DapiProblemKind, details: Str
     if let created = order.createdAt { lines.append("Created: \(dapiProblemDateText(created, timeZone: timeZone))") }
     if let carrier = dapiNonEmpty(order.shipping.carrier) { lines.append("Carrier: \(carrier)") }
     if let tracking = dapiNonEmpty(order.shipping.trackingNumber) { lines.append("Tracking number: \(tracking)") }
-    if let shipped = order.shipping.shippedAt { lines.append("Shipped: \(dapiProblemDateText(shipped, timeZone: timeZone))") }
+    if let shipped = order.shipping.shippedAt {
+        let age = lateStage == .withCarrier ? problemReportDaysAgoText(shipped, now: now, calendar: calendar).map { " (\($0))" } ?? "" : ""
+        lines.append("Shipped: \(dapiProblemDateText(shipped, timeZone: timeZone))\(age)")
+    }
+    if lateStage == .notShipped {
+        let age = order.createdAt.flatMap { problemReportDaysAgoText($0, now: now, calendar: calendar) }
+        lines.append("Shipped: not yet" + (age.map { " (created \($0))" } ?? ""))
+    }
     lines.append("Problem: \(problem.title)")
     if let items = order.items, !items.isEmpty {
         lines.append("")

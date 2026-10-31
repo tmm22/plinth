@@ -537,6 +537,69 @@ func spendReportDefaultFileName(date: Date = Date()) -> String {
     return "Slant spending \(formatter.string(from: date)).csv"
 }
 
+// MARK: - Reprints
+
+/// What reprints cost: orders that name an original in `metadata.reprintOf` (Report a Problem's Reprint as New
+/// Draft…), counted by the report's own rules (`spendReportCountedStatuses`, a readable creation date, each order
+/// once, USD totals only). Already inside the report's totals; this only picks them out.
+struct SpendReportReprints: Equatable {
+    var orders = 0
+    var spend: Decimal = 0
+    /// Counted reprints whose total Slant didn't return, or returned in another currency.
+    var ordersWithoutTotal = 0
+}
+
+/// The reprints among `records`, which the caller has already narrowed to the report's orders (the default platform's,
+/// and the period's for Load the Whole Period). Drafts, cancelled orders and unknown statuses aren't spend.
+func spendReportReprints(orders records: [Record]) -> SpendReportReprints {
+    var result = SpendReportReprints()
+    var seen = Set<String>()
+    for record in records {
+        let order = orderObject(record.values)
+        let number = orderNumber(order)
+        if !number.isEmpty, !seen.insert(number).inserted { continue }
+        guard orderReprintOf(order) != nil else { continue }
+        let status = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespaces).uppercased()
+        guard spendReportCountedStatuses.contains(status), orderCreatedDate(order) != nil else { continue }
+        result.orders += 1
+        let currency = ((order["currency"] as? String) ?? "").trimmingCharacters(in: .whitespaces).uppercased()
+        if usdCurrencyCodes.contains(currency), let total = orderTotalAmount(order) {
+            result.spend += total
+        } else {
+            result.ordersWithoutTotal += 1
+        }
+    }
+    return result
+}
+
+/// "2 reprints cost $18.40, included in the totals above." with any reprint lacking a USD total named; nil without
+/// reprints.
+func spendReportReprintLine(_ reprints: SpendReportReprints) -> String? {
+    guard reprints.orders > 0 else { return nil }
+    var line = "\(reprints.orders == 1 ? "1 reprint" : "\(reprints.orders) reprints") cost \(spendReportUSD(reprints.spend)), included in the totals above."
+    if reprints.ordersWithoutTotal > 0 {
+        line += " \(reprints.ordersWithoutTotal) \(reprints.ordersWithoutTotal == 1 ? "has" : "have") no USD total and \(reprints.ordersWithoutTotal == 1 ? "isn’t" : "aren’t") in that amount."
+    }
+    return line
+}
+
+/// Explains what counts as a reprint, under the line.
+let spendReportReprintCaption = "Reprints are orders made with Report a Problem’s Reprint as New Draft…, which Plinth marks with the order they replace."
+
+/// The text report's reprint section (appended after `spendReportText`), or "" without reprints.
+func spendReportReprintText(_ reprints: SpendReportReprints) -> String {
+    guard let line = spendReportReprintLine(reprints) else { return "" }
+    return "\nReprints\n\(line)\n"
+}
+
+/// The CSV's reprint table (appended after `spendReportCSV`, after a blank row), or "" without reprints.
+func spendReportReprintCSV(_ reprints: SpendReportReprints) -> String {
+    guard reprints.orders > 0 else { return "" }
+    let rows: [[String]] = [[], ["Reprints", "Orders", "Spend (USD)", "Orders without a total"],
+                            ["Reprints", String(reprints.orders), spendReportCSVAmount(reprints.spend), String(reprints.ordersWithoutTotal)]]
+    return rows.map { $0.map(csvField).joined(separator: ",") }.joined(separator: "\r\n") + "\r\n"
+}
+
 // MARK: - Store actions
 
 extension StudioStore {
@@ -565,6 +628,11 @@ extension StudioStore {
         Plinth.spendReport(orders: ordersShownOnPlatform(records, platformID: platformID),
                                 modelNames: orderItemModelNames(localModels: localModels, files: files),
                                 productSKUs: spendReportProductSKUs(savedProducts, localModels: localModels))
+    }
+
+    /// The reprints in the report's orders: the same platform check as `spendReport(for:)`.
+    func spendReportReprints(for records: [Record]) -> SpendReportReprints {
+        Plinth.spendReportReprints(orders: ordersShownOnPlatform(records, platformID: platformID))
     }
 
     /// How many of `records` the report leaves out for naming another platform.
@@ -933,6 +1001,7 @@ struct SpendingReportSheet: View {
     var body: some View {
         let loaded = store.hasKey ? periodLoader.current(platformID: store.platformID) : nil
         let report = loaded.map { store.spendReport(for: $0.records) } ?? store.currentSpendReport
+        let reprints = store.spendReportReprints(for: loaded?.records ?? store.orders)
         let notes = loaded.map {
             spendReportPeriodNotes(platformName: platformName($0.platformID), complete: $0.complete, capReached: $0.capReached,
                                    loadedCount: $0.records.count, lastCreated: $0.lastCreated,
@@ -973,6 +1042,7 @@ struct SpendingReportSheet: View {
                         if !report.productCosts.isEmpty || report.ordersWithoutItemPrices > 0 { productCostsTable(report) }
                         if !report.deliveryCosts.isEmpty || report.ordersWithoutDelivery > 0 { deliveryTable(report) }
                         if let shipTime { shipTimeSection(shipTime) }
+                        if reprints.orders > 0 { reprintsSection(reprints) }
                     }
                     .padding(24)
                 }
@@ -990,11 +1060,12 @@ struct SpendingReportSheet: View {
                 Button("Copy as Text") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(spendReportText(report, notes: notes, source: source)
-                                                   + orderShipTimeReportText(shipTime), forType: .string)
+                                                   + orderShipTimeReportText(shipTime) + spendReportReprintText(reprints),
+                                                   forType: .string)
                     copied = true
                 }
                 .disabled(report.countedOrders == 0)
-                Button("Export CSV…") { exportCSV(report, shipTime: shipTime) }
+                Button("Export CSV…") { exportCSV(report, shipTime: shipTime, reprints: reprints) }
                     .disabled(report.countedOrders == 0)
             }
             .padding(20)
@@ -1182,7 +1253,18 @@ struct SpendingReportSheet: View {
         }
     }
 
-    private func exportCSV(_ report: SpendReport, shipTime: OrderShipTimeSummary?) {
+    private func reprintsSection(_ reprints: SpendReportReprints) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeading(title: "Reprints")
+            if let line = spendReportReprintLine(reprints) {
+                Text(line).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            Text(spendReportReprintCaption).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func exportCSV(_ report: SpendReport, shipTime: OrderShipTimeSummary?, reprints: SpendReportReprints) {
         let panel = NSSavePanel()
         panel.title = "Export Spending Report"
         panel.nameFieldStringValue = spendReportDefaultFileName()
@@ -1191,7 +1273,7 @@ struct SpendingReportSheet: View {
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         exportError = nil
         // A UTF-8 byte order mark lets spreadsheet apps read non-ASCII names correctly.
-        let data = Data([0xEF, 0xBB, 0xBF]) + Data((spendReportCSV(report) + orderShipTimeReportCSV(shipTime)).utf8)
+        let data = Data([0xEF, 0xBB, 0xBF]) + Data((spendReportCSV(report) + orderShipTimeReportCSV(shipTime) + spendReportReprintCSV(reprints)).utf8)
         do {
             try data.write(to: destination, options: .atomic)
             store.activities.insert(Activity(title: "Export spending report", detail: report.countedOrders == 1 ? "1 order" : "\(report.countedOrders) orders", success: true), at: 0)
