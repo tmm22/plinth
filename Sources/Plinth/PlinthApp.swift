@@ -6,6 +6,8 @@ struct PlinthApp: App {
     @NSApplicationDelegateAdaptor(PlinthAppDelegate.self) private var appDelegate
     @StateObject private var store = StudioStore()
     @StateObject private var modalPresentation = ModalPresentationMonitor()
+    /// Slant 3D or 3DAPI (PrintService.swift): the File menu's order commands follow it. Read after `init()`'s migration.
+    @StateObject private var printChoice = PrintServiceChoice.shared
     init() {
         // First, before the store or anything else reads preferences, the Keychain or the support folder: the one-time
         // move from Slant Studio (LegacyMigration.swift). It does nothing outside the packaged Plinth app.
@@ -27,19 +29,27 @@ struct PlinthApp: App {
             // Every File and Go command acts in the main window. After the window was closed, `inMainWindow` opens it
             // again first and runs the command once it has appeared; each command keeps its own checks.
             let inMainWindow: (@escaping @MainActor () -> Void) -> Void = { ExternalModelOpenQueue.shared.performInMainWindow($0) }
+            // Slant's order commands only while Slant is the print service; with 3DAPI, ⌘N opens 3DAPI's composer.
+            let service = printChoice.service
+            let slantOrderCommands = slantOrderMenuCommandsAvailable(service: service)
+            let slantOnly: (@escaping @MainActor () -> Void) -> Void = { action in
+                inMainWindow { if slantOrderMenuCommandsAvailable(service: PrintServiceChoice.shared.service) { action() } }
+            }
             CommandGroup(replacing: .newItem) {
                 // Like the Go menu, these do nothing over a sheet, alert or dialog: opening the composer or importing
-                // (which shows Models) must never replace an open Pay or Cancel review.
-                Button("New Order Draft…") { inMainWindow { store.openOrderComposerFromMenu() } }
+                // (which shows Models) must never replace an open Pay or Cancel review. Either composer only opens for
+                // review; nothing is sent from the menu.
+                Button(newOrderMenuTitle(service: service)) { inMainWindow { store.openOrderComposerFromMenu() } }
                     .keyboardShortcut("n")
-                    .disabled(store.orderDraftBlockedReason != nil || store.busy || modalUIShown)
+                    .disabled(service == .dapi ? modalUIShown
+                                               : (store.orderDraftBlockedReason != nil || store.busy || modalUIShown))
                 Divider()
                 // Models. Library file actions only; nothing here uploads, places, pays for or cancels anything.
                 Button("Import Model…") { inMainWindow { store.importModelFromMenu() } }
                     .keyboardShortcut("o")
                     .disabled(modalUIShown)
-                Button("Upload from URL…") { inMainWindow { store.importModelFromURLFromMenu() } }
-                    .disabled(store.importFromURLBlockedReason != nil || modalUIShown)
+                Button("Upload from URL…") { slantOnly { store.importModelFromURLFromMenu() } }
+                    .disabled(!slantOrderCommands || store.importFromURLBlockedReason != nil || modalUIShown)
                 // Opens a .scad template to fill in; generating saves a new library model and never uploads.
                 Button("Personalise from Template…") { inMainWindow { store.personaliseFromTemplateFromMenu() } }
                     .disabled(modalUIShown)
@@ -60,18 +70,18 @@ struct PlinthApp: App {
                 Divider()
                 // Orders. None of these sends a request.
                 // Opens the Import Orders sheet only; drafts are created there after an explicit confirmation.
-                Button("Import Orders…") { inMainWindow { store.importOrdersFromMenu() } }
-                    .disabled(store.orderImportBlockedReason != nil || modalUIShown)
+                Button("Import Orders…") { slantOnly { store.importOrdersFromMenu() } }
+                    .disabled(!slantOrderCommands || store.orderImportBlockedReason != nil || modalUIShown)
                 // Saves a CSV of the loaded orders shown in the list; no request is made.
-                Button("Export Orders…") { inMainWindow { store.exportOrdersFromMenu() } }
-                    .disabled(!ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
+                Button("Export Orders…") { slantOnly { store.exportOrdersFromMenu() } }
+                    .disabled(!slantOrderCommands || !ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
                                                        sheetPresented: modalUIShown))
                 // Opens a local list of loaded orders' tracking only; nothing is sent.
-                Button("Tracking for Your Shop…") { inMainWindow { store.openShopFollowUpFromMenu() } }
-                    .disabled(store.orders.isEmpty || modalUIShown)
+                Button("Tracking for Your Shop…") { slantOnly { store.openShopFollowUpFromMenu() } }
+                    .disabled(!slantOrderCommands || store.orders.isEmpty || modalUIShown)
                 // Opens the spending report for the loaded orders; no request is made.
-                Button("Spending Report…") { inMainWindow { store.openSpendingReportFromMenu() } }
-                    .disabled(!ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
+                Button("Spending Report…") { slantOnly { store.openSpendingReportFromMenu() } }
+                    .disabled(!slantOrderCommands || !ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
                                                        sheetPresented: modalUIShown))
                 // Opens the Saved Products sheet only (a local list; nothing is sent).
                 Button("Saved Products…") { inMainWindow { store.openSavedProductsFromMenu() } }
@@ -79,7 +89,8 @@ struct PlinthApp: App {
                 Divider()
                 Button("Refresh") { inMainWindow { store.refreshFromMenu() } }
                     .keyboardShortcut("r")
-                    .disabled(!store.connected || store.busy || modalUIShown)
+                    .disabled(!store.connected || store.busy || modalUIShown
+                              || !slantRefreshAvailable(service: service, destination: store.destination))
             }
             SidebarCommands()
             CommandMenu("Go") {

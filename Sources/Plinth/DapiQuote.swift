@@ -206,12 +206,12 @@ struct DapiComparisonInputs {
     var slantDelivery: SpendReportDeliveryCost?
 }
 
-let dapiNoSlantEstimateText = "No current Slant estimate for this quantity — get one in Print configuration"
+let dapiNoSlantEstimateText = "No current Slant estimate for this quantity — get one in Models with Slant 3D as the print service"
 let dapiUpperBoundNote = "3DAPI charges less per unit for larger quantities; the exact price comes only with an order."
 let dapiSlantNoDeliveryHistoryText = "None of your loaded orders went there. Slant prices delivery only in a draft."
 let dapiSlantTotalOtherParcelsText = "Past delivery charges were for other parcels, so they aren’t added to this quantity."
 let dapiVATNote = "3DAPI’s prices are before VAT, which it adds only for UK and EU businesses without a confirmed VAT number."
-let dapiComparisonOnlyNote = "Plinth only compares prices. To print with 3DAPI, order in 3DAPI’s dashboard once it has approved your account."
+let dapiComparisonOnlyNote = "This sheet only compares prices; it orders nothing. To print with 3DAPI, choose 3DAPI as the print service in Settings › Account, then use Order with 3DAPI… in Models once 3DAPI has approved your account."
 
 /// The parcel size 3DAPI priced ("Small parcel"), or "Flat rate" when it couldn't weigh the order yet. 3DAPI's zone
 /// name is internal and isn't shown.

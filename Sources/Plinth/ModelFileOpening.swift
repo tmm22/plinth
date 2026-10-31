@@ -218,18 +218,28 @@ extension StudioStore {
         importModel()
     }
 
+    /// File › Upload from URL…: a Slant upload, so only while Slant is the print service.
     func importModelFromURLFromMenu() {
-        guard !menuCommandsBlockedByModalUI, importFromURLBlockedReason == nil else { return }
+        guard !menuCommandsBlockedByModalUI, importFromURLBlockedReason == nil,
+              slantOrderMenuCommandsAvailable(service: PrintServiceChoice.shared.service) else { return }
         showImportFromURL = true
     }
 
+    /// File › New Order Draft… (Slant's composer), or New 3DAPI Order… (3DAPI's composer in Orders) while 3DAPI is the
+    /// print service. Either only opens a composer for review; nothing is sent.
     func openOrderComposerFromMenu() {
-        guard !menuCommandsBlockedByModalUI, orderDraftBlockedReason == nil, !busy else { return }
+        guard !menuCommandsBlockedByModalUI else { return }
+        if PrintServiceChoice.shared.service == .dapi {
+            openDapiComposer(DapiComposerPrefill())
+            return
+        }
+        guard orderDraftBlockedReason == nil, !busy else { return }
         openOrderComposer()
     }
 
     /// File › Export Orders…: only on Orders with orders loaded and nothing modal shown. Writes a local file only.
     func exportOrdersFromMenu() {
+        guard slantOrderMenuCommandsAvailable(service: PrintServiceChoice.shared.service) else { return }
         guard !menuCommandsBlockedByModalUI, ordersExportMenuEnabled(destination: destination, ordersLoaded: !orders.isEmpty,
                                                                      sheetPresented: false) else { return }
         ordersExportRequest += 1
@@ -241,8 +251,10 @@ extension StudioStore {
         openSavedProducts()
     }
 
+    /// File › Refresh: Slant's, so not on the screens 3DAPI shows (`slantRefreshAvailable`).
     func refreshFromMenu() {
-        guard !menuCommandsBlockedByModalUI, connected, !busy else { return }
+        guard !menuCommandsBlockedByModalUI, connected, !busy,
+              slantRefreshAvailable(service: PrintServiceChoice.shared.service, destination: destination) else { return }
         Task { await refreshCurrent() }
     }
 }

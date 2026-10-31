@@ -116,6 +116,8 @@ struct AccountSettingsTab: View {
 
     var body: some View {
         Form {
+            PrintServiceSettingsSection() // PrintService.swift
+
             Section {
                 SecureField("API key", text: $key, prompt: Text("sl-…"))
                     .focused($keyFieldFocused)

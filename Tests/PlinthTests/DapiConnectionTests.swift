@@ -187,13 +187,48 @@ final class DapiConnectionTests: XCTestCase {
                        "Not yet approved by 3DAPI · Changes requested")
     }
 
-    func testScopeAdviceOnlyForOrdersWrite() {
-        XCTAssertNil(dapiKeyScopeAdvice(nil))
-        XCTAssertNil(dapiKeyScopeAdvice(integrator()))
-        let advice = dapiKeyScopeAdvice(integrator(allScopes + ["Orders:Write"]))
-        XCTAssertEqual(advice, "This key can also place paid orders on 3DAPI. Plinth needs only quotes:read, quotes:write and orders:read, so a key without orders:write is safer.")
-        // Advice only: the key still passes the account check.
-        XCTAssertNil(dapiAccountProblem(integrator(allScopes + ["orders:write"])))
+    func testOrderingStatusLine() throws {
+        // Nothing before a check, or when the key can't be used at all (the account problem says why).
+        XCTAssertNil(dapiOrderingStatusLine(nil, onboarding: nil))
+        XCTAssertNil(dapiOrderingStatusLine(DapiAccount(kind: "designer", approval: nil, effectiveScopes: allScopes), onboarding: nil))
+        XCTAssertNil(dapiOrderingStatusLine(integrator(["quotes:read"]), onboarding: nil))
+
+        // orders:write is optional: without it the key still saves and quotes, and the line says why it can't order.
+        XCTAssertNil(dapiAccountProblem(integrator(approval: "approved")))
+        let noWrite = try XCTUnwrap(dapiOrderingStatusLine(integrator(approval: "approved"), onboarding: nil))
+        XCTAssertFalse(noWrite.ready)
+        XCTAssertTrue(noWrite.text.hasPrefix("Ordering: not available yet. This 3DAPI key can’t place orders."), noWrite.text)
+
+        let withWrite = allScopes + ["Orders:Write"]
+        let pending = try XCTUnwrap(dapiOrderingStatusLine(integrator(withWrite), onboarding: nil))
+        XCTAssertFalse(pending.ready)
+        XCTAssertTrue(pending.text.contains("hasn’t approved this account"), pending.text)
+
+        let blocked = DapiOnboarding(status: "approved", approvedFiles: 10, requiredFiles: 10, uploadsUsed: 3, uploadsLimit: nil,
+                                     orderBlockers: ["billing_details_missing"])
+        let billing = try XCTUnwrap(dapiOrderingStatusLine(integrator(withWrite, approval: "approved"), onboarding: blocked))
+        XCTAssertFalse(billing.ready)
+        XCTAssertTrue(billing.text.contains("billing details"), billing.text)
+
+        let ready = try XCTUnwrap(dapiOrderingStatusLine(integrator(withWrite, approval: "approved"), onboarding: nil))
+        XCTAssertTrue(ready.ready)
+        XCTAssertEqual(ready.text, "Ordering: ready. Each order is charged when you press Place Order.")
+    }
+
+    func testKeyChangeWaitsForTheOrderScreens() {
+        XCTAssertEqual(dapiKeyChangeBlockedReason(activeRequests: 0, openSheets: 0, orderSessionReason: "Close the 3DAPI order sheet first."),
+                       "Close the 3DAPI order sheet first.")
+        XCTAssertEqual(dapiKeyChangeBlockedReason(activeRequests: 1, openSheets: 1,
+                                                  orderSessionReason: "Wait for 3DAPI to answer the order or cancellation first."),
+                       "Wait for 3DAPI to answer the order or cancellation first.", "an order waiting comes first")
+        var orderReason: String? = "Close the 3DAPI order sheet first."
+        let registry = registry!
+        let connection = DapiConnection(defaults: defaults, keychain: keys, makeClient: { registry.make($0) },
+                                        orderSessionBlockedReason: { orderReason })
+        XCTAssertEqual(connection.keyChangeBlockedReason, "Close the 3DAPI order sheet first.")
+        XCTAssertThrowsError(try connection.remove())
+        orderReason = nil
+        XCTAssertNil(connection.keyChangeBlockedReason)
     }
 
     // MARK: Quote write records

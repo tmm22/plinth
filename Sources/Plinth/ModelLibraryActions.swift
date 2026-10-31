@@ -318,7 +318,8 @@ func modelFileCommandsEnabled(destination: Destination, hasSelectedLocal: Bool, 
 // MARK: - Store actions
 
 extension StudioStore {
-    /// Sheets the store itself drives. A rename only counts while its model still exists, so a stale ID can't block menus.
+    /// Sheets the store itself drives, and the 3DAPI order and quote sheets (counted by `DapiOrderSession` and
+    /// `DapiConnection`). A rename only counts while its model still exists, so a stale ID can't block menus.
     var isPresentingSheet: Bool {
         showOrderComposer || showPlatformComposer || showSettingsPlatformComposer || showImportFromURL || showSavedProducts
             || showOrderImport || showShopFollowUp || batchPayRequest != nil
@@ -326,6 +327,7 @@ extension StudioStore {
             || personalisationTemplate != nil || meshFitRequest != nil || printReviewRequest != nil || showReplicaGenerator
             || showAccessoryDesigner
             || renameSheetIsShown(renamingModelID: renamingModelID, models: localModels)
+            || DapiOrderSession.shared.openSheets > 0 || DapiConnection.shared.openSheets > 0
     }
 
     /// Menu-driven Rename…: only from Models with a local model selected and nothing else presented, so the ID is

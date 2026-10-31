@@ -18,7 +18,8 @@ protocol DapiKeyStore {
 
 extension AIServiceKeychainItem: DapiKeyStore {}
 
-/// The scopes a key needs for price comparison: uploads and quotes, and `orders:read` for the shipping estimate.
+/// The scopes a key needs to be saved: uploads and quotes, and `orders:read` for the shipping estimate and the order
+/// list. `orders:write` is optional: it lets Plinth place orders (`dapiOrderingProblem`).
 let dapiRequiredScopes = ["quotes:read", "quotes:write", "orders:read"]
 
 /// Where a seller makes an integrator account (one email can't hold both a seller and an integrator account).
@@ -54,7 +55,7 @@ func dapiAccountProblem(_ account: DapiAccount) -> String? {
     let scopes = Set(account.effectiveScopes.map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
     let missing = dapiRequiredScopes.filter { !scopes.contains($0) }
     guard !missing.isEmpty else { return nil }
-    return "This key can’t use \(dapiJoinedList(missing)). In 3DAPI’s dashboard, make a key with quotes:read, quotes:write and orders:read."
+    return "This key can’t use \(dapiJoinedList(missing)). In 3DAPI’s dashboard, make a key with quotes:read, quotes:write and orders:read (and orders:write to place orders)."
 }
 
 /// "a", "a and b", "a, b and c" (fixed English wording, independent of the Mac's locale).
@@ -81,16 +82,22 @@ func dapiAccountStatusLine(_ account: DapiAccount?, onboarding: DapiOnboarding?)
     return line
 }
 
-/// Settings' note when the saved key can do more than Plinth needs (it never blocks anything), or nil.
-func dapiKeyScopeAdvice(_ account: DapiAccount?) -> String? {
-    guard let account, account.effectiveScopes.contains(where: { $0.trimmingCharacters(in: .whitespaces).lowercased() == "orders:write" })
-    else { return nil }
-    return "This key can also place paid orders on 3DAPI. Plinth needs only quotes:read, quotes:write and orders:read, so a key without orders:write is safer."
+/// Settings' ordering line for the saved key's account: whether it can place 3DAPI orders, or why not. Nil before the
+/// first account check, after a failed one, or when the key can't be used at all (`dapiAccountProblem` says why).
+func dapiOrderingStatusLine(_ account: DapiAccount?, onboarding: DapiOnboarding?) -> (ready: Bool, text: String)? {
+    guard let account, dapiAccountProblem(account) == nil else { return nil }
+    if let problem = dapiOrderingProblem(account: account, onboardingOrderBlockers: onboarding?.orderBlockers ?? []) {
+        return (false, "Ordering: not available yet. \(problem)")
+    }
+    return (true, "Ordering: ready. Each order is charged when you press Place Order.")
 }
 
 /// Why the 3DAPI key can't be saved or removed now, or nil. A quote write still waiting for 3DAPI (`writesInFlight`)
-/// counts as a request even after its sheet closed.
-func dapiKeyChangeBlockedReason(activeRequests: Int, openSheets: Int, writesInFlight: Int = 0) -> String? {
+/// counts as a request even after its sheet closed. `orderSessionReason` is the order screens' own
+/// (`DapiOrderSession.changeBlockedReason`: an order or cancellation waiting for 3DAPI, or an order sheet open).
+func dapiKeyChangeBlockedReason(activeRequests: Int, openSheets: Int, writesInFlight: Int = 0,
+                                orderSessionReason: String? = nil) -> String? {
+    if let orderSessionReason { return orderSessionReason }
     if activeRequests > 0 || writesInFlight > 0 { return "Wait for the 3DAPI request to finish." }
     if openSheets > 0 { return "Close the Get 3DAPI quote sheet first." }
     return nil
@@ -135,12 +142,16 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
     private let defaults: UserDefaults
     private let keychain: any DapiKeyStore
     private let makeClient: @Sendable (String) -> any DapiQuoting
+    /// The order screens' reason the key can't change (an order write waiting, an order sheet open).
+    private let orderSessionBlockedReason: @MainActor () -> String?
 
     init(defaults: UserDefaults = .standard, keychain: any DapiKeyStore = AIServiceKeychainItem.dapi,
-         makeClient: @escaping @Sendable (String) -> any DapiQuoting = { DapiClient(apiKey: $0) }) {
+         makeClient: @escaping @Sendable (String) -> any DapiQuoting = { DapiClient(apiKey: $0) },
+         orderSessionBlockedReason: @escaping @MainActor () -> String? = { DapiOrderSession.shared.changeBlockedReason }) {
         self.defaults = defaults
         self.keychain = keychain
         self.makeClient = makeClient
+        self.orderSessionBlockedReason = orderSessionBlockedReason
         isConfigured = defaults.bool(forKey: Self.keySavedDefaultsKey)
     }
 
@@ -148,7 +159,8 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
 
     /// Why the key can't be saved or removed now, or nil.
     var keyChangeBlockedReason: String? {
-        dapiKeyChangeBlockedReason(activeRequests: activeRequests, openSheets: openSheets, writesInFlight: quoteWritesInFlight.count)
+        dapiKeyChangeBlockedReason(activeRequests: activeRequests, openSheets: openSheets, writesInFlight: quoteWritesInFlight.count,
+                                   orderSessionReason: orderSessionBlockedReason())
     }
 
     func quoteWriteIsInFlight(forFileHash hash: String) -> Bool { quoteWritesInFlight.contains(hash.lowercased()) }
