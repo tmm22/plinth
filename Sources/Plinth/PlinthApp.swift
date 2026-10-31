@@ -217,23 +217,26 @@ struct StudioHelpSection: Identifiable, Equatable {
 let studioHelpSections: [StudioHelpSection] = [
     StudioHelpSection(title: "Getting started", body: """
         Open **Settings** (⌘,), paste your Slant 3D API key under **Account** and choose **Save & Test**. Then create or \
-        choose a platform: a platform groups your uploads and orders. The key is kept in the macOS Keychain on this Mac.
+        choose a platform: a platform groups your uploads and orders. The key is kept in the macOS Keychain on this Mac. \
+        **Print service**, at the top of **Account**, chooses Slant 3D (the default) or 3DAPI for Models’ next steps, \
+        Orders and Catalog; to print with 3DAPI, choose it there and save a 3DAPI key under **3DAPI**.
         """),
     StudioHelpSection(title: "Models", body: """
         Import an STL, OBJ or 3MF model with **File › Import Model…** (⌘O) or by dropping it on the window. Select a \
         model to preview it and check its mesh; the action bar leads through **Upload Model**, **Get Estimate** and \
-        **New Order Draft…**. The tools under **Improve for printing** work on STL models and always save a \
-        separate copy: the original is never changed.
+        **New Order Draft…**, or with 3DAPI through **Get 3DAPI Quote…** and **Order with 3DAPI…**. The tools under \
+        **Improve for printing** work on STL models and always save a separate copy: the original is never changed.
         """),
     StudioHelpSection(title: "Orders", body: """
         **New Order Draft…** (⌘N) creates a draft on Slant. A draft isn’t charged until you choose **Review & Place \
         Order…** and confirm **Pay & Send to Production**. Slant can’t delete drafts, so if Plinth can’t tell whether \
         a draft was created, it asks before you create another. **File › Import Orders…** creates drafts from an Etsy \
         or Shopify export after you confirm them. If Slant changes its API after this version of Plinth was made, a \
-        notice at the top of Orders says so; Plinth keeps working as before and only tells you.
+        notice at the top of Orders says so; Plinth keeps working as before and only tells you. With 3DAPI as the \
+        print service, Orders lists your 3DAPI orders instead.
         """),
     StudioHelpSection(title: "Catalog", body: """
-        Browse Slant’s materials, components and stationery.
+        Browse Slant’s materials, components and stationery, or 3DAPI’s materials while 3DAPI is your print service.
         """),
     StudioHelpSection(title: "Design tools (optional)", body: """
         **Review for Printing with Claude…**, **Design an Accessory from a Photo…** and **Generate a Replica from an \
@@ -241,15 +244,19 @@ let studioHelpSections: [StudioHelpSection] = [
         request that costs money is a button you press, with an estimate shown first, and Plinth never resends one by \
         itself.
         """),
-    StudioHelpSection(title: "Price comparison with 3DAPI (optional)", body: """
-        **Get 3DAPI Quote…** in a model’s **Print configuration** shows what 3DAPI, a separate print service, would \
-        charge to print it, beside Slant’s price. It needs a key from a 3DAPI integrator account, saved in \
-        **Settings › Account**. Getting a quote sends the model file to 3DAPI, which keeps it. Plinth only compares \
-        prices: it never orders or pays on 3DAPI.
+    StudioHelpSection(title: "Printing with 3DAPI (optional)", body: """
+        3DAPI is a separate print service. With a key from a 3DAPI integrator account, saved in \
+        **Settings › Account**, **Get 3DAPI Quote…** shows what 3DAPI would charge to print a model, beside Slant’s \
+        price; getting a quote sends the model file to 3DAPI, which keeps it. To order from 3DAPI, choose it as the \
+        print service (the key then needs orders:write). **New 3DAPI Order…** (⌘N) or **Order with 3DAPI…** opens \
+        an order to fill in; 3DAPI has no drafts, so nothing is charged until **Review Order…** and **Place Order**, \
+        which charges your 3DAPI wallet at once. If Plinth can’t tell whether an order was placed, it asks before you \
+        place another and offers **Look for Order on 3DAPI**. **Cancel Order…** is offered only while an order is \
+        Paid. Import Orders and Pay Several Drafts are for Slant only.
         """),
     StudioHelpSection(title: "What Plinth never does by itself", body: """
-        No menu item or keyboard shortcut uploads, pays, cancels or sends anything. When Plinth can’t tell whether a \
-        payment or cancellation went through, it holds that order until a reload shows what happened.
+        No menu item or keyboard shortcut uploads, pays, places, cancels or sends anything. When Plinth can’t tell \
+        whether a payment or cancellation went through, it holds that order until a reload shows what happened.
         """),
     StudioHelpSection(title: "Privacy", body: """
         Customers’ names, addresses and personalisation stay in memory and are never saved on this Mac. Your own \
@@ -259,8 +266,8 @@ let studioHelpSections: [StudioHelpSection] = [
         Click Plinth in the Dock, or choose **Window › Plinth** (⌘0).
         """),
     StudioHelpSection(title: "Keyboard shortcuts", body: """
-        ⌘N New Order Draft… · ⌘O Import Model… · ⇧⌘E Export Model… · ⌘R Refresh · ⌘1 Models · ⌘2 Orders · \
-        ⌘3 Catalog · ⌘0 Plinth window · ⌘, Settings
+        ⌘N New Order Draft… (New 3DAPI Order… with 3DAPI) · ⌘O Import Model… · ⇧⌘E Export Model… · ⌘R Refresh · \
+        ⌘1 Models · ⌘2 Orders · ⌘3 Catalog · ⌘0 Plinth window · ⌘, Settings
         """)
 ]
 
