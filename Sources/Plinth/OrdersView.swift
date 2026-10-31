@@ -1004,9 +1004,11 @@ struct OrderTableRow: Identifiable {
     let arriveBy: String
     let arriveBySortKey: Date
     let attention: OrderAttention?
+    /// A draft the seller hid (HiddenDrafts.swift), listed while Show Hidden Drafts is on. It never needs attention.
+    let isHiddenDraft: Bool
     var id: String { record.id }
 
-    init(record: Record, now: Date = Date()) {
+    init(record: Record, now: Date = Date(), isHiddenDraft: Bool = false) {
         self.record = record
         let order = orderObject(record.values)
         recipient = orderListTitle(order)
@@ -1021,7 +1023,8 @@ struct OrderTableRow: Identifiable {
         let arriveByDate = orderArriveByDate(order)
         arriveBy = arriveByDate.map(orderArriveByLabel) ?? ""
         arriveBySortKey = arriveByDate ?? orderMissingArriveBySortKey
-        attention = orderAttention(order, now: now)
+        attention = isHiddenDraft ? nil : orderAttention(order, now: now)
+        self.isHiddenDraft = isHiddenDraft
     }
 }
 
@@ -1079,24 +1082,54 @@ struct OrdersView: View {
         Binding(get: { needsAttentionOnly }, set: { needsAttentionOnly = $0; watchFocus = nil })
     }
     /// The list's rows: the default platform's loaded orders (`store.ordersOnDefaultPlatform`; Slant's list may
-    /// hold other platforms'), then Show's focus, the typed search and Needs Attention. Display only: `selected` and every
-    /// duplicate, lock and charge check read the raw `store.orders`.
-    var listRecords: [Record] { listRecords(from: store.ordersOnDefaultPlatform) }
+    /// hold other platforms') less hidden drafts (`store.ordersShownInList`, HiddenDrafts.swift), then Show's focus, the
+    /// typed search and Needs Attention. Display only: `selected` and every duplicate, lock and charge check read the
+    /// raw `store.orders`.
+    var listRecords: [Record] { listRecords(from: store.ordersShownInList) }
     func listRecords(from orders: [Record]) -> [Record] {
         if let focused = orderWatchFocusedRecords(orders, focus: watchFocus) { return focused }
-        if store.orderSearchActive { return orderAttentionFiltered(orders, enabled: needsAttentionOnly, now: Date()) }
+        if store.orderSearchActive { return attentionFiltered(orders) }
         let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
-        return orderAttentionFiltered(orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) },
-                                      enabled: needsAttentionOnly, now: Date())
+        return attentionFiltered(orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) })
+    }
+    /// Needs Attention never counts a hidden draft, even while Show Hidden Drafts lists them.
+    func attentionFiltered(_ orders: [Record]) -> [Record] {
+        guard needsAttentionOnly else { return orders }
+        let hidden = store.hiddenDraftIDSet
+        let keeping = store.unknownOutcomeOrderIDs
+        return orderAttentionFiltered(orders.filter { !orderIsHiddenDraft($0, hidden: hidden, keeping: keeping) },
+                                      enabled: true, now: Date())
+    }
+    /// The given orders less hidden drafts (all of them while Show Hidden Drafts is on).
+    func withoutHiddenDrafts(_ orders: [Record]) -> [Record] {
+        ordersShownWithoutHiddenDrafts(orders, hidden: store.hiddenDraftIDSet, keeping: store.unknownOutcomeOrderIDs,
+                                       showHidden: store.showHiddenDrafts)
     }
     /// Loaded orders left out of the list because they name another platform.
     var otherPlatformsHiddenCount: Int { store.orders.count - store.ordersOnDefaultPlatform.count }
-    /// The list is empty only because of the platform: the same filters over every loaded order would show some.
+    /// The default platform's loaded drafts left out because the seller hid them (0 while Show Hidden Drafts is on).
+    var hiddenDraftsCount: Int { store.ordersOnDefaultPlatform.count - store.ordersShownInList.count }
+    /// The list is empty only because of the platform: the same filters over every platform's orders (less hidden
+    /// drafts) would show some.
     var listEmptyOnlyForPlatform: Bool {
-        otherPlatformsHiddenCount > 0 && listRecords.isEmpty && !listRecords(from: store.orders).isEmpty
+        otherPlatformsHiddenCount > 0 && listRecords.isEmpty && !listRecords(from: withoutHiddenDrafts(store.orders)).isEmpty
+    }
+    /// The list is empty only because of hidden drafts: the same filters over the default platform's orders, hidden
+    /// drafts included, would show some.
+    var listEmptyOnlyForHiddenDrafts: Bool {
+        hiddenDraftsCount > 0 && listRecords.isEmpty && !listRecords(from: store.ordersOnDefaultPlatform).isEmpty
     }
     var tableRows: [OrderTableRow] {
-        orderTableRowsSorted(listRecords.map { OrderTableRow(record: $0) }, using: sortOrder)
+        let hidden = store.hiddenDraftIDSet
+        let keeping = store.unknownOutcomeOrderIDs
+        return orderTableRowsSorted(listRecords.map {
+            OrderTableRow(record: $0, isHiddenDraft: orderIsHiddenDraft($0, hidden: hidden, keeping: keeping))
+        }, using: sortOrder)
+    }
+    /// The list's IDs for Review Drafts One by One and Pay Several Drafts: never a hidden draft.
+    var reviewableListIDs: [String] {
+        orderListIDsExcludingHiddenDrafts(tableRows.map(\.id), orders: store.orders, hidden: store.hiddenDraftIDSet,
+                                          keeping: store.unknownOutcomeOrderIDs)
     }
     var draftFilterPreview: OrderFilter {
         var filter = OrderFilter()
@@ -1131,6 +1164,10 @@ struct OrdersView: View {
                             // Lets sellers match a draft to its marketplace order without opening it.
                             if let reference = row.marketplaceReference {
                                 Text(reference).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            if row.isHiddenDraft {
+                                Label("Hidden draft", systemImage: "eye.slash")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                     }
@@ -1168,9 +1205,19 @@ struct OrdersView: View {
                 }
                 .contextMenu(forSelectionType: String.self) { ids in
                     if ids.count == 1, let id = ids.first, let record = store.orders.first(where: { $0.id == id }) {
+                        let order = contextMenuOrder(record)
                         Button("Duplicate as New Draft…") { Task { await store.duplicateOrderAsDraft(orderID: id) } }
                             .disabled(store.duplicateOrderBlockedReason(orderID: id) != nil)
-                        Button("Copy Order Number") { copyToPasteboard(orderNumber(orderObject(record.values))) }
+                        Button("Copy Order Number") { copyToPasteboard(orderNumber(order)) }
+                        if let tracking = orderCopyTrackingMenuItem(orderTrackingNumbers(order)) {
+                            Button(tracking.title) { copyToPasteboard(tracking.value) }
+                        }
+                        // As the detail offers it: once an order has been placed. Opens the same sheet; sends nothing.
+                        if orderOffersProblemReport(status: (order["status"] as? String) ?? record.string("status")) {
+                            Button("Report a Problem…") { openProblemReport(id: id, order: order) }
+                                .disabled(pendingConfirm != nil || problemReport != nil)
+                        }
+                        hideDraftMenuItem(record)
                     }
                 }
                 .overlay {
@@ -1197,6 +1244,15 @@ struct OrdersView: View {
                 }
                 // Slant's list may hold other platforms' orders; those naming another platform aren't listed.
                 if !tableRows.isEmpty, let hidden = orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount) {
+                    Text(hidden)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                }
+                // Drafts the seller hid on this Mac (HiddenDrafts.swift).
+                if !tableRows.isEmpty, let hidden = orderHiddenDraftsLine(hiddenDraftsCount) {
                     Text(hidden)
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1295,6 +1351,11 @@ struct OrdersView: View {
                         Toggle("Needs Attention (Loaded Orders)", isOn: needsAttentionBinding)
                             .disabled(!store.ordersLoaded)
                     }
+                    // Local only, like Needs Attention: lists the drafts hidden on this Mac again (HiddenDrafts.swift).
+                    Section {
+                        Toggle("Show Hidden Drafts", isOn: $store.showHiddenDrafts)
+                            .disabled(store.hiddenDraftIDs.isEmpty && !store.showHiddenDrafts)
+                    }
                 } label: {
                     Label("Status", systemImage: store.orderFilter.status != nil || needsAttentionOnly
                           ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
@@ -1321,13 +1382,13 @@ struct OrdersView: View {
                 // the others open local sheets or save a CSV through the same guarded paths as the File menu.
                 Menu {
                     Button("Review Drafts One by One…") { reviewDraftsInOrder() }
-                        .disabled(store.busy || nextDraftForReview(after: nil, in: tableRows.map(\.id)) == nil)
+                        .disabled(store.busy || nextDraftForReview(after: nil, in: reviewableListIDs) == nil)
                         .help("Review each draft in the list in turn, starting at the top. Each is paid only if you press Pay & Send to Production in its own review.")
                     Button("Pay Several Drafts…") {
                         guard pendingConfirm == nil else { return }
-                        store.openBatchPay(listIDs: tableRows.map(\.id))
+                        store.openBatchPay(listIDs: reviewableListIDs)
                     }
-                    .disabled(store.busy || batchPayDraftRecords(listIDs: tableRows.map(\.id), orders: store.orders).isEmpty)
+                    .disabled(store.busy || batchPayDraftRecords(listIDs: reviewableListIDs, orders: store.orders).isEmpty)
                     .help("Choose drafts in the list, review them together and pay them one at a time. Nothing is paid until you confirm the total.")
                     Divider()
                     // Lists loaded orders' tracking to copy into Etsy or Shopify; sends nothing.
@@ -1479,7 +1540,9 @@ struct OrdersView: View {
     /// began (`ids`, by default the snapshot), skipping orders that are no longer drafts or are locked now.
     func nextDraftForReview(after currentID: String?, in ids: [String]? = nil) -> (id: String, caption: String)? {
         let rows = orderDraftReviewRows(snapshotIDs: ids ?? reviewListSnapshot, orders: store.orders)
-        guard let id = orderNextDraftToReview(rows: rows, after: currentID, isLocked: { store.isOutcomeUnknown(orderID: $0) }),
+        // A draft hidden since the run began is skipped too, keeping the run's place in the snapshot.
+        guard let id = orderNextDraftToReview(rows: rows, after: currentID,
+                                              isLocked: { store.isOutcomeUnknown(orderID: $0) || store.isHiddenDraft(orderID: $0) }),
               let record = store.orders.first(where: { $0.id == id }) else { return nil }
         let row = OrderTableRow(record: record)
         return (id, orderNextDraftCaption(recipient: row.recipient, number: row.number))
@@ -1489,7 +1552,7 @@ struct OrdersView: View {
     /// `startsRun`: Review Drafts One by One…, whose reviews show "Draft 2 of 5" and can skip to the next draft.
     func presentChargeReview(orderID: String, continuingRun: Bool = false, startsRun: Bool = false) {
         if !continuingRun {
-            reviewListSnapshot = tableRows.map(\.id)
+            reviewListSnapshot = reviewableListIDs
             reviewRunDraftIDs = orderReviewRunDraftIDs(rows: orderDraftReviewRows(snapshotIDs: reviewListSnapshot, orders: store.orders),
                                                        isLocked: { store.isOutcomeUnknown(orderID: $0) })
             reviewRunActive = startsRun
@@ -1502,7 +1565,7 @@ struct OrdersView: View {
     /// Review Drafts One by One…: opens the existing charge review for the first draft in the list. It never pays.
     func reviewDraftsInOrder() {
         guard !store.menuCommandsBlockedByModalUI, !store.busy, pendingConfirm == nil,
-              let next = nextDraftForReview(after: nil, in: tableRows.map(\.id)) else { return }
+              let next = nextDraftForReview(after: nil, in: reviewableListIDs) else { return }
         selection = next.id
         presentChargeReview(orderID: next.id, startsRun: true)
     }
@@ -1531,6 +1594,31 @@ struct OrdersView: View {
         selection = id
         presentChargeReview(orderID: id, continuingRun: true)
     }
+    // MARK: List context menu and hidden drafts (HiddenDrafts.swift)
+
+    /// The order a row's context menu acts on: the detail read for it when that is loaded, else the list's copy.
+    func contextMenuOrder(_ record: Record) -> [String: Any] {
+        if selection == record.id, let detail, orderBelongs(detail, to: record.id) { return detail }
+        return orderObject(record.values)
+    }
+    /// Report a Problem… from the list, as from the detail: opens the sheet only once nothing else is shown.
+    func openProblemReport(id: String, order: [String: Any]) {
+        guard pendingConfirm == nil, problemReport == nil, !store.menuCommandsBlockedByModalUI else { return }
+        problemReport = OrderProblemReportRequest(id: id, order: order)
+    }
+    /// Hide Draft or Unhide Draft for a row: drafts by Slant's raw status only, never one under the pay/cancel lock.
+    @ViewBuilder
+    func hideDraftMenuItem(_ record: Record) -> some View {
+        if store.isHiddenDraft(record) {
+            Divider()
+            Button("Unhide Draft") { store.unhideDraft(orderID: record.id) }
+        } else if orderCanHideDraft(orderObject(record.values),
+                                    locked: hiddenDraftOrderIDs(record).contains { store.isOutcomeUnknown(orderID: $0) }) {
+            Divider()
+            Button("Hide Draft") { store.hideDraft(orderID: record.id) }
+        }
+    }
+
     func reprintIfRequested() {
         guard let id = reprintAfterDismiss else { return }
         reprintAfterDismiss = nil
@@ -1621,7 +1709,10 @@ struct OrdersView: View {
     @ViewBuilder
     var filteredEmptyView: some View {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        if listEmptyOnlyForPlatform {
+        if listEmptyOnlyForHiddenDrafts {
+            // Never blames the search or the dates: these orders match, but are drafts hidden on this Mac.
+            hiddenDraftsEmptyView
+        } else if listEmptyOnlyForPlatform {
             // Never blames the search or the dates: these orders match, but are on another platform.
             otherPlatformsEmptyView
         } else if needsAttentionOnly {
@@ -1649,7 +1740,8 @@ struct OrdersView: View {
                       systemImage: "line.3.horizontal.decrease.circle")
             } description: {
                 Text([orderFilterEmptyDetail(store.orderFilter, search: query, moreOnServer: moreOnServer),
-                      orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount)].compactMap { $0 }.joined(separator: " "))
+                      orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount),
+                      orderHiddenDraftsLine(hiddenDraftsCount)].compactMap { $0 }.joined(separator: " "))
             } actions: {
                 if store.orderFilter.isActive {
                     Button("Show All Orders") {
@@ -1658,6 +1750,18 @@ struct OrdersView: View {
                     .disabled(store.busy)
                 }
             }
+        }
+    }
+
+    /// Every loaded order that would be listed is a draft hidden on this Mac.
+    var hiddenDraftsEmptyView: some View {
+        ContentUnavailableView {
+            Label("Only hidden drafts", systemImage: "eye.slash")
+        } description: {
+            Text([orderHiddenDraftsLine(hiddenDraftsCount), orderOtherPlatformsHiddenLine(otherPlatformsHiddenCount)]
+                .compactMap { $0 }.joined(separator: " "))
+        } actions: {
+            Button("Show Hidden Drafts") { store.showHiddenDrafts = true }
         }
     }
 
@@ -1686,6 +1790,8 @@ struct OrdersView: View {
                 Button("New Order Draft…") { store.openOrderComposer() }
                     .disabled(store.orderDraftBlockedReason != nil || store.busy)
             }
+        } else if listRecords.isEmpty, hiddenDraftsCount > 0 {
+            hiddenDraftsEmptyView
         } else if listRecords.isEmpty, otherPlatformsHiddenCount > 0 {
             otherPlatformsEmptyView
         }
@@ -1727,6 +1833,17 @@ struct OrdersView: View {
                             .disabled(duplicateBlocked != nil)
                             .fixedSize()
                             .help(duplicateBlocked ?? "Open a new draft with this order’s items and delivery details for review")
+                        // Local only (HiddenDrafts.swift): by Slant's raw status, never for an order under the lock.
+                        if store.isHiddenDraft(selected) {
+                            Button("Unhide Draft") { store.unhideDraft(orderID: selected.id) }
+                                .fixedSize()
+                                .help("List this draft in Orders again")
+                        } else if orderRawStatusIsDraft(orderObject(selected.values)),
+                                  orderCanHideDraft(displayed, locked: hiddenDraftOrderIDs(selected).contains { store.isOutcomeUnknown(orderID: $0) }) {
+                            Button("Hide Draft") { store.hideDraft(orderID: selected.id) }
+                                .fixedSize()
+                                .help(orderHideDraftHelp)
+                        }
                         if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
                             Button("Review & Place Order…") { presentChargeReview(orderID: selected.id) }
                                 .buttonStyle(.borderedProminent)
@@ -1753,6 +1870,10 @@ struct OrdersView: View {
                     }
                     if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
                         Text(orderDetailDraftCaption).font(.caption).foregroundStyle(.secondary)
+                        if store.isHiddenDraft(selected) {
+                            Text(orderHiddenDraftDetailNote).font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     } else if !canCancelSelected, let reason = orderDetailCancelBlockedNote((displayed["status"] as? String) ?? "") {
                         // Under the row with its own width, rather than squeezed beside the buttons.
                         Text(reason).font(.caption).foregroundStyle(.secondary)
@@ -2526,6 +2647,8 @@ func orderMatchesSearch(_ order: Record, query: String, modelNames: [String: Str
         fields.append(contentsOf: items.map { orderItemDisplayName($0, modelNames: modelNames) })
     }
     if let reference = orderMarketplaceReference(values) { fields.append(reference.id) }
+    // Tracking numbers, so a carrier's number pasted from a customer's message finds its order.
+    fields.append(contentsOf: orderTrackingNumbers(values))
     return fields.contains { $0.localizedCaseInsensitiveContains(trimmed) }
 }
 

@@ -230,10 +230,12 @@ final class OrderToolsTests: XCTestCase {
         let rows = parseCSV(csv)
         XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(rows[0], ordersCSVBaseColumns)
-        XCTAssertEqual(rows[1], [
+        XCTAssertEqual(Array(rows[1].prefix(11)), [
             "SLANT_ABC", "2026-10-03T09:00:00Z", "SHIPPED", "3", "2 × Bracket, large; 1 × Clip \"mini\"\nv2",
             "10.00", "5.50", "15.50", "USD", "USPS", "1Z1; 1Z2"
         ])
+        // The reference columns (HiddenDraftsTests): no marketplace, paid or label times on this order.
+        XCTAssertEqual(Array(rows[1].suffix(5)), ["", "", "", "SHIPPED", ""])
         XCTAssertTrue(csv.hasSuffix("\r\n"))
     }
 
