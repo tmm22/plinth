@@ -101,7 +101,7 @@ final class DapiOrderWatchTests: XCTestCase {
 
     @MainActor
     final class Harness {
-        let client = ScriptedDapiOrders()
+        let client = InsightsScriptedDapiOrders()
         var now = Date(timeIntervalSince1970: 2_000_000_000)
         var canCheck = true
         var hasClient = true

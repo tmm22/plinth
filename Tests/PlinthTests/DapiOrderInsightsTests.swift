@@ -33,7 +33,7 @@ func insightItem(_ quantity: Int, name: String = "Plinth 0123456789abcdef", mate
 }
 
 /// A scripted ordering client for list and by-ID reads; every write fails the test.
-final class ScriptedDapiOrders: DapiOrdering, @unchecked Sendable {
+final class InsightsScriptedDapiOrders: DapiOrdering, @unchecked Sendable {
     private let lock = NSLock()
     private var _pages: [Result<DapiOrderPage, DapiError>] = []
     private var _queries: [DapiOrderListQuery] = []
@@ -364,7 +364,7 @@ final class DapiOrderInsightsTests: XCTestCase {
 
     @MainActor
     func testLoaderReadsPagesThenKeepsPartialResultsOnFailure() async {
-        let client = ScriptedDapiOrders()
+        let client = InsightsScriptedDapiOrders()
         let now = date("2026-10-31T12:00:00Z")
         client.scriptPages([
             .success(DapiOrderPage(orders: [insightOrder(id: "ord_1", created: date("2026-10-30T12:00:00Z"))], hasMore: true, nextCursor: "c2")),
@@ -398,7 +398,7 @@ final class DapiOrderInsightsTests: XCTestCase {
 
     @MainActor
     func testLoaderStopsAtThePageCap() async {
-        let client = ScriptedDapiOrders()
+        let client = InsightsScriptedDapiOrders()
         let now = date("2026-10-31T12:00:00Z")
         var counter = 0
         client.scriptPages([.success(DapiOrderPage(orders: [insightOrder(id: "ord_x", created: now)], hasMore: true, nextCursor: "next"))])
@@ -423,7 +423,7 @@ final class DapiOrderInsightsTests: XCTestCase {
 
     @MainActor
     func testStopEndsTheRequestOnceAndDropsLateResults() async {
-        let client = ScriptedDapiOrders()
+        let client = InsightsScriptedDapiOrders()
         client.scriptPages([.success(DapiOrderPage(orders: [insightOrder(id: "ord_1", created: Date())], hasMore: true, nextCursor: "c"))])
         var counter = 0
         let loader = DapiSpendPeriodLoader(makeClient: { client }, sleep: { _ in try await Task.sleep(nanoseconds: 50_000_000) },
