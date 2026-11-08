@@ -228,8 +228,8 @@ struct SpendReportPricedLine {
 /// Slant's item `price` is the price of the whole line (live, 23 Oct 2026: a line of 2 was priced 19.86 where one unit
 /// was 9.93, equal to the order's `printingCost`). So every item must carry a USD price and a whole quantity, and the
 /// prices of all items must add up to the order's `printingCost`, to the cent. Otherwise the order is left out (and
-/// counted) rather than split by guesswork. Slant's JSON numbers arrive as doubles (9.93 reads as 9.92999…), so each
-/// price and the printing cost are rounded to cents before they are compared.
+/// counted) rather than split by guesswork. Slant's JSON numbers arrive as doubles, which needn't hold a cent amount
+/// exactly, so each price and the printing cost are rounded to cents before they are compared.
 func spendReportPricedPrintLines(_ items: [[String: Any]], printingCost: Any?) -> [SpendReportPricedLine]? {
     guard !items.isEmpty, let printingAmount = estimateAmount(printingCost), printingAmount >= 0 else { return nil }
     let printing = roundedToCents(printingAmount)

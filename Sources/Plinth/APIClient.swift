@@ -685,7 +685,9 @@ struct APIClient {
         }
         stage(.preparing)
         var body: [String: Any] = ["name": name, "platformId": platformId]
-        if !ownerId.isEmpty { body["ownerId"] = ownerId }
+        // Trimmed, as order drafts trim it: Slant files uploads under the owner and name.
+        let owner = ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !owner.isEmpty { body["ownerId"] = owner }
         if let type = uploadTypeParameter(forFileExtension: file.pathExtension) {
             body["type"] = type
         }

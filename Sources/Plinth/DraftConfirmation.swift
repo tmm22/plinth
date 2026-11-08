@@ -19,6 +19,15 @@ let draftMarkerCheckPageSize = 100
 /// Check Slant stops paging when Slant's figures show this many requests or fewer left in the current window.
 let draftMarkerCheckRateLimitReserve = 10
 
+/// Whether the metadata already holds `key` as Slant would read it: Slant turns snake_case keys into camelCase, so
+/// `studio_draft_id` and `studioDraftId` are the same field. Compared without underscores and in any case, which can
+/// only make Plinth leave its own field out more often, never overwrite the seller's.
+func orderMetadataHasKey(_ metadata: [String: Any], _ key: String) -> Bool {
+    func folded(_ text: String) -> String { text.replacingOccurrences(of: "_", with: "").lowercased() }
+    let target = folded(key)
+    return metadata.keys.contains { folded($0) == target }
+}
+
 /// A fresh marker for one Create Draft press. Random, so it says nothing about the order or the customer.
 func newStudioDraftMarker() -> String {
     UUID().uuidString.lowercased()
@@ -28,7 +37,7 @@ func newStudioDraftMarker() -> String {
 /// key themselves; otherwise unchanged (that draft is sent without a marker and can't be checked).
 func orderMetadataAddingDraftMarker(_ metadata: [String: Any], marker: String) -> [String: Any] {
     let trimmed = marker.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, metadata[studioDraftMarkerKey] == nil, metadata.count < orderMetadataFieldLimit else { return metadata }
+    guard !trimmed.isEmpty, !orderMetadataHasKey(metadata, studioDraftMarkerKey), metadata.count < orderMetadataFieldLimit else { return metadata }
     var result = metadata
     result[studioDraftMarkerKey] = trimmed
     return result
@@ -46,7 +55,7 @@ let orderReprintOfMaxLength = 100
 func orderMetadataAddingReprintOf(_ metadata: [String: Any], original: String?) -> [String: Any] {
     guard let number = original?.trimmingCharacters(in: .whitespacesAndNewlines), !number.isEmpty,
           number.count <= orderReprintOfMaxLength, !number.contains(where: { $0.isNewline }),
-          metadata[orderReprintOfKey] == nil, metadata.count < orderMetadataFieldLimit else { return metadata }
+          !orderMetadataHasKey(metadata, orderReprintOfKey), metadata.count < orderMetadataFieldLimit else { return metadata }
     var result = metadata
     result[orderReprintOfKey] = number
     return result
@@ -62,8 +71,8 @@ func orderReprintLinkNote(original: String?, sellerMetadata: [String: Any]) -> S
     guard number.count <= orderReprintOfMaxLength, !number.contains(where: { $0.isNewline }) else {
         return "The original order’s number can’t be recorded, so this draft won’t be marked as a reprint."
     }
-    if sellerMetadata[orderReprintOfKey] != nil {
-        return "Your reference fields already include “\(orderReprintOfKey)”, so Plinth won’t mark this draft as a reprint of order \(number)."
+    if let typed = sellerMetadata.keys.first(where: { orderMetadataHasKey([$0: true], orderReprintOfKey) }) {
+        return "Your reference fields already include “\(typed)”, so Plinth won’t mark this draft as a reprint of order \(number)."
     }
     let sent = orderMetadataAddingReprintOf(orderMetadataAddingDraftMarker(sellerMetadata, marker: "marker"), original: number)
     guard sent[orderReprintOfKey] != nil else {
@@ -222,7 +231,7 @@ func draftCreateCheckOutcome(attempts: [UnconfirmedDraftAttempt], result: DraftM
     let unmarked = attempts.filter { $0.marker == nil }
     if !unmarked.isEmpty {
         let list = unmarked.map(who).joined(separator: "; ")
-        parts.append("The attempt\(unmarked.count == 1 ? "" : "s") \(list) went without Plinth’s reference (all 10 reference fields were in use, or one was named studioDraftId), so Plinth can’t look for \(unmarked.count == 1 ? "it" : "them"). Check your drafts (\(draftCreateCheckDraftsPath)).")
+        parts.append("The attempt\(unmarked.count == 1 ? "" : "s") \(list) went without Plinth’s reference (all 10 reference fields were in use, or one was already named studioDraftId or studio_draft_id), so Plinth can’t look for \(unmarked.count == 1 ? "it" : "them"). Check your drafts (\(draftCreateCheckDraftsPath)).")
     }
     if earlierUnlisted {
         parts.append("Earlier attempts that are no longer listed can’t be looked for. Check your drafts (\(draftCreateCheckDraftsPath)).")

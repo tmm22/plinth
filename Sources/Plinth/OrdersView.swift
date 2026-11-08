@@ -2921,7 +2921,7 @@ func trackingFacts(_ fulfillment: Any?) -> [(String, String)] {
             }
         }
     }
-    for key in ["trackingUrl", "trackingURL", "url"] {
+    for key in ["trackingUrl", "trackingURL"] {
         if let url = stringValue(object[key]), !url.isEmpty {
             rows.append(("Tracking link", url))
             break
@@ -2929,6 +2929,15 @@ func trackingFacts(_ fulfillment: Any?) -> [(String, String)] {
     }
     return rows
 }
+/// Slant's tracking link as a URL the detail may open: https to a named host only; nil for anything else, which is
+/// shown as text.
+func orderTrackingLinkURL(_ text: String) -> URL? {
+    guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+          url.scheme?.lowercased() == "https", let host = url.host, !host.isEmpty else { return nil }
+    return url
+}
+/// Hover text for a tracking link Plinth won't open.
+let orderTrackingLinkNotOpenedHelp = "Plinth opens only secure (https) links. You can select and copy this one."
 /// One row of the order detail's Tracking section.
 struct OrderTrackingDisplayRow: Equatable {
     enum Kind: Equatable { case fact, number, link }
@@ -2969,7 +2978,12 @@ func orderTrackingDisplayRows(_ order: [String: Any]) -> [OrderTrackingDisplayRo
             rows.append(OrderTrackingDisplayRow(label: label, value: value, kind: .number,
                                                 trackURL: carrier?.trackingURL, trackCarrier: carrier?.name))
         case "Tracking link":
-            rows.append(OrderTrackingDisplayRow(label: label, value: value, kind: .link))
+            // A link opens only when it is https to a named host; anything else is shown as text, saying why.
+            if orderTrackingLinkURL(value) == nil {
+                rows.append(OrderTrackingDisplayRow(label: label, value: value, help: orderTrackingLinkNotOpenedHelp))
+            } else {
+                rows.append(OrderTrackingDisplayRow(label: label, value: value, kind: .link))
+            }
         default:
             rows.append(OrderTrackingDisplayRow(label: label, value: value))
         }
@@ -3201,8 +3215,9 @@ func orderComposerPrefill(reordering order: Record, asReprint: Bool = false) -> 
 /// Duplicate as New Draft's platform: the source order's when the loaded platform list (Slant lists only enabled
 /// platforms) has it; otherwise the composer keeps `current`, and `notCopied` says so when they differ.
 func orderComposerPlatformSeed(copied: String, current: String, loadedPlatformIDs: [String]) -> (platformID: String, notCopied: Bool) {
-    if loadedPlatformIDs.contains(copied) { return (copied, false) }
-    return (current, copied != current)
+    // In any case, as `orderPlatformMatch` compares them (UUIDs); the composer takes the list's own spelling.
+    if let listed = loadedPlatformIDs.first(where: { $0.caseInsensitiveCompare(copied) == .orderedSame }) { return (listed, false) }
+    return (current, copied.caseInsensitiveCompare(current) != .orderedSame)
 }
 
 /// Duplicate as New Draft's note when the source order's platform wasn't copied. An empty platform list means the
@@ -3463,7 +3478,7 @@ struct OrderSummary: View {
                         Spacer()
                         switch row.kind {
                         case .link:
-                            if let url = URL(string: row.value) { Link(row.value, destination: url) } else { Text(row.value).textSelection(.enabled) }
+                            if let url = orderTrackingLinkURL(row.value) { Link(row.value, destination: url) } else { Text(row.value).textSelection(.enabled) }
                         case .number:
                             Text(row.value).textSelection(.enabled)
                             Button { copyToPasteboard(row.value) } label: { Image(systemName: "doc.on.doc") }

@@ -431,9 +431,10 @@ func orderFilterQueryItems(_ filter: OrderFilter, page: Int, limit: Int, platfor
 /// Whether a reload in the Orders review sheet clears a shared lock. Without a record of what was attempted, or a cancel
 /// without the status it was sent from, the reload can't show whether the request took effect, so the lock stays.
 func unknownOutcomeResolvedByReload(context: UnknownOutcomeContext?, reloadedStatus: String) -> Bool {
-    let reloaded = reloadedStatus.uppercased()
+    // Trimmed before the emptiness check: `outcomeResolved` trims too, so a blank status must not get past here.
+    let reloaded = reloadedStatus.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     guard !reloaded.isEmpty, let context else { return false }
-    if context.action == .cancel, context.reviewedStatus.isEmpty { return false }
+    if context.action == .cancel, context.reviewedStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
     return outcomeResolved(action: context.action, reviewedStatus: context.reviewedStatus, reloadedStatus: reloaded)
 }
 /// A pay/cancel error that shows Slant did not act: the request failed before it was sent, or Slant refused it with a
@@ -2009,7 +2010,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             return true
         }) {
             var body: [String: Any] = ["URL": trimmedURL, "name": trimmedName, "platformId": platformID, "type": type]
-            if !ownerID.isEmpty { body["ownerId"] = ownerID }
+            let owner = ownerID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !owner.isEmpty { body["ownerId"] = owner }
             // Quit asks first until Slant answers, as for a Models upload (PlinthApp.swift).
             let write = SlantWritesInFlight.shared.begin(.upload)
             defer { SlantWritesInFlight.shared.end(write) }

@@ -577,7 +577,10 @@ func orderNamedPlatformID(_ order: [String: Any]) -> String? {
 func orderPlatformMatch(_ order: [String: Any], platformID: String) -> Bool? {
     let current = platformID.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !current.isEmpty, let named = orderNamedPlatformID(order) else { return nil }
-    return named == current
+    // UUIDs, so case carries no meaning: in any case, the list and the sums hide fewer rows, and the order watch's
+    // by-ID reads (`orderWatchFetchedOrderFitsPlatform`) accept the same platform's ID in another case, never another
+    // platform's.
+    return named.caseInsensitiveCompare(current) == .orderedSame
 }
 
 /// The loaded orders shown (or summed) for the default platform: those that name another platform are left out,
