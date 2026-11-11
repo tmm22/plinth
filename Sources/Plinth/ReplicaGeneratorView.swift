@@ -532,7 +532,7 @@ struct ReplicaGeneratorSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(ImageTo3DPhotoView.allCases.filter { slots[$0]?.problem != nil }) { view in
                 Label("\(view.title): \(slots[view]?.problem ?? "")", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(replicaPhotoAdvice)
@@ -619,7 +619,7 @@ struct ReplicaGeneratorSheet: View {
                 }
             }
             if !sizeText.isEmpty, let problem = replicaSizeProblem(sizeText) {
-                Text(problem).font(.caption).foregroundStyle(.orange)
+                Text(problem).font(.caption).foregroundStyle(.studioWarning)
             }
             Picker("Purpose", selection: $purpose) {
                 ForEach(ReplicaPurpose.allCases) { Text($0.rawValue).tag($0) }
@@ -627,7 +627,7 @@ struct ReplicaGeneratorSheet: View {
             .pickerStyle(.segmented)
             if purpose == .functional {
                 Label(replicaFunctionalPartWarning, systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
         } header: {
             Text("Replica")
@@ -665,7 +665,7 @@ struct ReplicaGeneratorSheet: View {
             }
             if let unconfirmedNotice {
                 Label(unconfirmedNotice, systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.callout).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
         } header: {
             Text("3D service")
@@ -705,7 +705,7 @@ struct ReplicaGeneratorSheet: View {
             case .processingFailed:
                 VStack(alignment: .leading, spacing: 6) {
                     Label(session.processingProblem ?? "The replica wasn’t processed.", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
                     if session.processAgainCanHelp {
                         Text("The model the service made is still here. Change the details above if needed, then Process Again. Nothing is sent or charged.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -727,7 +727,7 @@ struct ReplicaGeneratorSheet: View {
     private func stopView(_ stop: ImageTo3DStop) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Label(stop.userMessage, systemImage: stop.reason == .notSent ? "info.circle" : "exclamationmark.triangle")
-                .foregroundStyle(stop.reason == .notSent ? Color.secondary : Color.orange)
+                .foregroundStyle(stop.reason == .notSent ? Color.secondary : Color.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             if let note = replicaCreditsNote(stop) {
@@ -784,12 +784,12 @@ struct ReplicaGeneratorSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         if let problem = session.processingProblem {
-            Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if session.phase == .processed, inputs != session.lastInputs {
             Text("The details above changed since this result was made. Process Again to apply them before saving.")
-                .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
         }
         if session.generated?.service == .meshy, session.generated?.sourceKind.isGeneration == true {
             meshyAnalysis(processed)
@@ -820,7 +820,7 @@ struct ReplicaGeneratorSheet: View {
                 Text("\(report.summary) This is Meshy’s view of its original model, before Plinth’s repair.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if let problem = session.analysisProblem {
-                Text(problem).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(problem).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Free: Meshy checks its own model for holes and thin walls at this size.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -838,7 +838,7 @@ struct ReplicaGeneratorSheet: View {
                 .disabled(session.isRunning)
             if [.ready, .stopped, .processingFailed, .processed].contains(session.phase) {
                 if let startProblem {
-                    Label(startProblem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Label(startProblem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning)
                         .font(.callout).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 } else if let reason = blockedReasons.first {
                     Text(reason).font(.callout).foregroundStyle(.secondary).lineLimit(2)

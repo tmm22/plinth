@@ -674,7 +674,7 @@ struct EstimateComparisonSheet: View {
                 .disabled(runner.running)
                 .accessibilityLabel("Quantities to compare")
             if let problem = quantityInput.problem {
-                Label(problem, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.studioWarning)
             } else {
                 Text("Up to \(comparisonMaxQuantities) whole numbers from 1 to 10,000, separated by commas or spaces. Will price: \(quantityInput.values.map(String.init).joined(separator: ", ")).")
                     .font(.caption).foregroundStyle(.secondary)
@@ -693,7 +693,7 @@ struct EstimateComparisonSheet: View {
             }
             if plan.fileID != store.fileID {
                 Label("These estimates are for a different model or upload.", systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(.studioWarning)
             } else if store.busy, table.pricedCount > 0 {
                 // Why every Use is off for now, said once rather than under each button.
                 Text("Use is available once the current task finishes.").font(.caption).foregroundStyle(.secondary)
@@ -742,7 +742,7 @@ struct EstimateComparisonSheet: View {
             Text("Not requested").font(.caption).foregroundStyle(.secondary)
         case .failed(let reason):
             Label("Couldn’t price", systemImage: "exclamationmark.triangle")
-                .font(.caption).foregroundStyle(.orange)
+                .font(.caption).foregroundStyle(.studioWarning)
                 .help(reason)
                 .accessibilityLabel("Couldn’t price. \(reason)")
         case .priced(let price):
@@ -774,7 +774,7 @@ struct EstimateComparisonSheet: View {
             Button("Close") { dismiss() }
                 .keyboardShortcut(.cancelAction)
             if let message = runner.message {
-                Text(message).font(.caption).foregroundStyle(.orange)
+                Text(message).font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             } else if !runner.running, let reason = startBlockedReason {
                 Text(reason).font(.caption).foregroundStyle(.secondary)

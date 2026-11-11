@@ -490,7 +490,7 @@ struct ProductCostCheckView: View {
                 Button("Close") { onDone() }
                     .keyboardShortcut(.cancelAction)
                 if let message = runner.message {
-                    Text(message).font(.caption).foregroundStyle(.orange).lineLimit(3)
+                    Text(message).font(.caption).foregroundStyle(.studioWarning).lineLimit(3)
                 } else if !runner.running, let reason = startBlockedReason {
                     Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
@@ -525,7 +525,7 @@ struct ProductCostCheckView: View {
                     .disabled(runner.running)
             }
             if units == nil {
-                Text("Enter a whole number of units from 1 to 10,000.").font(.caption).foregroundStyle(.orange)
+                Text("Enter a whole number of units from 1 to 10,000.").font(.caption).foregroundStyle(.studioWarning)
             } else {
                 Text("Prices one order of this many units. Per-unit items are multiplied; once-per-order items are added once.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -559,7 +559,7 @@ struct ProductCostCheckView: View {
         switch part.state {
         case .priced(_, let detail): Text(detail).font(.caption).foregroundStyle(.secondary)
         case .unavailable(let reason), .failed(let reason):
-            Label(reason, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            Label(reason, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         case .waiting: Text(runner.running ? "Waiting" : "Estimated when you check").font(.caption).foregroundStyle(.secondary)
         case .requesting: Text("Estimating…").font(.caption).foregroundStyle(.secondary)
@@ -649,7 +649,7 @@ struct ProductCostCheckView: View {
             }
             LabeledContent("Estimated profit") {
                 Text(profitMoney(result.profit)).monospacedDigit().fontWeight(.semibold)
-                    .foregroundStyle(result.profit < 0 ? .red : .primary)
+                    .foregroundStyle(result.profit < 0 ? .studioError : .primary)
             }
             if units > 1 {
                 LabeledContent("Fees per unit") { Text(profitMoney(-result.feesPerUnit)).monospacedDigit() }.font(.callout)
@@ -659,9 +659,9 @@ struct ProductCostCheckView: View {
                 LabeledContent("Estimated margin") { Text(profitPercentText(margin)).monospacedDigit() }
             }
         } else if feeRates == nil, feePreset.hasRates {
-            Text("Check the highlighted fee rates.").font(.callout).foregroundStyle(.orange)
+            Text("Check the highlighted fee rates.").font(.callout).foregroundStyle(.studioWarning)
         } else {
-            Text("Check the highlighted amounts: use numbers like 24.99.").font(.callout).foregroundStyle(.orange)
+            Text("Check the highlighted amounts: use numbers like 24.99.").font(.callout).foregroundStyle(.studioWarning)
         }
     }
 
@@ -675,13 +675,13 @@ struct ProductCostCheckView: View {
                                                      delivery: delivery, preset: feePreset, rates: rates, offsiteAds: offsiteAds)
             let unreachable: Bool = { if case .unreachable = answer { return true }; return false }()
             Text(listingPriceTargetText(answer, targetPercent: target))
-                .font(.callout).foregroundStyle(unreachable ? .orange : .primary)
+                .font(.callout).foregroundStyle(unreachable ? .studioWarning : .primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         } else if parseProfitPercent(typed) == nil {
-            Text("Enter a margin from 0 to 100, such as 30.").font(.caption).foregroundStyle(.orange)
+            Text("Enter a margin from 0 to 100, such as 30.").font(.caption).foregroundStyle(.studioWarning)
         } else {
-            Text("Check the highlighted amounts first.").font(.caption).foregroundStyle(.orange)
+            Text("Check the highlighted amounts first.").font(.caption).foregroundStyle(.studioWarning)
         }
     }
 
@@ -694,7 +694,7 @@ struct ProductCostCheckView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 if !summary.complete {
                     Text("\(summary.partCount - summary.pricedCount) of \(summary.partCount) parts aren’t priced, so the real cost is higher.")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundStyle(.studioWarning)
                 }
                 if let checkedAt = runner.checkedAt, runner.units == units {
                     Text("\(productCostCheckedText(checkedAt)). Estimates can change; Slant prices the order itself when a draft is created.")

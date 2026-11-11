@@ -294,7 +294,7 @@ struct OrderComposerView: View {
                     .help(store.busy ? "Working…" : "Cancel")
                 Spacer()
                 if let validation {
-                    Text(validation).font(.caption).foregroundStyle(.orange).lineLimit(4).help(validation)
+                    Text(validation).font(.caption).foregroundStyle(.studioWarning).lineLimit(4).help(validation)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 else if let createBlockedReason { Text(createBlockedReason).font(.caption).foregroundStyle(.secondary) }
@@ -366,23 +366,23 @@ struct OrderComposerView: View {
                     Text("Items and delivery details were copied for you to check. Slant calculates new prices when you create the draft, and you review the total before anything is charged.")
                         .font(.callout).foregroundStyle(.secondary)
                     if lines.allSatisfy({ $0.reference.isEmpty }) {
-                        Text("No items could be copied. Choose them below.").font(.callout).foregroundStyle(.orange)
+                        Text("No items could be copied. Choose them below.").font(.callout).foregroundStyle(.studioWarning)
                     }
                     if lines.contains(where: { !orderLineOptionsSummary($0.optionsJSON).isEmpty }) {
                         Text("Some items include options copied from the original order. Check them under each item.")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     if !deliveryCopied {
-                        Text("This order had no delivery details to copy. Enter them below.").font(.callout).foregroundStyle(.orange)
+                        Text("This order had no delivery details to copy. Enter them below.").font(.callout).foregroundStyle(.studioWarning)
                     }
                     if platformNotCopied {
                         Text(orderComposerPlatformNotCopiedNote(platformsLoaded: platformListLoadedAtSeed,
                                                                 hasCurrentPlatform: !initialDraftPlatformID.isEmpty))
-                            .font(.callout).foregroundStyle(.orange)
+                            .font(.callout).foregroundStyle(.studioWarning)
                     }
                     if !skippedItems.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Label("Not copied", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            Label("Not copied", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning)
                             ForEach(Array(skippedItems.enumerated()), id: \.offset) { _, reason in
                                 Text(reason).font(.callout)
                             }
@@ -393,7 +393,7 @@ struct OrderComposerView: View {
             Section("Items") {
                 if let catalogLoadError {
                     Label(catalogLoadError, systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach($lines) { $item in
@@ -419,7 +419,7 @@ struct OrderComposerView: View {
                     Text(sourceOrderNumber == nil
                          ? orderComposerReusedAddressLine(delivery)
                          : "Copied address: \(deliverySummary.isEmpty ? delivery.email : deliverySummary)")
-                    if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.orange) }
+                    if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.studioWarning) }
                     HStack {
                         Button("Edit") { editingDelivery = true }
                         if sourceOrderNumber == nil {
@@ -584,7 +584,7 @@ struct OrderComposerView: View {
         TextField("Full name", text: $delivery.name, prompt: Text("Required"))
         VStack(alignment: .leading, spacing: 4) {
             TextField("Email", text: $delivery.email, prompt: Text("name@example.com"))
-            if let emailFieldError { Text(emailFieldError).font(.caption).foregroundStyle(.orange) }
+            if let emailFieldError { Text(emailFieldError).font(.caption).foregroundStyle(.studioWarning) }
         }
         // Country first: it decides whether State is required and how the postcode is checked.
         countryPicker
@@ -596,7 +596,7 @@ struct OrderComposerView: View {
         VStack(alignment: .leading, spacing: 4) {
             TextField("Postal code", text: $delivery.zip, prompt: Text("Required"))
                 .focused($postcodeFocused)
-            if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.orange) }
+            if let postcodeWarning { Text(postcodeWarning).font(.caption).foregroundStyle(.studioWarning) }
         }
     }
 
@@ -685,11 +685,11 @@ struct OrderComposerView: View {
             if let typed = quantityTexts[item.wrappedValue.id], orderQuantityFromText(typed) == nil {
                 Label("Enter a whole number from 1 to 10,000.", systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.studioWarning)
             } else if let warning = largeQuantityNotice(item.wrappedValue.quantity) {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.studioWarning)
             }
             if item.wrappedValue.type == "PRINT" {
                 catalogOrLoad(kind: .models, empty: store.files.isEmpty, hasSelection: !item.wrappedValue.reference.isEmpty) {
@@ -698,7 +698,7 @@ struct OrderComposerView: View {
                 if orderLineModelLooksMissing(item.wrappedValue, files: store.files,
                                               filesFullyLoaded: store.filesLoaded && !store.filesHasMore && !store.fileSearchActive) {
                     Label("This model isn’t in your uploaded models. It may have been deleted; choose another.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(.studioWarning)
                 }
                 catalogOrLoad(kind: .materials, empty: store.filaments.isEmpty, hasSelection: !item.wrappedValue.filamentID.isEmpty) {
                     materialPicker(selection: item.filamentID)
@@ -1744,7 +1744,7 @@ struct OrdersView: View {
                 DatePicker("To", selection: $draftToDate, displayedComponents: .date)
             }
             if let draftFilterValidation {
-                Text(draftFilterValidation).font(.caption).foregroundStyle(.orange)
+                Text(draftFilterValidation).font(.caption).foregroundStyle(.studioWarning)
             }
             HStack {
                 // Resets the dates and sort shown here; the toolbar's Status menu keeps its choice.
@@ -1931,7 +1931,7 @@ struct OrdersView: View {
                     // Never for a hidden draft (HiddenDrafts.swift): Needs Attention doesn't count one either.
                     if !store.isHiddenDraft(selected), let attention = orderAttention(displayed, now: Date()) {
                         Label("Needs attention: \(attention.detail)", systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout).foregroundStyle(.orange)
+                            .font(.callout).foregroundStyle(.studioWarning)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     // Actions sit under the header so placing a draft never needs scrolling; both open a review first.
@@ -2139,7 +2139,7 @@ struct OrderActionConfirmSheet: View {
                 ProgressView("Loading order…").controlSize(.small)
             case .failed:
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(isPay ? "Couldn’t load this order’s costs." : "Couldn’t load this order.").font(.callout).foregroundStyle(.orange)
+                    Text(isPay ? "Couldn’t load this order’s costs." : "Couldn’t load this order.").font(.callout).foregroundStyle(.studioWarning)
                     if let loadFailure {
                         Text(loadFailure).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
@@ -2172,7 +2172,7 @@ struct OrderActionConfirmSheet: View {
                                 reviewItemList(items)
                             }
                             if isPay, let notice = orderReviewLargeQuantityNotice(items) {
-                                Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                                Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning)
                             }
                             Divider()
                         }
@@ -2187,7 +2187,7 @@ struct OrderActionConfirmSheet: View {
                             LabeledContent("Total") { Text("\(orderTotalMoney(order)) USD").monospacedDigit().fontWeight(.semibold) }
                             if let costNotice {
                                 Label(costNotice, systemImage: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(.studioWarning)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             LabeledContent("Recipient") { Text(orderRecipientDisplay(order)).lineLimit(2) }
@@ -2196,7 +2196,7 @@ struct OrderActionConfirmSheet: View {
                             // only: Pay and the defaults are the same either way.
                             if let duplicate = marketplaceDuplicateNotice(order) {
                                 Label(duplicate, systemImage: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(.studioWarning)
                                     .lineLimit(1).truncationMode(.tail)
                                     .help(duplicate)
                                     .accessibilityLabel(duplicate)
@@ -2213,7 +2213,7 @@ struct OrderActionConfirmSheet: View {
             if let successMessage {
                 Text(successMessage).font(.callout).foregroundStyle(.secondary)
             } else if let actionMessage {
-                Text(actionMessage).font(.callout).foregroundStyle(.orange)
+                Text(actionMessage).font(.callout).foregroundStyle(.studioWarning)
             }
             if writing {
                 HStack(spacing: 6) {
@@ -2303,7 +2303,7 @@ struct OrderActionConfirmSheet: View {
     func importedSaleEstimateLine(_ estimate: ImportedSaleReviewEstimate) -> some View {
         Group {
             if estimate.isLoss {
-                Label(estimate.text, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Label(estimate.text, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning)
             } else {
                 Label(estimate.text, systemImage: "chart.line.uptrend.xyaxis").foregroundStyle(.secondary)
             }
@@ -2322,7 +2322,7 @@ struct OrderActionConfirmSheet: View {
                 VStack(alignment: .leading, spacing: 1) {
                     if isPay, orderItemHasLargeQuantity(item) {
                         Label(text, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange).fontWeight(.semibold)
+                            .foregroundStyle(.studioWarning).fontWeight(.semibold)
                             .lineLimit(1).truncationMode(.middle)
                             .accessibilityLabel("Large quantity: \(text)")
                     } else {
@@ -3523,7 +3523,7 @@ struct OrderSummary: View {
             // Advisory only: the address Slant's label was made for, when it differs (OrderDetailExtras.swift).
             if let advisory = orderLabelAddressAdvisory(order) {
                 Label(advisory.line, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(.studioWarning)
                     .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)

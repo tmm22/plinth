@@ -190,7 +190,7 @@ struct ModelSourceDetailsPanel: View {
             if let advisory = modelLicenceAdvisory(details, edited: edited) {
                 Label(advisory, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(inherited ? "From the original file’s details, as its creator or exporter wrote them. This copy keeps them for reference."

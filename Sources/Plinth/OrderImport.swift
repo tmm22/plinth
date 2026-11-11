@@ -1654,7 +1654,7 @@ struct OrderImportSheet: View {
                 Spacer()
             }
             if let loadError {
-                Label(loadError, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Label(loadError, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
             if let parsed {
                 preview(parsed, checks: currentChecks)
@@ -1752,7 +1752,7 @@ struct OrderImportSheet: View {
                 Text("Slant needs an email for every order. \(parse.format == .etsy ? "Etsy files don’t include buyers’ emails, so" : "Some orders have none;") enter one to use for these orders, such as your shop’s. Plinth never fills one in by itself.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if !fallbackEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !isEmailAddress(fallbackEmail) {
-                    Text("Enter an email like name@example.com.").font(.caption).foregroundStyle(.orange)
+                    Text("Enter an email like name@example.com.").font(.caption).foregroundStyle(.studioWarning)
                 }
             }
         }
@@ -1891,10 +1891,10 @@ struct OrderImportSheet: View {
                 }
                 if let state { stateLabel(state) }
                 ForEach(check.blockers, id: \.self) { text in
-                    Label(text, systemImage: "xmark.octagon.fill").font(.caption).foregroundStyle(.red)
+                    Label(text, systemImage: "xmark.octagon.fill").font(.caption).foregroundStyle(.studioError)
                 }
                 ForEach(orderImportVisibleWarnings(check.warnings, rowState: state), id: \.self) { text in
-                    Label(text, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                    Label(text, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.studioWarning)
                 }
                 if let padded = orderImportPaddedUSZIP(order.zip), order.countryCode == "US" {
                     Toggle("Use ZIP \(padded)", isOn: Binding(
@@ -1918,9 +1918,9 @@ struct OrderImportSheet: View {
         case .queued: Label("Waiting", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
         case .preparing(let step): Label(step, systemImage: "wand.and.stars").font(.caption).foregroundStyle(.secondary)
         case .sending: Label("Creating draft…", systemImage: "arrow.up.circle").font(.caption).foregroundStyle(.secondary)
-        case .created(let id): Label("Draft created: \(id)", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
-        case .refused(let reason): Label("Not created: \(reason)", systemImage: "xmark.circle.fill").font(.caption).foregroundStyle(.red)
-        case .unknown(let reason): Label("Not confirmed: \(reason)", systemImage: "questionmark.circle.fill").font(.caption).foregroundStyle(.orange)
+        case .created(let id): Label("Draft created: \(id)", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.studioSuccess)
+        case .refused(let reason): Label("Not created: \(reason)", systemImage: "xmark.circle.fill").font(.caption).foregroundStyle(.studioError)
+        case .unknown(let reason): Label("Not confirmed: \(reason)", systemImage: "questionmark.circle.fill").font(.caption).foregroundStyle(.studioWarning)
         case .notSent: Label("Not sent", systemImage: "minus.circle").font(.caption).foregroundStyle(.secondary)
         }
     }

@@ -376,7 +376,7 @@ struct DapiOrdersView: View {
                         Text(order.status.label).lineLimit(1)
                         if let attention = dapiOrderAttention(order) {
                             Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.studioWarning)
                                 .help(attention)
                                 .accessibilityLabel("Needs attention: \(attention)")
                         }
@@ -419,7 +419,7 @@ struct DapiOrdersView: View {
             if let error = list.loadError {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button("Try Reading Again") { list.reload() }
@@ -519,7 +519,7 @@ struct DapiOrderDetailView: View {
                 if cancelUnknown {
                     Label("A cancellation of this order didn’t get a clear answer, so it may or may not be cancelled. Refresh this order to see its status; Plinth won’t send another cancellation meanwhile.",
                           systemImage: "questionmark.circle")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let note = dapiCancelUnavailableNote(order, cancelUnknown: cancelUnknown) {
@@ -528,7 +528,7 @@ struct DapiOrderDetailView: View {
                 }
                 if let refreshError {
                     Label(refreshError, systemImage: "exclamationmark.triangle")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 delivery
@@ -557,7 +557,7 @@ struct DapiOrderDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
             if let attention = dapiOrderAttention(order) {
                 Label(attention, systemImage: "exclamationmark.circle.fill")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
@@ -825,7 +825,7 @@ struct DapiUnconfirmedOrdersNotice: View {
                           ? "This order was sent without a clear answer. 3DAPI may have charged and placed it:"
                           : "These orders were sent without a clear answer. 3DAPI may have charged and placed them:",
                           systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                     ForEach(attempts) { attempt in
                         Text(dapiUnconfirmedOrderLine(attempt)).font(.callout).padding(.leading, 20)

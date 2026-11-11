@@ -622,7 +622,7 @@ struct ProfitCheckPanel: View {
                     VStack(alignment: .trailing, spacing: 2) {
                         TextField("Units sold", text: $unitsText).labelsHidden().accessibilityLabel("Units sold").frame(width: 80).multilineTextAlignment(.trailing)
                         if parseProfitUnitsSold(unitsText) == nil {
-                            Text("Enter a whole number from 1").font(.caption2).foregroundStyle(.orange)
+                            Text("Enter a whole number from 1").font(.caption2).foregroundStyle(.studioWarning)
                         }
                     }
                 }
@@ -646,7 +646,7 @@ struct ProfitCheckPanel: View {
             VStack(alignment: .trailing, spacing: 2) {
                 TextField(title, text: binding).labelsHidden().accessibilityLabel(title).frame(width: 80).multilineTextAlignment(.trailing)
                 if rateValue(field) == nil {
-                    Text(field.isPercent ? "Enter 0–100" : "Enter an amount").font(.caption2).foregroundStyle(.orange)
+                    Text(field.isPercent ? "Enter 0–100" : "Enter an amount").font(.caption2).foregroundStyle(.studioWarning)
                 }
             }
         }
@@ -664,7 +664,7 @@ struct ProfitCheckPanel: View {
             }
             LabeledContent("Estimated profit") {
                 Text(profitMoney(result.profit)).monospacedDigit().fontWeight(.semibold)
-                    .foregroundStyle(result.profit < 0 ? .red : .primary)
+                    .foregroundStyle(result.profit < 0 ? .studioError : .primary)
             }
             if let margin = result.marginPercent {
                 LabeledContent("Estimated margin") { Text(profitPercentText(margin)).monospacedDigit() }
@@ -675,9 +675,9 @@ struct ProfitCheckPanel: View {
             }
             Text(profitCheckExclusionsNote).font(.caption).foregroundStyle(.secondary)
         } else if unitsSold == nil, parseProfitAmount(itemText) != nil, shippingAmount != nil, validRates != nil {
-            Text("Enter the units sold as a whole number, such as 1.").font(.callout).foregroundStyle(.orange)
+            Text("Enter the units sold as a whole number, such as 1.").font(.callout).foregroundStyle(.studioWarning)
         } else {
-            Text("Check the highlighted amounts: use numbers like 24.99.").font(.callout).foregroundStyle(.orange)
+            Text("Check the highlighted amounts: use numbers like 24.99.").font(.callout).foregroundStyle(.studioWarning)
         }
     }
 
@@ -807,7 +807,7 @@ struct ProfitFeeRatesEditor: View {
             VStack(alignment: .trailing, spacing: 2) {
                 TextField(title, text: binding).labelsHidden().accessibilityLabel(title).frame(width: 80).multilineTextAlignment(.trailing)
                 if rateValue(field) == nil {
-                    Text(field.isPercent ? "Enter 0–100" : "Enter an amount").font(.caption2).foregroundStyle(.orange)
+                    Text(field.isPercent ? "Enter 0–100" : "Enter an amount").font(.caption2).foregroundStyle(.studioWarning)
                 }
             }
         }

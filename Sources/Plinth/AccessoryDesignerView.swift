@@ -341,7 +341,7 @@ struct AccessoryDesignerSheet: View {
                 Section {
                     HStack {
                         Label(accessoryMissingClaudeKeyText, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.studioWarning)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer()
                         Button("Open Settings") { store.requestSettings(.designTools) }
@@ -357,7 +357,7 @@ struct AccessoryDesignerSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let photoProblem {
-                    Label(photoProblem, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.callout)
+                    Label(photoProblem, systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning).font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
@@ -457,13 +457,13 @@ struct AccessoryDesignerSheet: View {
             suggestControls
             if let message = suggestions.message {
                 Label(message.text, systemImage: message.isProblem ? "exclamationmark.triangle" : "checkmark.circle")
-                    .foregroundStyle(message.isProblem ? Color.orange : Color.secondary).font(.callout)
+                    .foregroundStyle(message.isProblem ? Color.studioWarning : Color.secondary).font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !suggestions.ideas.isEmpty {
                 if let ideasStaleReason {
                     Label(ideasStaleReason + " You can still use them.", systemImage: "clock.arrow.circlepath")
-                        .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(.studioWarning).font(.callout).fixedSize(horizontal: false, vertical: true)
                 }
                 if let identification = suggestions.identification {
                     identificationView(identification)
@@ -565,7 +565,7 @@ struct AccessoryDesignerSheet: View {
                 Text(idea.title).font(.headline).fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 if let useLabel = accessoryIdeaUseLabel(idea, chosen: chosenIdea, brief: brief) {
-                    Label(useLabel, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
+                    Label(useLabel, systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess).font(.callout)
                 } else {
                     Button("Use This Idea") { useIdea(idea) }
                         .help("Fills in what to make and the measurements to take. Nothing is sent.")
@@ -577,7 +577,7 @@ struct AccessoryDesignerSheet: View {
                 Text("Who wants it: \(idea.whoWantsIt)").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text(accessoryIdeaFitText(idea.fit)).font(.caption)
-                .foregroundStyle(idea.fit == .tight ? Color.orange : Color.secondary)
+                .foregroundStyle(idea.fit == .tight ? Color.studioWarning : Color.secondary)
             if let hardware = accessoryIdeaHardwareText(idea) {
                 Text(hardware).font(.caption).fixedSize(horizontal: false, vertical: true)
             }
@@ -585,7 +585,7 @@ struct AccessoryDesignerSheet: View {
                 Text(measure).font(.caption).fixedSize(horizontal: false, vertical: true)
             }
             if !idea.caution.isEmpty {
-                Label(idea.caution, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                Label(idea.caution, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -750,7 +750,7 @@ struct AccessoryDesignerSheet: View {
             } else if lookedForOpenSCAD {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("OpenSCAD isn’t installed in Applications. Plinth needs it to render each design on this Mac.", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.studioWarning)
                     HStack {
                         Link("Install OpenSCAD", destination: accessoryInstallOpenSCADURL)
                         Button("Check Again") { lookForOpenSCAD() }
@@ -934,18 +934,18 @@ private struct AccessoryDesignRunView: View {
             Label { Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: "sparkles") }
         case .render(_, _, let line, let acceptable):
             Label(line, systemImage: acceptable ? "cube" : "exclamationmark.triangle")
-                .foregroundStyle(acceptable ? Color.primary : Color.orange)
+                .foregroundStyle(acceptable ? Color.primary : Color.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         case .renderFailed(let number, let text):
             Label("Render \(number) failed: \(text)", systemImage: "xmark.octagon")
-                .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
         case .fitTest(let line, let passed):
             Label(line, systemImage: passed ? "ruler" : "exclamationmark.triangle")
-                .foregroundStyle(passed ? Color.secondary : Color.orange).font(.callout)
+                .foregroundStyle(passed ? Color.secondary : Color.studioWarning).font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
         case .refusedCode(let text):
             Label("Plinth didn’t run Claude’s code: \(text)", systemImage: "hand.raised")
-                .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
         case .question(let text):
             Label { Text(text).bold().fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: "questionmark.bubble") }
         case .answer(let text):
@@ -1105,14 +1105,14 @@ private struct AccessoryDesignRunView: View {
             }
             if !render.problems.isEmpty {
                 Label(render.problems.joined(separator: " "), systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.studioWarning).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
             fitSection(render.facts.fitSizes)
             if let piece = madePiece(render) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Fit-test piece").font(.subheadline.weight(.semibold))
                     ForEach(Array(accessoryFitTestCheckLines(piece).enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.callout).foregroundStyle(piece.check.passes ? Color.primary : Color.orange)
+                        Text(line).font(.callout).foregroundStyle(piece.check.passes ? Color.primary : Color.studioWarning)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Text(accessoryFitTestChecksCaption).font(.caption).foregroundStyle(.secondary)
@@ -1181,7 +1181,7 @@ private struct AccessoryDesignRunView: View {
                     .help("Saves the OpenSCAD file, which you can adjust later in Personalise from Template.")
                 Spacer()
                 if savedRenderIDs.contains(finish.render.id) {
-                    Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess)
                 } else {
                     Button("Save to Library") { saveToLibrary(finish) }
                         .buttonStyle(.borderedProminent)
@@ -1189,10 +1189,10 @@ private struct AccessoryDesignRunView: View {
                 }
             }
             if let message = saveProblem ?? libraryNameProblem {
-                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.callout)
+                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning).font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let saveStatus {
-                Label(saveStatus, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
+                Label(saveStatus, systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess).font(.callout)
             }
         }
     }
@@ -1216,7 +1216,7 @@ private struct AccessoryDesignRunView: View {
                         .lineLimit(2).truncationMode(.middle)
                     Spacer()
                     if savedRenderIDs.contains(piece.id) {
-                        Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess)
                     } else {
                         // Not the default button: Save to Library stays the main action.
                         Button("Save Fit Test to Library") { saveFitTestToLibrary(piece) }
@@ -1225,7 +1225,7 @@ private struct AccessoryDesignRunView: View {
                     }
                 }
                 if let fitTestSaveStatus {
-                    Label(fitTestSaveStatus, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
+                    Label(fitTestSaveStatus, systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess).font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

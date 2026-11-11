@@ -51,12 +51,12 @@ struct AddressPastePopover: View {
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
                 .accessibilityLabel("Pasted address")
             if text.count > addressPasteMaxCharacters {
-                Text("Only the first \(addressPasteMaxCharacters) characters are read.").font(.caption).foregroundStyle(.orange)
+                Text("Only the first \(addressPasteMaxCharacters) characters are read.").font(.caption).foregroundStyle(.studioWarning)
             }
             review
             if confirming {
                 Label(pastedAddressReplaceWarning(parsed, current: current), systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
@@ -99,12 +99,12 @@ struct AddressPastePopover: View {
                 .fixedSize(horizontal: false, vertical: true)
         } else if !parsed.foundAddress {
             Text("No address found. Paste the whole address, with the street, town and postcode.")
-                .font(.callout).foregroundStyle(.orange)
+                .font(.callout).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         } else if !usable {
             // The parsed parts aren't listed: this text may be anything that was on the clipboard.
             Text("This doesn’t look like an address. Paste the whole address, with the street, town and postcode.")
-                .font(.callout).foregroundStyle(.orange)
+                .font(.callout).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             VStack(alignment: .leading, spacing: 4) {
@@ -142,15 +142,15 @@ struct AddressPastePopover: View {
         case .pasted(let code):
             Text(Locale.current.localizedString(forRegionCode: code) ?? code)
         case .unrecognised(let text):
-            Text("“\(text)” isn’t recognised. Choose the country in the form.").foregroundStyle(.orange)
+            Text("“\(text)” isn’t recognised. Choose the country in the form.").foregroundStyle(.studioWarning)
         case .keptFromForm(let code):
             if let warning = pastedAddressKeptCountryWarning(parsed, keptCode: code) {
-                Text(warning).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(warning).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("\(Locale.current.localizedString(forRegionCode: code) ?? code) (kept from the form)")
             }
         case .missing:
-            Text("Not found. Choose the country in the form.").foregroundStyle(.orange)
+            Text("Not found. Choose the country in the form.").foregroundStyle(.studioWarning)
         }
     }
 

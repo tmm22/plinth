@@ -216,7 +216,7 @@ struct DapiOrderComposerView: View {
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if (order.items ?? []).count > dapiOrderMaxLines {
-                        Text("Only the first 100 lines were copied.").font(.callout).foregroundStyle(.orange)
+                        Text("Only the first 100 lines were copied.").font(.callout).foregroundStyle(.studioWarning)
                     }
                 }
             }
@@ -258,7 +258,7 @@ struct DapiOrderComposerView: View {
             }
             if let problem = state.materialsProblem {
                 HStack(alignment: .firstTextBaseline) {
-                    Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                    Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     // Never read again by itself: only this press reads the materials again.
@@ -318,7 +318,7 @@ struct DapiOrderComposerView: View {
             if value.quantity == nil {
                 fieldProblem("Enter a whole number from 1 to 10,000.")
             } else if let warning = largeQuantityNotice(value.quantity ?? 1) {
-                Label(warning, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.orange)
+                Label(warning, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.studioWarning)
             }
             switch value.state {
             case .resolving:
@@ -328,7 +328,7 @@ struct DapiOrderComposerView: View {
                 }
             case .problem(let reason):
                 HStack(alignment: .firstTextBaseline) {
-                    Label(reason, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                    Label(reason, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button("Check Again") { state.checkAgain(lineID: value.id) }
@@ -421,7 +421,7 @@ struct DapiOrderComposerView: View {
                 TextField("Postal code", text: $address.delivery.zip, prompt: Text("Optional"))
             }
             if let warning = postcodeFormatWarning(address.delivery.zip, country: orderCountryPickerValue(address.delivery)) {
-                Text(warning).font(.caption).foregroundStyle(.orange)
+                Text(warning).font(.caption).foregroundStyle(.studioWarning)
             }
             Text("These details are sent to 3DAPI with the order and kept only in this sheet until then.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -528,7 +528,7 @@ struct DapiOrderComposerView: View {
     }
 
     private func fieldProblem(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(.orange)
+        Text(text).font(.caption).foregroundStyle(.studioWarning)
     }
 
     private func applyMyAddress() {
@@ -558,14 +558,14 @@ struct DapiOrderComposerView: View {
                 Text("Choose the country and finish every line to price shipping.").font(.callout).foregroundStyle(.secondary)
             }
             if let problem = state.shippingProblem {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !state.shippingLoading, let key, stale || state.shipping == nil {
                 HStack {
                     if stale {
                         Label("Shipping needs updating for these lines and country.", systemImage: "exclamationmark.circle")
-                            .font(.callout).foregroundStyle(.orange)
+                            .font(.callout).foregroundStyle(.studioWarning)
                     }
                     Spacer(minLength: 0)
                     Button("Update Shipping") { state.requestShipping(key) }

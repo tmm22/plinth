@@ -217,7 +217,7 @@ struct MeshFitCard: View {
                 let summary = wallThicknessSummary(report, origin: loaded.mesh.minimum)
                 Label(summary.line, systemImage: summary.isClear ? "checkmark.circle" : "info.circle")
                     .font(.callout)
-                    .foregroundStyle(summary.isClear ? Color.green : Color.primary)
+                    .foregroundStyle(summary.isClear ? Color.studioSuccess : Color.primary)
                 DisclosureGroup("Breakdown", isExpanded: $breakdownExpanded) {
                     breakdown(report, summary: summary).padding(.top, 6)
                 }
@@ -338,7 +338,7 @@ struct MeshFitSheet: View {
                 case .fitCoupon: couponForm
                 }
                 if let failure {
-                    Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -481,7 +481,7 @@ struct MeshFitSheet: View {
                         Label("Result \(meshFitSizeLabel(plan.resultSizeMM)) · fits Slant’s 220 mm build volume", systemImage: "checkmark.circle")
                     } else {
                         Label("Result \(meshFitSizeLabel(plan.resultSizeMM)) · larger than Slant’s 220 mm build volume", systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.studioWarning)
                     }
                 } else if !sizeText.isEmpty {
                     Text("Enter a size in millimetres, such as 50 or 12.5.")
@@ -539,9 +539,9 @@ struct MeshFitSheet: View {
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if let settings = plinthSettings, let problem = plinthSettingsProblem(settings) {
-                    Text(problem).foregroundStyle(.orange)
+                    Text(problem).foregroundStyle(.studioWarning)
                 } else if plinthSettings == nil {
-                    Text("Enter each size in millimetres.").foregroundStyle(.orange)
+                    Text("Enter each size in millimetres.").foregroundStyle(.studioWarning)
                 }
                 Text("Adds a base under the whole model, joined into one solid, so tall or top-heavy figures stand steady. Needs a closed mesh.")
                 Text(plinthChamferNote)
@@ -579,7 +579,7 @@ struct MeshFitSheet: View {
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if let problem = couponProblem {
-                    Text(problem).foregroundStyle(.orange)
+                    Text(problem).foregroundStyle(.studioWarning)
                 }
                 if couponFeatures?.isEmpty == true {
                     Text("No round holes (through the base or running sideways) or pins standing on the part were found, so only the Bottom slice is offered.")

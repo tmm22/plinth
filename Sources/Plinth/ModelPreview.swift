@@ -64,7 +64,7 @@ struct ModelPreview: View {
                         }
                         if let warning = previewBuildVolumeWarning(model) {
                             Label(warning, systemImage: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.studioWarning)
                         }
                         if let notice = multipleObjectsNotice(objectCount: model.objectCount) {
                             Label(notice, systemImage: "square.stack.3d.up")

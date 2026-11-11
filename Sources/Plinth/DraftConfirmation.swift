@@ -351,7 +351,7 @@ struct UnconfirmedDraftNotice: View {
             if store.draftCreateOutcomeUnknown {
                 Label(draftCreateUnknownNotice(store.unconfirmedDraftCreates, earlierUnlisted: store.unconfirmedDraftCreatesOverflowed),
                       systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let outcome {
@@ -361,7 +361,7 @@ struct UnconfirmedDraftNotice: View {
             }
             if let failure {
                 Label(draftMarkerSearchFailureText(failure), systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {

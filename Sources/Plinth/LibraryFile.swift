@@ -2,7 +2,7 @@ import Foundation
 
 // The model library file (models.json): a lenient read that never loses the seller's library silently.
 //
-// - A file the app's decoder reads whole loads exactly as before, and is written back exactly as before.
+// - A file the app's decoder reads whole loads exactly as before, and is written back with the same encoder as before.
 // - Otherwise each entry is read on its own, so one bad entry never drops the rest. An entry this build can't read
 //   (one missing its ID, name, file or date, or one from a later version that changed them) is carried through: kept
 //   in memory with the same content (keys sorted) and written back after the readable ones on every save, so a newer

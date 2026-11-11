@@ -1057,7 +1057,7 @@ struct SpendingReportSheet: View {
                 .disabled(report.countedOrders == 0)
                 Spacer()
                 if let exportError {
-                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).lineLimit(2)
+                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning).lineLimit(2)
                 } else if copied {
                     Text("Copied").font(.callout).foregroundStyle(.secondary)
                 }
@@ -1110,11 +1110,11 @@ struct SpendingReportSheet: View {
                 }
             }
             if let message = periodLoader.message {
-                Text(message).font(.caption).foregroundStyle(.orange)
+                Text(message).font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             } else if periodLoader.load != nil, loaded == nil, !periodLoader.running {
                 Text("The default platform changed, so the loaded period isn’t shown. Load it again.")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(.studioWarning)
             } else if loaded == nil, let blocked, !periodLoader.running {
                 Text(blocked).font(.caption).foregroundStyle(.secondary)
             } else if loaded == nil {

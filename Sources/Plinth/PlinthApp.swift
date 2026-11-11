@@ -233,8 +233,8 @@ let studioHelpSections: [StudioHelpSection] = [
         **Improve for printing** work on STL models and always save a separate copy: the original is never changed. \
         **Show Overhangs** in the preview tints faces steeper than Slant’s 50° limit, with the model as its file is \
         oriented; it only changes the picture. The **Show** menu above the model list shows only originals, copies, \
-        uploaded models or those ready to upload, and sorts the list, and **Remove Copies of This Model…** clears a model’s copies at once (**Edit › Undo** brings \
-        them back). If a saved product’s material runs out of stock, a notice at the top of the window names it; \
+        uploaded models or those ready to upload, and sorts the list. **Remove Copies of This Model…** clears a \
+        model’s copies at once, and **Edit › Undo Remove Copies** brings them back. If a saved product’s material runs out of stock, a notice at the top of the window names it; \
         **Dismiss** hides it until another product or material is affected.
         """),
     StudioHelpSection(title: "Orders", body: """

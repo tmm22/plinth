@@ -412,7 +412,7 @@ struct RenameModelSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Model name")
             if let problem, !name.isEmpty {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
             }
             if let note = renameUploadedNote(isUploaded: model.remoteID != nil) {
                 Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

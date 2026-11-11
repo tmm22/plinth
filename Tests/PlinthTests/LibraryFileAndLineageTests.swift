@@ -36,14 +36,18 @@ final class LibraryFileAndLineageTests: XCTestCase {
 
     // MARK: Reading
 
-    func testAGoodFileReadsWholeAndWritesBackByteIdentical() throws {
+    func testAGoodFileReadsWholeAndWritesBackTheSameContent() throws {
         let models = [model("Owl"), model("Bracket", copiedFrom: UUID())]
         let data = try encoded(models)
         let read = readLibraryFile(data)
         XCTAssertNil(read.problem)
         XCTAssertEqual(read.models.map(\.id), models.map(\.id))
         XCTAssertTrue(read.carriedEntries.isEmpty)
-        XCTAssertEqual(try libraryFileData(read.models, carrying: []), data, "nothing carried: the same encoding as before")
+        // Nothing carried: the same encoder as before, so the same content. Bytes aren't compared: JSONEncoder's key
+        // order follows Swift's per-process hash seed, so two encodings of one library can order keys differently.
+        let written = try libraryFileData(read.models, carrying: [])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: written) as? NSArray, try JSONSerialization.jsonObject(with: data) as? NSArray)
+        XCTAssertEqual(try JSONDecoder().decode([LocalModel].self, from: written).map(\.id), models.map(\.id))
     }
 
     func testOneBadEntryKeepsTheRestAndIsCarriedThrough() throws {

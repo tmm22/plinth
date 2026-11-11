@@ -30,7 +30,7 @@ struct APIWorkbenchView: View {
                         ForEach(groups, id: \.self) { group in
                             Section(group) {
                                 ForEach(filtered.filter { $0.group == group }) { endpoint in
-                                    VStack(alignment: .leading, spacing: 5) { Text(endpoint.title).font(.callout).lineLimit(2); HStack(spacing: 6) { Text(endpoint.method).font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(endpoint.method == "GET" ? .green : .studioAccent); Text(endpoint.path).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1) } }.padding(.vertical, 5).tag(endpoint.id)
+                                    VStack(alignment: .leading, spacing: 5) { Text(endpoint.title).font(.callout).lineLimit(2); HStack(spacing: 6) { Text(endpoint.method).font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(endpoint.method == "GET" ? .studioSuccess : .studioAccent); Text(endpoint.path).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1) } }.padding(.vertical, 5).tag(endpoint.id)
                                 }
                             }
                         }
@@ -120,7 +120,7 @@ struct EndpointView: View {
                             }
                         }
                     }
-                    if let validation { Label(validation, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange) }
+                    if let validation { Label(validation, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning) }
                     HStack {
                         Group {
                             if hasOpenSCADResult {
@@ -133,7 +133,7 @@ struct EndpointView: View {
                         .disabled(store.busy || (endpoint.requiresAuth && !store.hasKey))
                         if store.busy { ProgressView().controlSize(.small) }
                         Spacer()
-                        if let responseStatus { Text("HTTP \(responseStatus)").font(.caption.monospaced()).foregroundStyle(.green) }
+                        if let responseStatus { Text("HTTP \(responseStatus)").font(.caption.monospaced()).foregroundStyle(.studioSuccess) }
                     }
                 }
                 if !responseText.isEmpty {
@@ -190,22 +190,22 @@ struct EndpointView: View {
                 // The composer's unconfirmed-draft notice: sending this may make a second draft.
                 Label(draftCreateUnknownNotice(store.unconfirmedDraftCreates, earlierUnlisted: store.unconfirmedDraftCreatesOverflowed),
                       systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.callout).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
             if let mutationNote {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(mutationNote).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    Text(mutationNote).font(.callout).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
                     if crossSheetUnknown {
                         Button("Reload Order") { startOrderPreview(pending) }.disabled(store.busy || previewLoading)
                     }
                 }
             } else if crossSheetUnknown {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(workbenchUnknownOutcomeBlockMessage).font(.callout).foregroundStyle(.orange)
+                    Text(workbenchUnknownOutcomeBlockMessage).font(.callout).foregroundStyle(.studioWarning)
                     Button("Reload Order") { startOrderPreview(pending) }.disabled(store.busy || previewLoading)
                 }
             } else if let unknownReason {
-                Text(unknownReason).font(.callout).foregroundStyle(.orange)
+                Text(unknownReason).font(.callout).foregroundStyle(.studioWarning)
             }
             if isCharge || isDeleteOrder {
                 if let order = previewOrder {
@@ -216,7 +216,7 @@ struct EndpointView: View {
                         Text("Total: \(orderTotalMoney(order))")
                         // As in the Orders review: advisory only, never changes whether Send is enabled.
                         if isCharge, let notice = orderUnlistedCostNotice(orderUnlistedCosts(order)) {
-                            Text(notice).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                            Text(notice).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
                         }
                         Text("Recipient: \(workbenchOrderRecipient(order))")
                     }.font(.callout).textSelection(.enabled)
@@ -224,7 +224,7 @@ struct EndpointView: View {
                     ProgressView("Loading order costs…").controlSize(.small)
                 } else if previewFailed {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(isCharge ? "Couldn’t load this order’s costs." : "Couldn’t load this order.").font(.callout).foregroundStyle(.orange)
+                        Text(isCharge ? "Couldn’t load this order’s costs." : "Couldn’t load this order.").font(.callout).foregroundStyle(.studioWarning)
                         Button("Try Again") { startOrderPreview(pending) }.disabled(store.busy)
                     }
                 }
@@ -232,14 +232,14 @@ struct EndpointView: View {
             if let phrase = pending.confirmPhrase {
                 VStack(alignment: .leading, spacing: 6) {
                     if phrase.isEmpty {
-                        Text("Enter the target id to confirm.").font(.caption).foregroundStyle(.orange)
+                        Text("Enter the target id to confirm.").font(.caption).foregroundStyle(.studioWarning)
                     } else {
                         Text(phrase == "rotate" ? "Type rotate to confirm secret rotation." : "Type \(phrase) to confirm.")
                             .font(.caption).foregroundStyle(.secondary)
                         TextField(phrase, text: $typedConfirm).textFieldStyle(.roundedBorder).disabled(store.busy || mutationAttempted || mutationSucceeded)
                             .accessibilityLabel(phrase == "rotate" ? "Type rotate to confirm" : "Type the ID to confirm")
                     }
-                    if let typedReason { Text(typedReason).font(.caption).foregroundStyle(.orange) }
+                    if let typedReason { Text(typedReason).font(.caption).foregroundStyle(.studioWarning) }
                 }
             }
             JSONView(text: pending.summary)

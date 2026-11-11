@@ -827,7 +827,7 @@ struct ModelsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Check this model’s scale", systemImage: "exclamationmark.triangle.fill")
                         .font(.headline)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.studioWarning)
                     Text(warning.message).font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if !canSaveScaledCopy(local) {
@@ -1051,10 +1051,10 @@ struct ModelsView: View {
                 }
                 if printQuantity(quantityText) == nil {
                     Label("Enter a whole number from 1 to 10,000.", systemImage: "exclamationmark.circle")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundStyle(.studioWarning)
                 } else if let notice = printQuantityNotice(quantityText) {
                     Label(notice, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundStyle(.studioWarning)
                 }
                 if printChoice.service == .slant {
                     CompareEstimatesButton(modelName: selectedModelName) // EstimateComparison.swift
@@ -1073,7 +1073,7 @@ struct ModelsView: View {
                                     .foregroundStyle(.secondary)
                             } else {
                                 Label("Previous estimate. The configuration has changed, so get a new estimate.", systemImage: "exclamationmark.circle")
-                                    .font(.caption).foregroundStyle(.orange)
+                                    .font(.caption).foregroundStyle(.studioWarning)
                             }
                         }
                         Spacer()
@@ -1748,7 +1748,7 @@ struct ImportFromURLSheet: View {
                 TextField("Link", text: $url, prompt: Text("https://…"))
                 TextField("Name", text: $name, prompt: Text("Model name in Slant"))
                 if let validation {
-                    Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -2265,7 +2265,7 @@ struct CatalogView: View {
         .searchable(text: $search, prompt: "Search \(kind.rawValue.lowercased())")
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Picker("Catalog", selection: $store.catalogKind) {
+                Picker("Catalogue", selection: $store.catalogKind) {
                     ForEach(Destination.catalogKinds) { kind in
                         Text(kind.rawValue).tag(kind)
                     }
@@ -2568,7 +2568,7 @@ func catalogReadableFields(_ record: Record, kind: Destination, categories: [Rec
             Text(catalogColourDisplay(record.string("color", "profile"))).foregroundStyle(.secondary)
         }
         if let stock = filamentAvailabilityLabel(record) {
-            Text(stock).foregroundStyle(.orange)
+            Text(stock).foregroundStyle(.studioWarning)
         }
     }
     if kind == .stationery {

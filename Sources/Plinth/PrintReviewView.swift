@@ -537,7 +537,7 @@ struct PrintReviewSheet: View {
                 }
                 .accessibilityElement(children: .combine)
             case .failed(let message):
-                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             case .done:
                 if let before = session.before {
@@ -622,7 +622,7 @@ struct PrintReviewSheet: View {
                 Text("mm").foregroundStyle(.secondary)
             }
             if let problem = printReviewSizeProblem(sizeText) {
-                Text(problem).font(.caption).foregroundStyle(.orange)
+                Text(problem).font(.caption).foregroundStyle(.studioWarning)
             } else {
                 Text("Optional. With a real size, Claude can suggest scaling to it; without one it never guesses a size.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -675,7 +675,7 @@ struct PrintReviewSheet: View {
             }
             switch session.claude {
             case .failed(let message):
-                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             case .stopped:
                 Text("Stopped. Anthropic may still bill for what Claude had already written.")
@@ -690,8 +690,8 @@ struct PrintReviewSheet: View {
 
     private func severityColour(_ severity: PrintReviewSeverity) -> Color {
         switch severity {
-        case .high: return .red
-        case .medium: return .orange
+        case .high: return .studioError
+        case .medium: return .studioWarning
         case .low: return .secondary
         }
     }
@@ -772,7 +772,7 @@ struct PrintReviewSheet: View {
                         .help("Closes this review and opens Reinforce this part for this model")
                 }
                 if let problem = step.problem {
-                    Label("Plinth won’t run this: \(problem)", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label("Plinth won’t run this: \(problem)", systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning)
                 }
             }
             .font(.callout)
@@ -815,7 +815,7 @@ struct PrintReviewSheet: View {
                     Text(line).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             case .failed(let message):
-                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             default:
                 EmptyView()

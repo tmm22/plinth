@@ -74,7 +74,7 @@ struct OrderImportPersonaliseSection: View {
         VStack(alignment: .leading, spacing: 6) {
             if session.openSCAD == nil {
                 Label(batchPersonaliseNoOpenSCADNote, systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
                 Button("Check Again") { checkAgain() }
                     .controlSize(.small)
                     .disabled(disabled)
@@ -104,7 +104,7 @@ struct OrderImportPersonaliseSection: View {
                     Text("\(link.templateName) · sets \(link.valueName) · \(entry.texts.count == 1 ? "1 item" : "\(entry.texts.count) items")")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     if case .failed(let reason)? = session.templates[link.templatePath] {
-                        Text(reason).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        Text(reason).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -160,12 +160,12 @@ struct SavedProductTemplateLinkEditor: View {
     private func valuePicker(_ current: SavedProductTemplateLink) -> some View {
         switch loaded {
         case .failed(let reason)?:
-            Text(reason).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            Text(reason).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
         case .loaded(let file)?:
             let texts = file.template.parameters.filter { $0.kind == .string }
             if texts.isEmpty {
                 Text("This template has no text values before its first module, so there’s nowhere for the buyer’s text to go.")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             } else {
                 Picker("Buyer’s text goes in", selection: Binding(get: { current.valueName }, set: { link?.valueName = $0 })) {
                     Text("Choose a value…").tag("")

@@ -158,7 +158,7 @@ struct DapiProfitCheckPanel: View {
                         TextField("Units sold", text: $unitsText).labelsHidden().accessibilityLabel("Units sold")
                             .frame(width: 80).multilineTextAlignment(.trailing)
                         if parseProfitUnitsSold(unitsText) == nil {
-                            Text("Enter a whole number from 1").font(.caption2).foregroundStyle(.orange)
+                            Text("Enter a whole number from 1").font(.caption2).foregroundStyle(.studioWarning)
                         }
                     }
                 }
@@ -182,7 +182,7 @@ struct DapiProfitCheckPanel: View {
                 TextField(title, text: binding).labelsHidden().accessibilityLabel(title)
                     .frame(width: 80).multilineTextAlignment(.trailing)
                 if rateValue(field) == nil {
-                    Text(field.isPercent ? "Enter 0–100" : "Enter an amount").font(.caption2).foregroundStyle(.orange)
+                    Text(field.isPercent ? "Enter 0–100" : "Enter an amount").font(.caption2).foregroundStyle(.studioWarning)
                 }
             }
         }
@@ -200,7 +200,7 @@ struct DapiProfitCheckPanel: View {
             }
             LabeledContent("Estimated profit") {
                 Text(profitMoney(result.profit)).monospacedDigit().fontWeight(.semibold)
-                    .foregroundStyle(result.profit < 0 ? .red : .primary)
+                    .foregroundStyle(result.profit < 0 ? .studioError : .primary)
             }
             if let margin = result.marginPercent {
                 LabeledContent("Estimated margin") { Text(profitPercentText(margin)).monospacedDigit() }
@@ -211,9 +211,9 @@ struct DapiProfitCheckPanel: View {
             Text("Not included: taxes, ads you pay for separately, currency conversion.")
                 .font(.caption).foregroundStyle(.secondary)
         } else if unitsSold == nil, parseProfitAmount(itemText) != nil, shippingAmount != nil, validRates != nil {
-            Text("Enter the units sold as a whole number, such as 1.").font(.callout).foregroundStyle(.orange)
+            Text("Enter the units sold as a whole number, such as 1.").font(.callout).foregroundStyle(.studioWarning)
         } else {
-            Text("Check the highlighted amounts: use numbers like 24.99.").font(.callout).foregroundStyle(.orange)
+            Text("Check the highlighted amounts: use numbers like 24.99.").font(.callout).foregroundStyle(.studioWarning)
         }
     }
 
@@ -488,7 +488,7 @@ struct DapiSpendingReportSheet: View {
                 .disabled(report.countedOrders == 0 && report.otherCurrencies.isEmpty)
                 Spacer()
                 if let exportError {
-                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).lineLimit(2)
+                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning).lineLimit(2)
                 } else if copied {
                     Text("Copied").font(.callout).foregroundStyle(.secondary)
                 }
@@ -530,7 +530,7 @@ struct DapiSpendingReportSheet: View {
                 }
             }
             if let message = loader.message {
-                Text(message).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(message).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             } else if loaded == nil {
                 Text("Reads every order in \(spendReportIntervalTitle(spendReportPeriodInterval(period))) from 3DAPI for this report, without changing the Orders list.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

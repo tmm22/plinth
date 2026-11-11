@@ -49,7 +49,7 @@ struct DapiPlaceOrderSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Label("The figures changed since you reviewed them, so nothing was sent. Check the new figures and press Place Order again.",
                                   systemImage: "exclamationmark.triangle.fill")
-                                .font(.callout).foregroundStyle(.orange)
+                                .font(.callout).foregroundStyle(.studioWarning)
                                 .fixedSize(horizontal: false, vertical: true)
                             ForEach(runner.changes, id: \.self) { change in
                                 Text(change).font(.callout).padding(.leading, 20)
@@ -123,18 +123,18 @@ struct DapiPlaceOrderSheet: View {
             EmptyView()
         case .blocked(let message):
             Label(message, systemImage: "exclamationmark.triangle")
-                .font(.callout).foregroundStyle(.orange)
+                .font(.callout).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         case .notCharged(let message):
             VStack(alignment: .leading, spacing: 4) {
                 Label("3DAPI didn’t place the order, and nothing was charged.", systemImage: "xmark.octagon")
-                    .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+                    .font(.callout.weight(.semibold)).foregroundStyle(.studioWarning)
                 Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
         case .unknown(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Label(message, systemImage: "questionmark.circle")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
                 if let attempt = runner.unconfirmed {
                     DapiUnconfirmedOrdersNotice(only: [attempt.id]) { order in onFound(order) }
@@ -388,7 +388,7 @@ struct DapiCancelOrderSheet: View {
         case .ready:
             Text("3DAPI still lets this order be cancelled.").font(.callout).foregroundStyle(.secondary)
         case .blocked(let message):
-            Label(message, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+            Label(message, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         case .cancelling:
             HStack(spacing: 8) {
@@ -404,16 +404,16 @@ struct DapiCancelOrderSheet: View {
             case .notYetCancelled(let order):
                 Label("3DAPI answered, but the order shows “\(order.status.label)”, not cancelled. Refresh it later to see whether the cancellation went through; Plinth won’t send another meanwhile.",
                       systemImage: "questionmark.circle")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             case .refused(let message):
                 VStack(alignment: .leading, spacing: 4) {
                     Label("3DAPI didn’t cancel the order.", systemImage: "xmark.octagon")
-                        .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+                        .font(.callout.weight(.semibold)).foregroundStyle(.studioWarning)
                     Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
                 }
             case .unknown(let message):
-                Label(message, systemImage: "questionmark.circle").font(.callout).foregroundStyle(.orange)
+                Label(message, systemImage: "questionmark.circle").font(.callout).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

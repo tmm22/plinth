@@ -582,12 +582,12 @@ struct ShopifyTrackingSheet: View {
             if !shopMatches {
                 Label("The Shopify connection changed in Settings. Close this and open it again to send to the connected store.",
                       systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
             if runner.canFulfil == false {
                 Label("The app can’t fulfil orders yet. Add the write_merchant_managed_fulfillment_orders scope in the Dev Dashboard, release a new version and approve it on the store.",
                       systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
             if let message = runner.message {
                 Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
@@ -665,7 +665,7 @@ struct ShopifyTrackingSheet: View {
                 Text(candidate.trackingNumbers.joined(separator: ", ")).font(.callout.monospaced()).lineLimit(2).textSelection(.enabled)
                 if connection.unconfirmedTrackingSends[candidate.id] != nil, state != .sent {
                     Label("An earlier send this session wasn’t confirmed. Check the order in Shopify before ticking it.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundStyle(.studioWarning)
                 }
                 stateLabel(state)
             }
@@ -683,15 +683,15 @@ struct ShopifyTrackingSheet: View {
             Label(check.summary, systemImage: check.isReady ? "checkmark.circle" : "minus.circle")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         case .checkFailed(let reason)?:
-            Label("Couldn’t check: \(reason)", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            Label("Couldn’t check: \(reason)", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
         case .sending?:
             Label("Sending…", systemImage: "arrow.up.circle").font(.caption).foregroundStyle(.secondary)
         case .sent?:
-            Label("Sent. Marked as done in your shop.", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+            Label("Sent. Marked as done in your shop.", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.studioSuccess)
         case .refused(let reason)?:
-            Label("Not sent: \(reason)", systemImage: "xmark.circle.fill").font(.caption).foregroundStyle(.red)
+            Label("Not sent: \(reason)", systemImage: "xmark.circle.fill").font(.caption).foregroundStyle(.studioError)
         case .unknown(let reason)?:
-            Label("Not confirmed: \(reason)", systemImage: "questionmark.circle.fill").font(.caption).foregroundStyle(.orange)
+            Label("Not confirmed: \(reason)", systemImage: "questionmark.circle.fill").font(.caption).foregroundStyle(.studioWarning)
         case .notSent?:
             Label("Not sent", systemImage: "minus.circle").font(.caption).foregroundStyle(.secondary)
         }

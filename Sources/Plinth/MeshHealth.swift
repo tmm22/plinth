@@ -253,7 +253,7 @@ struct MeshHealthPanel: View {
                 let summary = meshHealthSummary(report, objectCount: objectCount, pocketsExplainBodies: pocketsExplainBodies(report))
                 let label = Label(summary.line, systemImage: summary.isClean ? "checkmark.circle" : "info.circle")
                     .font(.callout)
-                    .foregroundStyle(summary.isClean ? Color.green : Color.primary)
+                    .foregroundStyle(summary.isClean ? Color.studioSuccess : Color.primary)
                 if summary.details.isEmpty {
                     label
                         .accessibilityElement(children: .combine)

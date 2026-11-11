@@ -303,7 +303,7 @@ struct OrderStatusCell: View {
     var body: some View {
         if let attention {
             HStack(spacing: 3) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).imageScale(.small)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning).imageScale(.small)
                 Text(status).lineLimit(1)
             }
             // The tooltip goes on the combined element: on the HStack before `.combine` it reached VoiceOver twice.
@@ -710,7 +710,7 @@ struct ShopFollowUpSheet: View {
                 Spacer()
                 // Shown here, as in the spending report: a window alert would wait behind the sheet.
                 if let exportError {
-                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).lineLimit(2)
+                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning).lineLimit(2)
                 }
                 // Marks apply as they're made, so Done; Escape closes the sheet as everywhere else.
                 Button("Done") { dismiss() }

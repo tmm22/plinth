@@ -230,7 +230,7 @@ private struct PersonalisationForm: View {
                 Text(engineCaption(now: now)).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let reason = blockedReason(now: now) {
-                    Label(reason, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                    Label(reason, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if engine == .local, localExecutable == nil, lookedForOpenSCAD {
@@ -261,10 +261,10 @@ private struct PersonalisationForm: View {
                 .keyboardShortcut(.cancelAction)
                 .disabled(generating && engine == .slant)
             if let problem {
-                Label(problem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning)
                     .font(.callout).lineLimit(3).fixedSize(horizontal: false, vertical: true)
             } else if let status {
-                Label(status, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Label(status, systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess)
                     .font(.callout).lineLimit(2)
             } else if generating {
                 ProgressView().controlSize(.small)

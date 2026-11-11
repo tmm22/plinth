@@ -469,7 +469,7 @@ struct ListingImagesSheet: View {
                 if let licenceAdvisory {
                     Label(licenceAdvisory, systemImage: "exclamationmark.triangle.fill")
                         .font(.callout)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -588,7 +588,7 @@ struct ListingImagesSheet: View {
         } else if let summary = job.summary {
             VStack(alignment: .leading, spacing: 6) {
                 Label(listingExportResultText(summary), systemImage: summary.saved.isEmpty ? "exclamationmark.triangle" : "checkmark.circle")
-                ForEach(summary.failures, id: \.self) { Text($0).font(.callout).foregroundStyle(.orange) }
+                ForEach(summary.failures, id: \.self) { Text($0).font(.callout).foregroundStyle(.studioWarning) }
                 if let folder = job.folder, !summary.saved.isEmpty {
                     Text(folder.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }

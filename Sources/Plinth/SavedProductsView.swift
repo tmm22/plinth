@@ -101,7 +101,7 @@ struct SavedProductQuantityField: View {
             .fixedSize()
             if printQuantity(text) == nil {
                 Text(savedProductQuantityInvalidText(quantity))
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -427,7 +427,7 @@ struct SavedProductsSheet: View {
         let states = orderability
         if let count = savedProductsCantOrderCountText(states.values.filter { !$0.canOrder }.count) {
             Label(count, systemImage: "exclamationmark.triangle.fill")
-                .font(.callout).foregroundStyle(.orange)
+                .font(.callout).foregroundStyle(.studioWarning)
         }
         if catalogsLoading {
             Text("Loading the catalogue to check stock…").font(.caption).foregroundStyle(.secondary)
@@ -454,7 +454,7 @@ struct SavedProductsSheet: View {
                 .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             if let reason = savedProductCantOrderText(state) {
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    .font(.caption).foregroundStyle(.studioWarning).lineLimit(2)
                     .help(state.blockers.joined(separator: "\n"))
             }
         }
@@ -478,7 +478,7 @@ struct SavedProductsSheet: View {
                         TextField("SKU", text: product.sku, prompt: Text("Optional"))
                         if let skuConflict {
                             Label("\(skuConflict) Each SKU can belong to one product.", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption).foregroundStyle(.orange)
+                                .font(.caption).foregroundStyle(.studioWarning)
                         } else {
                             Text("Your shop’s SKU for this product. It’s sent with each item of a draft made from it. Needed to match imported orders.")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -506,7 +506,7 @@ struct SavedProductsSheet: View {
             // Sheet footers: a local save, so Cancel sits just before Save Product in the trailing group.
             HStack {
                 if let saveError {
-                    Text(saveError).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    Text(saveError).font(.caption).foregroundStyle(.studioWarning).lineLimit(2)
                 } else if let blockedReason {
                     Text(blockedReason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
@@ -570,11 +570,11 @@ struct SavedProductsSheet: View {
                     TextField("Custom image link", text: line.imageURL, prompt: Text("Optional, https://…"))
                     if !isHTTPSImageURL(line.wrappedValue.imageURL) {
                         Text("Enter an https image link with a website address, or leave it blank.")
-                            .font(.caption).foregroundStyle(.orange)
+                            .font(.caption).foregroundStyle(.studioWarning)
                     }
                 }
             default:
-                Text("Choose a type for this item.").font(.callout).foregroundStyle(.orange)
+                Text("Choose a type for this item.").font(.callout).foregroundStyle(.studioWarning)
             }
             TextField("Item name", text: line.name, prompt: Text("Optional"))
         }
@@ -610,7 +610,7 @@ struct SavedProductsSheet: View {
                       ? "This model was removed from your library. Choose another."
                       : "This model was removed from your library. Drafts use its last uploaded file until you choose another.",
                       systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(.studioWarning)
             }
         } else if !line.wrappedValue.reference.isEmpty {
             Text("Uses Slant file \(line.wrappedValue.reference). Choose a library model to replace it.")
@@ -645,7 +645,7 @@ struct SavedProductsSheet: View {
             }
             if let filament = store.filaments.first(where: { $0.id == selected }), filamentAvailability(filament) == false {
                 Label("Out of stock. Drafts can’t use this product until it’s back in stock or you choose another material.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(.studioWarning)
             }
         }
     }
@@ -682,7 +682,7 @@ struct SavedProductsSheet: View {
             }
             if !loaded, !catalogsLoading, let catalogLoadError {
                 Label(catalogLoadError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -820,7 +820,7 @@ struct AddSavedProductPopover: View {
                     ), in: 1...10000).labelsHidden()
                 }
                 if units == nil {
-                    Text("Enter a whole number of units from 1 to 10,000.").font(.caption).foregroundStyle(.orange)
+                    Text("Enter a whole number of units from 1 to 10,000.").font(.caption).foregroundStyle(.studioWarning)
                 }
                 if let resolution {
                     if resolution.blockers.isEmpty, !resolution.lines.isEmpty {
@@ -834,7 +834,7 @@ struct AddSavedProductPopover: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     ForEach(Array(resolution.blockers.enumerated()), id: \.offset) { _, blocker in
-                        Label(blocker, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.orange)
+                        Label(blocker, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.studioWarning)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }

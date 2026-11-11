@@ -992,7 +992,7 @@ struct BatchPaySheet: View {
             }
             if let lockNotice, runner.phase != .paying {
                 Label(lockNotice, systemImage: "lock.fill")
-                    .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.callout).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
             switch runner.phase {
             case .choose: chooseList
@@ -1139,24 +1139,24 @@ struct BatchPaySheet: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if runner.phase == .review, store.draftCreateOutcomeUnknown || store.orderImportLedger.hasUnconfirmed {
                         Label(batchPayUnconfirmedCreateNotice, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+                            .foregroundStyle(.studioWarning).font(.callout).fixedSize(horizontal: false, vertical: true)
                     }
                     if runner.phase == .review,
                        let check = batchPayPlacedCheckNotice(needed: runner.placedCheckNeeded, recent: runner.recentRead,
                                                              leftOut: runner.uncheckedLeftOut) {
                         if check.warning {
                             Label(check.text, systemImage: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+                                .foregroundStyle(.studioWarning).font(.callout).fixedSize(horizontal: false, vertical: true)
                         } else {
                             Label(check.text, systemImage: "checkmark.shield")
                                 .foregroundStyle(.secondary).font(.callout).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     if let notice = batchPayLargeQuantityNotice(payable.compactMap(\.order)) {
-                        Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.callout)
+                        Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning).font(.callout)
                     }
                     if runner.phase == .review, let notice = batchPayLossNotice(payable.compactMap(\.order).map(profitEstimate)) {
-                        Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.callout)
+                        Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning).font(.callout)
                     }
                     ForEach(payable) { draft in
                         if let order = draft.order {
@@ -1170,7 +1170,7 @@ struct BatchPaySheet: View {
                                     }
                                 }
                                 if let note = runner.reloadMessages[draft.id] {
-                                    Text(note).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                                    Text(note).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
                                 }
                             }
                         }
@@ -1329,7 +1329,7 @@ struct BatchPayDraftCard<Extra: View>: View {
                     if orderItemHasLargeQuantity(item) {
                         // Each item wraps to a few lines, so every item can be read before paying.
                         Label(text, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange).fontWeight(.semibold)
+                            .foregroundStyle(.studioWarning).fontWeight(.semibold)
                             .lineLimit(3).truncationMode(.middle)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityLabel("Large quantity: \(text)")
@@ -1350,7 +1350,7 @@ struct BatchPayDraftCard<Extra: View>: View {
             .labeledContentStyle(.receipt)
             if let estimate {
                 if estimate.isLoss {
-                    Label(estimate.text, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Label(estimate.text, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text(estimate.text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -1377,17 +1377,17 @@ struct BatchPayDraftCard<Extra: View>: View {
         let text = batchPayStateText(state)
         switch state {
         case .placed:
-            Label(text, systemImage: "checkmark.circle.fill").foregroundStyle(.green).fontWeight(.semibold)
+            Label(text, systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess).fontWeight(.semibold)
         case .paying:
             HStack(spacing: 6) { ProgressView().controlSize(.small); Text(text) }
         case .queued:
             Text(text).foregroundStyle(.secondary)
         case .unknown:
-            Label(text, systemImage: "exclamationmark.octagon.fill").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            Label(text, systemImage: "exclamationmark.octagon.fill").foregroundStyle(.studioError).fixedSize(horizontal: false, vertical: true)
         case .unclear, .unrecognised:
-            Label(text, systemImage: "questionmark.circle.fill").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            Label(text, systemImage: "questionmark.circle.fill").foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
         case .refused, .notPaid:
-            Label(text, systemImage: "xmark.circle").foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            Label(text, systemImage: "xmark.circle").foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
         case .reloaded:
             Label(text, systemImage: "arrow.clockwise.circle").foregroundStyle(.secondary)
         }

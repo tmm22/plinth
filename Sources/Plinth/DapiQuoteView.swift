@@ -208,7 +208,7 @@ struct DapiQuoteSheet: View {
                         .accessibilityLabel("Quantity")
                     if quantity == nil {
                         Label("Enter a whole number from 1 to 10,000.", systemImage: "exclamationmark.circle")
-                            .font(.caption).foregroundStyle(.orange)
+                            .font(.caption).foregroundStyle(.studioWarning)
                     }
                 }
             }
@@ -273,11 +273,11 @@ struct DapiQuoteSheet: View {
         case .quoteFailed(let reason):
             Label(reason.map { "3DAPI couldn’t quote this file: \($0)" } ?? "3DAPI couldn’t quote this file and didn’t say why.",
                   systemImage: "exclamationmark.triangle")
-                .font(.callout).foregroundStyle(.orange)
+                .font(.callout).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         case .problem(let message):
             Label(message, systemImage: "exclamationmark.triangle")
-                .font(.callout).foregroundStyle(.orange)
+                .font(.callout).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -340,11 +340,11 @@ struct DapiQuoteSheet: View {
         } else if stale || runner.shippingProblem != nil || (runner.shipping == nil && destination != nil) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 if let problem = runner.shippingProblem {
-                    Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                    Label(problem, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if stale {
                     Label("Shipping needs updating for this country and quantity.", systemImage: "exclamationmark.circle")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -361,7 +361,7 @@ struct DapiQuoteSheet: View {
     private func cell(_ cell: DapiComparisonCell) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(cell.value).font(.callout.weight(.semibold).monospacedDigit())
-                .foregroundStyle(cell.isWarning ? Color.orange : Color.primary)
+                .foregroundStyle(cell.isWarning ? Color.studioWarning : Color.primary)
             if let note = cell.note {
                 Text(note).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -47,7 +47,7 @@ struct SellerAddressSettingsSection: View {
                 TextField("Postal code", text: $draft.zip, prompt: Text("Required"))
                     .focused($postcodeFocused)
                 if let warning = postcodeFormatWarning(draft.zip, country: draft.country, whileEditing: postcodeFocused) {
-                    Text(warning).font(.caption).foregroundStyle(.orange)
+                    Text(warning).font(.caption).foregroundStyle(.studioWarning)
                 }
             }
             HStack {
@@ -60,11 +60,11 @@ struct SellerAddressSettingsSection: View {
                 if differsFromSaved, let blockedReason {
                     Text(blockedReason).font(.caption).foregroundStyle(.secondary)
                 } else if justSaved, !differsFromSaved {
-                    Label("Saved", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                    Label("Saved", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.studioSuccess)
                 }
             }
             if let problem {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
             }
         } header: {
             Text("Your address (for samples)")
