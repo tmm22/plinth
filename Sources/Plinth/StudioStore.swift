@@ -778,6 +778,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     private(set) var libraryCarriedEntries: [Data] = []
     /// Set when the library file couldn't be read or kept at launch: saving is refused, so it is never replaced.
     private(set) var librarySaveBlocked = false
+    /// Slant files whose library links were cleared this session (replaced, deleted, or stored into by another upload):
+    /// a carried entry linked to one loses its link at the next save, like a listed model.
+    private var libraryUnlinkedFileIDs: Set<String> = []
     /// Saved products (SavedProducts.swift). References only; persisted to products.json.
     @Published var savedProducts: [SavedProduct] = []
     @Published var showSavedProducts = false
@@ -979,7 +982,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         }
         // Read leniently: entries this build can't read are carried through, and a file that wasn't fully read is
         // kept beside it before any save can replace it (LibraryFile.swift).
-        let library = loadLibraryFile(at: Self.supportDirectory.appendingPathComponent(libraryFileName))
+        // On a launch working in Slant Studio's folder, its library file is never moved aside.
+        let library = loadLibraryFile(at: Self.supportDirectory.appendingPathComponent(libraryFileName),
+                                      mayMoveFile: !AppSupportLocation.copyFailedThisLaunch)
         localModels = library.read.models
         libraryCarriedEntries = library.read.carriedEntries
         librarySaveBlocked = library.saveBlocked
@@ -1035,6 +1040,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         guard !librarySaveBlocked else { showError(librarySaveBlockedMessage); return }
         do {
             try FileManager.default.createDirectory(at: Self.supportDirectory, withIntermediateDirectories: true)
+            // A carried entry never keeps a link to a file whose links were cleared, or that a listed model links.
+            libraryCarriedEntries = libraryCarriedEntriesDroppingLinks(
+                libraryCarriedEntries, toFileIDs: libraryUnlinkedFileIDs.union(localModels.compactMap(\.remoteID)))
             try libraryFileData(localModels, carrying: libraryCarriedEntries)
                 .write(to: Self.supportDirectory.appendingPathComponent(libraryFileName), options: .atomic)
         } catch { showError("Could not save library: \(error.localizedDescription)") }
@@ -1179,6 +1187,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             for index in localModels.indices where localModels[index].remoteID == id {
                 localModels[index].remoteID = nil
             }
+            libraryUnlinkedFileIDs.insert(id)
             if fileID == id {
                 fileID = ""
                 estimate = nil
@@ -1687,6 +1696,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             showError("Choose a local model and a platform before uploading.")
             return false
         }
+        // An upload saves which model is linked to which Slant file (and, for a Replace File, saves the unlinking
+        // before anything is sent). While library saves are refused that can't be recorded, so nothing is uploaded.
+        guard !librarySaveBlocked else { showError(libraryUploadBlockedMessage); return false }
         let capturedID = model.id
         let capturedName = uploadName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? model.name : uploadName
         let capturedURL = model.url
@@ -1778,6 +1790,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// too. The names of the other models that lost a link, in library order. The caller saves the library.
     private func clearLinks(toFileIDs fileIDs: Set<String>, alsoUnlinking modelID: UUID?) -> [String] {
         let affected = modelsLinked(toFileIDs: fileIDs, in: localModels)
+        libraryUnlinkedFileIDs.formUnion(fileIDs)
         let others = localModels.filter { affected.contains($0.id) && $0.id != modelID }.map(\.name)
         for index in localModels.indices where affected.contains(localModels[index].id) || localModels[index].id == modelID {
             localModels[index].remoteID = nil
@@ -2016,6 +2029,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         guard trimmedURL.lowercased().hasPrefix("https://") else { showError("Use an https:// link to upload a model."); return false }
         guard !trimmedName.isEmpty else { showError("Enter a name for the uploaded model."); return false }
         guard !platformID.isEmpty else { showError("Choose a default platform in Settings › Account."); return false }
+        guard !librarySaveBlocked else { showError(libraryUploadBlockedMessage); return false }
         let type = importModelType(url: trimmedURL, name: trimmedName)
         // Nil: not a Replace File. Blank: a Replace File whose file ID isn't known (no link can be cleared by it).
         let replaced = replacingFileID?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2060,7 +2074,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 // The same file ID may now hold different contents, so an estimate for it is no longer current.
                 if fileID == returnedID { estimate = nil }
                 let unlinked = modelsLosingLinkAfterUpload(fileID: returnedID, uploadedModelID: nil, in: localModels)
-                if !unlinked.isEmpty || !unlinkedBeforeSending.isEmpty {
+                // A carried entry linked to that file loses its link too (at this save, or the next one).
+                let carriedBefore = libraryCarriedEntries
+                libraryUnlinkedFileIDs.insert(returnedID)
+                libraryCarriedEntries = libraryCarriedEntriesDroppingLinks(libraryCarriedEntries, toFileIDs: [returnedID])
+                if !unlinked.isEmpty || !unlinkedBeforeSending.isEmpty || libraryCarriedEntries != carriedBefore {
                     let names = unlinkedBeforeSending + localModels.filter { unlinked.contains($0.id) }.map(\.name)
                     for index in localModels.indices where unlinked.contains(localModels[index].id) {
                         localModels[index].remoteID = nil

@@ -270,12 +270,13 @@ func orderAttentionFilterHint(moreOnServer: Bool, statusFilter: String? = nil, d
     if searchActive {
         text += " Only the order found by your search is checked; clear the search to check the list."
     } else {
-        var limits: [String] = []
-        if let status = statusFilter?.trimmingCharacters(in: .whitespacesAndNewlines), !status.isEmpty {
-            limits.append("\(orderStatusTitle(status)) orders")
+        let status = statusFilter?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let kind = status.isEmpty ? "orders" : "\(orderStatusTitle(status)) orders"
+        if datesFiltered {
+            text += " Only \(kind) from the chosen dates are loaded."
+        } else if !status.isEmpty {
+            text += " Only \(kind) are loaded."
         }
-        if datesFiltered { limits.append("the chosen dates") }
-        if !limits.isEmpty { text += " Only \(limits.joined(separator: " in ")) are loaded." }
         if moreOnServer { text += " Load more to check older orders." }
     }
     return text
@@ -566,7 +567,7 @@ func shopFollowUpEmptyText(doneCount: Int, listLimit: String?, reading: Bool, re
     }
     if reading { return "Loading your recent orders from Slant…" }
     if let recent, recent.finished {
-        return "None of the loaded orders or \(recentOrdersReachText(recent, dateText: dateText)) has tracking from Slant yet. Check again later."
+        return "No order in your Orders list, or in \(recentOrdersReachText(recent, dateText: dateText)), has tracking from Slant yet. Check again later."
     }
     var parts: [String] = []
     if let recent {
@@ -575,11 +576,11 @@ func shopFollowUpEmptyText(doneCount: Int, listLimit: String?, reading: Bool, re
     }
     if let listLimit {
         parts.append(listLimit)
-        parts.append("Load Recent Orders to include your newest orders of every status.")
+        parts.append("Load Recent Orders adds your newest orders on Slant.")
     } else {
         parts.append(recent == nil
-            ? "None of the loaded orders has tracking from Slant yet. Refresh Orders later to check again."
-            : "None of the loaded orders has tracking from Slant yet.")
+            ? "No order in your Orders list has tracking from Slant yet. Refresh Orders later to check again."
+            : "No order in your Orders list has tracking from Slant yet.")
     }
     return parts.joined(separator: " ")
 }
@@ -589,21 +590,23 @@ func shopFollowUpSourceText(reading: Bool, recent: RecentOrdersRead?, ordersHasM
                             dateText: (Date) -> String = recentOrdersDateText) -> String {
     if reading { return "Loading your recent orders from Slant…" }
     if let recent, recent.finished {
-        return "Listed from the loaded orders and \(recentOrdersReachText(recent, dateText: dateText))."
+        return "Shows your Orders list and \(recentOrdersReachText(recent, dateText: dateText))."
     }
-    let more = "Load Recent Orders reads your \(recentOrdersMaxPages * recentOrdersPageSize) newest orders of every status."
+    let more = "Load Recent Orders adds your \(recentOrdersMaxPages * recentOrdersPageSize) newest orders on Slant."
     if let recent {
         let reason = recentOrdersStopReason(recent)
         var text = "Couldn’t load your recent orders from Slant."
         if !reason.isEmpty { text += " " + reason }
         if recent.pagesRead > 0, recent.stop != .accountChanged {
-            text += " Listed from the loaded orders and \(recentOrdersReachText(recent, dateText: dateText)) only."
+            text += " Shows your Orders list and \(recentOrdersReachText(recent, dateText: dateText)) only."
         } else {
-            text += " Only loaded orders are listed."
+            text += " Shows orders from your Orders list only."
         }
         return text
     }
-    return ordersHasMore ? "Only loaded orders are listed, and older orders aren’t loaded. \(more)" : "Only loaded orders are listed. \(more)"
+    return ordersHasMore
+        ? "Shows orders from your Orders list, which hasn’t loaded your older orders. \(more)"
+        : "Shows orders from your Orders list. \(more)"
 }
 
 // MARK: - Sheet

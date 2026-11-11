@@ -173,7 +173,13 @@ final class PreviewOverhangsTests: XCTestCase {
         let share = OverhangShare(overhangAreaMM2: 12, surfaceAreaMM2: 100)
         let none = OverhangShare(overhangAreaMM2: 0, surfaceAreaMM2: 100)
         XCTAssertEqual(previewOverhangCaption(share),
-                       "Orange: 12% of the surface faces down more steeply than Slant’s 50° limit, where Slant adds supports. Shown as the file is oriented, which is how Slant prints it.")
+                       "Orange: 12% of the surface faces down more steeply than Slant’s 50° limit, where Slant may add supports. Shown as the file is oriented, which is how Slant prints it.")
+        // With 3DAPI as the print service the rule is named as Slant's, never as a description of 3DAPI's printing.
+        for caption in [previewOverhangCaption(share, forDapi: true), previewOverhangCaption(none, forDapi: true),
+                        previewOverhangCaption(nil, forDapi: true)] {
+            XCTAssertTrue(caption.hasSuffix("Shown as the file is oriented. This is Slant’s 50° rule; 3DAPI’s may differ."))
+            XCTAssertFalse(caption.contains("how Slant prints it"))
+        }
         XCTAssertTrue(previewOverhangCaption(none).hasPrefix("No faces point down"))
         XCTAssertTrue(previewOverhangCaption(nil).hasPrefix("Finding overhangs"))
         for text in [previewOverhangCaption(share), previewOverhangCaption(none), previewOverhangCaption(nil)] {

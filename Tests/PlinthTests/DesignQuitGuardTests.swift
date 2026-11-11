@@ -32,7 +32,10 @@ final class DesignQuitGuardTests: XCTestCase {
                     let atStake = !items.isEmpty || unconfirmed > 0 || overflowed
                     guard atStake else { XCTAssertNil(question); continue }
                     let q = try XCTUnwrap(question, "\(items) \(unconfirmed) \(overflowed)")
-                    XCTAssertEqual(q.title, items.isEmpty ? "Quit with unconfirmed 3D generations?" : "Quit and lose paid design work?")
+                    let forgetTitle = unconfirmed == 1 && !overflowed
+                        ? "Quit and forget a 3D generation that may have been charged?"
+                        : "Quit and forget 3D generations that may have been charged?"
+                    XCTAssertEqual(q.title, items.isEmpty ? forgetTitle : "Quit and lose paid design work?")
                     for item in all where item != .generationInFlight {
                         XCTAssertEqual(q.message.contains(item.lostText), items.contains(item), "\(item) in \(items)")
                     }
@@ -72,12 +75,21 @@ final class DesignQuitGuardTests: XCTestCase {
         let design: [DesignQuitItem] = [.unsavedReplica]
         let slant = try XCTUnwrap(plinthQuitQuestion(writes: [.payment], dapiUnconfirmedOrders: 1, dapiUnknownCancels: 0,
                                                      designWork: design, unconfirmedGenerations: 2))
-        XCTAssertEqual(slant.title, slantWritesQuitQuestion([.payment])?.title)
-        XCTAssertEqual(slant.message, slantWritesQuitQuestion([.payment])?.message)
+        // The earlier question keeps its title and its wording, and the design work Quit Anyway would also lose
+        // follows it, so it is never lost unwarned.
+        let designMessage = try XCTUnwrap(designWorkQuitQuestion(items: design, unconfirmedGenerations: 2)?.message)
+        let slantAlone = try XCTUnwrap(slantWritesQuitQuestion([.payment]))
+        XCTAssertEqual(slant.title, slantAlone.title)
+        XCTAssertEqual(slant.message, slantAlone.message + "\n\n" + designMessage)
 
         let dapi = try XCTUnwrap(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 1, dapiUnknownCancels: 0,
                                                     designWork: design, unconfirmedGenerations: 2))
-        XCTAssertEqual(dapi.message, dapiUnclearOrdersQuitQuestion(unconfirmedOrders: 1, unknownCancels: 0)?.message)
+        let dapiAlone = try XCTUnwrap(dapiUnclearOrdersQuitQuestion(unconfirmedOrders: 1, unknownCancels: 0))
+        XCTAssertEqual(dapi.title, dapiAlone.title)
+        XCTAssertEqual(dapi.message, dapiAlone.message + "\n\n" + designMessage)
+        // With no design work at stake, the earlier questions are exactly as before.
+        XCTAssertEqual(plinthQuitQuestion(writes: [.payment], dapiUnconfirmedOrders: 1, dapiUnknownCancels: 0)?.message, slantAlone.message)
+        XCTAssertEqual(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 1, dapiUnknownCancels: 0)?.message, dapiAlone.message)
 
         let ours = try XCTUnwrap(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 0, dapiUnknownCancels: 0,
                                                     designWork: design, unconfirmedGenerations: 2))
@@ -85,7 +97,7 @@ final class DesignQuitGuardTests: XCTestCase {
 
         let records = try XCTUnwrap(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 0, dapiUnknownCancels: 0,
                                                        unconfirmedGenerationsOverflowed: true))
-        XCTAssertEqual(records.title, "Quit with unconfirmed 3D generations?")
+        XCTAssertEqual(records.title, "Quit and forget 3D generations that may have been charged?")
 
         // The existing call, without design work, behaves as before.
         XCTAssertNil(plinthQuitQuestion(writes: [], dapiUnconfirmedOrders: 0, dapiUnknownCancels: 0))

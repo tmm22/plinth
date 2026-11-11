@@ -149,13 +149,13 @@ func savedProductStockNoticeMaterialsLine(_ issues: [SavedProductStockIssue], na
 /// What the seller can do, and how old the materials are. Never a promise about when stock returns.
 func savedProductStockNoticeAdvice(count: Int, materialsAt: Date?, now: Date = Date(), calendar: Calendar = .current) -> String {
     let products = count == 1 ? "this product" : "these products"
-    var text = "Orders for \(products) can’t be placed with Slant until the material is back or you choose another one in Saved Products."
+    var text = "To order \(products) from Slant, choose another material in Saved Products."
     if let materialsAt {
         let time = materialsAt.formatted(date: .omitted, time: .shortened)
         let when = calendar.isDate(materialsAt, inSameDayAs: now)
             ? "today at \(time)"
             : "\(materialsAt.formatted(.dateTime.day().month())) at \(time)"
-        text += " From Slant’s materials as of \(when)."
+        text += " Slant’s materials were read \(when)."
     }
     return text
 }

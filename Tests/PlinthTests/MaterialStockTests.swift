@@ -122,9 +122,9 @@ final class MaterialStockTests: XCTestCase {
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertEqual(savedProductStockNoticeAdvice(count: 1, materialsAt: nil),
-                       "Orders for this product can’t be placed with Slant until the material is back or you choose another one in Saved Products.")
+                       "To order this product from Slant, choose another material in Saved Products.")
         XCTAssertTrue(savedProductStockNoticeAdvice(count: 2, materialsAt: now, now: now, calendar: calendar).contains("these products"))
-        XCTAssertTrue(savedProductStockNoticeAdvice(count: 2, materialsAt: now, now: now, calendar: calendar).contains("as of today at"))
+        XCTAssertTrue(savedProductStockNoticeAdvice(count: 2, materialsAt: now, now: now, calendar: calendar).contains("Slant’s materials were read today at"))
         XCTAssertFalse(savedProductStockNoticeAdvice(count: 2, materialsAt: now.addingTimeInterval(-3 * 86_400), now: now, calendar: calendar)
             .contains("today"))
     }

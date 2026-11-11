@@ -240,7 +240,7 @@ func batchPayUncheckedExclusions(_ drafts: [(id: String, order: [String: Any])],
     var reasons: [String: String] = [:]
     for draft in drafts where batchPayMarketplaceKey(draft.order) != nil {
         let sale = orderMarketplaceReferenceLine(draft.order) ?? "its marketplace order"
-        reasons[draft.id] = "Plinth couldn’t check your recent Slant orders for one already placed for \(sale), so it isn’t paid in this batch. Go Back and review again in a minute, or pay it in its own review after checking."
+        reasons[draft.id] = "Not paid in this batch: Plinth couldn’t check whether \(sale) already has a placed order. Review again in a minute, or pay it in its own review after checking."
     }
     return reasons
 }
@@ -270,17 +270,11 @@ func batchPayPlacedCheckNotice(needed: Bool, recent: RecentOrdersRead?, leftOut:
     return (text, true)
 }
 
-/// The confirmation's sentence on the same check, or nil when no draft names a marketplace order.
-func batchPayPlacedCheckConfirmText(needed: Bool, recent: RecentOrdersRead?,
-                                    dateText: (Date) -> String = recentOrdersDateText) -> String? {
-    guard needed else { return nil }
-    guard let recent, recent.finished else {
-        return "Plinth couldn’t check your recent Slant orders for ones already placed for these sales, so drafts for a marketplace order were left out."
-    }
-    if recent.complete {
-        return "Plinth checked \(recentOrdersReachText(recent, dateText: dateText)) for orders already placed for these sales."
-    }
-    return "Plinth checked \(recentOrdersReachText(recent, dateText: dateText)) for orders already placed for these sales; older orders weren’t checked."
+/// The confirmation's sentence on the same check: only when it couldn't be done (the review already says how far a
+/// finished check reached, and a payment confirmation stays short). Nil when no draft names a marketplace order.
+func batchPayPlacedCheckConfirmText(needed: Bool, recent: RecentOrdersRead?) -> String? {
+    guard needed, recent?.finished != true else { return nil }
+    return "Plinth couldn’t check your recent Slant orders for ones already placed for these sales, so drafts for a marketplace order were left out."
 }
 
 /// Shown in the review while a draft create this session wasn't confirmed: a duplicate draft without a marketplace
@@ -1117,8 +1111,8 @@ struct BatchPaySheet: View {
         VStack(alignment: .leading, spacing: 8) {
             if let until = runner.waitingUntil, until.timeIntervalSinceNow > 2 {
                 ProgressView("Waiting for Slant’s rate limit… \(runner.loadedCount) of \(runner.loadTotal) loaded.")
-            } else if let page = runner.recentPage {
-                ProgressView("Checking your recent orders for ones already placed… page \(page) of up to \(recentOrdersMaxPages).")
+            } else if runner.recentPage != nil {
+                ProgressView("Checking your recent orders for any already placed for these sales…")
             } else {
                 ProgressView("Loading drafts from Slant… \(runner.loadedCount) of \(runner.loadTotal) loaded.")
             }

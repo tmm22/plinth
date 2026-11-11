@@ -229,13 +229,18 @@ let studioHelpSections: [StudioHelpSection] = [
         **New Order Draft…**, or with 3DAPI through **Get 3DAPI Quote…** and **Order with 3DAPI…**. The tools under \
         **Improve for printing** work on STL models and always save a separate copy: the original is never changed. \
         **Show Overhangs** in the preview tints faces steeper than Slant’s 50° limit, with the model as its file is \
-        oriented; it only changes the picture.
+        oriented; it only changes the picture. **Show**, beside **On this Mac**, lists only originals or copies and \
+        sorts the list, and **Remove Copies of This Model…** clears a model’s copies at once (**Edit › Undo** brings \
+        them back). If a saved product’s material runs out of stock, a notice at the top of the window names it; \
+        **Dismiss** hides it until another product or material is affected.
         """),
     StudioHelpSection(title: "Orders", body: """
         **New Order Draft…** (⌘N) creates a draft on Slant. A draft isn’t charged until you choose **Review & Place \
         Order…** and confirm **Pay & Send to Production**. Slant can’t delete drafts, so if Plinth can’t tell whether \
         a draft was created, it asks before you create another. **File › Import Orders…** creates drafts from an Etsy \
-        or Shopify export after you confirm them. If Slant changes its API after this version of Plinth was made, a \
+        or Shopify export after you confirm them. When Import Orders or **Pay Several Drafts** looks for an order \
+        already placed for the same sale, Plinth also reads your 300 newest orders on Slant, so the check still works \
+        when the list shows only drafts; each sheet says how far back it checked. If Slant changes its API after this version of Plinth was made, a \
         notice at the top of Orders says so; Plinth keeps working as before and only tells you. With 3DAPI as the \
         print service, Orders lists your 3DAPI orders instead.
         """),
@@ -405,14 +410,21 @@ func dapiUnclearOrdersQuitQuestion(unconfirmedOrders: Int, unknownCancels: Int) 
 
 /// The quit question, or nil to quit at once: writes still waiting for a reply come first (`slantWritesQuitQuestion`,
 /// unchanged), then 3DAPI orders or cancellations whose outcome is unknown (`dapiUnclearOrdersQuitQuestion`), then
-/// paid design work that quitting would lose (`designWorkQuitQuestion`, DesignQuitGuard.swift).
+/// paid design work that quitting would lose (`designWorkQuitQuestion`, DesignQuitGuard.swift). When an earlier
+/// question is shown and design work would be lost too, its sentences follow the earlier message.
 func plinthQuitQuestion(writes: [SlantWriteKind], dapiUnconfirmedOrders: Int, dapiUnknownCancels: Int,
                         designWork: [DesignQuitItem] = [], unconfirmedGenerations: Int = 0,
                         unconfirmedGenerationsOverflowed: Bool = false) -> (title: String, message: String)? {
-    slantWritesQuitQuestion(writes)
-        ?? dapiUnclearOrdersQuitQuestion(unconfirmedOrders: dapiUnconfirmedOrders, unknownCancels: dapiUnknownCancels)
-        ?? designWorkQuitQuestion(items: designWork, unconfirmedGenerations: unconfirmedGenerations,
-                                  unconfirmedOverflowed: unconfirmedGenerationsOverflowed)
+    let design = designWorkQuitQuestion(items: designWork, unconfirmedGenerations: unconfirmedGenerations,
+                                        unconfirmedOverflowed: unconfirmedGenerationsOverflowed)
+    guard let earlier = slantWritesQuitQuestion(writes)
+        ?? dapiUnclearOrdersQuitQuestion(unconfirmedOrders: dapiUnconfirmedOrders, unknownCancels: dapiUnknownCancels) else {
+        return design
+    }
+    // An earlier question keeps its title and wording; paid design work that Quit Anyway would also lose is added
+    // after it, so the seller never loses it unwarned.
+    guard let design else { return earlier }
+    return (earlier.title, earlier.message + "\n\n" + design.message)
 }
 
 extension PlinthAppDelegate {

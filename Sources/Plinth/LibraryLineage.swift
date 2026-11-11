@@ -24,10 +24,14 @@ func libraryModelsByID(_ models: [LocalModel]) -> [UUID: LocalModel] {
     Dictionary(models.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 }
 
-/// The row caption naming the model a copy came from, or nil when it isn't known to be a copy of a library model.
+/// The row caption naming the model a copy came from, or nil when it isn't known to be a copy of a library model, the
+/// original is no longer in the library (nothing the seller could do with that), or the copy's name already starts
+/// with the original's ("Owl (repaired)" under "Owl"), which says the same thing. So it shows for renamed copies and
+/// originals, where the names no longer tell. Show Original is offered whenever the original is in the library.
 func libraryCopyCaption(_ model: LocalModel, modelsByID: [UUID: LocalModel]) -> String? {
-    guard let originalID = model.originalModelID, originalID != model.id else { return nil }
-    guard let original = modelsByID[originalID] else { return "Copy of a removed model" }
+    guard let originalID = model.originalModelID, originalID != model.id, let original = modelsByID[originalID] else { return nil }
+    let originalName = original.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !originalName.isEmpty, model.name.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(originalName) { return nil }
     return "Copy of “\(original.name)”"
 }
 
@@ -148,7 +152,9 @@ func libraryRemoveCopiesTitle(count: Int, originalName: String) -> String {
 }
 
 /// The confirmation's message. `movesToTrash` is false only when none of the copies' files is in Plinth's folder.
-func libraryRemoveCopiesMessage(count: Int, originalName: String, uploadedCount: Int, movesToTrash: Bool = true) -> String {
+/// `includesPrintReady` and `usedBySavedProducts` name what the seller might not expect to go with the copies.
+func libraryRemoveCopiesMessage(count: Int, originalName: String, uploadedCount: Int, movesToTrash: Bool = true,
+                                includesPrintReady: Bool = false, usedBySavedProducts: Int = 0) -> String {
     var message: String
     if count == 1 {
         message = movesToTrash
@@ -158,6 +164,13 @@ func libraryRemoveCopiesMessage(count: Int, originalName: String, uploadedCount:
         message = movesToTrash
             ? "These copies, including any made from other copies, will be removed from Plinth and their library files moved to the Trash. To restore them all, choose Edit › Undo."
             : "These copies, including any made from other copies, will be removed from Plinth."
+    }
+    if includesPrintReady { message += count == 1 ? " It is the print-ready copy." : " This includes the print-ready copy." }
+    if usedBySavedProducts > 0 {
+        message += count == 1
+            ? " A saved product uses it, so check that product afterwards."
+            : (usedBySavedProducts == 1 ? " 1 of them is used in saved products" : " \(usedBySavedProducts) of them are used in saved products")
+              + ", so check those products afterwards."
     }
     message += " “\(originalName)” itself stays."
     if uploadedCount > 0 { message += " Uploaded copies stay in your Slant account." }

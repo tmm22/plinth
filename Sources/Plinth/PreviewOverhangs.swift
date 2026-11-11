@@ -24,6 +24,8 @@ func overhangTriangleMask(_ mesh: STLMesh, limitDegrees: Double = Double(slantOv
                           ignoringNarrowCeilings: Bool = false,
                           isCancelled: () -> Bool = { false }) -> OverhangTriangleMask? {
     let count = mesh.triangleCount
+    // The ceilings pass has no cancel hook of its own, so a superseded request stops before starting it.
+    if isCancelled() { return nil }
     let ceilings = ignoringNarrowCeilings ? printReviewNarrowCeilings(mesh) : []
     if isCancelled() { return nil }
     let limit = sin(limitDegrees * .pi / 180)
@@ -91,13 +93,15 @@ func previewOverhangHighlight(_ mesh: STLMesh, ignoringNarrowCeilings: Bool,
 let previewShowOverhangsTitle = "Show Overhangs"
 
 /// Under the control while it is on: what the tint means, with the same figure and words as the 50° advisory. It names
-/// Slant, like the preview's build-volume line, so with 3DAPI as the print service it never claims to describe 3DAPI's
-/// printing. No promise about the print.
-func previewOverhangCaption(_ share: OverhangShare?) -> String {
-    let placed = "Shown as the file is oriented, which is how Slant prints it."
+/// Slant, like the preview's build-volume line, and with 3DAPI as the print service (`forDapi`) says the rule is
+/// Slant's, so it never claims to describe 3DAPI's printing. No promise about the print.
+func previewOverhangCaption(_ share: OverhangShare?, forDapi: Bool = false) -> String {
+    let placed = forDapi
+        ? "Shown as the file is oriented. This is Slant’s 50° rule; 3DAPI’s may differ."
+        : "Shown as the file is oriented, which is how Slant prints it."
     guard let share else { return "Finding overhangs… \(placed)" }
     if share.overhangAreaMM2 <= 0 { return "No faces point down more steeply than Slant’s 50° limit. \(placed)" }
-    return "Orange: \(percentLabel(share.fraction)) of the surface faces down more steeply than Slant’s 50° limit, where Slant adds supports. \(placed)"
+    return "Orange: \(percentLabel(share.fraction)) of the surface faces down more steeply than Slant’s 50° limit, where Slant may add supports. \(placed)"
 }
 
 /// The control's accessibility value: the share of the surface tinted, while it is on.

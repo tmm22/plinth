@@ -121,7 +121,10 @@ func designWorkQuitQuestion(items: [DesignQuitItem], unconfirmedGenerations: Int
         sentences.append("Plinth \(also)forgets that \(what) this session may have spent credits, so it can’t warn you "
                          + "before you generate again. Check the service’s dashboard first.")
     }
-    let title = lost.isEmpty ? "Quit with unconfirmed 3D generations?" : "Quit and lose paid design work?"
+    let forgetTitle = unconfirmed == 1 && !unconfirmedOverflowed
+        ? "Quit and forget a 3D generation that may have been charged?"
+        : "Quit and forget 3D generations that may have been charged?"
+    let title = lost.isEmpty ? forgetTitle : "Quit and lose paid design work?"
     return (title, sentences.joined(separator: " "))
 }
 

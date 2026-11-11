@@ -207,8 +207,7 @@ struct ModelsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                         if libraryFilter != .all {
                             Button("Show All Models") { libraryFilter = .all }
-                                .buttonStyle(.link)
-                                .font(.caption)
+                                .controlSize(.small)
                         }
                     }
                 }
@@ -352,10 +351,12 @@ struct ModelsView: View {
             }
             .pickerStyle(.inline)
         } label: {
-            Image(systemName: libraryFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+            // A text label as well as the icon: a larger target than the icon alone, and it names the active filter.
+            Label(libraryFilter == .all ? "Show" : libraryFilter.title,
+                  systemImage: libraryFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                .labelStyle(.titleAndIcon)
         }
         .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .fixedSize()
         .help("Filter and sort the models on this Mac")
         .accessibilityLabel("Filter and Sort Models")
@@ -375,9 +376,12 @@ struct ModelsView: View {
         let ids = Set(libraryCopyIDs(of: originalID, in: store.localModels))
         let copies = store.localModels.filter { ids.contains($0.id) }
         let name = store.localModels.first { $0.id == originalID }?.name ?? "This model"
+        let usedIDs = Set(store.savedProducts.flatMap(\.lines).compactMap(\.localModelID))
         return libraryRemoveCopiesMessage(
             count: copies.count, originalName: name, uploadedCount: copies.filter { $0.remoteID != nil }.count,
-            movesToTrash: copies.isEmpty || copies.contains { isManagedModelCopy($0.url, supportDirectory: StudioStore.supportDirectory) })
+            movesToTrash: copies.isEmpty || copies.contains { isManagedModelCopy($0.url, supportDirectory: StudioStore.supportDirectory) },
+            includesPrintReady: copies.contains { $0.printPreparation != nil },
+            usedBySavedProducts: copies.filter { usedIDs.contains($0.id) }.count)
     }
 
     /// Show Original: selects the model a copy came from, first turning off a filter or search that hides it.

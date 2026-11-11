@@ -5,8 +5,9 @@ import Foundation
 // - A file the app's decoder reads whole loads exactly as before, and is written back exactly as before.
 // - Otherwise each entry is read on its own, so one bad entry never drops the rest. An entry this build can't read
 //   (one missing its ID, name, file or date, or one from a later version that changed them) is carried through: kept
-//   in memory as it was and written back after the readable ones on every save, so a newer build (or a repaired file)
-//   still has it. Only an entry that isn't a JSON object at all, which no version of Plinth writes, is dropped, and it
+//   in memory with the same content (keys sorted) and written back after the readable ones on every save, so a newer
+//   build (or a repaired file) still has it. Only its Slant file link is ever changed: dropped when that file is
+//   replaced, deleted or linked by another model (`libraryCarriedEntriesDroppingLinks`). Only an entry that isn't a JSON object at all, which no version of Plinth writes, is dropped, and it
 //   survives in the kept copy.
 // - Before anything can replace a file that wasn't fully read, its bytes are kept beside it as
 //   `models.unreadable.json` (the Saved Products pattern), never overwriting an earlier kept copy.
@@ -81,6 +82,21 @@ func libraryFileData(_ models: [LocalModel], carrying carried: [Data]) throws ->
     return data
 }
 
+/// Carried entries without a link to any of `fileIDs`: a carried entry is a library model too, so when a Slant file is
+/// replaced, deleted or taken by another model, its link (`remoteID`) is dropped like a listed model's. Otherwise a
+/// newer build that reads the entry would show a model linked to a file holding another model's bytes, or two models
+/// linked to one file. Entries that name none of the files, or can't be parsed, are returned as they were.
+func libraryCarriedEntriesDroppingLinks(_ entries: [Data], toFileIDs fileIDs: Set<String>) -> [Data] {
+    guard !fileIDs.isEmpty else { return entries }
+    return entries.map { entry in
+        guard var object = (try? JSONSerialization.jsonObject(with: entry)) as? [String: Any],
+              let linked = object["remoteID"] as? String,
+              fileIDs.contains(linked) || fileIDs.contains(linked.trimmingCharacters(in: .whitespacesAndNewlines)) else { return entry }
+        object.removeValue(forKey: "remoteID")
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])) ?? entry
+    }
+}
+
 /// `models.unreadable.json` for slot 1, then `models.unreadable-2.json` and so on, beside the library file.
 func libraryBackupURL(for library: URL, slot: Int) -> URL {
     let base = library.deletingPathExtension()
@@ -133,7 +149,10 @@ struct LibraryLoadOutcome {
 }
 
 /// Reads the library at `url`, keeping a copy of a file that wasn't fully read before anything can replace it.
-func loadLibraryFile(at url: URL, fileManager: FileManager = .default) -> LibraryLoadOutcome {
+/// `mayMoveFile` is false while Plinth works in Slant Studio's folder (a launch whose folder copy failed): a file that
+/// can't be opened is then left where it is, and saving is refused for the session instead, so Slant Studio's library
+/// file is never moved or renamed.
+func loadLibraryFile(at url: URL, mayMoveFile: Bool = true, fileManager: FileManager = .default) -> LibraryLoadOutcome {
     guard fileManager.fileExists(atPath: url.path) else { return LibraryLoadOutcome() }
     var outcome = LibraryLoadOutcome()
     let data: Data?
@@ -155,9 +174,12 @@ func loadLibraryFile(at url: URL, fileManager: FileManager = .default) -> Librar
         do {
             if let data {
                 try data.write(to: target, options: .withoutOverwriting)
-            } else {
+            } else if mayMoveFile {
                 // Unreadable bytes can't be copied, so the file itself is moved aside.
                 try fileManager.moveItem(at: url, to: target)
+            } else {
+                outcome.saveBlocked = mustKeep
+                return outcome
             }
             outcome.keptCopyName = target.lastPathComponent
             outcome.keptNewCopy = true
@@ -168,8 +190,9 @@ func loadLibraryFile(at url: URL, fileManager: FileManager = .default) -> Librar
     return outcome
 }
 
-/// The alert shown at launch, or nil. Always for a library that couldn't be read at all; for unreadable entries only
-/// when this launch kept the copy (later launches show the sidebar note and an Activity line instead of nagging).
+/// The alert shown at launch, or nil. Always for a library that couldn't be read at all, and whenever saving is
+/// refused for the session; for unreadable entries otherwise only when this launch kept the copy (later launches show
+/// the sidebar note and an Activity line instead of nagging).
 func libraryLoadAlertMessage(_ outcome: LibraryLoadOutcome) -> String? {
     guard let problem = outcome.read.problem else { return nil }
     let folder = "Plinth’s support folder (Application Support › Plinth)"
@@ -177,14 +200,17 @@ func libraryLoadAlertMessage(_ outcome: LibraryLoadOutcome) -> String? {
     case .couldNotOpen, .wholeFileUnreadable:
         let opening = problem == .couldNotOpen ? "Plinth couldn’t open your model library" : "Plinth couldn’t read your model library"
         guard !outcome.saveBlocked, let kept = outcome.keptCopyName else {
-            return "\(opening) or keep a copy of it, so the list is empty and library changes won’t be saved this session. Your model files are still in the Models folder in \(folder)."
+            return "\(opening) or keep a copy of it, so the list is empty and library changes won’t be saved this session. Nothing was deleted: your model files are still in the Models folder in \(folder). Quit and reopen Plinth to try again."
         }
         let verb = problem == .couldNotOpen && outcome.keptNewCopy ? "moved aside as" : "kept as"
-        return "\(opening), so the list is empty. The file was \(verb) “\(kept)” in \(folder), and your model files are still in the Models folder there."
+        return "\(opening), so the list is empty. Nothing was deleted: the file was \(verb) “\(kept)” in \(folder), and your model files are still in the Models folder there."
     case .entriesUnreadable(let count):
-        guard outcome.keptNewCopy, let kept = outcome.keptCopyName else { return nil }
         let models = count == 1 ? "1 model" : "\(count) models"
         let listed = count == 1 ? "it isn’t listed" : "they aren’t listed"
+        if outcome.saveBlocked {
+            return "Plinth couldn’t read \(models) in your library, so \(listed), and couldn’t keep a copy of the library file. Library changes won’t be saved this session, so the file isn’t replaced. Quit and reopen Plinth to try again."
+        }
+        guard outcome.keptNewCopy, let kept = outcome.keptCopyName else { return nil }
         let entries = outcome.read.droppedEntries == 0
             ? "Plinth keeps the entries unchanged in the library file, where a newer version of Plinth may read them, and kept"
             : "Plinth kept"
@@ -201,7 +227,8 @@ func libraryLoadActivityDetail(_ outcome: LibraryLoadOutcome) -> String? {
         return "Library couldn’t be read; a copy was kept"
     case .entriesUnreadable(let count):
         let entries = count == 1 ? "1 entry" : "\(count) entries"
-        return "\(entries) couldn’t be read; kept unchanged"
+        if outcome.saveBlocked { return "\(entries) couldn’t be read or kept; changes aren’t saved this session" }
+        return "\(entries) couldn’t be read; kept in the library file"
     }
 }
 
@@ -209,9 +236,12 @@ func libraryLoadActivityDetail(_ outcome: LibraryLoadOutcome) -> String? {
 func libraryUnreadableEntriesNote(_ count: Int) -> String? {
     guard count > 0 else { return nil }
     return count == 1
-        ? "1 model in your library file couldn’t be read by this version of Plinth. Its entry is kept unchanged."
-        : "\(count) models in your library file couldn’t be read by this version of Plinth. Their entries are kept unchanged."
+        ? "1 model isn’t listed because this version of Plinth can’t read it. It’s kept in the library file."
+        : "\(count) models aren’t listed because this version of Plinth can’t read them. They’re kept in the library file."
 }
 
 /// What `saveModels` shows while saving is refused for the session.
 let librarySaveBlockedMessage = "Library changes can’t be saved this session, because Plinth couldn’t keep a copy of the library file it couldn’t read. Quit and reopen Plinth to try again."
+
+/// What an upload shows while library saving is refused: the link between a model and its Slant file couldn't be saved.
+let libraryUploadBlockedMessage = "Plinth can’t upload this session, because library changes can’t be saved: it couldn’t keep a copy of the library file it couldn’t read. Quit and reopen Plinth to try again."

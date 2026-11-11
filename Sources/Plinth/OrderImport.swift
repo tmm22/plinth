@@ -738,8 +738,8 @@ func orderImportDuplicateCoverageText(listNotice: String?, reading: Bool, recent
     if recent.finished {
         let reach = recentOrdersReachText(recent, dateText: dateText)
         return recent.complete
-            ? "Checked for duplicates against \(reach) (every status and platform) and this session’s imports."
-            : "Checked for duplicates against \(reach) (every status and platform) and this session’s imports. Older orders aren’t checked."
+            ? "Checked \(reach) and this session’s imports for earlier imports of these orders."
+            : "Checked \(reach) and this session’s imports for earlier imports of these orders. Older orders aren’t checked."
     }
     var text = "Couldn’t read your recent orders on Slant."
     let reason = recentOrdersStopReason(recent)
@@ -759,10 +759,6 @@ func orderImportNewlyWarned(before: [String: OrderImportCheck], after: [String: 
 
 // MARK: Email for orders without one
 
-/// The last email used for orders without one in this session, with the key it was used under: memory only, never
-/// saved, and offered (never filled in) only while that key is current.
-@MainActor var orderImportLastFallbackEmail: (key: String, email: String)?
-
 /// One button beside "Email for orders without one": it fills the field with an email the seller chose, which stays
 /// visible and editable. Plinth never fills the field by itself or makes an email up.
 struct OrderImportEmailSuggestion: Equatable {
@@ -771,10 +767,9 @@ struct OrderImportEmailSuggestion: Equatable {
     let help: String
 }
 
-/// Use My Email (the seller's saved address in Settings, as Use My Address) and Use Last Email (the one used for an
-/// import earlier this session), each only when it is a valid email that isn't already in the field, and the second
-/// only when it differs from the first.
-func orderImportFallbackEmailSuggestions(current: String, sellerEmail: String?, lastUsed: String?) -> [OrderImportEmailSuggestion] {
+/// Use My Email (the seller's saved address in Settings, as Use My Address), only when it is a valid email that isn't
+/// already in the field.
+func orderImportFallbackEmailSuggestions(current: String, sellerEmail: String?) -> [OrderImportEmailSuggestion] {
     func clean(_ text: String?) -> String? {
         guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), isEmailAddress(trimmed) else { return nil }
         return trimmed
@@ -784,10 +779,6 @@ func orderImportFallbackEmailSuggestions(current: String, sellerEmail: String?, 
     if let mine = clean(sellerEmail), mine.lowercased() != typed {
         result.append(OrderImportEmailSuggestion(title: "Use My Email", email: mine,
                                                  help: "Fill in \(mine), the email in your address in Settings › Account"))
-    }
-    if let last = clean(lastUsed), last.lowercased() != typed, last.lowercased() != clean(sellerEmail)?.lowercased() {
-        result.append(OrderImportEmailSuggestion(title: "Use Last Email", email: last,
-                                                 help: "Fill in \(last), the email you used for an import earlier this session"))
     }
     return result
 }
@@ -1972,7 +1963,9 @@ struct OrderImportSheet: View {
                 // No default-action shortcut: creating drafts always takes a click and the confirmation.
                 Button(createButtonTitle(count) + "…") { confirmCreate = true }
                     .buttonStyle(.borderedProminent)
-                    .disabled(count == 0 || runner.running || store.busy || store.orderDraftBlockedReason != nil || shopifyFetching)
+                    // Create waits for the read of recent orders, so its warnings are shown before anything is sent.
+                    .disabled(count == 0 || runner.running || store.busy || recentReading || store.orderDraftBlockedReason != nil
+                              || shopifyFetching)
             }
         }
     }
@@ -2015,8 +2008,7 @@ struct OrderImportSheet: View {
     }
 
     private var emailSuggestions: [OrderImportEmailSuggestion] {
-        let last = orderImportLastFallbackEmail.flatMap { $0.key == store.apiKey ? $0.email : nil }
-        return orderImportFallbackEmailSuggestions(current: fallbackEmail, sellerEmail: store.sellerAddress?.email, lastUsed: last)
+        orderImportFallbackEmailSuggestions(current: fallbackEmail, sellerEmail: store.sellerAddress?.email)
     }
 
     /// Reads recent orders of every status and platform for the duplicate check (read-only, inside `store.run`, so
@@ -2032,10 +2024,12 @@ struct OrderImportSheet: View {
             recentReading = false
             recentTask = nil
             guard let read else { return }
-            guard let parsed, !runner.running, !confirmCreate else {
+            guard let parsed, !runner.running else {
                 recentRead = read
                 return
             }
+            // A read that lands while the confirmation shows closes it: the seller sees the new warnings first.
+            confirmCreate = false
             let before = checks(for: parsed)
             recentRead = read
             ticked.subtract(orderImportNewlyWarned(before: before, after: checks(for: parsed)))
@@ -2205,11 +2199,6 @@ struct OrderImportSheet: View {
         runner.saleAmounts = importedSaleAmountsByOrder(
             parsed.orders, leavingOutItemsIn: Set(currentChecks.filter { $0.value.leftOutItemCount > 0 }.map(\.key)))
         importCheckMessage = nil
-        // The email used for orders without one, offered (never filled in) for the next file this session.
-        let email = fallbackEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        if isEmailAddress(email), jobs.contains(where: { currentChecks[$0.id]?.usesFallbackEmail == true }) {
-            orderImportLastFallbackEmail = (store.apiKey, email)
-        }
         runner.start(jobs, store: store)
         // Sent orders are unticked so pressing Create again never resends them without a fresh, explicit tick.
         if runner.running { ticked.subtract(jobs.map(\.id)) }

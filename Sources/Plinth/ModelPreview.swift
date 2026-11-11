@@ -16,6 +16,8 @@ struct ModelPreview: View {
     @State private var loadedURL: URL?
     /// Show Overhangs (PreviewOverhangs.swift): display only, remembered as a plain preference.
     @AppStorage(previewShowOverhangsDefaultsKey) private var showOverhangs = false
+    /// The overhang caption says the 50° rule is Slant's while 3DAPI is the print service.
+    @ObservedObject private var printChoice = PrintServiceChoice.shared
     /// The tint and the URL it was worked out for: shown only while that is still the loaded model.
     @State private var overhangs: (url: URL, highlight: PreviewOverhangHighlight)?
     private var currentOverhangs: PreviewOverhangHighlight? {
@@ -52,7 +54,7 @@ struct ModelPreview: View {
                                 .help("Tints faces that point down more steeply than Slant’s 50° limit, the same rule as Plinth’s 50° overhang check. Display only: the model isn’t changed.")
                         }
                         if showOverhangs {
-                            Text(previewOverhangCaption(currentOverhangs?.share))
+                            Text(previewOverhangCaption(currentOverhangs?.share, forDapi: printChoice.service == .dapi))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         if let warning = previewBuildVolumeWarning(model) {

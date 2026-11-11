@@ -208,7 +208,11 @@ final class RecentOrdersTests: XCTestCase {
         XCTAssertFalse(cappedNotice.warning)
         XCTAssertTrue(cappedNotice.text.contains("back to 3 Oct 2026"))
         XCTAssertTrue(cappedNotice.text.contains("wouldn’t be noticed"))
-        XCTAssertTrue(try XCTUnwrap(batchPayPlacedCheckConfirmText(needed: true, recent: capped, dateText: date)).contains("older orders weren’t checked"))
+        // The confirmation stays short: a finished check is described in the review only.
+        XCTAssertNil(batchPayPlacedCheckConfirmText(needed: true, recent: capped))
+        XCTAssertNil(batchPayPlacedCheckConfirmText(needed: true, recent: finishedRead([sale("A", status: "DRAFT", sale: "1")])))
+        XCTAssertTrue(try XCTUnwrap(batchPayPlacedCheckConfirmText(needed: true, recent: nil)).contains("were left out"),
+                      "a check that was never made is never passed over in silence")
 
         capped.stop = .rateLimit("Stopped to wait for Slant’s rate limit.")
         let stopped = try XCTUnwrap(batchPayPlacedCheckNotice(needed: true, recent: capped, leftOut: 2, dateText: date))
@@ -249,7 +253,7 @@ final class RecentOrdersTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(orderImportDuplicateCoverageText(listNotice: list, reading: true, recent: nil)).hasPrefix("Checking"))
         let complete = try XCTUnwrap(orderImportDuplicateCoverageText(listNotice: list, reading: false,
                                                                         recent: finishedRead([sale("A", status: "SHIPPED", sale: "1"), sale("B", status: "DRAFT", sale: "2")])))
-        XCTAssertTrue(complete.contains("all 2 of your orders on Slant (every status and platform)"))
+        XCTAssertEqual(complete, "Checked all 2 of your orders on Slant and this session’s imports for earlier imports of these orders.")
         let capped = try XCTUnwrap(orderImportDuplicateCoverageText(listNotice: list, reading: false, recent: finishedRead([], complete: false)))
         XCTAssertTrue(capped.contains("Older orders aren’t checked."))
         var failed = RecentOrdersRead(stop: .failed("Slant’s reply didn’t list orders."))
@@ -272,16 +276,13 @@ final class RecentOrdersTests: XCTestCase {
     // MARK: Email for orders without one
 
     func testEmailSuggestionsAreOfferedNeverFilledIn() {
-        XCTAssertTrue(orderImportFallbackEmailSuggestions(current: "", sellerEmail: nil, lastUsed: nil).isEmpty)
-        let mine = orderImportFallbackEmailSuggestions(current: "", sellerEmail: " me@shop.com ", lastUsed: nil)
+        XCTAssertTrue(orderImportFallbackEmailSuggestions(current: "", sellerEmail: nil).isEmpty)
+        let mine = orderImportFallbackEmailSuggestions(current: "", sellerEmail: " me@shop.com ")
         XCTAssertEqual(mine.map(\.title), ["Use My Email"])
         XCTAssertEqual(mine.first?.email, "me@shop.com")
-        XCTAssertTrue(orderImportFallbackEmailSuggestions(current: "ME@shop.com", sellerEmail: "me@shop.com", lastUsed: "me@shop.com").isEmpty,
+        XCTAssertTrue(orderImportFallbackEmailSuggestions(current: "ME@shop.com", sellerEmail: "me@shop.com").isEmpty,
                       "nothing to offer when the field already holds it")
-        XCTAssertEqual(orderImportFallbackEmailSuggestions(current: "", sellerEmail: "me@shop.com", lastUsed: "orders@shop.com").map(\.title),
-                       ["Use My Email", "Use Last Email"])
-        XCTAssertEqual(orderImportFallbackEmailSuggestions(current: "", sellerEmail: "not an email", lastUsed: "orders@shop.com").map(\.title),
-                       ["Use Last Email"])
+        XCTAssertTrue(orderImportFallbackEmailSuggestions(current: "", sellerEmail: "not an email").isEmpty)
     }
 
     // MARK: Tracking for Your Shop and Needs Attention
@@ -314,24 +315,26 @@ final class RecentOrdersTests: XCTestCase {
         let text = shopFollowUpEmptyText(doneCount: 0, listLimit: limit, reading: false, recent: nil)
         XCTAssertTrue(text.contains("only Draft orders"))
         XCTAssertTrue(text.contains("Load Recent Orders"))
-        XCTAssertFalse(text.contains("None of the loaded orders has tracking"))
+        XCTAssertFalse(text.contains("has tracking from Slant yet"))
         XCTAssertTrue(shopFollowUpListLimitText(statusFilter: nil, datesFiltered: false, searchActive: true)?.contains("search") == true)
         XCTAssertNil(shopFollowUpListLimitText(statusFilter: nil, datesFiltered: false, searchActive: false))
         XCTAssertTrue(shopFollowUpEmptyText(doneCount: 0, listLimit: nil, reading: false, recent: nil).contains("Refresh Orders later"))
         let read = shopFollowUpEmptyText(doneCount: 0, listLimit: limit, reading: false, recent: finishedRead([], complete: false))
-        XCTAssertTrue(read.hasPrefix("None of the loaded orders or"))
+        XCTAssertTrue(read.hasPrefix("No order in your Orders list, or in "))
         let failed = shopFollowUpEmptyText(doneCount: 0, listLimit: limit, reading: false, recent: RecentOrdersRead(stop: .failed("Offline.")))
         XCTAssertTrue(failed.hasPrefix("Couldn’t load your recent orders from Slant. Offline."))
         XCTAssertTrue(failed.contains("only Draft orders"))
-        XCTAssertTrue(shopFollowUpSourceText(reading: false, recent: nil, ordersHasMore: true).contains("older orders aren’t loaded"))
+        XCTAssertTrue(shopFollowUpSourceText(reading: false, recent: nil, ordersHasMore: true).contains("hasn’t loaded your older orders"))
         XCTAssertTrue(shopFollowUpSourceText(reading: false, recent: finishedRead([shipped("S", tracking: ["1"])]), ordersHasMore: true)
-            .hasPrefix("Listed from the loaded orders and your 1 order on Slant"))
+            .hasPrefix("Shows your Orders list and your 1 order on Slant"))
     }
 
     func testNeedsAttentionSaysWhatTheLoadedListLeavesOut() {
         XCTAssertTrue(orderAttentionFilterHint(moreOnServer: false, statusFilter: "DRAFT").hasSuffix("Only Draft orders are loaded."))
         XCTAssertTrue(orderAttentionFilterHint(moreOnServer: true, statusFilter: "SUBMITTED", datesFiltered: true)
-            .hasSuffix("Only Submitted orders in the chosen dates are loaded. Load more to check older orders."))
+            .hasSuffix("Only Submitted orders from the chosen dates are loaded. Load more to check older orders."))
+        XCTAssertTrue(orderAttentionFilterHint(moreOnServer: false, datesFiltered: true)
+            .hasSuffix("Only orders from the chosen dates are loaded."))
         let search = orderAttentionFilterHint(moreOnServer: false, searchActive: true)
         XCTAssertTrue(search.contains("Only the order found by your search is checked"))
         XCTAssertFalse(search.contains("Load more"))

@@ -168,7 +168,7 @@ final class LibraryFileAndLineageTests: XCTestCase {
         XCTAssertEqual(second.read.carriedEntries.count, 1)
         XCTAssertFalse(second.keptNewCopy)
         XCTAssertNil(libraryLoadAlertMessage(second))
-        XCTAssertEqual(libraryLoadActivityDetail(second), "1 entry couldn’t be read; kept unchanged")
+        XCTAssertEqual(libraryLoadActivityDetail(second), "1 entry couldn’t be read; kept in the library file")
         XCTAssertEqual(backups(), ["models.unreadable.json"])
         XCTAssertEqual(try Data(contentsOf: libraryBackupURL(for: library, slot: 1)), original)
         XCTAssertNotNil(libraryUnreadableEntriesNote(second.read.carriedEntries.count))
@@ -185,6 +185,61 @@ final class LibraryFileAndLineageTests: XCTestCase {
         XCTAssertNil(outcome.keptCopyName)
         XCTAssertTrue(try XCTUnwrap(libraryLoadAlertMessage(outcome)).contains("won’t be saved"))
         XCTAssertEqual(try Data(contentsOf: libraryBackupURL(for: library, slot: 1)), Data("old 1".utf8))
+    }
+
+    func testBlockedSavingIsSaidAtLaunchEvenForUnreadableEntries() throws {
+        // A dropped entry (not an object) would be lost by a save, and every copy slot is taken: saving is refused,
+        // and the seller hears so at launch rather than at their first import.
+        for slot in 1...libraryBackupSlotLimit {
+            try Data("old \(slot)".utf8).write(to: libraryBackupURL(for: library, slot: slot))
+        }
+        try file([model("Owl")], raw: ["42"]).write(to: library)
+        let outcome = loadLibraryFile(at: library)
+        XCTAssertEqual(outcome.read.problem, .entriesUnreadable(count: 1))
+        XCTAssertTrue(outcome.saveBlocked)
+        let alert = try XCTUnwrap(libraryLoadAlertMessage(outcome))
+        XCTAssertTrue(alert.contains("won’t be saved this session"))
+        XCTAssertTrue(try XCTUnwrap(libraryLoadActivityDetail(outcome)).contains("aren’t saved this session"))
+    }
+
+    func testAFileThatCantBeOpenedIsNeverMovedInSlantStudiosFolder() throws {
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)   // unreadable as a file
+        let kept = loadLibraryFile(at: library, mayMoveFile: false)
+        XCTAssertEqual(kept.read.problem, .couldNotOpen)
+        XCTAssertTrue(kept.saveBlocked, "left in place, so saving is refused instead")
+        XCTAssertNil(kept.keptCopyName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.path))
+        XCTAssertTrue(backups().isEmpty)
+        XCTAssertTrue(try XCTUnwrap(libraryLoadAlertMessage(kept)).contains("won’t be saved this session"))
+        // In Plinth's own folder it is moved aside, as before.
+        let moved = loadLibraryFile(at: library)
+        XCTAssertFalse(moved.saveBlocked)
+        XCTAssertEqual(moved.keptCopyName, "models.unreadable.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.path))
+    }
+
+    func testACarriedEntryLosesItsLinkToAReplacedOrSharedFile() throws {
+        let linked = #"{"name":"No ID","filePath":"/library/x.stl","added":1,"remoteID":"file-F","futureField":{"kind":"new"}}"#
+        let other = #"{"name":"Also no ID","filePath":"/library/y.stl","added":1,"remoteID":"file-G"}"#
+        let read = readLibraryFile(try file([model("Owl")], raw: [linked, other]))
+        XCTAssertEqual(read.carriedEntries.count, 2)
+        // Nothing named: returned as they were, byte for byte.
+        XCTAssertEqual(libraryCarriedEntriesDroppingLinks(read.carriedEntries, toFileIDs: []), read.carriedEntries)
+        XCTAssertEqual(libraryCarriedEntriesDroppingLinks(read.carriedEntries, toFileIDs: ["file-Z"]), read.carriedEntries)
+        // File F was replaced (or is now linked by a listed model): only that entry's link goes, nothing else in it.
+        let dropped = libraryCarriedEntriesDroppingLinks(read.carriedEntries, toFileIDs: ["file-F"])
+        XCTAssertEqual(dropped[1], read.carriedEntries[1])
+        let entry = try XCTUnwrap(try JSONSerialization.jsonObject(with: dropped[0]) as? [String: Any])
+        XCTAssertNil(entry["remoteID"])
+        XCTAssertEqual(entry["name"] as? String, "No ID")
+        XCTAssertEqual((entry["futureField"] as? [String: Any])?["kind"] as? String, "new")
+        // And the file written with it reads back with one linked carried entry, not two.
+        let rewritten = try libraryFileData(read.models, carrying: dropped)
+        let rows = try XCTUnwrap(try JSONSerialization.jsonObject(with: rewritten) as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["remoteID"] as? String }, ["file-G"])
+        // An entry that can't be parsed is left alone rather than lost.
+        let junk = [Data("not json".utf8)]
+        XCTAssertEqual(libraryCarriedEntriesDroppingLinks(junk, toFileIDs: ["file-F"]), junk)
     }
 
     func testBackupPlanRules() {
@@ -239,8 +294,16 @@ final class LibraryFileAndLineageTests: XCTestCase {
     func testCopyCaptionNamesTheOriginalOrSaysItWasRemoved() {
         let original = model("Owl")
         let copy = model("Owl (repaired)", copiedFrom: original.id)
-        XCTAssertEqual(libraryCopyCaption(copy, modelsByID: libraryModelsByID([original, copy])), "Copy of “Owl”")
-        XCTAssertEqual(libraryCopyCaption(copy, modelsByID: libraryModelsByID([copy])), "Copy of a removed model")
+        // A copy whose name still starts with its original's already says where it came from.
+        XCTAssertNil(libraryCopyCaption(copy, modelsByID: libraryModelsByID([original, copy])))
+        // A renamed copy, or a renamed original, gets the caption.
+        let renamed = model("Desk owl", copiedFrom: original.id)
+        XCTAssertEqual(libraryCopyCaption(renamed, modelsByID: libraryModelsByID([original, renamed])), "Copy of “Owl”")
+        var renamedOriginal = original
+        renamedOriginal.name = "Barn owl"
+        XCTAssertEqual(libraryCopyCaption(copy, modelsByID: libraryModelsByID([renamedOriginal, copy])), "Copy of “Barn owl”")
+        // Nothing to say, or to do, about an original that is no longer in the library.
+        XCTAssertNil(libraryCopyCaption(copy, modelsByID: libraryModelsByID([copy])))
         XCTAssertNil(libraryCopyCaption(original, modelsByID: libraryModelsByID([original, copy])))
     }
 
@@ -321,6 +384,17 @@ final class LibraryFileAndLineageTests: XCTestCase {
         XCTAssertTrue(message.contains("Slant account"))
         XCTAssertFalse(libraryRemoveCopiesMessage(count: 1, originalName: "Owl", uploadedCount: 0).contains("Slant"))
         XCTAssertFalse(libraryRemoveCopiesMessage(count: 2, originalName: "Owl", uploadedCount: 0, movesToTrash: false).contains("Trash"))
+        // What the seller might not expect to go with the copies is named before the button is pressed.
+        XCTAssertFalse(message.contains("print-ready"))
+        XCTAssertFalse(message.contains("saved product"))
+        let warned = libraryRemoveCopiesMessage(count: 3, originalName: "Owl", uploadedCount: 0, includesPrintReady: true, usedBySavedProducts: 2)
+        XCTAssertTrue(warned.contains("This includes the print-ready copy."))
+        XCTAssertTrue(warned.contains("2 of them are used in saved products, so check those products afterwards."))
+        XCTAssertTrue(libraryRemoveCopiesMessage(count: 3, originalName: "Owl", uploadedCount: 0, usedBySavedProducts: 1)
+            .contains("1 of them is used in saved products, so check those products afterwards."))
+        let single = libraryRemoveCopiesMessage(count: 1, originalName: "Owl", uploadedCount: 0, includesPrintReady: true, usedBySavedProducts: 1)
+        XCTAssertTrue(single.contains("It is the print-ready copy."))
+        XCTAssertTrue(single.contains("A saved product uses it, so check that product afterwards."))
     }
 
     func testRestoreOrderRebuildsTheLibrary() {
