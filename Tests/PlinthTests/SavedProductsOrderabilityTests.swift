@@ -38,15 +38,15 @@ extension SavedProductsTests {
         XCTAssertTrue(state.canOrder)
         XCTAssertEqual(state.uncheckedCatalogs, [.materials, .components, .stationery])
         XCTAssertEqual(savedProductsUncheckedCatalogsText(state.uncheckedCatalogs, loaded: []),
-                       "Stock and availability weren’t checked for materials, components and stationery, because those catalogs aren’t loaded.")
+                       "Stock and availability weren’t checked for materials, components and stationery, because those catalogues aren’t loaded.")
         // Partly loaded: only the missing ones, and an empty loaded catalog is named for what it is.
         let partial = savedProductOrderability(kit, localModels: [bracket], filaments: [pla], components: [], stationery: [])
         XCTAssertEqual(partial.uncheckedCatalogs, [.components, .stationery])
         XCTAssertEqual(savedProductsUncheckedCatalogsText(partial.uncheckedCatalogs, loaded: [.materials, .stationery]),
-                       "Stock and availability weren’t checked for components, because that catalog isn’t loaded. Stock and availability weren’t checked for stationery, because Slant listed none.")
+                       "Stock and availability weren’t checked for components, because that catalogue isn’t loaded. Stock and availability weren’t checked for stationery, because Slant listed none.")
         // Order doesn't depend on how the kinds were gathered (the sheet unions them through a Set).
         XCTAssertEqual(savedProductsUncheckedCatalogsText([.stationery, .materials], loaded: []),
-                       "Stock and availability weren’t checked for materials and stationery, because those catalogs aren’t loaded.")
+                       "Stock and availability weren’t checked for materials and stationery, because those catalogues aren’t loaded.")
         XCTAssertNil(savedProductsUncheckedCatalogsText([], loaded: []))
 
         // Everything loaded and present: nothing unchecked.

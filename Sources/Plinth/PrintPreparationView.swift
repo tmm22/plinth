@@ -46,9 +46,11 @@ struct PrintReadyCopyHint: View {
         if model.printPreparation == nil, let copy = printReadyCopy(of: model, in: store.localModels) {
             HStack(spacing: 6) {
                 Text("A print-ready copy exists").font(.caption).foregroundStyle(.secondary)
+                // A real button (not a caption link), small only because it shares the action bar's caption line.
                 Button("Show Copy") { store.select(copy) }
-                    .buttonStyle(.link).font(.caption)
+                    .buttonStyle(.bordered).controlSize(.small)
                     .disabled(store.busy)
+                    .accessibilityLabel("Show Copy, the print-ready copy")
             }
         }
     }
@@ -81,7 +83,7 @@ struct PrintPreparationPanel: View {
                 }
             }
         }
-        .alert("Add Fillets and Thicken Walls?", isPresented: $confirmFollowUp) {
+        .alert("Add fillets and thicken walls?", isPresented: $confirmFollowUp) {
             Button("Add Fillets and Thicken Walls") {
                 followUp.improveAndSaveCopy(of: model, intent: designEditIntent(model) ?? PartIntent(), profile: .fitAffecting, store: store)
             }
@@ -264,7 +266,8 @@ struct FitChangingFollowUps<Fillets: View>: View {
                latest.printPreparation?.hasTeardropHoles == true {
                 HStack(spacing: 6) {
                     Text("Saved with teardrop holes: \(latest.name)").font(.callout).foregroundStyle(.secondary)
-                    Button("Show Copy") { store.select(latest) }.buttonStyle(.link).disabled(store.busy)
+                    Button("Show Copy") { store.select(latest) }.buttonStyle(.bordered).disabled(store.busy)
+                        .accessibilityLabel("Show Copy, the copy with teardrop holes")
                 }
             }
             if let caption = printPreparationFitChangingCaption(fillets: fillets, teardropHoles: running == nil ? holes : 0) {
@@ -327,7 +330,7 @@ struct TeardropHolesConfirmation: View {
         // Over both lists, so no two holes read the same.
         let labels = teardropCandidateLabels(offer.holes, low: offer.minimum, high: offer.maximum)
         VStack(alignment: .leading, spacing: 14) {
-            Text("Add teardrop holes").font(.title3.weight(.semibold))
+            Text("Add teardrop holes").font(.title2.weight(.bold))
             Text(text)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 6) {
@@ -368,7 +371,25 @@ struct TeardropHolesConfirmation: View {
         }
         .padding(20)
         .frame(minWidth: 460, idealWidth: 540, maxWidth: 640)
+        // Cancel keeps Return; Escape cancels too, also when no control in the sheet has keyboard focus.
         .onExitCommand { dismiss() }
+        .modifier(EscapeKeyAction { dismiss() })
+    }
+}
+
+/// Escape for a sheet whose Return default is already its safe Cancel/Keep button (a button can't carry both
+/// shortcuts): a zero-size, invisible button with the cancel-action shortcut. `.onExitCommand` alone fires only while
+/// a control in the sheet has keyboard focus. Never put a sending or saving action here.
+struct EscapeKeyAction: ViewModifier {
+    let action: () -> Void
+    func body(content: Content) -> some View {
+        content.background {
+            Button("Cancel", action: action)
+                .keyboardShortcut(.cancelAction)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
     }
 }
 

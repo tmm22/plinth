@@ -335,9 +335,20 @@ func comparisonEstimateContext(fileID: String, filamentID: String, quantity: Int
 func comparisonUseBlockedReason(planFileID: String, currentFileID: String, filamentID: String, filaments: [Record], busy: Bool) -> String? {
     if busy { return "Wait for the current task to finish." }
     if planFileID != currentFileID { return "These estimates are for a different model or upload." }
+    return comparisonUseMaterialBlockedReason(filamentID: filamentID, filaments: filaments)
+}
+
+/// The part of `comparisonUseBlockedReason` that belongs to one material's column, shown under its Use buttons. The
+/// table-wide reasons (busy, another model) are shown once above the table instead.
+func comparisonUseMaterialBlockedReason(filamentID: String, filaments: [Record]) -> String? {
     guard let filament = filaments.first(where: { $0.id == filamentID }) else { return "This material is no longer offered." }
     if filamentAvailability(filament) == false { return "This material is now out of stock." }
     return nil
+}
+
+/// Each Use button's accessible name: its visible title first, then what it acts on ("Use PLA Black, quantity 10").
+func comparisonUseAccessibilityLabel(materialName: String, quantity: Int) -> String {
+    "Use \(materialName), quantity \(quantity)"
 }
 
 func comparisonCompletionSummary(priced: Int, total: Int, failed: Int) -> String {
@@ -683,6 +694,9 @@ struct EstimateComparisonSheet: View {
             if plan.fileID != store.fileID {
                 Label("These estimates are for a different model or upload.", systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.orange)
+            } else if store.busy, table.pricedCount > 0 {
+                // Why every Use is off for now, said once rather than under each button.
+                Text("Use is available once the current task finishes.").font(.caption).foregroundStyle(.secondary)
             }
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                 GridRow {
@@ -741,9 +755,16 @@ struct EstimateComparisonSheet: View {
                     StudioBadge(text: "Lowest per unit", tone: .success)
                 }
                 Button("Use") { use(cell.key, plan: plan) }
-                    .controlSize(.small)
+                    .buttonStyle(.bordered)
                     .disabled(useReason != nil)
                     .help(useReason ?? "Set Print configuration to this material and quantity")
+                    .accessibilityLabel(comparisonUseAccessibilityLabel(
+                        materialName: plan.materials.first { $0.id == cell.key.filamentID }?.name ?? "this material",
+                        quantity: cell.key.quantity))
+                if let reason = comparisonUseMaterialBlockedReason(filamentID: cell.key.filamentID, filaments: store.filaments) {
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }

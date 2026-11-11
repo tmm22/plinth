@@ -97,9 +97,10 @@ let previewShowOverhangsTitle = "Show Overhangs"
 /// Slant's, so it never claims to describe 3DAPI's printing. No promise about the print.
 func previewOverhangCaption(_ share: OverhangShare?, forDapi: Bool = false) -> String {
     let placed = forDapi
-        ? "Shown as the file is oriented. This is Slant’s 50° rule; 3DAPI’s may differ."
+        ? "Shown as the file is oriented. 3DAPI’s limit may differ."
         : "Shown as the file is oriented, which is how Slant prints it."
-    guard let share else { return "Finding overhangs… \(placed)" }
+    // With 3DAPI the transient line still names Slant's limit, so "3DAPI's limit" never stands alone.
+    guard let share else { return forDapi ? "Finding faces steeper than Slant’s 50° limit… \(placed)" : "Finding overhangs… \(placed)" }
     if share.overhangAreaMM2 <= 0 { return "No faces point down more steeply than Slant’s 50° limit. \(placed)" }
     return "Orange: \(percentLabel(share.fraction)) of the surface faces down more steeply than Slant’s 50° limit, where Slant may add supports. \(placed)"
 }

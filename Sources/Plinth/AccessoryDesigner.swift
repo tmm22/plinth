@@ -963,7 +963,7 @@ let accessoryPhotoComparisonText = "If the seller’s photos show the accessory 
 func accessoryRenderProblems(_ facts: AccessoryRenderFacts) -> [String] {
     var problems: [String] = []
     if !facts.health.isClosed {
-        problems.append("The surface isn’t closed (\(facts.health.openEdges.formatted()) open and \(facts.health.nonManifoldEdges.formatted()) non-manifold edges).")
+        problems.append("The surface isn’t closed (\(facts.health.openEdges.formatted()) open edges and \(facts.health.nonManifoldEdges.formatted()) edges shared by more than two faces).")
     } else if !facts.health.isConsistentlyOriented || facts.health.isInsideOut {
         problems.append("Some faces point the wrong way.")
     }

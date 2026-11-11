@@ -359,6 +359,9 @@ func printReviewCloseConfirmation(hasPlan: Bool, asking: Bool, savedCopy: Bool) 
         message: "Claude’s plan isn’t kept. Reviewing again sends a new request, which is billed again.")
 }
 
+/// Review for Printing's notice while no Anthropic key is saved, shown at the top of the sheet.
+let printReviewMissingKeyText = "Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic) to ask Claude."
+
 struct PrintReviewSheet: View {
     @EnvironmentObject var store: StudioStore
     @Environment(\.dismiss) private var dismiss
@@ -392,15 +395,17 @@ struct PrintReviewSheet: View {
                                                      set: { if !$0 { reinforceConfirmation = nil } }),
                                 presenting: reinforceConfirmation) { model in
                 Button("Close and Open Reinforce") { openReinforce(model) }
-                Button("Keep Reviewing", role: .cancel) {}
+                // Return keeps working: the plan would be lost.
+                Button("Keep Working", role: .cancel) {}
+                    .keyboardShortcut(.defaultAction)
             } message: { _ in
                 Text("Claude’s plan isn’t kept. Reviewing again sends a new request.")
             }
             .confirmationDialog(closeConfirmation?.title ?? "Close this review?", isPresented: $confirmClose,
                                 titleVisibility: .visible) {
-                Button("Close Review", role: .destructive) { close() }
-                // Return keeps reviewing.
-                Button("Keep Reviewing", role: .cancel) {}
+                Button("Close Without Saving", role: .destructive) { close() }
+                // Return keeps working.
+                Button("Keep Working", role: .cancel) {}
                     .keyboardShortcut(.defaultAction)
             } message: {
                 Text(closeConfirmation?.message ?? "")
@@ -432,6 +437,15 @@ struct PrintReviewSheet: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    // A missing key is said first, above the measurements, so it is seen before scrolling.
+                    if !claudeConnection.isConfigured {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(printReviewMissingKeyText, systemImage: "key")
+                                .font(.callout).fixedSize(horizontal: false, vertical: true)
+                            Button("Open Settings") { store.requestSettings(.designTools) }
+                        }
+                        Divider()
+                    }
                     if let model {
                         if model.supportsPreview {
                             measurementsSection
@@ -621,9 +635,9 @@ struct PrintReviewSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Ask Claude").font(.headline)
             if !claudeConnection.isConfigured {
-                Text("Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic) to ask Claude.")
-                    .font(.callout).fixedSize(horizontal: false, vertical: true)
-                Button("Open Settings") { store.requestSettings(.designTools) }
+                // The notice and Open Settings are at the top of the sheet.
+                Text("Needs your Anthropic API key, as the note at the top says.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 contextFields
                 let context = effectiveContext

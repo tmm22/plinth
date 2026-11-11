@@ -27,6 +27,9 @@ enum MeshFitTool: String, Sendable {
 }
 
 /// A store-driven sheet, counted in `isPresentingSheet`.
+/// Under the Size and base buttons while another task runs: why they are off.
+let meshFitBusyCaption = "Available once the current task finishes."
+
 struct MeshFitRequest: Identifiable {
     let id = UUID()
     let tool: MeshFitTool
@@ -168,6 +171,8 @@ struct MeshFitCard: View {
             if let reason = [MeshFitTool.scale, .flatBase, .plinth].lazy.compactMap({ meshFitEditBlockedReason(model, tool: $0) }).first {
                 Text(reason).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if store.busy {
+                Text(meshFitBusyCaption).font(.caption).foregroundStyle(.secondary)
             } else {
                 Text("Each saves a separate copy; this model is kept as it is.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -176,14 +181,23 @@ struct MeshFitCard: View {
     }
 
     private var couponSection: some View {
-        HStack(spacing: 12) {
-            Button("\(MeshFitTool.fitCoupon.title)…") { store.beginMeshFit(.fitCoupon, model: model, loaded: loaded) }
-                .disabled(store.busy || meshFitEditBlockedReason(model, tool: .fitCoupon) != nil)
-                .help(meshFitEditBlockedReason(model, tool: .fitCoupon)
-                      ?? "Saves a small test piece cut round a hole or pin, or a slice of the base, as a separate copy")
-            Text("A small test piece, to check a fit before ordering the full part")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Button("\(MeshFitTool.fitCoupon.title)…") { store.beginMeshFit(.fitCoupon, model: model, loaded: loaded) }
+                    .disabled(store.busy || meshFitEditBlockedReason(model, tool: .fitCoupon) != nil)
+                    .help(meshFitEditBlockedReason(model, tool: .fitCoupon)
+                          ?? "Saves a small test piece cut round a hole or pin, or a slice of the base, as a separate copy")
+                Text("A small test piece, to check a fit before ordering the full part")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Why the button is off, visible as well as in its help tag.
+            if let reason = meshFitEditBlockedReason(model, tool: .fitCoupon) {
+                Text(reason).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if store.busy {
+                Text(meshFitBusyCaption).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -331,14 +345,15 @@ struct MeshFitSheet: View {
             .formStyle(.grouped)
             .disabled(saving)
             Divider()
+            // Sheet footers: a local save, so Cancel sits just before the save button.
             HStack {
+                if saving { ProgressView().controlSize(.small) }
+                Spacer()
                 Button("Cancel") {
                     worker?.cancel()
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                Spacer()
-                if saving { ProgressView().controlSize(.small) }
                 // A free local save, like the other Size and base sheets.
                 Button(saveTitle, action: save)
                     .buttonStyle(.borderedProminent)
@@ -580,8 +595,9 @@ struct MeshFitSheet: View {
                             dismiss()
                             store.select(copy)
                         }
-                        .buttonStyle(.link)
+                        .buttonStyle(.bordered)
                         .disabled(store.busy)
+                        .accessibilityLabel("Show Copy, the print-ready copy")
                     }
                 }
             }

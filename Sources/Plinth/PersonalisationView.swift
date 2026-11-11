@@ -49,9 +49,10 @@ struct OrderImportPersonalisationRow: View {
                     NSPasteboard.general.setString(item.personalisation, forType: .string)
                     copied = true
                 }
-                .buttonStyle(.link).font(.caption)
+                // A real button, small only because it sits in each order's caption line.
+                .buttonStyle(.bordered).controlSize(.small)
                 .help("Copies the buyer’s personalisation to paste into Personalise from Template. Plinth doesn’t save it.")
-                .accessibilityLabel("Copy personalisation")
+                .accessibilityLabel(copied ? "Copied personalisation" : "Copy personalisation")
             }
             if orderImportPersonalisationShowsOptions(item) {
                 Text("Options: \(item.options)").font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -74,7 +75,8 @@ struct OrderImportPersonalisationNotice: View {
                 NSPasteboard.general.setString(list, forType: .string)
                 copied = true
             }
-            .buttonStyle(.link).font(.caption)
+            .buttonStyle(.bordered)
+            .padding(.top, 2)
             .help("Copies each order ID with its personalisation (no names or addresses), so you can keep the list after closing this window.")
         }
     }
@@ -251,8 +253,13 @@ private struct PersonalisationForm: View {
         }
     }
 
+    /// Sheet footers: Generate STL can send the template to Slant, so Close sits at the leading edge, apart from it.
     private var footer: some View {
         HStack(alignment: .center, spacing: 12) {
+            // Close: each generated model is already in the library, and nothing else is kept.
+            Button("Close") { job?.cancel(); store.personalisationTemplate = nil }
+                .keyboardShortcut(.cancelAction)
+                .disabled(generating && engine == .slant)
             if let problem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     .font(.callout).lineLimit(3).fixedSize(horizontal: false, vertical: true)
@@ -267,10 +274,6 @@ private struct PersonalisationForm: View {
             if generating, engine == .local {
                 Button("Stop") { job?.cancel() }
             }
-            // Close: each generated model is already in the library, and nothing else is kept.
-            Button("Close") { job?.cancel(); store.personalisationTemplate = nil }
-                .keyboardShortcut(.cancelAction)
-                .disabled(generating && engine == .slant)
             // No Return shortcut: a Slant generation uses up its hourly allowance, so it always takes a click.
             Button("Generate STL") { generate() }
                 .buttonStyle(.borderedProminent)

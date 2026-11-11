@@ -153,6 +153,12 @@ func accessoryProgressLine(repliesThisRound: Int, rendersThisRound: Int, limits:
     "Reply \(repliesThisRound) of \(limits.maxReplies) · render \(rendersThisRound) of \(limits.maxRenders) this round"
 }
 
+/// The measurement row's remove button, naming the row once it has a name: "Remove Measurement: Phone thickness".
+func accessoryRemoveMeasurementLabel(_ name: String) -> String {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "Remove Measurement" : "Remove Measurement: \(trimmed)"
+}
+
 struct AccessoryPhoto: Identifiable {
     let id = UUID()
     let image: PreparedImage
@@ -248,7 +254,7 @@ struct AccessoryDesignerSheet: View {
             }
         }
         .confirmationDialog(closeConfirmation?.title ?? "Close this window?", isPresented: $confirmClose, titleVisibility: .visible) {
-            Button("Discard", role: .destructive) { close() }
+            Button("Close Without Saving", role: .destructive) { close() }
             // Return keeps working.
             Button("Keep Working", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
@@ -362,10 +368,11 @@ struct AccessoryDesignerSheet: View {
             }
             ideasSection
             Section("What to make") {
-                TextField("Accessory", text: $brief.description, prompt: Text("A stand that holds this phone at 60°"), axis: .vertical)
+                // In a grouped Form the hidden title is read and an explicit label is added to it ("Notes, Notes"
+                // in a live VoiceOver test), so these rows carry their accessible name as the title alone.
+                TextField("What to make", text: $brief.description, prompt: Text("A stand that holds this phone at 60°"), axis: .vertical)
                     .lineLimit(2...4)
                     .labelsHidden()
-                    .accessibilityLabel("What to make")
             }
             Section {
                 ForEach($brief.measurements) { $row in
@@ -383,7 +390,6 @@ struct AccessoryDesignerSheet: View {
                 TextField("Notes", text: $brief.notes, prompt: Text("Optional: material, where it will be used, anything to avoid"), axis: .vertical)
                     .lineLimit(2...5)
                     .labelsHidden()
-                    .accessibilityLabel("Notes")
             }
             prerequisitesSection
         }
@@ -672,10 +678,15 @@ struct AccessoryDesignerSheet: View {
                             Button {
                                 photos.removeAll { $0.id == photo.id }
                             } label: {
+                                // A 28-point target round a larger symbol, drawn over the photo's corner.
                                 Image(systemName: "xmark.circle.fill").symbolRenderingMode(.hierarchical)
+                                    .font(.title2)
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .padding(4)
+                            .padding(2)
+                            .help("Remove this photo")
                             .accessibilityLabel("Remove Photo")
                         }
                     }
@@ -700,20 +711,18 @@ struct AccessoryDesignerSheet: View {
 
     private func measurementFields(_ row: Binding<AccessoryMeasurement>, caption: String?) -> some View {
         HStack(spacing: 8) {
-            TextField("Measurement", text: row.label, prompt: Text("Phone thickness"))
+            // Titles only (no extra accessibility label): see the What to make field.
+            TextField("Measurement name", text: row.label, prompt: Text("Phone thickness"))
                 .labelsHidden()
-                .accessibilityLabel("Measurement name")
                 .help(caption ?? "")
-            TextField("Millimetres", text: row.millimetres, prompt: Text("mm"))
+            TextField("Size in millimetres", text: row.millimetres, prompt: Text("mm"))
                 .labelsHidden()
-                .accessibilityLabel("Size in millimetres")
                 .focused($focusedSize, equals: row.wrappedValue.id)
                 .frame(width: 80)
             Picker("How measured", selection: row.method) {
                 ForEach(AccessoryMeasurementMethod.allCases) { method in Text(method.title).tag(method) }
             }
             .labelsHidden()
-            .accessibilityLabel("How measured")
             .frame(width: 170)
             Button {
                 let id = row.wrappedValue.id
@@ -722,8 +731,10 @@ struct AccessoryDesignerSheet: View {
             } label: {
                 Image(systemName: "minus.circle")
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Remove Measurement")
+            // A bordered target, not a 13-point bare icon.
+            .buttonStyle(.bordered)
+            .help("Remove this measurement")
+            .accessibilityLabel(accessoryRemoveMeasurementLabel(row.wrappedValue.label))
         }
     }
 
@@ -775,16 +786,17 @@ struct AccessoryDesignerSheet: View {
         return accessoryBriefProblem(brief, photoCount: photos.count)
     }
 
+    /// Sheet footers: Start Design is billed, so Close sits at the leading edge, apart from it.
     private var briefFooter: some View {
         HStack(spacing: 12) {
+            // Escape too; once anything has been sent, closing asks first.
+            Button("Close") { requestClose() }
+                .keyboardShortcut(.cancelAction)
             if let problem = startProblem ?? blockedReasonOtherThanKey {
                 Text(problem).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            // Escape too; once anything has been sent, closing asks first.
-            Button("Close") { requestClose() }
-                .keyboardShortcut(.cancelAction)
             // Never the default button and no shortcut: every request is billed.
             Button("Start Design") { startDesign() }
                 .buttonStyle(.borderedProminent)

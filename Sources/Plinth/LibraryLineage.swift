@@ -19,6 +19,49 @@ extension LocalModel {
     }
 }
 
+// MARK: - Copies known only by their names
+
+/// The bracketed endings Plinth's tools give the copies they save (`studioCopyName`, `stlCopyName`, the Size and base,
+/// print-ready, reviewed and pockets-filled names and Reinforce's `fileSuffix`), so a copy saved before lineage was
+/// recorded still shows under Copies. A replica, a design and a fit test are originals, so their endings are not here.
+let libraryCopyNameSuffixes: Set<String> = [
+    "repaired", "simplified", "STL copy", "auto-improved", "prepared", "edge-improved", "print-ready",
+    "print-ready, teardrop holes", "reviewed", "pockets filled", "flat base", "plinth", "fit coupon",
+    "experimental cells", "experimental shell", "experimental hole ring", "teardrop holes", "bridging",
+    "overhang chamfer", "matched walls", "part", "internal walls", "reinforced",
+]
+
+/// Reinforce's endings that may carry a part number, "Name (part 2)" (`reinforcementCopyName`).
+private let libraryCopyNumberedSuffixes: Set<String> = [
+    "experimental cells", "experimental shell", "experimental hole ring", "teardrop holes", "bridging",
+    "overhang chamfer", "matched walls", "part", "internal walls", "reinforced",
+]
+
+/// Whether a library name ends the way a copy saved by Plinth's tools does: one of `libraryCopyNameSuffixes` in
+/// brackets after a name, "(scaled to 50 mm)" or "(scaled to 50 mm wide)" from Scale to Size, "(part 2)" from a split,
+/// or the scale check's "-scaled-x25.4". Display only: it puts such a model under the Copies filter, and nothing else
+/// (Remove Copies, captions, Show Original) treats it as a copy, because its original isn't known.
+func libraryNameLooksLikeCopy(_ name: String) -> Bool {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.range(of: #"^.*\S-scaled-x[0-9][0-9.eE+-]*$"#, options: .regularExpression) != nil { return true }
+    guard trimmed.hasSuffix(")"), let open = trimmed.range(of: " (", options: .backwards), open.lowerBound > trimmed.startIndex
+    else { return false }
+    let inner = String(trimmed[open.upperBound..<trimmed.index(before: trimmed.endIndex)])
+    if libraryCopyNameSuffixes.contains(inner) { return true }
+    if inner.range(of: #"^scaled to [0-9]+(\.[0-9]+)? mm( wide| deep| tall)?$"#, options: .regularExpression) != nil { return true }
+    if let space = inner.lastIndex(of: " "), libraryCopyNumberedSuffixes.contains(String(inner[..<space])) {
+        let number = inner[inner.index(after: space)...]
+        return !number.isEmpty && number.count <= 4 && number.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+    return false
+}
+
+extension LocalModel {
+    /// What the library's Copies and Originals filters go by: a known copy (`isLibraryCopy`), or a model whose name
+    /// ends the way a copy's does (`libraryNameLooksLikeCopy`). Display only.
+    var isShownAsLibraryCopy: Bool { isLibraryCopy || libraryNameLooksLikeCopy(name) }
+}
+
 /// Library models by ID (the first of any repeated ID).
 func libraryModelsByID(_ models: [LocalModel]) -> [UUID: LocalModel] {
     Dictionary(models.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -70,8 +113,8 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     func includes(_ model: LocalModel) -> Bool {
         switch self {
         case .all: return true
-        case .originals: return !model.isLibraryCopy
-        case .copies: return model.isLibraryCopy
+        case .originals: return !model.isShownAsLibraryCopy
+        case .copies: return model.isShownAsLibraryCopy
         case .uploaded: return model.remoteID != nil
         case .readyToUpload: return model.remoteID == nil
         }
@@ -86,6 +129,14 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
         case .readyToUpload: return "Showing models ready to upload only"
         }
     }
+}
+
+/// The Show menu's visible label above the library list: "Show: All Models", "Show: Copies".
+func libraryFilterMenuTitle(_ filter: LibraryFilter) -> String { "Show: \(filter.title)" }
+
+/// Its accessible name: the visible label first (WCAG 2.5.3, Label in Name), then what else the menu does.
+func libraryFilterMenuAccessibilityLabel(_ filter: LibraryFilter) -> String {
+    "\(libraryFilterMenuTitle(filter)), filter and sort models"
 }
 
 enum LibrarySort: String, CaseIterable, Identifiable {
@@ -245,7 +296,7 @@ extension StudioStore {
                 store.restoreRemovedModels(removed, undoManager: undoManager)
             }
         }
-        undoManager?.setActionName("Remove Copies")
+        undoManager?.setActionName(libraryRemoveCopiesUndoName)
     }
 
     /// Undo for `removeLocalModels`: moves every file back from the Trash and reinserts the same entries in their old
@@ -281,9 +332,13 @@ extension StudioStore {
                 store.removeLocalModels(ids: restoredIDs, undoManager: undoManager)
             }
         }
-        undoManager?.setActionName("Remove Copies")
+        undoManager?.setActionName(libraryRemoveCopiesUndoName)
     }
 }
+
+/// Edit › Undo / Redo's action names (HIG: name what is undone): "Undo Remove Copies", "Redo Remove Model".
+let libraryRemoveCopiesUndoName = "Remove Copies"
+let libraryRemoveModelUndoName = "Remove Model"
 
 /// "1 model" / "3 models", for Activity (counts only).
 func libraryModelCountText(_ count: Int) -> String {

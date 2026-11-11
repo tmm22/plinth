@@ -158,10 +158,11 @@ struct MeshyPrintabilityReport: Equatable, Sendable {
     /// One line per finding, in a fixed order.
     var findings: [String] {
         var lines: [String] = []
-        if isWatertight == false { lines.append("Not watertight") }
+        // In the mesh check's plain words (MeshHealth.swift), not Meshy's terms.
+        if isWatertight == false { lines.append("Not closed") }
         if let holes, holes > 0 { lines.append(holes == 1 ? "1 hole" : "\(holes) holes") }
-        if let edges = nonManifoldEdges, edges > 0 { lines.append(edges == 1 ? "1 non-manifold edge" : "\(edges) non-manifold edges") }
-        if let faces = degenerateFaces, faces > 0 { lines.append(faces == 1 ? "1 degenerate face" : "\(faces) degenerate faces") }
+        if let edges = nonManifoldEdges, edges > 0 { lines.append(edges == 1 ? "1 edge shared by more than two faces" : "\(edges) edges shared by more than two faces") }
+        if let faces = degenerateFaces, faces > 0 { lines.append(faces == 1 ? "1 zero-area face" : "\(faces) zero-area faces") }
         if hasThinWalls == true {
             let share = thinAreaRatio.map { " (\(Int(($0 * 100).rounded()))% of the surface)" } ?? ""
             let limit = wallThicknessMM.map { " thinner than \(String(format: "%.1f", $0)) mm" } ?? ""

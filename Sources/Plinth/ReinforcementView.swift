@@ -92,7 +92,10 @@ private struct ReinforcementReview: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                SectionHeading(title: "Reinforce this part", caption: "Position the change, protect clearances, then preview a new copy")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Reinforce this part").font(.title2.weight(.bold))
+                    Text("Position the change, protect clearances, then preview a new copy").font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
             }.padding(20)
             Divider()
@@ -163,7 +166,7 @@ private struct ReinforcementReview: View {
                         Button(working ? "Preparing Preview…" : "Update Preview") { updatePreview() }.disabled(working)
                         if working { ProgressView().controlSize(.small); Button("Stop") { cancelPreview() } }
                         Spacer()
-                        Toggle("Cutaway view", isOn: $section).toggleStyle(.switch).disabled(!current || preview?.proposedSection == nil)
+                        Toggle("Cutaway view", isOn: $section).toggleStyle(.checkbox).disabled(!current || preview?.proposedSection == nil)
                     }
                     if let failure { Text(failure).font(.callout).foregroundStyle(.secondary) }
                     HStack(spacing: 14) {
@@ -206,9 +209,10 @@ private struct ReinforcementReview: View {
                     Toggle("Save for test printing; this treatment is not a verified strength improvement", isOn: $experimentalConfirmed)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // Sheet footers: a local save, so Cancel sits just before the save button.
                 HStack {
-                    Button("Cancel") { cancelPreview(); dismiss() }.keyboardShortcut(.cancelAction)
                     Spacer()
+                    Button("Cancel") { cancelPreview(); dismiss() }.keyboardShortcut(.cancelAction)
                     Button(settings.kind.isExperimental ? "Save Experimental Test Copy" : settings.kind == .split ? "Save Two-Part Copies" : "Apply to New Copy") { save() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!current || !confirmed || (settings.kind.isExperimental && !experimentalConfirmed) || working || saving || store.busy || !shellsHeld)

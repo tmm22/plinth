@@ -177,8 +177,10 @@ final class PreviewOverhangsTests: XCTestCase {
         // With 3DAPI as the print service the rule is named as Slant's, never as a description of 3DAPI's printing.
         for caption in [previewOverhangCaption(share, forDapi: true), previewOverhangCaption(none, forDapi: true),
                         previewOverhangCaption(nil, forDapi: true)] {
-            XCTAssertTrue(caption.hasSuffix("Shown as the file is oriented. This is Slant’s 50° rule; 3DAPI’s may differ."))
+            XCTAssertTrue(caption.hasSuffix("Shown as the file is oriented. 3DAPI’s limit may differ."))
             XCTAssertFalse(caption.contains("how Slant prints it"))
+            XCTAssertTrue(caption.contains("Slant’s 50° limit"), "3DAPI's limit is never mentioned without Slant's")
+            XCTAssertFalse(caption.contains("3DAPI’s may differ"), "Said once, not twice")
         }
         XCTAssertTrue(previewOverhangCaption(none).hasPrefix("No faces point down"))
         XCTAssertTrue(previewOverhangCaption(nil).hasPrefix("Finding overhangs"))

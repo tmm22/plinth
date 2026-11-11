@@ -115,11 +115,11 @@ func productCostParts(
             let noun = kind == .components ? "Components" : "Stationery"
             guard !reference.isEmpty else { parts.append(part(.unavailable("Choose which \(noun.lowercased()) item to use."))); continue }
             guard loadedCatalogs.contains(kind) || !records.isEmpty else {
-                parts.append(part(.unavailable("Load \(noun) in Catalog to include its price.")))
+                parts.append(part(.unavailable("Load \(noun) in Catalogue to include its price.")))
                 continue
             }
             guard let record = records.first(where: { $0.id == reference }) else {
-                parts.append(part(.unavailable("It’s no longer offered in the catalog.")))
+                parts.append(part(.unavailable("It’s no longer offered in the catalogue.")))
                 continue
             }
             // Like an out-of-stock material: Slant marks it not available, so it isn't priced as if it could be ordered.
@@ -130,7 +130,7 @@ func productCostParts(
             switch productCostCatalogPrice(record) {
             case .success(let price):
                 let each = money(NSDecimalNumber(decimal: price))
-                parts.append(part(.priced(total: price * Decimal(quantity), detail: "Catalog price, \(each) each")))
+                parts.append(part(.priced(total: price * Decimal(quantity), detail: "Catalogue price, \(each) each")))
             case .failure(let reason):
                 parts.append(part(.unavailable(reason.message)))
             }
@@ -462,8 +462,8 @@ struct ProductCostCheckView: View {
         let summary = productCostSummary(parts, units: shownUnits)
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Cost of “\(savedProductDisplayName(product))”").font(.title2.weight(.semibold))
-                Text("Fresh Slant estimates for each print, plus catalog prices for components and stationery, in USD. Results stay only while this is open and are never saved with the product.")
+                Text("Cost of “\(savedProductDisplayName(product))”").font(.title2.weight(.bold))
+                Text("Fresh Slant estimates for each print, plus catalogue prices for components and stationery, in USD. Results stay only while this is open and are never saved with the product.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
