@@ -283,7 +283,8 @@ final class SlantAPISignalsTests: XCTestCase {
     }
 
     func testNoticeCopy() {
-        let later = Date(timeIntervalSince1970: 1_794_000_000)
+        // Later than the bundled copy's date whatever that is, so a new snapshot never breaks this test.
+        let later = slantAPIBundledSpecDate.addingTimeInterval(86_400)
         let dated = slantAPISpecChangeSentence(areas: ["Orders"], changedOn: later)
         XCTAssertTrue(dated.hasPrefix("Slant changed its API on "), dated)
         XCTAssertTrue(dated.contains("(Orders), after this version of Plinth was made. Plinth carries on as before, but some details may be missing or wrong until it’s updated. If anything in Orders looks odd, check it on Slant."), dated)

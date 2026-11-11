@@ -14,9 +14,9 @@ let slantAPISpecURL = URL(string: "https://slant3dapi.com/v2/api/openapi.json")!
 let slantAPISpecHost = "slant3dapi.com"
 let slantAPISpecMaxBytes = 2 * 1024 * 1024
 let slantAPISpecTimeout: TimeInterval = 30
-/// The bundled copy's `Last-Modified` (26 Oct 2026 21:09:58 GMT; reviewed 28 Oct 2026). A change is dated only when
+/// The bundled copy's `Last-Modified` (9 Nov 2026 19:42:24 GMT; reviewed 12 Nov 2026). A change is dated only when
 /// Slant's `Last-Modified` is later than this; update it with the bundled file.
-let slantAPIBundledSpecDate = Date(timeIntervalSince1970: 1_793_048_998)
+let slantAPIBundledSpecDate = Date(timeIntervalSince1970: 1_794_253_344)
 let slantAPICheckInterval: TimeInterval = 24 * 3600
 let slantAPIFirstCheckDelay: TimeInterval = 60
 /// Without a Slant key (or the bundled copy) no check runs; the loop looks again this often, making no request.

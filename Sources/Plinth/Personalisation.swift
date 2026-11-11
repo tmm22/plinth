@@ -475,7 +475,8 @@ func personalisedModelName(templateName: String, parameters: [ScadParameter], va
 
 // MARK: Slant quota
 
-/// Slant's OpenSCAD allowance as Studio sees it this session: 5 generations an hour, one at a time. Every request sent
+/// Plinth's own cap on Slant's OpenSCAD generations this session: 5 an hour, one at a time. Slant's limit was 5 an
+/// hour until its spec changed to 100 on 9 Nov 2026; that figure isn't verified live, so the cap stays at the lower one. Every request sent
 /// counts, whatever its outcome, because Slant may count one that didn't reply. The API Workbench's sends count too;
 /// Studio can't see generations made with the same key elsewhere, so Slant may refuse sooner. Memory only.
 struct OpenSCADQuota: Equatable {

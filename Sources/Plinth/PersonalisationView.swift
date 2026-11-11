@@ -247,7 +247,7 @@ private struct PersonalisationForm: View {
             return "Runs OpenSCAD on this Mac. Nothing is sent to Slant, and there’s no hourly limit."
         case .slant:
             let remaining = session.quota.remaining(now: now)
-            return "Sends the template and these values to Slant, which returns the STL. Slant allows \(OpenSCADQuota.generationsPerHour) generations an hour, one at a time: \(remaining) left by Plinth’s count this session (it can’t see generations made elsewhere with your key). Every request counts, and Plinth never retries one."
+            return "Sends the template and these values to Slant, which returns the STL. Plinth sends at most \(OpenSCADQuota.generationsPerHour) generations an hour, one at a time: \(remaining) left by Plinth’s count this session (it can’t see generations made elsewhere with your key). Every request counts, and Plinth never retries one."
         }
     }
 

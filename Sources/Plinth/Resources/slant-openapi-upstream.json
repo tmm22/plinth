@@ -3730,7 +3730,7 @@
           "Files"
         ],
         "summary": "Convert OpenSCAD code to STL",
-        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 5 generations per hour with one generation in flight at a time.",
+        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 100 generations per hour with one generation in flight at a time.",
         "security": [
           {
             "ApiKeyAuth": []

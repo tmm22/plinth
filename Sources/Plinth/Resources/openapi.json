@@ -4191,7 +4191,7 @@
           "Files"
         ],
         "summary": "Convert OpenSCAD code to STL",
-        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 5 generations per hour with one generation in flight at a time. Docs example: a 200 reply carries X-RateLimit-Limit: 5 and X-RateLimit-Remaining: 4.",
+        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 100 generations per hour with one generation in flight at a time. Docs example from before 9 Nov 2026, when this read 5 generations per hour: a 200 reply carries X-RateLimit-Limit: 5 and X-RateLimit-Remaining: 4.",
         "security": [
           {
             "ApiKeyAuth": []
