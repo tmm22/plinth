@@ -5,17 +5,35 @@ import SceneKit
 struct ModelPreview: View {
     let url: URL?
     var showsPrintBed = false
+    /// Show Overhangs leaves out internal walls' slot ceilings, as Review for Printing does on print-ready copies.
+    var overhangsIgnoreNarrowCeilings = false
     /// Reports the parsed model (or nil) for the URL just loaded, so callers can check it without parsing again.
     var onModelChange: ((URL, PreviewModel?) -> Void)? = nil
     @State private var model: PreviewModel?
     @State private var failure: String?
     @State private var isLoading = false
+    /// The URL `model` was read from; the overhang work starts only once it is set.
+    @State private var loadedURL: URL?
+    /// Show Overhangs (PreviewOverhangs.swift): display only, remembered as a plain preference.
+    @AppStorage(previewShowOverhangsDefaultsKey) private var showOverhangs = false
+    /// The tint and the URL it was worked out for: shown only while that is still the loaded model.
+    @State private var overhangs: (url: URL, highlight: PreviewOverhangHighlight)?
+    private var currentOverhangs: PreviewOverhangHighlight? {
+        guard let overhangs, overhangs.url == loadedURL else { return nil }
+        return overhangs.highlight
+    }
+
+    private struct OverhangWork: Equatable {
+        let url: URL?
+        let show: Bool
+        let ignoreNarrowCeilings: Bool
+    }
 
     var body: some View {
         ZStack {
             Color(nsColor: .controlBackgroundColor)
             if let model {
-                STLSceneView(mesh: model.mesh, showsPrintBed: showsPrintBed)
+                STLSceneView(mesh: model.mesh, showsPrintBed: showsPrintBed, overhangs: showOverhangs ? currentOverhangs : nil)
                 VStack {
                     Spacer()
                     VStack(alignment: .leading, spacing: 6) {
@@ -24,7 +42,19 @@ struct ModelPreview: View {
                             Spacer(minLength: 8)
                             Text("\(model.mesh.triangleCount.formatted()) triangles")
                         }
-                        Text(previewDimensionsLabel(model))
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(previewDimensionsLabel(model))
+                            Spacer(minLength: 8)
+                            Toggle(previewShowOverhangsTitle, isOn: $showOverhangs)
+                                .toggleStyle(.checkbox)
+                                .accessibilityLabel(previewShowOverhangsTitle)
+                                .accessibilityValue(previewOverhangAccessibilityValue(isOn: showOverhangs, share: currentOverhangs?.share))
+                                .help("Tints faces that point down more steeply than Slant’s 50° limit, the same rule as Plinth’s 50° overhang check. Display only: the model isn’t changed.")
+                        }
+                        if showOverhangs {
+                            Text(previewOverhangCaption(currentOverhangs?.share))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         if let warning = previewBuildVolumeWarning(model) {
                             Label(warning, systemImage: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
@@ -50,8 +80,22 @@ struct ModelPreview: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .task(id: OverhangWork(url: loadedURL, show: showOverhangs, ignoreNarrowCeilings: overhangsIgnoreNarrowCeilings)) {
+            // Off the main actor; a model switched or the toggle turned off meanwhile cancels it, and a late result
+            // for an earlier model is dropped.
+            overhangs = nil
+            guard showOverhangs, let loaded = loadedURL, let mesh = model?.mesh else { return }
+            let ignore = overhangsIgnoreNarrowCeilings
+            let worker = Task.detached(priority: .userInitiated) {
+                previewOverhangHighlight(mesh, ignoringNarrowCeilings: ignore, isCancelled: { Task.isCancelled })
+            }
+            let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+            guard !Task.isCancelled, loadedURL == loaded, showOverhangs, let result else { return }
+            overhangs = (loaded, result)
+        }
         .task(id: url) {
             model = nil
+            loadedURL = nil
             failure = nil
             guard let url else { isLoading = false; return }
             if !supportsLocalPreview(url) {
@@ -66,7 +110,9 @@ struct ModelPreview: View {
             let result = await worker.value
             guard !Task.isCancelled else { return }
             switch result {
-            case .success(let loaded): model = loaded
+            case .success(let loaded):
+                model = loaded
+                loadedURL = url
             case .failure(let error): failure = error.localizedDescription
             }
             isLoading = false
@@ -251,6 +297,18 @@ func previewBedHeight(_ mesh: STLMesh) -> Float {
 struct STLSceneView: NSViewRepresentable {
     let mesh: STLMesh
     var showsPrintBed = false
+    /// Show Overhangs' tinted triangles, or nil for one colour. Display only.
+    var overhangs: PreviewOverhangHighlight? = nil
+
+    /// The model's node and buffers, so the tint can change without rebuilding the scene or moving the camera.
+    final class Coordinator {
+        var modelNode: SCNNode?
+        var sources: [SCNGeometrySource] = []
+        var triangleCount = 0
+        var applied: PreviewOverhangHighlight?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> SCNView {
         let view = SCNView()
@@ -258,17 +316,61 @@ struct STLSceneView: NSViewRepresentable {
         view.antialiasingMode = .multisampling4X
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = false
-        view.scene = makeScene()
+        view.scene = makeScene(context.coordinator)
+        applyOverhangs(context.coordinator)
         view.defaultCameraController.target = SCNVector3Zero
         view.defaultCameraController.inertiaEnabled = true
         return view
     }
 
     func updateNSView(_ view: SCNView, context: Context) {
-        // The enclosing view removes this representable while a new URL loads.
+        // The enclosing view removes this representable while a new URL loads; only the tint changes here.
+        applyOverhangs(context.coordinator)
     }
 
-    private func makeScene() -> SCNScene {
+    private static func previewMaterial(_ color: NSColor) -> SCNMaterial {
+        let material = SCNMaterial()
+        material.diffuse.contents = color
+        material.lightingModel = .physicallyBased
+        material.roughness.contents = 0.65
+        material.metalness.contents = 0.05
+        material.isDoubleSided = true
+        return material
+    }
+
+    private static let plainColour = NSColor(calibratedRed: 0.72, green: 0.79, blue: 0.84, alpha: 1)
+    private static let overhangColour = NSColor(calibratedRed: 0.96, green: 0.48, blue: 0.16, alpha: 1)
+
+    /// One plain element (as before) without a tint; with one, the plain and tinted triangles as two indexed elements
+    /// over the same buffers, each with its own material.
+    private func applyOverhangs(_ coordinator: Coordinator) {
+        guard let node = coordinator.modelNode, coordinator.applied !== overhangs || node.geometry == nil else { return }
+        coordinator.applied = overhangs
+        var elements: [SCNGeometryElement] = []
+        var materials: [SCNMaterial] = []
+        if let overhangs, overhangs.plainTriangles + overhangs.overhangTriangles == coordinator.triangleCount {
+            if overhangs.plainTriangles > 0 {
+                elements.append(SCNGeometryElement(data: overhangs.plainIndices, primitiveType: .triangles,
+                                                   primitiveCount: overhangs.plainTriangles, bytesPerIndex: 4))
+                materials.append(Self.previewMaterial(Self.plainColour))
+            }
+            if overhangs.overhangTriangles > 0 {
+                elements.append(SCNGeometryElement(data: overhangs.overhangIndices, primitiveType: .triangles,
+                                                   primitiveCount: overhangs.overhangTriangles, bytesPerIndex: 4))
+                materials.append(Self.previewMaterial(Self.overhangColour))
+            }
+        }
+        if elements.isEmpty {
+            elements = [SCNGeometryElement(data: nil, primitiveType: .triangles, primitiveCount: coordinator.triangleCount,
+                                           bytesPerIndex: 0)]
+            materials = [Self.previewMaterial(Self.plainColour)]
+        }
+        let geometry = SCNGeometry(sources: coordinator.sources, elements: elements)
+        geometry.materials = materials
+        node.geometry = geometry
+    }
+
+    private func makeScene(_ coordinator: Coordinator) -> SCNScene {
         let scene = SCNScene()
         let extent = mesh.maximum - mesh.minimum
         let center = (mesh.maximum + mesh.minimum) * 0.5
@@ -295,17 +397,11 @@ struct STLSceneView: NSViewRepresentable {
                                      usesFloatComponents: true, componentsPerVector: 3, bytesPerComponent: 4,
                                      dataOffset: 0, dataStride: 12)
         }
-        let geometry = SCNGeometry(sources: [source(normalized, semantic: .vertex), source(normals, semantic: .normal)],
-                                   elements: [SCNGeometryElement(data: nil, primitiveType: .triangles,
-                                                                primitiveCount: mesh.triangleCount, bytesPerIndex: 0)])
-        let material = SCNMaterial()
-        material.diffuse.contents = NSColor(calibratedRed: 0.72, green: 0.79, blue: 0.84, alpha: 1)
-        material.lightingModel = .physicallyBased
-        material.roughness.contents = 0.65
-        material.metalness.contents = 0.05
-        material.isDoubleSided = true
-        geometry.materials = [material]
-        let model = SCNNode(geometry: geometry)
+        // The geometry itself is set by `applyOverhangs`, plain or tinted.
+        coordinator.sources = [source(normalized, semantic: .vertex), source(normals, semantic: .normal)]
+        coordinator.triangleCount = mesh.triangleCount
+        let model = SCNNode()
+        coordinator.modelNode = model
         // STL printing coordinates conventionally use Z as the vertical axis.
         model.eulerAngles.x = -.pi / 2
         scene.rootNode.addChildNode(model)

@@ -49,7 +49,7 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
 }
 
 /// The sheet's state, in memory only.
-@MainActor final class PrintReviewSession: ObservableObject {
+@MainActor final class PrintReviewSession: ObservableObject, DesignQuitSource {
     enum Measuring: Equatable {
         case working(Double, String)
         case done
@@ -233,6 +233,23 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
     /// True when Run Selected Steps would repeat the last run that saved a copy (or found nothing to change).
     var selectionAlreadyRun: Bool { lastRunSelection == ticked }
 
+    /// The inputs of Close's question, shared with the quit question so the two never disagree.
+    private var closeInputs: (hasPlan: Bool, asking: Bool, savedCopy: Bool) {
+        (plan != nil && !ticked.isEmpty, isAsking, selectionAlreadyRun || { if case .saved = run { return true }; return false }())
+    }
+
+    /// What Close asks before it discards something billed, or nil.
+    var closeConfirmation: PrintReviewCloseConfirmation? {
+        let inputs = closeInputs
+        return printReviewCloseConfirmation(hasPlan: inputs.hasPlan, asking: inputs.asking, savedCopy: inputs.savedCopy)
+    }
+
+    /// What quitting would lose while the sheet is open (`printReviewDesignQuitItems`).
+    var designQuitItems: [DesignQuitItem] {
+        let inputs = closeInputs
+        return printReviewDesignQuitItems(hasPlan: inputs.hasPlan, asking: inputs.asking, savedCopy: inputs.savedCopy)
+    }
+
     func runTicked(model: LocalModel, store: StudioStore) {
         guard !isRunning, !isAsking, !selectionAlreadyRun, let mesh, let before, let plan else { return }
         let selection = ticked
@@ -389,11 +406,7 @@ struct PrintReviewSheet: View {
             }
     }
 
-    private var closeConfirmation: PrintReviewCloseConfirmation? {
-        printReviewCloseConfirmation(hasPlan: session.plan != nil && !session.ticked.isEmpty, asking: session.isAsking,
-                                     savedCopy: session.selectionAlreadyRun
-                                         || { if case .saved = session.run { return true }; return false }())
-    }
+    private var closeConfirmation: PrintReviewCloseConfirmation? { session.closeConfirmation }
 
     private func requestClose() {
         if closeConfirmation != nil { confirmClose = true } else { close() }
@@ -454,6 +467,7 @@ struct PrintReviewSheet: View {
         .imageSharingConsent($consentRequest)
         .onChange(of: claudeConnection.isConfigured) { _, _ in holdClaudeSessionIfConfigured() }
         .onAppear {
+            DesignQuitRegistry.shared.register(session)
             holdClaudeSessionIfConfigured()
             guard model == nil, let found = store.localModels.first(where: { $0.id == request.modelID }) else { return }
             model = found
@@ -465,6 +479,7 @@ struct PrintReviewSheet: View {
             if found.supportsPreview { session.measure(url: found.url, record: found.printPreparation, fromPrintReadyCopy: found.derivesFromPrintReadyCopy) }
         }
         .onDisappear {
+            DesignQuitRegistry.shared.unregister(session)
             session.cancelAll()
             if holdsClaudeSession {
                 holdsClaudeSession = false

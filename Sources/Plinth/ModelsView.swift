@@ -383,7 +383,9 @@ struct ModelsView: View {
         ZStack(alignment: .bottom) {
             Group {
                 if let local = store.selectedLocal {
-                    ModelPreview(url: local.url, showsPrintBed: local.printRecipe != nil) { url, model in
+                    ModelPreview(url: local.url, showsPrintBed: local.printRecipe != nil,
+                                 overhangsIgnoreNarrowCeilings: local.printPreparation?.internalWalls != nil
+                                     || local.fromPrintReadyCopy == true) { url, model in
                         previewMesh = model.map { LoadedPreviewMesh(url: url, model: $0) }
                     }
                     .frame(height: 260)

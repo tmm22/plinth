@@ -159,8 +159,21 @@ struct AccessoryPhoto: Identifiable {
     let preview: NSImage?
 }
 
+/// The accessory sheet's entry in `DesignQuitRegistry`: reads the design run and the ideas live, through the same
+/// conditions as the sheet's Close (`accessoryDesignQuitItems`). Holds both weakly; lives and dies with the sheet.
+@MainActor final class AccessoryDesignQuitTracker: ObservableObject, DesignQuitSource {
+    weak var run: AccessoryDesignRun?
+    weak var suggestions: AccessorySuggestionRun?
+
+    var designQuitItems: [DesignQuitItem] {
+        accessoryDesignQuitItems(designStarted: run?.hasStarted == true, ideasHeld: !(suggestions?.ideas.isEmpty ?? true),
+                                 suggesting: suggestions?.isWorking ?? false)
+    }
+}
+
 struct AccessoryDesignerSheet: View {
     @EnvironmentObject var store: StudioStore
+    @StateObject private var quitTracker = AccessoryDesignQuitTracker()
     @ObservedObject private var anthropic = AnthropicConnection.shared
     @State private var brief = AccessoryDesignBrief()
     @State private var photos: [AccessoryPhoto] = []
@@ -217,11 +230,16 @@ struct AccessoryDesignerSheet: View {
         .frame(minWidth: 820, idealWidth: 960, minHeight: 620, idealHeight: 760)
         // The key is held only once one is set up, so Open Settings can add a missing key while this sheet is open.
         .onChange(of: anthropic.isConfigured) { _, _ in holdClaudeSessionIfConfigured() }
+        .onChange(of: run.map(ObjectIdentifier.init)) { _, _ in quitTracker.run = run }
         .onAppear {
+            quitTracker.run = run
+            quitTracker.suggestions = suggestions
+            DesignQuitRegistry.shared.register(quitTracker)
             holdClaudeSessionIfConfigured()
             if !lookedForOpenSCAD { lookForOpenSCAD() }
         }
         .onDisappear {
+            DesignQuitRegistry.shared.unregister(quitTracker)
             run?.stop()
             suggestions.stop()
             if claudeSessionOpen {

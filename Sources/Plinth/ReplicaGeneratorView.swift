@@ -59,7 +59,7 @@ struct GeneratedReplicaFile {
 }
 
 /// The sheet's run state. Lives and dies with the sheet.
-@MainActor final class ReplicaGeneratorSession: ObservableObject {
+@MainActor final class ReplicaGeneratorSession: ObservableObject, DesignQuitSource {
     enum Phase: Equatable { case ready, generating, stopped, processing, processingFailed, processed, saved }
 
     @Published private(set) var phase: Phase = .ready
@@ -103,6 +103,8 @@ struct GeneratedReplicaFile {
     var service: ImageTo3DService? { generated?.service ?? provider?.service }
     /// A paid model that isn't in the library: closing discards it.
     var hasUnsavedModel: Bool { generated != nil && savedModelIDs.isEmpty }
+    /// What quitting would lose while the sheet is open (`replicaDesignQuitItems`).
+    var designQuitItems: [DesignQuitItem] { replicaDesignQuitItems(hasUnsavedModel: hasUnsavedModel) }
 
     /// Save to Library is allowed only for the result on show, made from the details typed now.
     func canSave(_ inputs: ReplicaInputs?) -> Bool {
@@ -164,7 +166,10 @@ struct GeneratedReplicaFile {
         }
         let connection = connection
         connection.beginWork()
+        // Quitting asks while this generation is out, until its outcome is recorded below (DesignQuitGuard.swift).
+        let generation = DesignQuitRegistry.shared.beginGeneration()
         let task = Task { @MainActor [weak self] in
+            defer { DesignQuitRegistry.shared.endGeneration(generation) }
             let result = await body(sleep, proceed, report)
             connection.endWork()
             guard let self, self.control === control else {
@@ -504,7 +509,9 @@ struct ReplicaGeneratorSheet: View {
             // A functional part is simplified to 20,000 triangles: higher detail would be paid for and lost.
             if !replicaHigherDetailAvailable(for: newPurpose) { higherDetail = false }
         }
+        .onAppear { DesignQuitRegistry.shared.register(session) }
         .onDisappear {
+            DesignQuitRegistry.shared.unregister(session)
             for job in photoJobs.values { job.cancel() }
             photoJobs = [:]
             slots = [:]
