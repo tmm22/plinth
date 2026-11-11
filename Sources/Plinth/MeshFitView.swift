@@ -98,7 +98,7 @@ extension StudioStore {
             guard importModelReturningID(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: fileDetails),
                                          inheritsZUpLock: lineage.inheritsZUpLock || locksZUp, origin: .studioToolCopy,
                                          keepsPlacement: lineage.keepsPlacement, fromPrintReadyCopy: lineage.fromPrintReadyCopy,
-                                         fitCoupon: locksZUp) != nil else {
+                                         fitCoupon: locksZUp, copiedFrom: model.id) != nil else {
                 return false
             }
             activities.insert(Activity(title: activityTitle, detail: model.name, success: true), at: 0)

@@ -380,7 +380,8 @@ private struct ReinforcementReview: View {
                 try part.binarySTL().write(to: url, options: .atomic)
                 imported = store.importModel(url, improvement: model.designImprovement, intent: designEditIntent(model), reinforcement: record,
                                              sourceDetails: model.sourceDetails, inheritsZUpLock: model.requiresZUp,
-                                             origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy) && imported
+                                             origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy,
+                                             copiedFrom: model.id) && imported
             }
             if imported { dismiss() }
         } catch { store.showError(error.localizedDescription) }

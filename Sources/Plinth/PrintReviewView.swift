@@ -304,7 +304,8 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
             return store.importModel(url, recipe: records.recipe, improvement: records.improvement, intent: records.intent,
                                      reinforcement: records.reinforcement, autoImprovement: records.autoImprovement,
                                      sourceDetails: sourceDetailsForCopy(of: model), inheritsZUpLock: records.inheritsZUpLock,
-                                     origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy)
+                                     origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy,
+                                     copiedFrom: model.id)
         } catch {
             store.showError("The copy wasn’t saved: \(error.localizedDescription)")
             return false
