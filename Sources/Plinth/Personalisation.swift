@@ -477,8 +477,9 @@ func personalisedModelName(templateName: String, parameters: [ScadParameter], va
 
 /// Plinth's own cap on Slant's OpenSCAD generations this session, one at a time. Slant's limit was 5 an hour until
 /// its spec changed to 100 on 9 Nov 2026, and that figure isn't verified live. So the cap starts at 5 each session and
-/// then follows the hourly limit Slant's own reply states (`noteSlantLimit`, from `X-RateLimit-Limit` on a generation
-/// Slant answered), never above the spec's 100. Every request sent counts, whatever its outcome, because Slant may
+/// then follows the limit Slant's own reply states (`noteSlantLimit`, from the rate-limit headers of a generation
+/// Slant answered): a lower figure at once, a higher one only when the reply's reset time shows an hourly window, and
+/// never above the spec's 100. Every request sent counts, whatever its outcome, because Slant may
 /// count one that didn't reply. The API Workbench's sends count too; Plinth can't see generations made with the same
 /// key elsewhere, so Slant may refuse sooner. Memory only.
 struct OpenSCADQuota: Equatable {
@@ -532,11 +533,10 @@ struct OpenSCADQuota: Equatable {
 
     mutating func finish() { inFlight = false }
 
-    /// After a generation Slant answered: its reply's hourly limit (`X-RateLimit-Limit`, OpenSCAD's own limiter on this
-    /// path) becomes the cap, lower or higher, when it is a figure Plinth will follow (`openSCADLimitToFollow`).
-    /// Anything else leaves the cap as it was.
-    mutating func noteSlantLimit(_ limit: Int?) {
-        guard let limit = openSCADLimitToFollow(limit) else { return }
+    /// After a generation Slant answered: its reply's limit becomes the cap when it is a figure Plinth will follow
+    /// (`openSCADLimitToFollow`). Anything else leaves the cap as it was.
+    mutating func noteSlantLimit(_ reply: RateLimitInfo, now: Date) {
+        guard let limit = openSCADLimitToFollow(limit: reply.limit, reset: reply.reset, current: generationsPerHour, now: now) else { return }
         generationsPerHour = limit
     }
 
@@ -546,11 +546,20 @@ struct OpenSCADQuota: Equatable {
     }
 }
 
-/// The hourly limit from a generation reply that Plinth follows: 1 to `maximumGenerationsPerHour`. A missing,
-/// unreadable, zero or larger figure is ignored, so a header from some other limiter never lifts the cap past the
-/// figure Slant's spec gives.
-func openSCADLimitToFollow(_ limit: Int?) -> Int? {
+/// How far ahead a reply's `X-RateLimit-Reset` must be before its limit can raise the cap. Slant's shared limiter is
+/// per minute (its reset has been seen up to about 60 s ahead) and also reports 100, so a reset within two minutes
+/// can't show that the figure is OpenSCAD's hourly one.
+let openSCADHourlyResetMinimumLead: TimeInterval = 120
+
+/// The limit from a generation reply that Plinth follows, or nil to keep the cap. Only 1 to
+/// `maximumGenerationsPerHour`: a missing, unreadable, zero or larger figure is ignored. A figure no higher than the
+/// cap is followed at once (the cautious direction). A higher one is followed only when the reply's reset is more than
+/// `openSCADHourlyResetMinimumLead` ahead, which a per-minute limiter's never is; without that evidence the cap stays,
+/// so the shared limiter's 100 a minute is never mistaken for 100 an hour.
+func openSCADLimitToFollow(limit: Int?, reset: Date?, current: Int, now: Date) -> Int? {
     guard let limit, (1...OpenSCADQuota.maximumGenerationsPerHour).contains(limit) else { return nil }
+    if limit <= current { return limit }
+    guard let reset, reset.timeIntervalSince(now) > openSCADHourlyResetMinimumLead else { return nil }
     return limit
 }
 
@@ -1036,7 +1045,7 @@ extension StudioStore {
                 defer { session.quota.finish() }
                 let response = try await client.request("POST", path: "/files/openScad", body: ["scadCode": source])
                 // The reply's own hourly limit sets Plinth's cap (never the shared per-minute figure: see above).
-                session.quota.noteSlantLimit(rateLimitInfo(from: response.headers).limit)
+                session.quota.noteSlantLimit(rateLimitInfo(from: response.headers), now: Date())
                 bytes = response.data
             } catch {
                 failure = error

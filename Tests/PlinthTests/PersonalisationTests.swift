@@ -196,17 +196,24 @@ final class PersonalisationTests: XCTestCase {
     func testTheCapStartsAtFiveAndFollowsTheLimitSlantsReplyStates() {
         var quota = OpenSCADQuota()
         let start = Date(timeIntervalSince1970: 1_000_000)
+        let hourly = start.addingTimeInterval(3_000)   // a reset 50 minutes ahead: an hourly window
+        func reply(_ limit: Int?, reset: Date? = nil) -> RateLimitInfo { RateLimitInfo(limit: limit, reset: reset) }
         XCTAssertEqual(quota.generationsPerHour, 5, "until Slant's own reply says otherwise")
         // Figures Plinth won't follow leave the cap alone: none, zero, negative, or above the spec's 100.
         for ignored in [nil, 0, -1, 101, 6_000] as [Int?] {
-            quota.noteSlantLimit(ignored)
+            quota.noteSlantLimit(reply(ignored, reset: hourly), now: start)
             XCTAssertEqual(quota.generationsPerHour, 5)
-            XCTAssertNil(openSCADLimitToFollow(ignored))
+            XCTAssertNil(openSCADLimitToFollow(limit: ignored, reset: hourly, current: 5, now: start))
+        }
+        // 100 without evidence of an hourly window could be the shared per-minute limiter: the cap stays.
+        for reset in [nil, start.addingTimeInterval(-5), start.addingTimeInterval(45), start.addingTimeInterval(120)] as [Date?] {
+            quota.noteSlantLimit(reply(100, reset: reset), now: start)
+            XCTAssertEqual(quota.generationsPerHour, 5, "reset \(String(describing: reset))")
         }
         XCTAssertTrue(quota.begin(now: start))
         quota.finish()
-        // Slant's reply states 100 an hour: the cap follows it, and what was already sent still counts.
-        quota.noteSlantLimit(100)
+        // Slant's reply states 100 with a reset well past a minute: the cap follows it, and what was sent still counts.
+        quota.noteSlantLimit(reply(100, reset: hourly), now: start)
         XCTAssertEqual(quota.generationsPerHour, 100)
         XCTAssertEqual(quota.remaining(now: start), 99)
         for second in 1...5 {
@@ -214,20 +221,52 @@ final class PersonalisationTests: XCTestCase {
             quota.finish()
         }
         XCTAssertEqual(quota.remaining(now: start.addingTimeInterval(6)), 94)
-        // A lower figure is followed too, at once: six were sent, so the third-from-last must age out first.
-        quota.noteSlantLimit(3)
+        // A lower figure is followed at once, with or without a reset: six were sent, so the fourth must age out first.
+        quota.noteSlantLimit(reply(3), now: start)
         let now = start.addingTimeInterval(10)
+        XCTAssertEqual(quota.generationsPerHour, 3)
         XCTAssertEqual(quota.remaining(now: now), 0)
         XCTAssertFalse(quota.begin(now: now))
         XCTAssertEqual(quota.nextAvailable(now: now), start.addingTimeInterval(3 + 3600))
         XCTAssertEqual(quota.blockedReason(now: now)?.hasPrefix("Plinth has sent 6 generations to Slant in the last hour."), true)
         XCTAssertNil(quota.blockedReason(now: start.addingTimeInterval(3 + 3601)))
+        // The edges of what is followed: 1 and 100 are, and the same figure again changes nothing.
+        XCTAssertEqual(openSCADLimitToFollow(limit: 1, reset: nil, current: 5, now: start), 1)
+        XCTAssertEqual(openSCADLimitToFollow(limit: 5, reset: nil, current: 5, now: start), 5)
+        XCTAssertEqual(openSCADLimitToFollow(limit: 100, reset: start.addingTimeInterval(121), current: 5, now: start), 100)
+        XCTAssertNil(openSCADLimitToFollow(limit: 6, reset: nil, current: 5, now: start))
+        // At exactly the cap after a raise, the next slot opens when the oldest send ages out.
+        var raised = OpenSCADQuota()
+        raised.noteSlantLimit(reply(7, reset: hourly), now: start)
+        for second in 0..<7 {
+            XCTAssertTrue(raised.begin(now: start.addingTimeInterval(Double(second))))
+            raised.finish()
+        }
+        XCTAssertFalse(raised.begin(now: start.addingTimeInterval(8)))
+        XCTAssertEqual(raised.nextAvailable(now: start.addingTimeInterval(8)), start.addingTimeInterval(3600))
         // One in flight at a time, whatever the cap.
-        quota.noteSlantLimit(100)
+        quota.noteSlantLimit(reply(100, reset: now.addingTimeInterval(3_000)), now: now)
         XCTAssertTrue(quota.begin(now: now))
         XCTAssertFalse(quota.begin(now: now))
         // A new session starts at five again: nothing about the limit is saved.
         XCTAssertEqual(OpenSCADQuota().generationsPerHour, 5)
+    }
+
+    func testTheReplyHeadersThatSetTheCapAreReadAsSlantSendsThem() {
+        // Epoch milliseconds, any header case, as Slant sends them.
+        let now = Date(timeIntervalSince1970: 1_794_000_000)
+        let resetMS = String(Int((now.timeIntervalSince1970 + 3_000) * 1000))
+        var quota = OpenSCADQuota()
+        quota.noteSlantLimit(rateLimitInfo(from: ["x-ratelimit-limit": "100", "X-RateLimit-Reset": resetMS], now: now), now: now)
+        XCTAssertEqual(quota.generationsPerHour, 100)
+        // The shared limiter's shape (100, reset within the minute) is never taken for an hourly limit.
+        var shared = OpenSCADQuota()
+        let soon = String(Int((now.timeIntervalSince1970 + 60) * 1000))
+        shared.noteSlantLimit(rateLimitInfo(from: ["X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "99", "X-RateLimit-Reset": soon], now: now), now: now)
+        XCTAssertEqual(shared.generationsPerHour, 5)
+        // No headers at all: nothing changes.
+        shared.noteSlantLimit(rateLimitInfo(from: [:], now: now), now: now)
+        XCTAssertEqual(shared.generationsPerHour, 5)
     }
 
     func testQuotaCountsFivePerHourOneInFlight() {

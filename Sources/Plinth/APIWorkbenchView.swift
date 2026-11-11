@@ -589,7 +589,7 @@ struct EndpointView: View {
                 }
                 wrote = true
                 // As Personalise: the reply's own hourly limit sets Plinth's OpenSCAD cap.
-                if isOpenSCAD { openSCAD.quota.noteSlantLimit(rateLimitInfo(from: response.headers).limit) }
+                if isOpenSCAD { openSCAD.quota.noteSlantLimit(rateLimitInfo(from: response.headers), now: Date()) }
                 guard !Task.isCancelled else { return }
                 responseData = response.data; responseStatus = response.statusCode
                 if isOpenSCAD {
