@@ -568,13 +568,13 @@ struct ShopifyTrackingSheet: View {
         let count = readyIDs.count
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Send tracking to Shopify").font(.title2.bold())
+                Text("Send tracking to Shopify").font(.title2.weight(.bold))
                 Text("Adds Slant’s tracking to each Shopify order in \(shop) and marks the items Slant made as fulfilled; anything else in the order stays unfulfilled. Plinth checks each order first and skips any that Shopify already shows as fulfilled or with this tracking.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             List(candidates) { row($0) }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
+                .listStyle(.inset(alternatesRowBackgrounds: false))
                 .frame(minHeight: 220)
             Toggle("Email customers their shipping details", isOn: $notifyCustomer)
                 .disabled(runner.running)
@@ -592,7 +592,10 @@ struct ShopifyTrackingSheet: View {
             if let message = runner.message {
                 Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
+            // Sheet footers: this sheet sends to Shopify, so Close sits at the leading edge, apart from Send Tracking.
             HStack {
+                Button(runner.running ? "Close and Stop" : "Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 if runner.running {
                     ProgressView().controlSize(.small)
                     Text(runner.checking ? "Checking orders in Shopify…" : "Sending…").font(.callout)
@@ -605,8 +608,6 @@ struct ShopifyTrackingSheet: View {
                         .disabled(connection.busy || !shopMatches)
                         .help("Read these orders from Shopify again. Nothing is sent.")
                 }
-                Button(runner.running ? "Close and Stop" : "Close") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 // No default-action shortcut: sending always takes a click and the confirmation.
                 Button(count == 1 ? "Send Tracking for 1 Order…" : "Send Tracking for \(count) Orders…") { confirmSend = true }
                     .buttonStyle(.borderedProminent)

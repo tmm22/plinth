@@ -1045,15 +1045,8 @@ struct SpendingReportSheet: View {
                 }
             }
             Divider()
+            // Sheet footers: a report, so Close sits just before Export CSV…; Copy as Text leads.
             HStack {
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                if let exportError {
-                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).lineLimit(2)
-                } else if copied {
-                    Text("Copied").font(.callout).foregroundStyle(.secondary)
-                }
                 Button("Copy as Text") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(spendReportText(report, notes: notes, source: source)
@@ -1062,6 +1055,14 @@ struct SpendingReportSheet: View {
                     copied = true
                 }
                 .disabled(report.countedOrders == 0)
+                Spacer()
+                if let exportError {
+                    Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).lineLimit(2)
+                } else if copied {
+                    Text("Copied").font(.callout).foregroundStyle(.secondary)
+                }
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Export CSV…") { exportCSV(report, reprints: reprints) }
                     .disabled(report.countedOrders == 0)
             }

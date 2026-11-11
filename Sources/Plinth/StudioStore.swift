@@ -80,7 +80,7 @@ func orderListChangedWhilePaging(firstCount: Int?, latestCount: Int?) -> Bool {
     guard let firstCount, let latestCount else { return false }
     return firstCount != latestCount
 }
-let orderListChangedWhileLoadingNote = "Orders changed on Slant while loading. Reload to see them all."
+let orderListChangedWhileLoadingNote = "Orders changed on Slant while loading. Refresh to see them all."
 
 struct LocalModel: Codable, Identifiable {
     var id = UUID()
@@ -492,7 +492,7 @@ func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStat
     }
 }
 /// Shared copy when pay/cancel was sent but the order status hasn’t been reloaded yet.
-let unknownOutcomeBlockMessage = "This order’s last payment or cancel request didn’t confirm. Reload the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
+let unknownOutcomeBlockMessage = "This order’s last payment or cancel request didn’t confirm. Refresh the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
 /// A cancel lock kept although the order moved on: it was sent while the order was being made and the order has
 /// shipped since, which doesn't show whether the refund was made (`outcomeResolved`). Reloading can't lift it.
 let unknownOutcomeShippedSinceCancelMessage = "Slant didn’t confirm your cancel and refund request, and the order has shipped since, which doesn’t show whether the refund was made. Check this order in your Slant dashboard. Plinth won’t send another cancel, or pay drafts in a batch, until Slant shows the order cancelled or you quit and reopen Plinth."
@@ -675,6 +675,13 @@ func orderSearchQueryItems(_ typed: String, platformID: String) -> [String: Stri
     let platform = platformID.trimmingCharacters(in: .whitespacesAndNewlines)
     if !platform.isEmpty { query["platformId"] = platform }
     return query
+}
+/// What Return's order-number lookup does with the rows that match: a found order replaces the list as the search
+/// result; none keeps the loaded list and its typed filter, so the seller never loses matches they could already see
+/// (a customer's name that matched loaded orders isn't an order number, and Slant finds nothing for it).
+enum OrderSearchLookupOutcome: Equatable { case showFound, keepLoadedList }
+func orderSearchLookupOutcome(matchCount: Int) -> OrderSearchLookupOutcome {
+    matchCount > 0 ? .showFound : .keepLoadedList
 }
 /// Only rows whose order number is the one looked up (ignoring case), so a reply that ignored `publicId` (the newest
 /// orders) is never shown as search results.
@@ -870,6 +877,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Bumped by File › Export Orders…; the Orders screen exports the rows its list shows (after search and sort).
     @Published var ordersExportRequest = 0
     @Published private(set) var orderSearchActive = false
+    /// The typed text whose Return lookup Slant answered with no such order (`orderSearchLookupOutcome`): the loaded
+    /// list and its typed filter stay, and the note under the list says so. Cleared by the next search, reload or filter.
+    @Published private(set) var orderSearchNotFound: String?
     @Published private(set) var fileSearchActive = false
     @Published var orderFilter = OrderFilter()
     @Published var selectedEndpointID: String?
@@ -1331,7 +1341,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         uploadNameCheckRateLimitedUntil = nil
         fileID = ""; filamentID = ""
         accountLoaded = false; filesLoaded = false; ordersLoaded = false; loadedCatalogs = []
-        orderSearchActive = false; fileSearchActive = false
+        orderSearchActive = false; fileSearchActive = false; orderSearchNotFound = nil
         filePage = 0; orderPage = 0; filesHasMore = false; ordersHasMore = false
         ordersChangedWhileLoading = false; ordersFirstPageCount = nil
         lastDelivery = nil; pendingOrderPrefill = nil; orderFilter = OrderFilter()
@@ -1498,6 +1508,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             ordersLoaded = true
             noteOrderListFirstPage(ordersResponse, rawCount: orderRecords.count)
             orderSearchActive = false; fileSearchActive = false
+            orderSearchNotFound = nil
             filesLoaded = true; ordersLoaded = true; accountLoaded = true
             loadedCatalogs.formUnion([.materials, .platforms])
             connected = true
@@ -1518,9 +1529,16 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             filesHasMore = listHasMorePages(pagination: responsePagination(response), recordCount: more.count, currentPage: next, pageSize: listPageSize)
         }
     }
+    /// The seller changed the typed search: a "no order with that number" note about other text goes.
+    func noteOrderSearchEdited(_ text: String) {
+        guard let notFound = orderSearchNotFound,
+              notFound != text.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        orderSearchNotFound = nil
+    }
     func searchOrders(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
+            orderSearchNotFound = nil
             let cleared = clearedOrderSearchState()
             orderSearchActive = cleared.orderSearchActive
             orders = cleared.orders
@@ -1540,7 +1558,15 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let response = try await client.request("GET", path: "/orders", query: orderSearchQueryItems(trimmed, platformID: platformID))
             noteRateLimit(from: response)
             SlantAPIWatch.shared.noteOrderList(response, firstPage: false)
-            orders = orderSearchMatchingRecords(responseRecords(response), typed: trimmed)
+            let matches = orderSearchMatchingRecords(responseRecords(response), typed: trimmed)
+            // No order with that number: keep the loaded list (and the typed filter over it), so a name that matched
+            // loaded orders never empties the list. Only a found order replaces it.
+            guard orderSearchLookupOutcome(matchCount: matches.count) == .showFound else {
+                orderSearchNotFound = trimmed
+                return
+            }
+            orderSearchNotFound = nil
+            orders = matches
             orderSearchActive = true
             orderPage = 1
             ordersHasMore = false
@@ -1560,6 +1586,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         _ = await run("Filter orders", retryable: true, retry: .applyOrderFilter) {
             orderFilter = filter
             orderSearchActive = false
+            orderSearchNotFound = nil
             let query = orderFilterQueryItems(filter, page: 1, limit: listPageSize, platformID: platformID)
             let response = try await client.request("GET", path: "/orders", query: query)
             noteRateLimit(from: response)

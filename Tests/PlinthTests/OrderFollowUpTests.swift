@@ -313,8 +313,14 @@ final class OrderFollowUpTests: XCTestCase {
     func testAttentionCopy() {
         XCTAssertTrue(orderAttentionFilterHint(moreOnServer: true).hasSuffix("Load more to check older orders."))
         XCTAssertFalse(orderAttentionFilterHint(moreOnServer: false).contains("Load more"))
-        XCTAssertEqual(orderAttentionEmptyDetail(filterActive: false), "None of the loaded orders need attention.")
-        XCTAssertEqual(orderAttentionEmptyDetail(filterActive: true, search: " bracket "),
-                       "None of the loaded orders with the chosen status or dates matching “bracket” need attention.")
+        XCTAssertEqual(orderAttentionEmptyDetail(), "None of the loaded orders need attention.")
+        XCTAssertEqual(orderAttentionEmptyDetail(datesFiltered: true, search: " bracket "),
+                       "None of the loaded orders from the chosen dates matching “bracket” need attention.")
+        // Names the actual status, and the dates only when they are set.
+        XCTAssertEqual(orderAttentionEmptyDetail(statusFilter: "SUBMITTED"), "None of the loaded Submitted orders need attention.")
+        XCTAssertEqual(orderAttentionEmptyDetail(statusFilter: "DRAFT", datesFiltered: true),
+                       "None of the loaded Draft orders from the chosen dates need attention.")
+        XCTAssertEqual(orderAttentionEmptyDetail(statusFilter: "  "), "None of the loaded orders need attention.")
+        XCTAssertFalse(orderAttentionEmptyDetail(statusFilter: "SHIPPED").contains("dates"))
     }
 }

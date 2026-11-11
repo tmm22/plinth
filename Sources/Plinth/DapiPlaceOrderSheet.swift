@@ -78,7 +78,9 @@ struct DapiPlaceOrderSheet: View {
                 .keyboardShortcut(.defaultAction)
         } message: {
             // Only the attempts that may be this order (`dapiPlaceNeedsPlaceAnyway`); the notices list every one.
-            Text(dapiPlaceAnywayMessage(runner.placeAnywayAttempts))
+            // It points to Orders, whose notice lists every unconfirmed attempt: the button's title follows that count.
+            Text(dapiNamingLookForButton(dapiPlaceAnywayMessage(runner.placeAnywayAttempts),
+                                         count: session.unconfirmedOrders.count))
         }
         .onAppear {
             if !registered {

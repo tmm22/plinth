@@ -106,13 +106,13 @@ func orderShippingOptions(provider: String) -> [String: Any] {
 }
 
 func orderMetadataDictionary(_ fields: [OrderMetadataField]) throws -> [String: Any] {
-    guard fields.count <= 10 else { throw StudioError("Add up to 10 reference fields (metadata).") }
+    guard fields.count <= 10 else { throw StudioError("Add up to 10 reference fields.") }
     var result: [String: Any] = [:]
     var seen = Set<String>()
     for field in fields {
         let key = field.key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { throw StudioError("Give every reference field (metadata) a key.") }
-        guard !seen.contains(key) else { throw StudioError("Each reference field (metadata) needs a different key.") }
+        guard !key.isEmpty else { throw StudioError("Give every reference field a name.") }
+        guard !seen.contains(key) else { throw StudioError("Each reference field needs a different name.") }
         seen.insert(key)
         result[key] = field.value
     }
@@ -216,6 +216,9 @@ struct OrderComposerView: View {
     @State private var catalogLoadError: String?
     /// Check Slant's last result for unconfirmed drafts (DraftConfirmation.swift).
     @State private var draftCheckOutcome: DraftCreateCheckOutcome?
+    /// Each line's quantity as typed (`orderQuantityFromText`), so a number can be typed or dictated; the line's
+    /// `quantity` changes only to a valid value, and Create Draft waits while any typed quantity isn't one.
+    @State private var quantityTexts: [UUID: String] = [:]
 
     var composerPopoverShown: Bool { showAddressPaste || showAddSavedProduct }
     var hasUnsavedInput: Bool {
@@ -244,6 +247,9 @@ struct OrderComposerView: View {
         if orderLinesUseUnavailableMaterial(lines, filaments: store.filaments) {
             return "Choose an in-stock material for every 3D print item."
         }
+        if orderQuantityTextsHaveProblem(quantityTexts, lineIDs: lines.map(\.id)) {
+            return "Enter a whole number from 1 to 10,000 for every quantity."
+        }
         return nil
     }
     var deliverySummary: String {
@@ -260,7 +266,7 @@ struct OrderComposerView: View {
         VStack(spacing: 0) {
             // A sheet shows no window title, so the form carries its own heading.
             Text(orderComposerHeading(sourceOrderNumber: sourceOrderNumber, isReprint: reprintOf != nil))
-                .font(.title2.weight(.semibold))
+                .font(.title2.weight(.bold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top], 16)
             // A reprint says which order it reprints and whether the link goes with the draft (DraftConfirmation.swift).
@@ -313,9 +319,11 @@ struct OrderComposerView: View {
             if composerPopoverShown { showAddressPaste = false; showAddSavedProduct = false }
             else if !store.busy { requestClose(fromCancelButton: true) }
         }
-        .confirmationDialog("Discard this order draft?", isPresented: $confirmDiscard) {
+        .confirmationDialog("Discard this order draft?", isPresented: $confirmDiscard, titleVisibility: .visible) {
             Button("Discard Draft", role: .destructive) { dismiss() }
+            // Return keeps editing: discarding takes a click.
             Button("Keep Editing", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text(orderComposerDiscardMessage(outcomeUnknown: store.draftCreateOutcomeUnknown))
         }
@@ -401,6 +409,7 @@ struct OrderComposerView: View {
                             showAddSavedProduct = false
                         }
                         .environmentObject(store)
+                        .tint(.studioAccent)
                     }
             }
             Section {
@@ -438,7 +447,6 @@ struct OrderComposerView: View {
                         } label: {
                             Label("Use My Address", systemImage: "house")
                         }
-                        .controlSize(.small)
                         .disabled(store.busy)
                         .help("Fill in your own address from Settings › Account, for a sample sent to you")
                     }
@@ -451,7 +459,6 @@ struct OrderComposerView: View {
                     } label: {
                         Label("Paste Address…", systemImage: "doc.on.clipboard")
                     }
-                    .controlSize(.small)
                     .disabled(store.busy)
                     .help("Fill in an address copied from Etsy, Shopify or an email, after you check it")
                     .popover(isPresented: $showAddressPaste, arrowEdge: .bottom) {
@@ -468,6 +475,7 @@ struct OrderComposerView: View {
                             popoverClosedAt = Date()
                             showAddressPaste = false
                         })
+                        .tint(.studioAccent)
                     }
                     // Location is only requested when this is pressed; manual entry stays available.
                     Button {
@@ -477,7 +485,6 @@ struct OrderComposerView: View {
                     } label: {
                         Label("Use Current Location", systemImage: "location")
                     }
-                    .controlSize(.small)
                     .disabled(locationLookup.isBusy || store.busy)
                     .help("Suggest an address from your Mac’s location, for you to check before using it")
                 }
@@ -502,12 +509,15 @@ struct OrderComposerView: View {
                             Text("Owner ID \(ownerID) is sent with this draft. Change it in Settings › Advanced.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        Text("Reference fields (metadata)").padding(.top, 4)
+                        Text("Reference fields").padding(.top, 4)
+                        Text("Your own notes saved with the order on Slant, such as a shop order number. Each has a name and a value.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text("Optional notes saved with the order, such as your shop’s order number. Up to 10.")
                             .font(.caption).foregroundStyle(.secondary)
                         ForEach($metadataFields) { $field in
                             HStack {
-                                TextField("Key", text: $field.key)
+                                TextField("Name", text: $field.key)
                                 TextField("Value", text: $field.value)
                                 Button(role: .destructive) { metadataFields.removeAll { $0.id == field.id } } label: { Image(systemName: "minus.circle") }
                                     .accessibilityLabel("Remove reference field").help("Remove reference field")
@@ -613,6 +623,17 @@ struct OrderComposerView: View {
         }
     }
 
+    /// What VoiceOver and Voice Control call a line: its chosen model, component or stationery, else its type.
+    func orderLineAccessibilityName(_ line: OrderLine) -> String {
+        let records = line.type == "PRINT" ? store.files : line.type == "COMPONENT" ? store.components : store.stationery
+        let chosen = records.first { $0.id == line.reference }.map { displayName(for: $0, fallback: "") }
+            ?? (line.type == "PRINT" ? store.localModels.first { $0.remoteID == line.reference }?.name : nil)
+        if let chosen, !chosen.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return chosen }
+        let name = line.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        return line.type == "PRINT" ? "3D print item" : line.type == "COMPONENT" ? "component" : "stationery item"
+    }
+
     @ViewBuilder
     func orderItemEditor(_ item: Binding<OrderLine>) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -630,22 +651,42 @@ struct OrderComposerView: View {
                 )) {
                     Text("3D print").tag("PRINT"); Text("Component").tag("COMPONENT"); Text("Stationery").tag("STATIONERY")
                 }.frame(width: 210)
-                // Text plus a label-less stepper: in a grouped Form a labelled Stepper is drawn as a form row, which put
-                // the arrows at the far edge away from the number.
+                // A field to type or dictate the number, plus a label-less stepper (in a grouped Form a labelled
+                // Stepper is drawn as a form row, which put the arrows at the far edge away from the number), as in
+                // the 3DAPI composer. Both are named for the item.
+                let lineName = orderLineAccessibilityName(item.wrappedValue)
+                let lineID = item.wrappedValue.id
                 HStack(spacing: 4) {
-                    Text("Quantity: \(item.wrappedValue.quantity)").monospacedDigit()
-                    Stepper("Quantity", value: item.quantity, in: 1...10000)
+                    Text("Quantity:")
+                    TextField("Quantity", text: Binding(
+                        get: { quantityTexts[lineID] ?? String(item.wrappedValue.quantity) },
+                        set: { text in
+                            quantityTexts[lineID] = text
+                            if let value = orderQuantityFromText(text) { item.wrappedValue.quantity = value }
+                        }))
                         .labelsHidden()
+                        .monospacedDigit()
+                        .frame(width: 64)
+                        .accessibilityLabel("Quantity for \(lineName)")
+                    Stepper("Quantity", value: Binding(
+                        get: { item.wrappedValue.quantity },
+                        set: { item.wrappedValue.quantity = $0; quantityTexts[lineID] = nil }), in: 1...10000)
+                        .labelsHidden()
+                        .accessibilityLabel("Quantity for \(lineName)")
                         .accessibilityValue("\(item.wrappedValue.quantity)")
                 }
                 .fixedSize()
-                Spacer(minLength: 0)
-                Button(role: .destructive) { lines.removeAll { $0.id == item.wrappedValue.id } } label: { Image(systemName: "minus.circle") }
-                    .accessibilityLabel("Remove item")
-                    .help(lines.count < 2 ? "An order needs at least one item." : "Remove item")
+                Spacer(minLength: 16)
+                Button(role: .destructive) { lines.removeAll { $0.id == lineID } } label: { Image(systemName: "minus.circle") }
+                    .accessibilityLabel("Remove \(lineName)")
+                    .help(lines.count < 2 ? "An order needs at least one item." : "Remove this item")
                     .disabled(lines.count < 2)
             }
-            if let warning = largeQuantityNotice(item.wrappedValue.quantity) {
+            if let typed = quantityTexts[item.wrappedValue.id], orderQuantityFromText(typed) == nil {
+                Label("Enter a whole number from 1 to 10,000.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            } else if let warning = largeQuantityNotice(item.wrappedValue.quantity) {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
@@ -687,7 +728,6 @@ struct OrderComposerView: View {
                             .lineLimit(4)
                     }
                     Button("Remove Options") { item.wrappedValue = orderLineRemovingOptions(item.wrappedValue) }
-                        .controlSize(.small)
                         .help("Send this item without the copied options")
                 }
             }
@@ -1102,9 +1142,16 @@ struct OrdersView: View {
     var listRecords: [Record] { listRecords(from: store.ordersShownInList) }
     func listRecords(from orders: [Record]) -> [Record] {
         if let focused = orderWatchFocusedRecords(orders, focus: watchFocus) { return focused }
-        if store.orderSearchActive { return attentionFiltered(orders) }
+        // A found order is shown whatever was typed; after a lookup that found nothing, the typed text filters
+        // whatever is loaded (a previous search's result included), so the list never claims Slant found it.
+        if store.orderSearchActive, !orderSearchIsNotFound { return attentionFiltered(orders) }
         let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
         return attentionFiltered(orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) })
+    }
+    /// Return's lookup found no order with the text in the box (`store.orderSearchNotFound`).
+    var orderSearchIsNotFound: Bool {
+        guard let notFound = store.orderSearchNotFound else { return false }
+        return notFound == search.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     /// Needs Attention never counts a hidden draft, even while Show Hidden Drafts lists them.
     func attentionFiltered(_ orders: [Record]) -> [Record] {
@@ -1185,16 +1232,17 @@ struct OrdersView: View {
                             }
                         }
                     }
-                    // Flexible widths whose minimums add up to about the pane's 360 pt minimum, so the table scrolls
-                    // sideways only at the narrowest window; the recipient gets the most room, the order number
-                    // (also in the detail) the least, and Created always fits a full "23 Oct 2026".
-                    .width(min: 96, ideal: 160)
+                    // Status, Created, Total and the order number have minimums that fit their content ("Submitted"
+                    // with the attention marker, "23 Oct 2026", "$12,345.67", a full 19-character order number), so
+                    // they are never cut off; the recipient (free text, with a tooltip) gives way first. Their
+                    // minimums pass the 360 pt pane, so only the narrowest windows scroll sideways.
+                    .width(min: 64, ideal: 160)
                     TableColumn("Status", value: \.status) { (row: OrderTableRow) in
                         // With the Needs Attention marker when the order is late or stuck (OrderFollowUp.swift), and
                         // a hover hint when the status shown comes from Slant's shipping record.
                         OrderStatusCell(status: row.status, attention: row.attention, note: row.statusNote)
                     }
-                    .width(min: 64, ideal: 112, max: 160)
+                    .width(min: 100, ideal: 112, max: 160)
                     TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
                         Text(row.created.isEmpty ? "—" : row.created).lineLimit(1)
                     }
@@ -1211,11 +1259,12 @@ struct OrdersView: View {
                     TableColumn("Total", value: \.totalSortKey) { (row: OrderTableRow) in
                         Text(row.total).monospacedDigit().lineLimit(1)
                     }
-                    .width(min: 52, ideal: 68, max: 110)
+                    .width(min: 84, ideal: 88, max: 120)
                     TableColumn("Order number", value: \.number) { (row: OrderTableRow) in
-                        Text(row.number).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(row.number)
+                        Text(row.number).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                            .truncationMode(.middle).help(row.number)
                     }
-                    .width(min: 60, ideal: 100)
+                    .width(min: 164, ideal: 168)
                 }
                 .contextMenu(forSelectionType: String.self) { ids in
                     if ids.count == 1, let id = ids.first, let record = store.orders.first(where: { $0.id == id }) {
@@ -1245,6 +1294,8 @@ struct OrdersView: View {
                                                   datesFiltered: store.orderFilter.startDate != nil || store.orderFilter.endDate != nil,
                                                   searchActive: store.orderSearchActive))
                         .font(.caption).foregroundStyle(.secondary)
+                        // Its full height, so the last sentence isn't clipped at small window heights.
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.top, 6)
@@ -1269,7 +1320,6 @@ struct OrdersView: View {
                             .help(orderNotShownHelp(hiddenDrafts: hiddenDraftsCount, otherPlatforms: otherPlatformsHiddenCount))
                         if hiddenDraftsCount > 0 {
                             Button("Show") { store.showHiddenDrafts = true }
-                                .controlSize(.small)
                                 .accessibilityLabel("Show hidden drafts")
                                 .help("List the drafts hidden on this Mac (Show Hidden Drafts in the Status menu)")
                         }
@@ -1278,9 +1328,10 @@ struct OrdersView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 6)
                 }
-                if let hint = orderSearchHint(typed: search, searchActive: store.orderSearchActive) {
+                if let hint = orderSearchHint(typed: search, searchActive: store.orderSearchActive, notFound: store.orderSearchNotFound) {
                     Text(hint)
                         .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 6)
@@ -1292,8 +1343,7 @@ struct OrdersView: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
-                        Button("Reload") { Task { await store.applyOrderFilter(store.orderFilter) } }
-                            .controlSize(.small)
+                        Button("Refresh") { Task { await store.applyOrderFilter(store.orderFilter) } }
                             .disabled(!store.hasKey || store.busy)
                     }
                     .padding(.horizontal, 16)
@@ -1322,6 +1372,7 @@ struct OrdersView: View {
         .searchable(text: $search, prompt: "Search orders")
         .onSubmit(of: .search) { Task { await store.searchOrders(search) } }
         .onChange(of: search) { _, new in
+            store.noteOrderSearchEdited(new)
             if new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, store.orderSearchActive {
                 Task { await store.searchOrders("") }
             }
@@ -1337,6 +1388,13 @@ struct OrdersView: View {
                 Button("New Order Draft…") { store.openOrderComposer() }
                     .disabled(store.orderDraftBlockedReason != nil || store.busy)
                     .help(store.orderDraftBlockedReason ?? "Create an order draft")
+            }
+            // Why Import Orders… is unavailable, when the New Order Draft… caption beside it doesn't already say so.
+            if let caption = orderImportToolbarCaption(importReason: store.orderImportBlockedReason,
+                                                       draftReason: store.orderDraftBlockedReason) {
+                ToolbarItem(placement: .automatic) {
+                    Text(caption).font(.caption).foregroundStyle(.secondary)
+                }
             }
             ToolbarItem(placement: .automatic) {
                 // Opens the import sheet only; drafts are created there after an explicit confirmation.
@@ -1391,7 +1449,8 @@ struct OrdersView: View {
                 }
                 .help("Date range and Newest/Oldest order")
                 .popover(isPresented: $filtersPresented, arrowEdge: .bottom) {
-                    filtersPopover
+                    // Popovers don't inherit the window's tint: without this, Apply is system blue.
+                    filtersPopover.tint(.studioAccent)
                 }
             }
             ToolbarItem(placement: .automatic) {
@@ -1743,7 +1802,12 @@ struct OrdersView: View {
             ContentUnavailableView {
                 Label("Nothing needs attention", systemImage: "checkmark.circle")
             } description: {
-                Text(orderAttentionEmptyDetail(filterActive: store.orderFilter.isActive, search: query))
+                // With the list's "Not shown" line, which the empty state would otherwise hide.
+                Text([orderAttentionEmptyDetail(statusFilter: store.orderFilter.status,
+                                                datesFiltered: store.orderFilter.startDate != nil || store.orderFilter.endDate != nil,
+                                                search: query),
+                      orderNotShownLine(hiddenDrafts: hiddenDraftsCount, otherPlatforms: otherPlatformsHiddenCount).map { $0 + "." }]
+                    .compactMap { $0 }.joined(separator: " "))
             } actions: {
                 Button("Show All Orders") {
                     needsAttentionOnly = false
@@ -1754,7 +1818,16 @@ struct OrdersView: View {
                 .disabled(store.busy && store.orderFilter.isActive)
             }
         } else if !query.isEmpty, !store.orderFilter.isActive {
-            ContentUnavailableView.search(text: query)
+            if orderSearchIsNotFound {
+                // Return's lookup found no such order, and no loaded order matches either.
+                ContentUnavailableView {
+                    Label("No Results for “\(query)”", systemImage: "magnifyingglass")
+                } description: {
+                    Text("Slant found no order numbered “\(query)”, and no loaded order matches it.")
+                }
+            } else {
+                ContentUnavailableView.search(text: query)
+            }
         } else {
             // Load More (under the list) stays available when Slant has more pages: the date filter's margin can trim
             // a whole page away, so "none" is only about the pages read so far.
@@ -1836,7 +1909,7 @@ struct OrdersView: View {
                             .help(lagNote ?? orderStatusHelp(detailStatus) ?? "")
                         Spacer()
                         Button { load(selected.id) } label: { Image(systemName: "arrow.clockwise") }
-                            .accessibilityLabel("Reload order").help("Reload order").disabled(store.busy)
+                            .accessibilityLabel("Refresh Order").help("Refresh Order: read this order from Slant again").disabled(store.busy)
                     }
                     if let lagNote = orderStatusLagNote(displayed) {
                         Text(lagNote).font(.caption).foregroundStyle(.secondary)
@@ -1863,9 +1936,9 @@ struct OrdersView: View {
                     }
                     // Actions sit under the header so placing a draft never needs scrolling; both open a review first.
                     // The destructive Cancel & Refund… comes last.
+                    let duplicateBlocked = store.duplicateOrderBlockedReason(orderID: selected.id)
                     HStack {
                         Spacer()
-                        let duplicateBlocked = store.duplicateOrderBlockedReason(orderID: selected.id)
                         Button("Duplicate as New Draft…") { Task { await store.duplicateOrderAsDraft(orderID: selected.id) } }
                             .disabled(duplicateBlocked != nil)
                             .fixedSize()
@@ -1905,6 +1978,14 @@ struct OrdersView: View {
                             .help("Review cancellation")
                         }
                     }
+                    // Why Duplicate as New Draft… is unavailable, visible as well as on hover (not for a moment's
+                    // "Working…").
+                    if let caption = orderDisabledActionCaption("Duplicate as New Draft…", reason: duplicateBlocked) {
+                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
                     if ((displayed["status"] as? String) ?? "").uppercased() == "DRAFT" {
                         Text(orderDetailDraftCaption).font(.caption).foregroundStyle(.secondary)
                         if store.isHiddenDraft(selected) {
@@ -1943,7 +2024,7 @@ struct OrdersView: View {
     @ViewBuilder
     var detailEmptyState: some View {
         if !store.ordersLoaded {
-            EmptyState(icon: "shippingbox", title: "Your orders, in one place", detail: "Load recent orders, or create a draft to calculate printing and shipping.") {
+            EmptyState(icon: "shippingbox", title: "No orders loaded", detail: "Load recent orders, or create a draft to calculate printing and shipping.") {
                 Button("Load Orders") { Task { await store.refresh() } }.disabled(!store.hasKey || store.busy)
             }
         } else if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.orderSearchActive || store.orderFilter.isActive
@@ -2036,7 +2117,7 @@ struct OrderActionConfirmSheet: View {
         reviewGate.enabled && !writing && !store.busy && !sharedOutcomeLock
     }
     var sheetTitle: String {
-        if isPay { return "Place this order?" }
+        if isPay { return orderPayReviewTitle }
         return orderCancelSheetTitle(copyStatus)
     }
     var sheetBodyCopy: String {
@@ -2142,8 +2223,7 @@ struct OrderActionConfirmSheet: View {
             }
             Spacer(minLength: 0)
             HStack {
-                // Close after a Pay Slant accepted but didn't place (nothing more to do here), Done after a placed
-                // order or a requested cancellation, Go Back before anything was done.
+                // Close once a Pay or a cancel was accepted, Go Back before anything was done.
                 Button(orderReviewDismissTitle(writeSucceeded: writeSucceeded, payNotPlaced: payNotPlaced), role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(writing)
@@ -2172,7 +2252,7 @@ struct OrderActionConfirmSheet: View {
                             context: store.unknownOutcomeContext(orderID: orderID), currentStatus: fresh?["status"] as? String) {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
-                        Button("Reload Order") { loadFresh(keepUnknownMessage: true) }
+                        Button("Refresh Order") { loadFresh(keepUnknownMessage: true) }
                             .disabled(store.busy || writing)
                     }
                 } else if isPay {
@@ -2407,7 +2487,7 @@ struct OrderActionConfirmSheet: View {
                 onCompleted(orderID, best)
             } else if payAcceptedUnconfirmed {
                 if let shownOrder = completedOrder { fresh = shownOrder; loadState = .loaded }
-                actionMessage = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Reload the order before doing anything else."
+                actionMessage = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Press Refresh Order before doing anything else."
             } else if attemptedWrite {
                 actionMessage = unknownWriteError.map { orderConfirmUnknownOutcomeMessage(isPay: isPay, error: $0) }
                     ?? orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
@@ -2497,15 +2577,19 @@ func slantUnclearReplyCause(_ error: Error) -> String {
 /// already have happened. It never suggests sending again; a reload shows what Slant did.
 func orderConfirmUnknownOutcomeMessage(isPay: Bool, error: Error) -> String {
     let outcome = isPay ? "the order may have been placed and charged" : "the cancellation may have gone through"
-    return "\(slantUnclearReplyCause(error)), so the result is unknown: \(outcome). Reload the order to see what Slant shows."
+    return "\(slantUnclearReplyCause(error)), so the result is unknown: \(outcome). Press Refresh Order to see what Slant shows."
 }
+/// The pay review's title, matching the command that opens it ("Review & Place Order…") in sentence case.
+let orderPayReviewTitle = "Review and place order"
 /// The pay/cancel review's dismiss button.
 func orderReviewDismissTitle(writeSucceeded: Bool, payNotPlaced: Bool) -> String {
+    // Close once the order was placed or the cancellation requested too: the work is saved, and Done is only for
+    // edits that apply as they're made. `payNotPlaced` no longer changes the title, only whether Review Next Draft shows.
     guard writeSucceeded else { return "Go Back" }
-    return payNotPlaced ? "Close" : "Done"
+    return "Close"
 }
 /// The single review and the Workbench refuse to act on a reply for another order.
-let orderReviewDifferentOrderMessage = "Slant returned a different order. Reload Orders and review this order again."
+let orderReviewDifferentOrderMessage = "Slant returned a different order. Refresh the list and review this order again."
 /// Activity's detail for a 2xx Pay that didn't place the order (never "Completed"): counts and statuses only.
 func orderPayActivityDetail(_ outcome: BatchPayOutcome) -> String {
     switch outcome {
@@ -2547,7 +2631,7 @@ func orderConfirmLoadStateAfterRun(succeeded: Bool, skippedBusy: Bool) -> OrderC
 func orderConfirmMutationSendAllowed(attempted: Bool, succeeded: Bool) -> (Bool, String?) {
     if succeeded { return (false, nil) }
     if attempted {
-        return (false, "The result is unknown. Reload the order before trying again.")
+        return (false, "The result is unknown. Press Refresh Order before trying again.")
     }
     return (true, nil)
 }
@@ -2791,6 +2875,25 @@ func orderStatusHelp(_ status: String) -> String? {
     case "PRINTING": "In production: printing, finishing and packing"
     default: nil
     }
+}
+/// A typed or dictated quantity for a Slant composer line: digits, optionally grouped in threes by commas or spaces
+/// ("1,000", "10 000"), with spaces around ignored; 1 to 10,000 like the stepper. Nil for anything else (0, a
+/// fraction, text, a misplaced comma), so the line keeps its last valid quantity and Create Draft waits.
+func orderQuantityFromText(_ text: String) -> Int? {
+    let separators: Set<Character> = [",", " ", "\u{00A0}", "\u{202F}"]
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.count <= 12 else { return nil }
+    if trimmed.contains(where: { separators.contains($0) }) {
+        let groups = trimmed.split(omittingEmptySubsequences: false, whereSeparator: { separators.contains($0) })
+        guard groups.count > 1, let first = groups.first, (1...3).contains(first.count),
+              groups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }
+        return printQuantity(groups.joined())
+    }
+    return printQuantity(trimmed)
+}
+/// A line whose typed quantity isn't usable blocks Create Draft (entries for removed lines don't count).
+func orderQuantityTextsHaveProblem(_ texts: [UUID: String], lineIDs: [UUID]) -> Bool {
+    lineIDs.contains { id in texts[id].map { orderQuantityFromText($0) == nil } ?? false }
 }
 func orderStatusTitle(_ status: String) -> String {
     switch status.uppercased() {
@@ -3258,6 +3361,19 @@ func orderComposerDeliverySeed(prefill: OrderComposerPrefill?, lastDelivery: Del
 }
 
 /// Why "Duplicate as New Draft" is unavailable, or nil when it can open the composer.
+/// A visible caption for a disabled action, beside its tooltip: "Duplicate as New Draft… isn’t available: …". Nil when
+/// it's available, or only waiting for a moment ("Working…", "Wait for the current task to finish.").
+func orderDisabledActionCaption(_ action: String, reason: String?) -> String? {
+    guard let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty,
+          !orderTransientBlockedReasons.contains(reason) else { return nil }
+    return "\(action) isn’t available: \(reason)"
+}
+let orderTransientBlockedReasons: Set<String> = ["Working…", "Wait for the current task to finish."]
+/// The Orders toolbar's caption for Import Orders…: only a lasting reason the New Order Draft… caption doesn't give.
+func orderImportToolbarCaption(importReason: String?, draftReason: String?) -> String? {
+    guard let importReason, importReason != draftReason else { return nil }
+    return orderDisabledActionCaption("Import Orders…", reason: importReason)
+}
 func orderDuplicateBlockedReason(draftBlockedReason: String?, composerOpen: Bool, outcomeUnknown: Bool, busy: Bool) -> String? {
     if let draftBlockedReason { return draftBlockedReason }
     if outcomeUnknown { return unknownOutcomeBlockMessage }
@@ -3454,7 +3570,6 @@ struct OrderSummary: View {
                     Text(reprint).textSelection(.enabled).lineLimit(2)
                     if let onShowOrder, let original = orderReprintOriginal(of: order, loaded: store.orders) {
                         Button("Show Original") { onShowOrder(original.id) }
-                            .controlSize(.small)
                             .help("Select order \(orderNumber(orderObject(original.values))) in the list")
                     }
                 }
@@ -3489,7 +3604,6 @@ struct OrderSummary: View {
                             // Opens the carrier's page in the browser only on this click; Plinth itself sends nothing.
                             if let url = row.trackURL, let carrier = row.trackCarrier {
                                 Button("Track Parcel") { NSWorkspace.shared.open(url) }
-                                    .controlSize(.small)
                                     .accessibilityLabel("Track parcel \(row.value) on \(carrier)’s website")
                                     .help("Open \(carrier)’s tracking page for this number in your browser")
                             }

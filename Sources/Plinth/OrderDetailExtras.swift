@@ -534,15 +534,21 @@ struct OrderProblemReportSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
             }
             Spacer(minLength: 0)
+            // Sheet footers: nothing here sends, so Close sits just before Copy Message; Reprint leads.
+            let reprintBlocked = store.duplicateOrderBlockedReason(orderID: orderID)
+            if let caption = orderDisabledActionCaption("Reprint as New Draft…", reason: orderID.isEmpty ? nil : reprintBlocked) {
+                // Visible as well as on hover: why Reprint as New Draft… can't be used now.
+                Text(caption).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
-                Button("Close", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                let reprintBlocked = store.duplicateOrderBlockedReason(orderID: orderID)
                 Button("Reprint as New Draft…") { onReprint() }
                     .disabled(reprintBlocked != nil || orderID.isEmpty)
                     .help(reprintBlocked ?? orderReprintButtonHelp(orderNumber: orderNumber(order)))
                 Spacer()
-                if copied { Text("Copied.").font(.caption).foregroundStyle(.secondary) }
+                if copied { Text("Copied").font(.caption).foregroundStyle(.secondary) }
+                Button("Close", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Copy Message") {
                     guard let message else { return }
                     copyToPasteboard(message)

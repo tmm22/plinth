@@ -282,11 +282,13 @@ func orderAttentionFilterHint(moreOnServer: Bool, statusFilter: String? = nil, d
     return text
 }
 
-/// The empty list's text while Needs Attention is on.
-func orderAttentionEmptyDetail(filterActive: Bool, search: String = "") -> String {
+/// The empty list's text while Needs Attention is on. Names only the filters in use: the status by name (as
+/// `orderAttentionFilterHint` does) and "the chosen dates" only when dates are set.
+func orderAttentionEmptyDetail(statusFilter: String? = nil, datesFiltered: Bool = false, search: String = "") -> String {
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-    var orders = "loaded orders"
-    if filterActive { orders += " with the chosen status or dates" }
+    let status = statusFilter?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    var orders = status.isEmpty ? "loaded orders" : "loaded \(orderStatusTitle(status)) orders"
+    if datesFiltered { orders += " from the chosen dates" }
     if !query.isEmpty { orders += " matching “\(query)”" }
     return "None of the \(orders) need attention."
 }
@@ -611,6 +613,12 @@ func shopFollowUpSourceText(reading: Bool, recent: RecentOrdersRead?, ordersHasM
 
 // MARK: - Sheet
 
+/// After the order title in Tracking for Your Shop: " · Ada · Shipped" (the first name only when known).
+func shopFollowUpOrderSuffix(firstName: String?, status: String) -> String {
+    let name = firstName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return (name.isEmpty ? "" : " · \(name)") + " · \(orderStatusTitle(status))"
+}
+
 struct ShopFollowUpSheet: View {
     @EnvironmentObject var store: StudioStore
     @Environment(\.dismiss) private var dismiss
@@ -637,7 +645,7 @@ struct ShopFollowUpSheet: View {
         let shopifyCount = shopifyTrackingCSVRows(listed.filter { !store.shopFollowUpDoneIDs.contains($0.id) }).count
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Tracking for your shop").font(.title2.bold())
+                Text("Tracking for your shop").font(.title2.weight(.bold))
                 Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop. Plinth remembers your marks on this Mac.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -647,7 +655,6 @@ struct ShopFollowUpSheet: View {
                     Spacer(minLength: 0)
                     if store.hasKey, !recentReading {
                         Button(recentRead == nil ? "Load Recent Orders" : "Load Again") { startRecentRead() }
-                            .controlSize(.small)
                             .disabled(store.busy)
                             .help("Read your \(recentOrdersMaxPages * recentOrdersPageSize) newest orders on Slant, every status and platform, for this sheet only. Read-only: the Orders list doesn’t change.")
                     }
@@ -753,20 +760,19 @@ struct ShopFollowUpSheet: View {
                 if ticked { store.shopFollowUpDoneIDs.insert(entry.id) } else { store.shopFollowUpDoneIDs.remove(entry.id) }
             })
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Toggle("Done in your shop", isOn: done)
+            // A visible label, so the box can be clicked on its word and spoken (Voice Control: "Done").
+            Toggle("Done", isOn: done)
                 .toggleStyle(.checkbox)
-                .labelsHidden()
-                .accessibilityLabel("Marked as done in your shop, \(shopFollowUpOrderTitle(entry))")
+                .accessibilityLabel("Done, \(shopFollowUpOrderTitle(entry))")
                 .help(shopFollowUpDoneHelp)
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(shopFollowUpOrderTitle(entry)).font(.body.weight(.medium)).textSelection(.enabled)
-                    if let name = entry.recipientFirstName {
-                        Text("· \(name)").foregroundStyle(.secondary)
-                    }
-                    Text("· \(orderStatusTitle(entry.displayStatus.isEmpty ? entry.status : entry.displayStatus))").foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
+                // One paragraph that wraps, so a long order number is shown in full rather than cut off.
+                (Text(shopFollowUpOrderTitle(entry)).fontWeight(.medium)
+                    + Text(shopFollowUpOrderSuffix(firstName: entry.recipientFirstName,
+                                                   status: entry.displayStatus.isEmpty ? entry.status : entry.displayStatus))
+                        .foregroundStyle(.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
                 Text(shopFollowUpTrackingText(entry))
                     .font(.callout.monospaced()).textSelection(.enabled).lineLimit(2)
                 if let carrier = shopFollowUpCarrierCaption(entry) {

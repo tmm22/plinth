@@ -73,7 +73,7 @@ final class OrdersRound14ReadTests: XCTestCase {
         XCTAssertFalse(orderListChangedWhilePaging(firstCount: 120, latestCount: 120))
         XCTAssertFalse(orderListChangedWhilePaging(firstCount: nil, latestCount: 3))
         XCTAssertFalse(orderListChangedWhilePaging(firstCount: 3, latestCount: nil))
-        XCTAssertTrue(orderListChangedWhileLoadingNote.contains("Reload"))
+        XCTAssertTrue(orderListChangedWhileLoadingNote.contains("Refresh"))
     }
 
     // MARK: Not found and search

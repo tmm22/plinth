@@ -173,7 +173,7 @@ func profitCheckSlantTotal(_ order: [String: Any]) -> ProfitSlantTotal {
        !currency.isEmpty, currency.uppercased() != "USD" {
         return .unavailable("Slant returned this order’s costs in \(currency), and the profit check only works in USD.")
     }
-    let unusable = ProfitSlantTotal.unavailable("Slant hasn’t returned a usable total for this order yet. Reload it after the draft is calculated.")
+    let unusable = ProfitSlantTotal.unavailable("Slant hasn’t returned a usable total for this order yet. Refresh it after the draft is calculated.")
     func present(_ key: String) -> Bool { order[key] != nil && !(order[key] is NSNull) }
     let total: Decimal?
     if present("total") {
@@ -182,7 +182,7 @@ func profitCheckSlantTotal(_ order: [String: Any]) -> ProfitSlantTotal {
         total = estimateAmount(order["totalCost"])
     } else if present("printingCost") || present("deliveryCost") {
         guard let print = estimateAmount(order["printingCost"]), let delivery = estimateAmount(order["deliveryCost"]) else {
-            return .unavailable("Slant returned only part of this order’s cost, so the total isn’t known yet. Reload the order.")
+            return .unavailable("Slant returned only part of this order’s cost, so the total isn’t known yet. Refresh the order.")
         }
         total = print + delivery
     } else {
@@ -612,7 +612,7 @@ struct ProfitCheckPanel: View {
                     if showsListingFee { rateField(.listingFeePerItem, "Listing fee ($ per unit sold)") }
                     if preset.offersOffsiteAds { rateField(.offsiteAdsPercent, "Offsite Ads fee (%, max $100)") }
                     if preset != .custom, currentRates != preset.defaultRates || rateTexts.values.contains(where: { $0.isEmpty }) {
-                        Button("Restore \(preset.title) Rates") { restoreDefaults() }.controlSize(.small)
+                        Button("Restore \(preset.title) Rates") { restoreDefaults() }
                     }
                 }
                 .padding(.top, 4)
@@ -782,7 +782,7 @@ struct ProfitFeeRatesEditor: View {
                         if preset != .shopifyBasicUS { rateField(.listingFeePerItem, "Listing fee ($ per unit sold)") }
                         if preset.offersOffsiteAds { rateField(.offsiteAdsPercent, "Offsite Ads fee (%, max $100)") }
                         if preset != .custom, currentRates != preset.defaultRates || rateTexts.values.contains(where: { $0.isEmpty }) {
-                            Button("Restore \(preset.title) Rates") { restoreDefaults() }.controlSize(.small)
+                            Button("Restore \(preset.title) Rates") { restoreDefaults() }
                         }
                     }
                     .padding(.top, 4)
