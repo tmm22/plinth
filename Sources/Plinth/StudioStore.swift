@@ -1494,7 +1494,14 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             orders = cleared.orders
             orderPage = cleared.orderPage
             ordersHasMore = false
-            await refresh()
+            // Only the orders, with the current filter: a full refresh would also re-read platforms, materials and
+            // files, dropping extra Models pages and an active Models file search. Before the account has loaded,
+            // the full refresh still runs (it loads what the orders depend on).
+            if orderSearchClearReloadsOnlyOrders(connected: connected, hasKey: hasKey) {
+                await applyOrderFilter(orderFilter)
+            } else {
+                await refresh()
+            }
             return
         }
         _ = await run("Search orders", retryable: true, retry: .searchOrders(trimmed)) {
@@ -2209,6 +2216,11 @@ func canLoadMoreListPages(searchActive: Bool) -> Bool { !searchActive }
 func nextListPage(lastLoadedPage: Int) -> Int { lastLoadedPage + 1 }
 func clearedOrderSearchState() -> (orderSearchActive: Bool, orders: [Record], orderPage: Int) {
     (false, [], 0)
+}
+/// Clearing the Orders search reloads only the orders (`applyOrderFilter`) once the account has loaded; before that
+/// (or without a key, which opens Settings) it keeps the full refresh.
+func orderSearchClearReloadsOnlyOrders(connected: Bool, hasKey: Bool) -> Bool {
+    connected && hasKey
 }
 func shouldUpdateFileIDAfterUpload(uploadedModelID: UUID, selectedLocalID: UUID?) -> Bool {
     selectedLocalID == uploadedModelID

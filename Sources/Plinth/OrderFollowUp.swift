@@ -4,8 +4,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 // Order follow-up: getting Slant's tracking back to the marketplace (Tracking for Your Shop…), a Shopify tracking
-// CSV, the arrive-by date and the Needs Attention check. Everything here reads orders already loaded; nothing sends a
-// request, and nothing is written to disk except a CSV the user saves.
+// CSV, the arrive-by date and the Needs Attention check. Everything here reads orders already loaded, except Tracking
+// for Your Shop's read of recent orders (RecentOrders.swift: read-only, in the sheet's memory only, never into
+// `store.orders`); nothing is written to disk except a CSV the user saves and the done ticks.
 
 // MARK: - Arrive-by date
 
@@ -260,11 +261,24 @@ func orderAttentionFiltered(_ records: [Record], enabled: Bool, now: Date) -> [R
 }
 
 /// Under the list while Needs Attention is on: what it checks, and that only loaded orders are checked.
-func orderAttentionFilterHint(moreOnServer: Bool) -> String {
-    let base = "Showing loaded orders that need attention: payment problems, past their arrive-by date, not shipped "
+func orderAttentionFilterHint(moreOnServer: Bool, statusFilter: String? = nil, datesFiltered: Bool = false,
+                              searchActive: Bool = false) -> String {
+    var text = "Showing loaded orders that need attention: payment problems, past their arrive-by date, not shipped "
         + "\(orderAttentionNotShippedBusinessDays) business days after being paid, still waiting to print after "
         + "\(orderAttentionNotStartedBusinessDays) business days, or drafts not placed after \(orderAttentionDraftDays) days."
-    return moreOnServer ? base + " Load more to check older orders." : base
+    // Say what the loaded list leaves out, so "nothing needs attention" is never read as covering every order.
+    if searchActive {
+        text += " Only the order found by your search is checked; clear the search to check the list."
+    } else {
+        var limits: [String] = []
+        if let status = statusFilter?.trimmingCharacters(in: .whitespacesAndNewlines), !status.isEmpty {
+            limits.append("\(orderStatusTitle(status)) orders")
+        }
+        if datesFiltered { limits.append("the chosen dates") }
+        if !limits.isEmpty { text += " Only \(limits.joined(separator: " in ")) are loaded." }
+        if moreOnServer { text += " Load more to check older orders." }
+    }
+    return text
 }
 
 /// The empty list's text while Needs Attention is on.
@@ -522,6 +536,76 @@ extension StudioStore {
     }
 }
 
+// MARK: - Recent orders for the sheet
+
+/// Whether the sheet reads recent orders as it opens: when the Orders list is filtered (status or dates) or shows a
+/// search, so it may hold no shipped orders at all (straight after an import it shows drafts only). Otherwise the
+/// seller can press Load Recent Orders.
+func shopFollowUpShouldReadOnOpen(filterActive: Bool, searchActive: Bool, hasKey: Bool) -> Bool {
+    hasKey && (filterActive || searchActive)
+}
+
+/// What the Orders list leaves out, for the sheet's empty state: "The Orders list shows only Draft orders, so shipped
+/// orders may not be loaded." Nil when it isn't filtered or searched.
+func shopFollowUpListLimitText(statusFilter: String?, datesFiltered: Bool, searchActive: Bool) -> String? {
+    if searchActive { return "The Orders list shows a search result, so shipped orders may not be loaded." }
+    let status = statusFilter?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !status.isEmpty, datesFiltered {
+        return "The Orders list shows only \(orderStatusTitle(status)) orders from the chosen dates, so shipped orders may not be loaded."
+    }
+    if !status.isEmpty { return "The Orders list shows only \(orderStatusTitle(status)) orders, so shipped orders may not be loaded." }
+    if datesFiltered { return "The Orders list shows only orders from the chosen dates, so shipped orders may not be loaded." }
+    return nil
+}
+
+/// The empty sheet's description: never blames Slant for orders the list's filter or search left out.
+func shopFollowUpEmptyText(doneCount: Int, listLimit: String?, reading: Bool, recent: RecentOrdersRead?,
+                           dateText: (Date) -> String = recentOrdersDateText) -> String {
+    if doneCount > 0 {
+        return "Every listed order with tracking is marked as done in your shop. Show marked orders lists them again."
+    }
+    if reading { return "Loading your recent orders from Slant…" }
+    if let recent, recent.finished {
+        return "None of the loaded orders or \(recentOrdersReachText(recent, dateText: dateText)) has tracking from Slant yet. Check again later."
+    }
+    var parts: [String] = []
+    if let recent {
+        let reason = recentOrdersStopReason(recent)
+        parts.append(reason.isEmpty ? "Couldn’t load your recent orders from Slant." : "Couldn’t load your recent orders from Slant. \(reason)")
+    }
+    if let listLimit {
+        parts.append(listLimit)
+        parts.append("Load Recent Orders to include your newest orders of every status.")
+    } else {
+        parts.append(recent == nil
+            ? "None of the loaded orders has tracking from Slant yet. Refresh Orders later to check again."
+            : "None of the loaded orders has tracking from Slant yet.")
+    }
+    return parts.joined(separator: " ")
+}
+
+/// Under the header: where the listed orders come from.
+func shopFollowUpSourceText(reading: Bool, recent: RecentOrdersRead?, ordersHasMore: Bool,
+                            dateText: (Date) -> String = recentOrdersDateText) -> String {
+    if reading { return "Loading your recent orders from Slant…" }
+    if let recent, recent.finished {
+        return "Listed from the loaded orders and \(recentOrdersReachText(recent, dateText: dateText))."
+    }
+    let more = "Load Recent Orders reads your \(recentOrdersMaxPages * recentOrdersPageSize) newest orders of every status."
+    if let recent {
+        let reason = recentOrdersStopReason(recent)
+        var text = "Couldn’t load your recent orders from Slant."
+        if !reason.isEmpty { text += " " + reason }
+        if recent.pagesRead > 0, recent.stop != .accountChanged {
+            text += " Listed from the loaded orders and \(recentOrdersReachText(recent, dateText: dateText)) only."
+        } else {
+            text += " Only loaded orders are listed."
+        }
+        return text
+    }
+    return ordersHasMore ? "Only loaded orders are listed, and older orders aren’t loaded. \(more)" : "Only loaded orders are listed. \(more)"
+}
+
 // MARK: - Sheet
 
 struct ShopFollowUpSheet: View {
@@ -532,25 +616,51 @@ struct ShopFollowUpSheet: View {
     /// Send Tracking to Shopify… (ShopifyTracking.swift), with the store and orders fixed when it opens.
     @State private var shopifySend: ShopifyTrackingSession?
     @ObservedObject private var shopify = ShopifyConnection.shared
+    /// Recent orders of every status and platform (RecentOrders.swift): this sheet's memory only, never in
+    /// `store.orders`. Read as the sheet opens while the Orders list is filtered or searched, or on Load Recent Orders.
+    @State private var recentRead: RecentOrdersRead?
+    @State private var recentReading = false
+    @State private var recentTask: Task<Void, Never>?
+    /// Bumped when the sheet closes, so a reply that arrives afterwards is ignored.
+    @State private var recentGeneration = 0
+
+    /// The loaded orders, then the read's (each order once: `shopFollowUpGroups` keeps the first entry with
+    /// tracking, so a loaded copy without tracking never hides the read's copy with it).
+    private var sourceOrders: [Record] { store.orders + (recentRead?.orders(forKey: store.apiKey) ?? []) }
 
     var body: some View {
-        let groups = shopFollowUpGroups(store.orders, done: store.shopFollowUpDoneIDs, showDone: showDone)
+        let groups = shopFollowUpGroups(sourceOrders, done: store.shopFollowUpDoneIDs, showDone: showDone)
         let listed = groups.imported + groups.notImported
         let shopifyCount = shopifyTrackingCSVRows(listed.filter { !store.shopFollowUpDoneIDs.contains($0.id) }).count
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Tracking for your shop").font(.title2.bold())
-                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop. Plinth remembers your marks on this Mac. Only loaded orders are listed.")
+                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop. Plinth remembers your marks on this Mac.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(shopFollowUpSourceText(reading: recentReading, recent: recentRead, ordersHasMore: store.ordersHasMore))
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if recentReading { ProgressView().controlSize(.small).accessibilityLabel("Loading recent orders") }
+                    Spacer(minLength: 0)
+                    if store.hasKey, !recentReading {
+                        Button(recentRead == nil ? "Load Recent Orders" : "Load Again") { startRecentRead() }
+                            .controlSize(.small)
+                            .disabled(store.busy)
+                            .help("Read your \(recentOrdersMaxPages * recentOrdersPageSize) newest orders on Slant, every status and platform, for this sheet only. Read-only: the Orders list doesn’t change.")
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if listed.isEmpty {
                 ContentUnavailableView {
                     Label(groups.doneCount > 0 ? "All orders marked as done" : "No tracking yet", systemImage: "shippingbox")
                 } description: {
-                    Text(groups.doneCount > 0
-                         ? "Every loaded order with tracking is marked as done in your shop. Show marked orders lists them again."
-                         : "None of the loaded orders has tracking from Slant yet. Refresh Orders later to check again.")
+                    Text(shopFollowUpEmptyText(
+                        doneCount: groups.doneCount,
+                        listLimit: shopFollowUpListLimitText(statusFilter: store.orderFilter.status,
+                                                             datesFiltered: store.orderFilter.startDate != nil || store.orderFilter.endDate != nil,
+                                                             searchActive: store.orderSearchActive),
+                        reading: recentReading, recent: recentRead))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -596,15 +706,40 @@ struct ShopFollowUpSheet: View {
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
-            if store.ordersHasMore {
-                Text("Older orders aren’t loaded. Load more in Orders to include them.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
         .padding(20)
         .frame(minWidth: 620, idealWidth: 700, minHeight: 440, idealHeight: 560)
+        .onAppear {
+            if shopFollowUpShouldReadOnOpen(filterActive: store.orderFilter.isActive, searchActive: store.orderSearchActive,
+                                            hasKey: store.hasKey) {
+                startRecentRead()
+            }
+        }
+        .onDisappear {
+            // Stops the read before its next page; anything it returns later is ignored, and its orders are dropped.
+            recentGeneration += 1
+            recentTask?.cancel()
+            recentTask = nil
+            recentRead = nil
+            recentReading = false
+        }
         .sheet(item: $shopifySend) { session in
             ShopifyTrackingSheet(shop: session.shop, candidates: session.candidates).environmentObject(store)
+        }
+    }
+
+    /// Read-only, inside `store.run` (so never while another request runs). Nothing changes in the Orders list.
+    private func startRecentRead() {
+        guard store.hasKey, !store.busy, !recentReading else { return }
+        recentReading = true
+        recentGeneration += 1
+        let generation = recentGeneration
+        recentTask = Task {
+            let read = await store.readRecentOrders(title: "Read recent orders for tracking")
+            guard generation == recentGeneration else { return }
+            recentReading = false
+            recentTask = nil
+            if let read { recentRead = read }
         }
     }
 

@@ -216,6 +216,73 @@ func batchPayDuplicateCheckOrder(id: String, fresh: [String: Any]?, listed: [Rec
     return orderObject(record.values)
 }
 
+// MARK: Orders already placed, beyond the loaded list
+
+/// Marketplace keys of placed orders among the loaded list and the review's read of recent orders
+/// (RecentOrders.swift). The read only adds keys: the loaded list is always checked too, and neither is ever
+/// platform-checked (seeing every platform's orders is the cautious direction for a duplicate guard).
+func batchPayPlacedKeys(loaded: [Record], recent: [Record]) -> Set<String> {
+    batchPayPlacedMarketplaceKeys(loaded + recent)
+}
+
+/// Whether the review needs the read of recent orders: only a draft naming a marketplace order can match a placed one.
+func batchPayPlacedCheckNeeded(_ drafts: [[String: Any]]) -> Bool {
+    drafts.contains { batchPayMarketplaceKey($0) != nil }
+}
+
+/// Drafts left out because the read of recent orders didn't finish (it failed, stopped for the rate limit or wasn't
+/// made), by draft ID: each draft naming a marketplace order, since a placed order for its sale may be beyond the
+/// loaded list. Cautious without trapping the seller: Go Back and review again reads again, and the draft can still be
+/// paid in its own review after checking. A read that reached its page cap finished (the review says how far back it
+/// reached). Like `batchPayDuplicateExclusions`, it only leaves more out.
+func batchPayUncheckedExclusions(_ drafts: [(id: String, order: [String: Any])], recent: RecentOrdersRead?) -> [String: String] {
+    guard recent?.finished != true else { return [:] }
+    var reasons: [String: String] = [:]
+    for draft in drafts where batchPayMarketplaceKey(draft.order) != nil {
+        let sale = orderMarketplaceReferenceLine(draft.order) ?? "its marketplace order"
+        reasons[draft.id] = "Plinth couldn’t check your recent Slant orders for one already placed for \(sale), so it isn’t paid in this batch. Go Back and review again in a minute, or pay it in its own review after checking."
+    }
+    return reasons
+}
+
+/// The review's line on how far the placed-order check reached, or nil when no draft names a marketplace order.
+/// `warning` when the read didn't finish (drafts for a marketplace order are then left out).
+func batchPayPlacedCheckNotice(needed: Bool, recent: RecentOrdersRead?, leftOut: Int,
+                               dateText: (Date) -> String = recentOrdersDateText) -> (text: String, warning: Bool)? {
+    guard needed else { return nil }
+    if let recent, recent.finished {
+        var text = "Checked for orders already placed for these sales: \(recentOrdersReachText(recent, dateText: dateText)), every status and platform."
+        if !recent.complete { text += " An earlier order for one of these sales wouldn’t be noticed." }
+        return (text, false)
+    }
+    var text = "Couldn’t check your recent Slant orders for ones already placed for these sales."
+    if let recent {
+        let reason = recentOrdersStopReason(recent)
+        if !reason.isEmpty { text += " " + reason }
+        if recent.pagesRead > 0 { text += " Only \(recentOrdersReachText(recent, dateText: dateText)) were read." }
+    }
+    switch leftOut {
+    case 0: text += " Drafts for a marketplace order aren’t paid in this batch."
+    case 1: text += " So 1 draft for a marketplace order is left out below."
+    default: text += " So \(leftOut) drafts for a marketplace order are left out below."
+    }
+    text += " Go Back and review again in a minute, or pay one in its own review after checking."
+    return (text, true)
+}
+
+/// The confirmation's sentence on the same check, or nil when no draft names a marketplace order.
+func batchPayPlacedCheckConfirmText(needed: Bool, recent: RecentOrdersRead?,
+                                    dateText: (Date) -> String = recentOrdersDateText) -> String? {
+    guard needed else { return nil }
+    guard let recent, recent.finished else {
+        return "Plinth couldn’t check your recent Slant orders for ones already placed for these sales, so drafts for a marketplace order were left out."
+    }
+    if recent.complete {
+        return "Plinth checked \(recentOrdersReachText(recent, dateText: dateText)) for orders already placed for these sales."
+    }
+    return "Plinth checked \(recentOrdersReachText(recent, dateText: dateText)) for orders already placed for these sales; older orders weren’t checked."
+}
+
 /// Shown in the review while a draft create this session wasn't confirmed: a duplicate draft without a marketplace
 /// reference can't be detected, so the seller checks recipients for repeats.
 let batchPayUnconfirmedCreateNotice = "A draft created this session wasn’t confirmed, so a duplicate draft may exist. Check that no buyer appears twice before paying."
@@ -470,6 +537,14 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
     /// Orders this sheet placed (or found placed on reload). They're never offered or paid again from this sheet, even
     /// if the list still shows them as drafts because their refresh failed.
     @Published private(set) var placedIDs: Set<String> = []
+    /// The review's read of recent orders (RecentOrders.swift), in this sheet's memory only; nil when not needed or
+    /// not made. `placedCheckNeeded`: a reviewed draft names a marketplace order.
+    @Published private(set) var recentRead: RecentOrdersRead?
+    @Published private(set) var placedCheckNeeded = false
+    /// How many drafts were left out because that read didn't finish (`batchPayUncheckedExclusions`).
+    @Published private(set) var uncheckedLeftOut = 0
+    /// The page of recent orders being read, for the progress line.
+    @Published private(set) var recentPage: Int?
     /// The account and platform the review was loaded with; paying needs both unchanged.
     private var reviewedKey = ""
     private var reviewedPlatform = ""
@@ -494,6 +569,9 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
         reviewed = []
         states = [:]
         reloadMessages = [:]
+        recentRead = nil
+        placedCheckNeeded = false
+        uncheckedLeftOut = 0
         message = nil
         phase = .choose
     }
@@ -513,6 +591,10 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
         reviewed = []
         states = [:]
         reloadMessages = [:]
+        recentRead = nil
+        placedCheckNeeded = false
+        uncheckedLeftOut = 0
+        recentPage = nil
         loadedCount = 0
         loadTotal = ids.count
         reviewedKey = store.apiKey
@@ -526,14 +608,18 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
         var loaded: [String: [String: Any]] = [:]
         var failures: [String: String] = [:]
         var cancelled = false
+        var recent: RecentOrdersRead?
+        var checkNeeded = false
         let ran = await store.run("Load drafts for payment review", handlesError: { _ in true }) {
             var lastStart: Date?
+            var loadStopped = false
             loadLoop: for (index, id) in ids.enumerated() {
                 if stopRequested { cancelled = true; return }
                 switch orderImportPacing(lastRequestStart: lastStart, rateLimit: observedRateLimit, rateLimitedUntil: rateLimitedUntil,
                                          now: Date(), minimumSpacing: batchPayReviewSpacing) {
                 case .stop(let reason):
                     for rest in ids[index...] { failures[rest] = reason }
+                    loadStopped = true
                     break loadLoop
                 case .wait(let seconds):
                     if seconds > 0 {
@@ -545,6 +631,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
                 if stopRequested { cancelled = true; return }
                 guard accountUnchanged(store) else {
                     for rest in ids[index...] { failures[rest] = "The account or platform changed." }
+                    loadStopped = true
                     break loadLoop
                 }
                 lastStart = Date()
@@ -557,12 +644,51 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
                     failures[id] = friendlyAPIMessage(error)
                     if case APIError.http(let status, _, _, _)? = error as? APIError, status == 401 || status == 403 {
                         for rest in ids[(index + 1)...] { failures[rest] = friendlyAPIMessage(error) }
+                        loadStopped = true
                         break loadLoop
                     }
                 }
                 loadedCount = index + 1
             }
+            // Orders already placed for these sales may be beyond the loaded list (after an import it shows drafts
+            // only): read the newest orders of every status and platform, with the same pacing and stops, never
+            // retried. Only when a draft names a marketplace order, since no other draft can match.
+            checkNeeded = batchPayPlacedCheckNeeded(ids.compactMap {
+                batchPayDuplicateCheckOrder(id: $0, fresh: loaded[$0], listed: store.orders)
+            })
+            guard checkNeeded else { return }
+            if loadStopped {
+                recent = RecentOrdersRead(stop: .failed("Not checked, because loading the drafts stopped first."))
+                return
+            }
+            var read = await readRecentOrderPages(
+                beforePage: { page in
+                    if self.stopRequested { return .cancelled }
+                    switch orderImportPacing(lastRequestStart: lastStart, rateLimit: self.observedRateLimit,
+                                             rateLimitedUntil: self.rateLimitedUntil, now: Date(), minimumSpacing: batchPayReviewSpacing) {
+                    case .stop(let reason): return .rateLimit(reason)
+                    case .wait(let seconds):
+                        if seconds > 0 {
+                            self.waitingUntil = Date().addingTimeInterval(seconds)
+                            await self.sleepUnlessStopped(seconds)
+                            self.waitingUntil = nil
+                        }
+                    }
+                    if self.stopRequested { return .cancelled }
+                    guard self.accountUnchanged(store) else { return .accountChanged }
+                    self.recentPage = page
+                    lastStart = Date()
+                    return nil
+                },
+                fetch: { page in try await store.client.request("GET", path: "/orders", query: recentOrdersQuery(page: page)) },
+                afterPage: { self.noteRateLimit($0, store: store) },
+                onRateLimited: { self.rateLimitedUntil = $0 })
+            if !self.accountUnchanged(store) { read.stop = .accountChanged; read.orders = [] }
+            read.accountKey = reviewedKey
+            if read.stop == .cancelled { cancelled = true; return }
+            recent = read
         }
+        recentPage = nil
         waitingUntil = nil
         guard ran else {
             phase = .choose
@@ -587,7 +713,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             reviewed.compactMap { draft in
                 batchPayDuplicateCheckOrder(id: draft.id, fresh: draft.order, listed: store.orders).map { (id: draft.id, order: $0) }
             },
-            placedKeys: batchPayPlacedMarketplaceKeys(store.orders),
+            placedKeys: batchPayPlacedKeys(loaded: store.orders, recent: recent?.orders(forKey: reviewedKey) ?? []),
             excludedIDs: Set(reviewed.filter { !$0.payable }.map(\.id)),
             hiddenKeys: batchPayHiddenDraftMarketplaceKeys(store.orders, hidden: store.hiddenDraftIDSet,
                                                            keeping: store.unknownOutcomeOrderIDs, reviewedIDs: Set(reviewed.map(\.id))))
@@ -595,6 +721,18 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             guard draft.payable, let reason = duplicates[draft.id] else { return draft }
             return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
         }
+        // When the wider check couldn't be done, drafts for a marketplace order are left out too (never fewer).
+        if checkNeeded {
+            let unchecked = batchPayUncheckedExclusions(
+                reviewed.filter(\.payable).compactMap { draft in draft.order.map { (id: draft.id, order: $0) } }, recent: recent)
+            reviewed = reviewed.map { draft in
+                guard draft.payable, let reason = unchecked[draft.id] else { return draft }
+                return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
+            }
+            uncheckedLeftOut = unchecked.count
+        }
+        placedCheckNeeded = checkNeeded
+        recentRead = recent
         phase = .review
     }
 
@@ -886,7 +1024,8 @@ struct BatchPaySheet: View {
             Button("Don’t Pay", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text(batchPayConfirmMessage)
+            Text([batchPayConfirmMessage, batchPayPlacedCheckConfirmText(needed: runner.placedCheckNeeded, recent: runner.recentRead)]
+                .compactMap { $0 }.joined(separator: " "))
         }
         .onDisappear {
             // Closing stops the batch before its next order and drops the reviewed copies.
@@ -978,6 +1117,8 @@ struct BatchPaySheet: View {
         VStack(alignment: .leading, spacing: 8) {
             if let until = runner.waitingUntil, until.timeIntervalSinceNow > 2 {
                 ProgressView("Waiting for Slant’s rate limit… \(runner.loadedCount) of \(runner.loadTotal) loaded.")
+            } else if let page = runner.recentPage {
+                ProgressView("Checking your recent orders for ones already placed… page \(page) of up to \(recentOrdersMaxPages).")
             } else {
                 ProgressView("Loading drafts from Slant… \(runner.loadedCount) of \(runner.loadTotal) loaded.")
             }
@@ -1000,6 +1141,17 @@ struct BatchPaySheet: View {
                     if runner.phase == .review, store.draftCreateOutcomeUnknown || store.orderImportLedger.hasUnconfirmed {
                         Label(batchPayUnconfirmedCreateNotice, systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if runner.phase == .review,
+                       let check = batchPayPlacedCheckNotice(needed: runner.placedCheckNeeded, recent: runner.recentRead,
+                                                             leftOut: runner.uncheckedLeftOut) {
+                        if check.warning {
+                            Label(check.text, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Label(check.text, systemImage: "checkmark.shield")
+                                .foregroundStyle(.secondary).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     if let notice = batchPayLargeQuantityNotice(payable.compactMap(\.order)) {
                         Label(notice, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.callout)

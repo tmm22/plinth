@@ -655,7 +655,8 @@ func orderImportLoadedSourceKeys(_ orders: [Record]) -> Set<String> {
 }
 
 /// Why this source order might already have a draft, or nil.
-func orderImportDuplicateReason(_ order: OrderImportOrder, ledger: OrderImportLedger, loadedKeys: Set<String>) -> String? {
+func orderImportDuplicateReason(_ order: OrderImportOrder, ledger: OrderImportLedger, loadedKeys: Set<String>,
+                                recentKeys: Set<String> = []) -> String? {
     switch ledger.entry(source: order.source, sourceOrderID: order.sourceOrderID) {
     case .created(let orderID)?:
         return orderImportAlreadyImportedWarning(orderID)
@@ -666,6 +667,9 @@ func orderImportDuplicateReason(_ order: OrderImportOrder, ledger: OrderImportLe
     }
     if loadedKeys.contains(order.id) {
         return "An order in the loaded list was already imported from this \(order.source.marketplace) order."
+    }
+    if recentKeys.contains(order.id) {
+        return "One of your recent orders on Slant was already imported from this \(order.source.marketplace) order."
     }
     return nil
 }
@@ -717,6 +721,75 @@ func orderImportDuplicateCoverageNotice(ordersLoaded: Bool, ordersHasMore: Bool,
         return "Only the orders loaded in the list (and this session’s imports) are checked for duplicates. Older orders, and orders hidden by search or filters, aren’t."
     }
     return nil
+}
+
+/// Whether the sheet reads recent orders of every status and platform when a list is shown: only while the loaded
+/// list can't show every earlier order (`orderImportDuplicateCoverageNotice`), with a key, and before any read.
+func orderImportShouldReadRecentOrders(coverageNotice: String?, hasKey: Bool, alreadyRead: Bool, reading: Bool) -> Bool {
+    coverageNotice != nil && hasKey && !alreadyRead && !reading
+}
+
+/// What the duplicate check covers, with the sheet's read of recent orders: the read's reach when it finished, the
+/// loaded list's notice and why the read didn't finish otherwise. Never says "no duplicates".
+func orderImportDuplicateCoverageText(listNotice: String?, reading: Bool, recent: RecentOrdersRead?,
+                                      dateText: (Date) -> String = recentOrdersDateText) -> String? {
+    if reading { return "Checking your recent orders on Slant for earlier imports…" }
+    guard let recent else { return listNotice }
+    if recent.finished {
+        let reach = recentOrdersReachText(recent, dateText: dateText)
+        return recent.complete
+            ? "Checked for duplicates against \(reach) (every status and platform) and this session’s imports."
+            : "Checked for duplicates against \(reach) (every status and platform) and this session’s imports. Older orders aren’t checked."
+    }
+    var text = "Couldn’t read your recent orders on Slant."
+    let reason = recentOrdersStopReason(recent)
+    if !reason.isEmpty { text += " " + reason }
+    if recent.pagesRead > 0, recent.stop != .accountChanged {
+        text += " Checked \(recentOrdersReachText(recent, dateText: dateText)) only."
+    }
+    text += " " + (listNotice ?? "Only the orders loaded in the list and this session’s imports are checked for duplicates.")
+    return text
+}
+
+/// Orders with more warnings than before (a duplicate found by a later read): unticked, so a tick never stays on an
+/// order the seller hasn't seen warned.
+func orderImportNewlyWarned(before: [String: OrderImportCheck], after: [String: OrderImportCheck]) -> Set<String> {
+    Set(after.compactMap { id, check in check.warnings.count > (before[id]?.warnings.count ?? 0) ? id : nil })
+}
+
+// MARK: Email for orders without one
+
+/// The last email used for orders without one in this session, with the key it was used under: memory only, never
+/// saved, and offered (never filled in) only while that key is current.
+@MainActor var orderImportLastFallbackEmail: (key: String, email: String)?
+
+/// One button beside "Email for orders without one": it fills the field with an email the seller chose, which stays
+/// visible and editable. Plinth never fills the field by itself or makes an email up.
+struct OrderImportEmailSuggestion: Equatable {
+    let title: String
+    let email: String
+    let help: String
+}
+
+/// Use My Email (the seller's saved address in Settings, as Use My Address) and Use Last Email (the one used for an
+/// import earlier this session), each only when it is a valid email that isn't already in the field, and the second
+/// only when it differs from the first.
+func orderImportFallbackEmailSuggestions(current: String, sellerEmail: String?, lastUsed: String?) -> [OrderImportEmailSuggestion] {
+    func clean(_ text: String?) -> String? {
+        guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), isEmailAddress(trimmed) else { return nil }
+        return trimmed
+    }
+    let typed = current.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    var result: [OrderImportEmailSuggestion] = []
+    if let mine = clean(sellerEmail), mine.lowercased() != typed {
+        result.append(OrderImportEmailSuggestion(title: "Use My Email", email: mine,
+                                                 help: "Fill in \(mine), the email in your address in Settings › Account"))
+    }
+    if let last = clean(lastUsed), last.lowercased() != typed, last.lowercased() != clean(sellerEmail)?.lowercased() {
+        result.append(OrderImportEmailSuggestion(title: "Use Last Email", email: last,
+                                                 help: "Fill in \(last), the email you used for an import earlier this session"))
+    }
+    return result
 }
 
 // MARK: Matching items to saved products
@@ -804,6 +877,9 @@ struct OrderImportContext {
     var fallbackEmail: String = ""
     var ledger = OrderImportLedger()
     var loadedKeys: Set<String> = []
+    /// Ledger keys from the sheet's read of recent orders of every status and platform (RecentOrders.swift), beyond
+    /// the loaded list. Memory only.
+    var recentKeys: Set<String> = []
     /// Match products choices, keyed by `OrderImportMatchKey.id`. Used only for items no saved product matches by SKU.
     var productChoices: [String: OrderImportProductChoice] = [:]
 }
@@ -1021,7 +1097,8 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
 
     // Already handled or imported
     if let handled = order.alreadyHandled { warn("\(handled) Tick it only if it really needs a new draft.") }
-    if let duplicate = orderImportDuplicateReason(order, ledger: context.ledger, loadedKeys: context.loadedKeys) { warn(duplicate) }
+    if let duplicate = orderImportDuplicateReason(order, ledger: context.ledger, loadedKeys: context.loadedKeys,
+                                                  recentKeys: context.recentKeys) { warn(duplicate) }
 
     guard check.blockers.isEmpty else { return check }
     check.draftEmail = email
@@ -1510,13 +1587,22 @@ struct OrderImportSheet: View {
     /// Fetch from Shopify (ShopifyImport.swift) is running: Choose File… and Create wait for it.
     @State private var shopifyFetching = false
     @ObservedObject private var shopify = ShopifyConnection.shared
+    /// Recent orders of every status and platform (RecentOrders.swift) for the duplicate check: this sheet's memory
+    /// only, read at most once per opening unless the seller presses Check Again, and never into `store.orders`.
+    @State private var recentRead: RecentOrdersRead?
+    @State private var recentReading = false
+    @State private var recentTask: Task<Void, Never>?
+    /// Bumped when the sheet closes, so a reply that arrives afterwards is ignored.
+    @State private var recentGeneration = 0
 
     private var context: OrderImportContext {
         OrderImportContext(
             products: store.savedProducts, localModels: store.localModels, filaments: store.filaments,
             components: store.components, stationery: store.stationery, platformID: store.platformID,
             ownerID: store.ownerID, fallbackEmail: fallbackEmail, ledger: store.orderImportLedger,
-            loadedKeys: orderImportLoadedSourceKeys(store.orders), productChoices: productChoices)
+            loadedKeys: orderImportLoadedSourceKeys(store.orders),
+            recentKeys: orderImportLoadedSourceKeys(recentRead?.orders(forKey: store.apiKey) ?? []),
+            productChoices: productChoices)
     }
 
     private func checks(for parse: OrderImportParse) -> [String: OrderImportCheck] {
@@ -1612,6 +1698,12 @@ struct OrderImportSheet: View {
         .onDisappear {
             // Closing stops the batch before its next request and drops every imported address and product choice.
             runner.requestStop()
+            // A read of recent orders stops before its next page, and anything it returns later is ignored.
+            recentGeneration += 1
+            recentTask?.cancel()
+            recentTask = nil
+            recentRead = nil
+            recentReading = false
             parsed = nil
             fallbackEmail = ""
             ticked = []
@@ -1628,10 +1720,18 @@ struct OrderImportSheet: View {
             Text("\(parse.format.title) · \(parse.orders.count == 1 ? "1 order" : "\(parse.orders.count) orders")\(blocked > 0 ? " · \(blocked) can’t be imported" : "")")
                 .font(.headline)
             ForEach(parse.notices, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
-            if let coverage = orderImportDuplicateCoverageNotice(
-                ordersLoaded: store.ordersLoaded, ordersHasMore: store.ordersHasMore,
-                listIsPartial: store.orderSearchActive || store.orderFilter.isActive) {
-                Text(coverage).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let coverage = orderImportDuplicateCoverageText(listNotice: listCoverageNotice, reading: recentReading,
+                                                               recent: recentRead) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(coverage).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if recentReading { ProgressView().controlSize(.small).accessibilityLabel("Checking recent orders") }
+                    if !recentReading, recentRead?.finished != true, recentRead != nil || listCoverageNotice != nil {
+                        Button(recentRead == nil ? "Check Recent Orders" : "Check Again") { startRecentRead() }
+                            .controlSize(.small)
+                            .disabled(store.busy || runner.running || !store.hasKey)
+                            .help("Read your \(recentOrdersMaxPages * recentOrdersPageSize) newest orders on Slant, every status and platform, for earlier imports. Read-only: nothing is created or changed.")
+                    }
+                }
             }
             Text("Drafts are created on platform \(platformName).").font(.caption).foregroundStyle(.secondary)
             if let saleNotice = orderImportSaleAmountsNotice(parse.orders) {
@@ -1643,11 +1743,18 @@ struct OrderImportSheet: View {
         }
         if parse.orders.contains(where: { $0.email.isEmpty }) {
             VStack(alignment: .leading, spacing: 4) {
-                TextField("Email for orders without one", text: $fallbackEmail, prompt: Text("you@yourshop.com"))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 360)
-                    .disabled(runner.running)
-                Text("Slant needs an email for every order. \(parse.format == .etsy ? "Etsy files don’t include buyers’ emails, so" : "Some orders have none;") enter one to use for these orders, such as your shop’s. Plinth never fills one in for you.")
+                HStack(spacing: 8) {
+                    TextField("Email for orders without one", text: $fallbackEmail, prompt: Text("you@yourshop.com"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 360)
+                        .disabled(runner.running)
+                    ForEach(emailSuggestions, id: \.title) { suggestion in
+                        Button(suggestion.title) { fallbackEmail = suggestion.email }
+                            .disabled(runner.running)
+                            .help(suggestion.help)
+                    }
+                }
+                Text("Slant needs an email for every order. \(parse.format == .etsy ? "Etsy files don’t include buyers’ emails, so" : "Some orders have none;") enter one to use for these orders, such as your shop’s. Plinth never fills one in by itself.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if !fallbackEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !isEmailAddress(fallbackEmail) {
                     Text("Enter an email like name@example.com.").font(.caption).foregroundStyle(.orange)
@@ -1901,6 +2008,40 @@ struct OrderImportSheet: View {
         }
     }
 
+    /// The loaded list's own coverage notice (`orderImportDuplicateCoverageNotice`).
+    private var listCoverageNotice: String? {
+        orderImportDuplicateCoverageNotice(ordersLoaded: store.ordersLoaded, ordersHasMore: store.ordersHasMore,
+                                           listIsPartial: store.orderSearchActive || store.orderFilter.isActive)
+    }
+
+    private var emailSuggestions: [OrderImportEmailSuggestion] {
+        let last = orderImportLastFallbackEmail.flatMap { $0.key == store.apiKey ? $0.email : nil }
+        return orderImportFallbackEmailSuggestions(current: fallbackEmail, sellerEmail: store.sellerAddress?.email, lastUsed: last)
+    }
+
+    /// Reads recent orders of every status and platform for the duplicate check (read-only, inside `store.run`, so
+    /// never while busy or while a batch runs). Orders that the read shows were already imported are unticked.
+    private func startRecentRead() {
+        guard !runner.running, !recentReading, store.hasKey, !store.busy else { return }
+        recentReading = true
+        recentGeneration += 1
+        let generation = recentGeneration
+        recentTask = Task {
+            let read = await store.readRecentOrders(title: "Check recent orders for earlier imports")
+            guard generation == recentGeneration else { return }
+            recentReading = false
+            recentTask = nil
+            guard let read else { return }
+            guard let parsed, !runner.running, !confirmCreate else {
+                recentRead = read
+                return
+            }
+            let before = checks(for: parsed)
+            recentRead = read
+            ticked.subtract(orderImportNewlyWarned(before: before, after: checks(for: parsed)))
+        }
+    }
+
     /// After a batch that made (or may have made) drafts, or when this session's imports are on record.
     private var showDraftsAvailable: Bool {
         guard !runner.running else { return false }
@@ -2002,6 +2143,12 @@ struct OrderImportSheet: View {
         fileName = label
         let initial = checks(for: parse)
         ticked = Set(parse.orders.map(\.id).filter { initial[$0]?.tickedByDefault == true })
+        // The loaded list may hold only drafts (after an import) or a search: read recent orders of every status
+        // once, so an order already imported in an earlier session is found. Read-only; Create waits while it runs.
+        if orderImportShouldReadRecentOrders(coverageNotice: listCoverageNotice, hasKey: store.hasKey,
+                                             alreadyRead: recentRead != nil, reading: recentReading) {
+            startRecentRead()
+        }
         return true
     }
 
@@ -2058,6 +2205,11 @@ struct OrderImportSheet: View {
         runner.saleAmounts = importedSaleAmountsByOrder(
             parsed.orders, leavingOutItemsIn: Set(currentChecks.filter { $0.value.leftOutItemCount > 0 }.map(\.key)))
         importCheckMessage = nil
+        // The email used for orders without one, offered (never filled in) for the next file this session.
+        let email = fallbackEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isEmailAddress(email), jobs.contains(where: { currentChecks[$0.id]?.usesFallbackEmail == true }) {
+            orderImportLastFallbackEmail = (store.apiKey, email)
+        }
         runner.start(jobs, store: store)
         // Sent orders are unticked so pressing Create again never resends them without a fresh, explicit tick.
         if runner.running { ticked.subtract(jobs.map(\.id)) }

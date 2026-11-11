@@ -1240,7 +1240,10 @@ struct OrdersView: View {
                     }
                 }
                 if needsAttentionOnly {
-                    Text(orderAttentionFilterHint(moreOnServer: store.ordersHasMore && !store.orderSearchActive))
+                    Text(orderAttentionFilterHint(moreOnServer: store.ordersHasMore && !store.orderSearchActive,
+                                                  statusFilter: store.orderFilter.status,
+                                                  datesFiltered: store.orderFilter.startDate != nil || store.orderFilter.endDate != nil,
+                                                  searchActive: store.orderSearchActive))
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
