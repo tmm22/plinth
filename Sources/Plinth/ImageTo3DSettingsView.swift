@@ -78,7 +78,7 @@ struct ImageTo3DSettingsSection: View {
             SecureField(connection.hasKey(service) ? "Replace key" : "API key", text: $keyField, prompt: Text(service.keyPrompt))
                 .onSubmit { saveAndTest() }
             if let advice = imageTo3DKeyPrefixAdvice(keyField, service: service) {
-                Text(advice).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(advice).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
                 Button("Save & Test") { saveAndTest() }
@@ -97,11 +97,11 @@ struct ImageTo3DSettingsSection: View {
                 Text(reason).font(.caption).foregroundStyle(.secondary)
             }
             if let status {
-                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.studioSuccess)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let problem {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } header: {
@@ -123,8 +123,10 @@ struct ImageTo3DSettingsSection: View {
         .onChange(of: connection.selectedService) { _, _ in clearForm() }
         .onChange(of: connection.tripoRegion) { _, _ in status = nil; problem = nil }
         .confirmationDialog("Remove the \(service.title) key?", isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { removeKey() }
+            Button("Remove Key", role: .destructive) { removeKey() }
+            // Never the destructive button: Return keeps the key.
             Button("Keep Key", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("This removes the \(service.title) API key from the Keychain on this Mac. Your \(service.title) account and credits are unchanged.")
         }

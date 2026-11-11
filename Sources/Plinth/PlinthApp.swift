@@ -23,6 +23,10 @@ struct PlinthApp: App {
                 .frame(minWidth: 1080, minHeight: 720)
                 .tint(.studioAccent)
                 .modifier(ExternalModelOpenAttachment(store: store))
+                // While the main window is open it takes every external event (a model opened from Finder), so SwiftUI
+                // never opens a second main window for one. With the window closed, SwiftUI opens it for the event and
+                // `ExternalModelOpenQueue` waits for it rather than asking for another (ModelFileOpening.swift).
+                .handlesExternalEvents(preferring: mainWindowExternalEvents, allowing: mainWindowExternalEvents)
         }
         .defaultSize(width: 1360, height: 900)
         .windowToolbarStyle(.unified)
@@ -51,6 +55,10 @@ struct PlinthApp: App {
                         store.performDapiOrderToolFromMenu(tool)
                     }
                 }
+            }
+            let slantToolEnabled: (DapiOrderToolRequest) -> Bool = { tool in
+                slantOrderToolMenuEnabled(tool, destination: store.destination, ordersLoaded: !store.orders.isEmpty,
+                                          modalUIShown: modalUIShown)
             }
             let dapiToolEnabled: (DapiOrderToolRequest) -> Bool = { tool in
                 dapiOrderToolMenuEnabled(tool, service: service, keySaved: dapiKeySaved, destination: store.destination,
@@ -94,21 +102,16 @@ struct PlinthApp: App {
                 // only: with 3DAPI every order is charged when placed, so a batch import would be a batch of charges.
                 Button("Import Orders…") { slantOnly { store.importOrdersFromMenu() } }
                     .disabled(!slantOrderCommands || store.orderImportBlockedReason != nil || modalUIShown)
-                // Saves a CSV of the loaded orders shown in the list; no request is made.
+                // Saves a CSV of the rows the Orders list shows, so only with Orders shown; no request is made.
                 Button("Export Orders…") { orderTool(.exportOrders) { store.exportOrdersFromMenu() } }
-                    .disabled(slantOrderCommands
-                              ? !ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
-                                                         sheetPresented: modalUIShown)
-                              : !dapiToolEnabled(.exportOrders))
-                // Opens a local list of loaded orders' tracking only; nothing is sent.
+                    .disabled(slantOrderCommands ? !slantToolEnabled(.exportOrders) : !dapiToolEnabled(.exportOrders))
+                // Opens a local list of loaded orders' tracking only; nothing is sent. Like Spending Report…, it works on
+                // every loaded order, so it opens from any screen and shows Orders first (`slantOrderToolMenuEnabled`).
                 Button("Tracking for Your Shop…") { orderTool(.trackingForYourShop) { store.openShopFollowUpFromMenu() } }
-                    .disabled(slantOrderCommands ? (store.orders.isEmpty || modalUIShown) : !dapiToolEnabled(.trackingForYourShop))
+                    .disabled(slantOrderCommands ? !slantToolEnabled(.trackingForYourShop) : !dapiToolEnabled(.trackingForYourShop))
                 // Opens the spending report for the loaded orders; no request is made.
-                Button("Spending Report…") { orderTool(.spendingReport) { store.openSpendingReportFromMenu() } }
-                    .disabled(slantOrderCommands
-                              ? !ordersExportMenuEnabled(destination: store.destination, ordersLoaded: !store.orders.isEmpty,
-                                                         sheetPresented: modalUIShown)
-                              : !dapiToolEnabled(.spendingReport))
+                Button("Spending Report…") { orderTool(.spendingReport) { store.openSpendingReportFromMenuShowingOrders() } }
+                    .disabled(slantOrderCommands ? !slantToolEnabled(.spendingReport) : !dapiToolEnabled(.spendingReport))
                 // Opens the Saved Products sheet only (a local list; nothing is sent).
                 Button("Saved Products…") { inMainWindow { store.openSavedProductsFromMenu() } }
                     .disabled(modalUIShown)
@@ -125,7 +128,7 @@ struct PlinthApp: App {
                 // API Workbench and Activity are listed only when Settings › Advanced › Show developer tools is on.
                 ForEach(goMenuDestinations(showDeveloperTools: store.showDeveloperTools)) { item in
                     if item == sidebarDeveloperDestinations.first { Divider() }
-                    let button = Button(item.rawValue) { inMainWindow { store.goFromMenu(to: item) } }
+                    let button = Button(item.title) { inMainWindow { store.goFromMenu(to: item) } }
                         .disabled(modalUIShown)
                     if let key = goMenuShortcut(for: item) {
                         button.keyboardShortcut(KeyEquivalent(key), modifiers: .command)
@@ -221,7 +224,7 @@ let studioHelpSections: [StudioHelpSection] = [
         Open **Settings** (⌘,), paste your Slant 3D API key under **Account** and choose **Save & Test**. Then create or \
         choose a platform: a platform groups your uploads and orders. The key is kept in the macOS Keychain on this Mac. \
         **Print service**, at the top of **Account**, chooses Slant 3D (the default) or 3DAPI for Models’ next steps, \
-        Orders and Catalog; to print with 3DAPI, choose it there and save a 3DAPI key under **3DAPI**.
+        Orders and Catalogue; to print with 3DAPI, choose it there and save a 3DAPI key under **3DAPI**.
         """),
     StudioHelpSection(title: "Models", body: """
         Import an STL, OBJ or 3MF model with **File › Import Model…** (⌘O) or by dropping it on the window. Select a \
@@ -229,8 +232,8 @@ let studioHelpSections: [StudioHelpSection] = [
         **New Order Draft…**, or with 3DAPI through **Get 3DAPI Quote…** and **Order with 3DAPI…**. The tools under \
         **Improve for printing** work on STL models and always save a separate copy: the original is never changed. \
         **Show Overhangs** in the preview tints faces steeper than Slant’s 50° limit, with the model as its file is \
-        oriented; it only changes the picture. **Show**, beside **On this Mac**, lists only originals or copies and \
-        sorts the list, and **Remove Copies of This Model…** clears a model’s copies at once (**Edit › Undo** brings \
+        oriented; it only changes the picture. The **Show** menu above the model list shows only originals, copies, \
+        uploaded models or those ready to upload, and sorts the list, and **Remove Copies of This Model…** clears a model’s copies at once (**Edit › Undo** brings \
         them back). If a saved product’s material runs out of stock, a notice at the top of the window names it; \
         **Dismiss** hides it until another product or material is affected.
         """),
@@ -241,10 +244,11 @@ let studioHelpSections: [StudioHelpSection] = [
         or Shopify export after you confirm them. When Import Orders or **Pay Several Drafts** looks for an order \
         already placed for the same sale, Plinth also reads your 300 newest orders on Slant, so the check still works \
         when the list shows only drafts; each sheet says how far back it checked. If Slant changes its API after this version of Plinth was made, a \
-        notice at the top of Orders says so; Plinth keeps working as before and only tells you. With 3DAPI as the \
-        print service, Orders lists your 3DAPI orders instead.
+        notice at the top of Orders says so; Plinth keeps working as before and only tells you. **Tracking for Your \
+        Shop…** lists loaded orders’ tracking to copy into your shop; **Load Recent Orders** there also reads your 300 \
+        newest orders, for that sheet only. With 3DAPI as the print service, Orders lists your 3DAPI orders instead.
         """),
-    StudioHelpSection(title: "Catalog", body: """
+    StudioHelpSection(title: "Catalogue", body: """
         Browse Slant’s materials, components and stationery, or 3DAPI’s materials while 3DAPI is your print service.
         """),
     StudioHelpSection(title: "Design tools (optional)", body: """
@@ -279,7 +283,7 @@ let studioHelpSections: [StudioHelpSection] = [
         """),
     StudioHelpSection(title: "Keyboard shortcuts", body: """
         ⌘N New Order Draft… (New 3DAPI Order… with 3DAPI) · ⌘O Import Model… · ⇧⌘E Export Model… · ⌘R Refresh · \
-        ⌘1 Models · ⌘2 Orders · ⌘3 Catalog · ⌘0 Plinth window · ⌘, Settings
+        ⌘1 Models · ⌘2 Orders · ⌘3 Catalogue · ⌘0 Plinth window · ⌘, Settings
         """)
 ]
 

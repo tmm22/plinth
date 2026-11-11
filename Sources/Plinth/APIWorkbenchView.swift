@@ -41,7 +41,7 @@ struct APIWorkbenchView: View {
                 Text("\(store.endpoints.count) documented operations").font(.caption).foregroundStyle(.secondary).padding(15)
             }.frame(minWidth: 245, idealWidth: 290, maxWidth: 360)
             if let selected { EndpointView(endpoint: selected).id(selected.id).frame(minWidth: 560) }
-            else { EmptyState(icon: "terminal", title: "The complete API workspace", detail: "Choose an operation to explore its parameters, edit a request, and inspect the live response. All requests go to Slant’s production API.") }
+            else { EmptyState(icon: "terminal", title: "Choose an operation", detail: "Pick one in the list to explore its parameters, edit a request, and inspect the live response. All requests go to Slant’s production API.") }
         }.onAppear { if store.selectedEndpointID == nil { store.selectedEndpointID = store.endpoints.first { $0.path == "/usage" }?.id } }
     }
 }

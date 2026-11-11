@@ -11,6 +11,9 @@ func savedProductStockNoticeScreen(destination: Destination, service: PrintServi
     }
 }
 
+/// Names the materials notice in its Dismiss button's accessibility label ("Dismiss Materials Notice").
+let savedProductStockNoticeAccessibilityName = "Materials Notice"
+
 /// At the top of the main window when a saved product can't be ordered because a material is out of stock or no
 /// longer offered (MaterialStock.swift). Advice only: no default button, nothing sent, nothing changed; Open Saved
 /// Products… only opens the sheet, and Dismiss hides it until another product or material is affected.
@@ -36,10 +39,7 @@ struct SavedProductStockNotice: View {
             if shown, let headline = savedProductStockNoticeHeadline(issues) {
                 let lines = [headline, savedProductStockNoticeMaterialsLine(issues),
                              savedProductStockNoticeAdvice(count: issues.count, materialsAt: materials.at)].compactMap { $0 }
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                        .accessibilityHidden(true)
+                StudioNoticeStrip(.warning) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(lines[0]).font(.callout)
                             .lineLimit(4)
@@ -50,15 +50,13 @@ struct SavedProductStockNotice: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    Spacer(minLength: 8)
+                } buttons: {
                     Button("Open Saved Products…") { store.openSavedProducts() }
                         .help("See and edit your saved products. Nothing is changed or sent.")
                     Button("Dismiss") { watch.dismiss(pairs) }
                         .help("Hide this until another saved product or material is affected")
+                        .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Dismiss", notice: savedProductStockNoticeAccessibilityName))
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color.orange.opacity(0.08))
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel(lines.joined(separator: " "))
             }

@@ -88,7 +88,7 @@ struct PlatformsSettingsSections: View {
             if let error = state.error {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.studioWarning)
             }
             if store.platformLimitReached {
                 Text("This account already has \(maxPlatforms) enabled platforms. Disable one before creating another.")
@@ -204,7 +204,7 @@ struct PlatformsSettingsSheets: ViewModifier {
 
     private var enableCandidateSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Enable platform").font(.title3.weight(.semibold))
+            Text("Enable platform").font(.title2.weight(.bold))
             if let candidate = state.enableCandidate {
                 Text(displayName(for: candidate, fallback: "Untitled platform")).font(.headline)
                 Text(candidate.id).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
@@ -212,12 +212,13 @@ struct PlatformsSettingsSheets: ViewModifier {
                     Text(reason).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            // Sheet footers: Enable writes to Slant, so it sits apart from the dismiss button.
             HStack {
-                Spacer()
                 // Nothing to enable: the sheet only informs, so it closes.
                 Button(enableBlockedReason == nil ? "Cancel" : "Close") { state.confirmEnable = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
+                Spacer()
                 Button("Enable") {
                     Task {
                         state.error = nil
@@ -362,7 +363,7 @@ struct PlatformDetailSheet: View {
         if let actionError {
             Label(actionError, systemImage: "exclamationmark.triangle")
                 .font(.callout)
-                .foregroundStyle(.orange)
+                .foregroundStyle(.studioWarning)
         }
     }
 
@@ -384,7 +385,7 @@ struct PlatformDetailSheet: View {
                 }
                 .disabled(store.busy)
                 Button("Disable…") { confirmDisable = true }
-                    .tint(.red)
+                    .tint(.studioError)
                     .disabled(store.busy)
                 if !livePlatform.string("webhookURL", "webhookUrl").isEmpty {
                     Button("Send Test Webhook") {
@@ -415,7 +416,7 @@ struct PlatformDetailSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Webhook secret").font(.headline)
             if secretUncertain {
-                Text(webhookSecretUncertainNote).font(.caption).foregroundStyle(.orange)
+                Text(webhookSecretUncertainNote).font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             } else if displayedSecret.isEmpty {
                 Text("Hidden · rotate to mint a new secret.").font(.caption).foregroundStyle(.secondary)
@@ -447,7 +448,7 @@ struct PlatformDetailSheet: View {
             }
             if rotatedSecret != nil {
                 Text("Update your webhook receiver with the new secret now. The old one stops working.")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(.studioWarning)
             }
         }
     }
@@ -530,16 +531,17 @@ struct PlatformDetailSheet: View {
 
     private var disableConfirmSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Disable this platform?").font(.title3.weight(.semibold))
+            Text("Disable this platform?").font(.title2.weight(.bold))
             Text("Disabled platforms disappear from this list. You can re-enable it here or by its ID. Its name, shop address and webhook URL stay reserved, so a new platform can’t reuse them.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             actionErrorLabel
+            // Sheet footers: Disable Platform writes to Slant, so it sits apart from Cancel.
             HStack {
-                Spacer()
                 Button("Cancel") { confirmDisable = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
+                Spacer()
                 Button("Disable Platform", role: .destructive) {
                     Task {
                         actionError = nil
@@ -559,15 +561,16 @@ struct PlatformDetailSheet: View {
 
     private var resendAllConfirmSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Resend all failed deliveries?").font(.title3.weight(.semibold))
+            Text("Resend all failed deliveries?").font(.title2.weight(.bold))
             Text("Slant tries once more to deliver this platform’s failed webhooks, oldest first, up to 25 at a time. If more remain, Resend Remaining sends the next batch.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // Sheet footers: Resend All sends from Slant, so it sits apart from Cancel.
             HStack {
-                Spacer()
                 Button("Cancel") { confirmResendAll = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
+                Spacer()
                 Button("Resend All") {
                     Task {
                         if let result = await perform({ await store.resendDeadWebhooks(platformID: record.id) }) {
@@ -588,18 +591,19 @@ struct PlatformDetailSheet: View {
 
     private var rotateSecretSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Rotate webhook secret").font(.title3.weight(.semibold))
+            Text("Rotate webhook secret").font(.title2.weight(.bold))
             Text("Type rotate to confirm secret rotation. The previous secret stops working immediately.")
                 .foregroundStyle(.secondary)
             TextField("rotate", text: $rotateTyped)
                 .textFieldStyle(.roundedBorder)
                 .disabled(store.busy)
             actionErrorLabel
+            // Sheet footers: Rotate Secret writes to Slant, so it sits apart from Cancel.
             HStack {
-                Spacer()
                 Button("Cancel") { rotatePrompt = false }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
+                Spacer()
                 Button("Rotate Secret") {
                     Task {
                         if let secret = await perform({ await store.rotateWebhookSecret(platformID: record.id) }) {
@@ -827,17 +831,19 @@ struct PlatformComposerView: View {
                     }
                 }
                 if let validation {
-                    Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label(validation, systemImage: "exclamationmark.triangle").foregroundStyle(.studioWarning)
                 }
             }.formStyle(.grouped)
             Divider()
+            // Sheet footers: Create Platform and Save Changes write to Slant, so Cancel sits at the leading edge, apart
+            // from them.
             HStack {
-                Spacer()
-                if store.busy { ProgressView().controlSize(.small) }
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(store.busy)
                     .help(store.busy ? "Working…" : "Cancel")
+                Spacer()
+                if store.busy { ProgressView().controlSize(.small) }
                 // Never the default button and no shortcut: both write to Slant's production API (POST or PATCH
                 // /platforms), and a platform can only be disabled afterwards, never deleted. Return in a field must
                 // not send it.

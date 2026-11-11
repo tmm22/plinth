@@ -52,11 +52,11 @@ struct AnthropicSettingsSection: View {
                 Text(reason).font(.caption).foregroundStyle(.secondary)
             }
             if let status {
-                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.studioSuccess)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let problem {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } header: {
@@ -66,7 +66,7 @@ struct AnthropicSettingsSection: View {
                 .settingsFooterLayout()
         }
         .confirmationDialog("Remove the Anthropic key?", isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { remove() }
+            Button("Remove Key", role: .destructive) { remove() }
             Button("Keep Key", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {

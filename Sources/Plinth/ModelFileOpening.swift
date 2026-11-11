@@ -47,7 +47,18 @@ func queuedImportNote(count: Int) -> String? {
         guard !pending.isEmpty else { return }
         // Show the window first: an error alert or a review left open in a closed window would otherwise hold the
         // import back with nothing on screen. Raising it doesn't dismiss or act on anything presented in it.
-        revealMainWindow()
+        if NSApp.isHidden { NSApp.unhide(nil) }
+        let delay = externalOpenRevealDelay(mainWindowOpen: existingMainWindow() != nil)
+        if delay == 0 {
+            revealMainWindow()
+        } else {
+            // The window was closed: SwiftUI opens one for the open event itself (PlinthApp.swift), so wait for it
+            // and raise that one; only if none has appeared by then is one asked for, so there is never a second.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                revealMainWindow()
+            }
+        }
         scheduleDrain()
     }
 
@@ -162,6 +173,16 @@ func queuedImportNote(count: Int) -> String? {
 
 let mainWindowID = "main"
 
+/// The external events the open main window takes (`handlesExternalEvents(preferring:allowing:)`): all of them, so a
+/// model opened from Finder goes to the window that is already open instead of SwiftUI opening a second one.
+let mainWindowExternalEvents: Set<String> = ["*"]
+
+/// How long a Finder open waits before raising the main window: at once while it is open; after it was closed, long
+/// enough for the window SwiftUI opens for the event to appear, so Plinth doesn't ask for a second one.
+func externalOpenRevealDelay(mainWindowOpen: Bool) -> TimeInterval {
+    mainWindowOpen ? 0 : 1
+}
+
 /// Whether a window could be the main window: not a panel (open and save panels, the About panel), the Settings
 /// window or the Help window, which can all become main too.
 func isMainStudioWindowCandidate(identifier: String?, isPanel: Bool, canBecomeMain: Bool) -> Bool {
@@ -209,6 +230,20 @@ func ordersExportMenuEnabled(destination: Destination, ordersLoaded: Bool, sheet
     destination == .orders && ordersLoaded && !sheetPresented
 }
 
+/// Whether File › Export Orders…, Tracking for Your Shop… and Spending Report… are enabled while Slant is the print
+/// service: only with orders loaded and nothing modal shown. Export Orders… saves the rows the Orders list shows (its
+/// search and filters), so it needs Orders on screen; Tracking for Your Shop… and Spending Report… work on every loaded
+/// order, so they open from any screen and show Orders first. Refresh (`.reload`) has its own rule.
+func slantOrderToolMenuEnabled(_ tool: DapiOrderToolRequest, destination: Destination, ordersLoaded: Bool,
+                               modalUIShown: Bool) -> Bool {
+    guard ordersLoaded, !modalUIShown else { return false }
+    switch tool {
+    case .exportOrders: return destination == .orders
+    case .trackingForYourShop, .spendingReport: return true
+    case .reload: return false
+    }
+}
+
 extension StudioStore {
     /// File menu commands act only when no sheet, alert or dialog is up; their disabled state can lag behind AppKit.
     var menuCommandsBlockedByModalUI: Bool { isPresentingSheet || appIsPresentingModalUI() }
@@ -243,6 +278,16 @@ extension StudioStore {
         guard !menuCommandsBlockedByModalUI, ordersExportMenuEnabled(destination: destination, ordersLoaded: !orders.isEmpty,
                                                                      sheetPresented: false) else { return }
         ordersExportRequest += 1
+    }
+
+    /// File › Spending Report… while Slant is the print service: shows Orders, as Tracking for Your Shop… does, then
+    /// opens the report for the loaded orders. Nothing is sent; nothing while anything modal is shown.
+    func openSpendingReportFromMenuShowingOrders() {
+        guard slantOrderMenuCommandsAvailable(service: PrintServiceChoice.shared.service), !menuCommandsBlockedByModalUI,
+              slantOrderToolMenuEnabled(.spendingReport, destination: destination, ordersLoaded: !orders.isEmpty,
+                                        modalUIShown: false) else { return }
+        destination = .orders
+        openSpendingReportFromMenu()
     }
 
     /// File › Saved Products…: opens the local product list only (no request), and only when nothing modal is shown.

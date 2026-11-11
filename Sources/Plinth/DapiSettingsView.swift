@@ -55,11 +55,11 @@ struct DapiSettingsSection: View {
                 Text(reason).font(.caption).foregroundStyle(.secondary)
             }
             if let status {
-                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.studioSuccess)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let problem {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } header: {
@@ -82,8 +82,10 @@ struct DapiSettingsSection: View {
             if connection.account != nil, !testing { problem = reason }
         }
         .confirmationDialog("Remove the 3DAPI key?", isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { removeKey() }
+            Button("Remove Key", role: .destructive) { removeKey() }
+            // Never the destructive button: Return keeps the key.
             Button("Keep Key", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("This removes the 3DAPI API key from the Keychain on this Mac. Your 3DAPI account, its quotes and its orders are unchanged.")
         }

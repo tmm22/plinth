@@ -78,7 +78,7 @@ struct ShopifySettingsSection: View {
             } else {
                 TextField("Store address", text: $shopField, prompt: Text("your-store.myshopify.com"))
                 if !shopField.trimmingCharacters(in: .whitespaces).isEmpty, shopifyShopDomain(shopField) == nil {
-                    Text("Enter the store’s myshopify.com address, such as your-store.myshopify.com.").font(.caption).foregroundStyle(.orange)
+                    Text("Enter the store’s myshopify.com address, such as your-store.myshopify.com.").font(.caption).foregroundStyle(.studioWarning)
                 }
                 Picker("Sign in with", selection: $kind) {
                     ForEach(ShopifySignInKind.allCases) { Text($0.title).tag($0) }
@@ -97,11 +97,11 @@ struct ShopifySettingsSection: View {
                 }
             }
             if let status {
-                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.studioSuccess)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let problem {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } header: {
@@ -119,7 +119,9 @@ struct ShopifySettingsSection: View {
         }
         .confirmationDialog("Disconnect Shopify?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
             Button("Disconnect", role: .destructive) { disconnect() }
+            // Never the destructive button: Return keeps the connection.
             Button("Keep Connected", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("This removes the Shopify details from the Keychain on this Mac. Your store and its app are unchanged.")
         }

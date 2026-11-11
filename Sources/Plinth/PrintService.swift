@@ -136,10 +136,10 @@ func printServiceChangeBlockedReason(dapiOrderSessionReason: String?, writesInFl
 }
 
 /// Settings › Account › Print service's footer.
-let printServiceSettingsFooter = "Choose who prints your orders. This changes Models’ next steps, the Orders section and Catalog’s materials; your model library and Get 3DAPI Quote… stay as they are. The two services never share data: no price, ID or file from one is sent to the other."
+let printServiceSettingsFooter = "Choose who prints your orders. This changes Models’ next steps, the Orders section and Catalogue’s materials; your model library and Get 3DAPI Quote… stay as they are. The two services never share data: no price, ID or file from one is sent to the other."
 
 /// Shown under the picker while 3DAPI is chosen without a saved 3DAPI key.
-let printServiceDapiKeyMissingNote = "Add your 3DAPI integrator key under 3DAPI below to quote and order with 3DAPI."
+let printServiceDapiKeyMissingNote = "Add a 3DAPI key (from an integrator account) under 3DAPI below to quote and order with 3DAPI."
 
 /// Settings › Account's first section: the print service picker. A change goes through
 /// `PrintServiceChoice.select(_:blockedReason:)` with the reason computed at the moment of the change.
@@ -164,17 +164,18 @@ struct PrintServiceSettingsSection: View {
 
     var body: some View {
         Section {
-            Picker("Print service", selection: Binding(get: { choice.service }, set: { pick($0) })) {
+            // The section is headed Print service; the row says what the choice does rather than repeating it.
+            Picker("Print with", selection: Binding(get: { choice.service }, set: { pick($0) })) {
                 ForEach(PrintService.allCases) { service in
                     Text(service.displayName).tag(service)
                 }
             }
             .disabled(blocked != nil)
-            .help(blocked ?? "Choose the print service for Models, Orders and Catalog")
+            .help(blocked ?? "Choose the print service for Models, Orders and Catalogue")
             if let blocked {
                 Text(blocked).font(.caption).foregroundStyle(.secondary)
             } else if let refusal {
-                Label(refusal, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                Label(refusal, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
             }
             if choice.service == .dapi, !dapi.isConfigured {
                 Label(printServiceDapiKeyMissingNote, systemImage: "key")
@@ -298,7 +299,7 @@ func dapiModelsNextStepStatus(_ step: DapiModelsNextStep, hasReadyQuote: Bool = 
     case .needsModel: return "Import a model to quote and order it with 3DAPI."
     case .needsLocalCopy: return "3DAPI prints models from this Mac. Download this model into the library first."
     case .fileMissing: return "This model’s file is missing from the library, so 3DAPI can’t quote or print it. Import it again."
-    case .needsKey: return "Add your 3DAPI integrator key in Settings › Account to quote and order with 3DAPI."
+    case .needsKey: return "Add a 3DAPI key in Settings › Account to quote and order with 3DAPI."
     case .invalidQuantity: return "Enter a whole-number quantity from 1 to 10,000."
     case .ready: return dapiModelsReadyStatus(hasReadyQuote: hasReadyQuote, orderingProblem: orderingProblem)
     }

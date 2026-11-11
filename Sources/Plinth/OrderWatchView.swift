@@ -3,6 +3,9 @@ import AppKit
 
 // MARK: - Orders: "Since you last looked"
 
+/// Names the order updates notice in its buttons' accessibility labels ("Dismiss Order Updates Notice").
+let orderWatchNoticeAccessibilityName = "Order Updates Notice"
+
 /// Above the orders list while checks have found changes the seller hasn't seen. Changes stay until Show or Dismiss,
 /// so glancing at Orders never loses them. Show reloads the newest orders (a user action, like Show All Orders) and
 /// focuses the list on the changed ones.
@@ -15,15 +18,12 @@ struct OrderWatchBanner: View {
         let changes = watch.unseenChanges
         if !changes.isEmpty {
             let summary = orderWatchSummaryText(changes)
-            HStack(spacing: 10) {
-                Image(systemName: "bell.badge")
-                    .foregroundStyle(Color.studioAccent)
-                    .accessibilityHidden(true)
+            StudioNoticeStrip(.information) {
                 (Text("Since you last looked: ").fontWeight(.semibold) + Text(summary))
                     .font(.callout)
                     .lineLimit(2)
                     .help(summary)
-                Spacer(minLength: 8)
+            } buttons: {
                 // Shipped orders have tracking to copy into the shop. Opens the local list only; nothing is sent.
                 if orderWatchChangesIncludeShipped(changes) {
                     Button("Tracking for Your Shop…") { store.openShopFollowUpFromMenu() }
@@ -34,12 +34,11 @@ struct OrderWatchBanner: View {
                 Button("Show") { onShow(Set(changes.map(\.id))) }
                     .disabled(!store.hasKey || store.busy)
                     .help("Reload the newest orders and list the ones that changed")
+                    .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Show", notice: orderWatchNoticeAccessibilityName))
                 Button("Dismiss") { watch.acknowledge() }
                     .help("Mark these changes as seen")
+                    .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Dismiss", notice: orderWatchNoticeAccessibilityName))
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(Color.studioAccent.opacity(0.08))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Since you last looked: \(summary)")
         }
@@ -120,7 +119,9 @@ struct OrderWatchSettingsSection: View {
         }
         .confirmationDialog("Forget saved order statuses?", isPresented: $confirmForget, titleVisibility: .visible) {
             Button("Forget Statuses", role: .destructive) { watch.forgetSavedStatuses() }
+            // Never the destructive button: Return keeps the statuses.
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("Unseen changes are cleared. The next check records your orders’ statuses again without reporting them as changes.")
         }
