@@ -85,6 +85,7 @@ struct SellerAddressSettingsSection: View {
         .confirmationDialog("Remove your saved address?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove Address", role: .destructive) { remove() }
             Button("Keep Address", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("It is deleted from this Mac. Drafts you already created keep the address they were sent with.")
         }

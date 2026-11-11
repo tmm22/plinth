@@ -39,6 +39,9 @@ func queuedImportNote(count: Int) -> String? {
     @Published private(set) var isWaiting = false
     private weak var store: StudioStore?
     private var drainScheduled = false
+    /// Set while a Finder open waits for the window SwiftUI opens for it (`externalOpenRevealDelay`): nothing else asks
+    /// for a window meanwhile, so the two can't both open one.
+    private var revealPending = false
 
     /// Launch Services only delivers the declared STL, OBJ and 3MF types. Anything else is dropped quietly rather than
     /// raising an alert that could appear over a review sheet.
@@ -54,8 +57,10 @@ func queuedImportNote(count: Int) -> String? {
         } else {
             // The window was closed: SwiftUI opens one for the open event itself (PlinthApp.swift), so wait for it
             // and raise that one; only if none has appeared by then is one asked for, so there is never a second.
+            revealPending = true
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                revealPending = false
                 revealMainWindow()
             }
         }
@@ -167,7 +172,10 @@ func queuedImportNote(count: Int) -> String? {
         pending = []
         if isWaiting { isWaiting = false }
         for url in urls { store.importModel(url, origin: .imported) }
-        if existingMainWindow() == nil { revealMainWindow() }
+        // While a delayed reveal waits for SwiftUI's window, asking for one here would make a second.
+        if externalOpenShouldRevealAfterImport(mainWindowOpen: existingMainWindow() != nil, revealPending: revealPending) {
+            revealMainWindow()
+        }
     }
 }
 
@@ -181,6 +189,12 @@ let mainWindowExternalEvents: Set<String> = ["*"]
 /// enough for the window SwiftUI opens for the event to appear, so Plinth doesn't ask for a second one.
 func externalOpenRevealDelay(mainWindowOpen: Bool) -> TimeInterval {
     mainWindowOpen ? 0 : 1
+}
+
+/// Whether the queue asks for a window after importing: only when none is open and no delayed reveal is still waiting
+/// for the window SwiftUI opens for the event (that reveal asks for one itself if none has appeared).
+func externalOpenShouldRevealAfterImport(mainWindowOpen: Bool, revealPending: Bool) -> Bool {
+    !mainWindowOpen && !revealPending
 }
 
 /// Whether a window could be the main window: not a panel (open and save panels, the About panel), the Settings

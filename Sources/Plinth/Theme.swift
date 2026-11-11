@@ -41,20 +41,24 @@ func wcagComposite(_ color: StudioRGB, opacity: Double, over background: StudioR
               color.blue * opacity + background.blue * (1 - opacity))
 }
 
-/// The app's own colours in light and dark mode. `ThemeContrastTests` pins every pair against the window, grouped-form
-/// and sidebar greys (WCAG 4.5:1 for text), so a change can't drift below it.
+/// The app's own colours in light and dark mode. `ThemeContrastTests` pins them (WCAG 1.4.3: 4.5:1 for text; 1.4.11:
+/// 3:1 for icons), so a change can't drift below: the status colours as text on every background below, on their badge
+/// tint and on the notice strip's; the accent as text on white and the window grey, as an icon on the sidebar grey, and
+/// under white button text.
 enum StudioPalette {
-    /// The accent, as text or an icon on white, and with white text on it (filled buttons): both at least 4.5:1.
-    static let accentLight = StudioRGB(206, 70, 8)
-    /// The dark accent: white text on it at least 3.5:1, and as text or an icon on the dark window at least 4.5:1.
+    /// The light accent: text on white and on the window grey, and white text on it (filled buttons), at least 4.5:1.
+    static let accentLight = StudioRGB(190, 64, 6)
+    /// The dark accent: as text on the dark window at least 4.5:1, and white text on it at least 3.5:1, about what
+    /// Apple's own dark-mode blue gives. One orange can't reach 4.5:1 both as text on a dark window and under white
+    /// text, so filled buttons get the lower figure in dark mode, as system buttons do.
     static let accentDark = StudioRGB(220, 98, 22)
     /// Warnings (amber/orange), successes (green) and errors (red) as text, icons and badge text.
-    static let warningLight = StudioRGB(160, 72, 6)
+    static let warningLight = StudioRGB(146, 64, 4)
     static let warningDark = StudioRGB(245, 158, 11)
-    static let successLight = StudioRGB(21, 110, 50)
-    static let successDark = StudioRGB(52, 199, 89)
-    static let errorLight = StudioRGB(180, 30, 30)
-    static let errorDark = StudioRGB(255, 130, 120)
+    static let successLight = StudioRGB(18, 100, 44)
+    static let successDark = StudioRGB(60, 210, 100)
+    static let errorLight = StudioRGB(170, 28, 28)
+    static let errorDark = StudioRGB(255, 150, 140)
 
     /// What the colours are checked against: white, the window and grouped-form grey, and the sidebar grey (light);
     /// the dark window, a dark grouped row and the dark sidebar (dark).

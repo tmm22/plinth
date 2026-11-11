@@ -19,7 +19,7 @@ final class ThemeContrastTests: XCTestCase {
     }
 
     /// Warning, success and error text reaches 4.5:1 on every light and dark background, and badge text on its own
-    /// 14% tint (on white and on the dark window) does too.
+    /// 14% tint over each of those backgrounds (a badge sits in the grey sidebar too) does as well.
     func testStatusColoursReachTextContrastInBothAppearances() {
         let pairs: [(String, StudioRGB, StudioRGB)] = [
             ("warning", StudioPalette.warningLight, StudioPalette.warningDark),
@@ -33,10 +33,14 @@ final class ThemeContrastTests: XCTestCase {
             for background in StudioPalette.darkBackgrounds {
                 XCTAssertGreaterThanOrEqual(wcagContrastRatio(dark, background), 4.5, "\(name) dark on \(background)")
             }
-            let lightBadge = wcagComposite(light, opacity: StudioPalette.badgeTintOpacity, over: white)
-            XCTAssertGreaterThanOrEqual(wcagContrastRatio(light, lightBadge), 4.5, "\(name) badge on white")
-            let darkBadge = wcagComposite(dark, opacity: StudioPalette.badgeTintOpacity, over: StudioPalette.darkBackgrounds[0])
-            XCTAssertGreaterThanOrEqual(wcagContrastRatio(dark, darkBadge), 4.5, "\(name) badge on the dark window")
+            for background in StudioPalette.lightBackgrounds {
+                let badge = wcagComposite(light, opacity: StudioPalette.badgeTintOpacity, over: background)
+                XCTAssertGreaterThanOrEqual(wcagContrastRatio(light, badge), 4.5, "\(name) badge on \(background)")
+            }
+            for background in StudioPalette.darkBackgrounds {
+                let badge = wcagComposite(dark, opacity: StudioPalette.badgeTintOpacity, over: background)
+                XCTAssertGreaterThanOrEqual(wcagContrastRatio(dark, badge), 4.5, "\(name) dark badge on \(background)")
+            }
             // Primary text stays readable on the warning notice strip's tint.
             let lightStrip = wcagComposite(light, opacity: StudioPalette.noticeTintOpacity, over: StudioPalette.lightBackgrounds[1])
             XCTAssertGreaterThanOrEqual(wcagContrastRatio(StudioRGB(0, 0, 0), lightStrip), 4.5)
@@ -51,8 +55,10 @@ final class ThemeContrastTests: XCTestCase {
     func testTheAccentKeepsContrastForFilledButtonsAndText() {
         XCTAssertGreaterThanOrEqual(wcagContrastRatio(white, StudioPalette.accentLight), 4.5, "white on the light accent")
         XCTAssertGreaterThanOrEqual(wcagContrastRatio(StudioPalette.accentLight, white), 4.5, "light accent text on white")
-        XCTAssertGreaterThanOrEqual(wcagContrastRatio(StudioPalette.accentLight, StudioPalette.lightBackgrounds[1]), 3,
-                                    "light accent icons on the window grey")
+        XCTAssertGreaterThanOrEqual(wcagContrastRatio(StudioPalette.accentLight, StudioPalette.lightBackgrounds[1]), 4.5,
+                                    "light accent text (links) on the window grey")
+        XCTAssertGreaterThanOrEqual(wcagContrastRatio(StudioPalette.accentLight, StudioPalette.lightBackgrounds[2]), 3,
+                                    "light accent icons on the sidebar grey")
         XCTAssertGreaterThanOrEqual(wcagContrastRatio(white, StudioPalette.accentDark), 3.5, "white on the dark accent")
         XCTAssertGreaterThanOrEqual(wcagContrastRatio(StudioPalette.accentDark, StudioPalette.darkBackgrounds[0]), 4.5,
                                     "dark accent text on the dark window")
@@ -97,6 +103,10 @@ extension ShellUXTests {
         XCTAssertGreaterThan(externalOpenRevealDelay(mainWindowOpen: false), 0)
         // Within the reveal's own two-second guard and well before a waiting menu command is dropped (5 s).
         XCTAssertLessThan(externalOpenRevealDelay(mainWindowOpen: false), 2)
+        // The import's own reveal never races the delayed one (it drains at about 0.35 s, before the delay ends).
+        XCTAssertFalse(externalOpenShouldRevealAfterImport(mainWindowOpen: false, revealPending: true))
+        XCTAssertTrue(externalOpenShouldRevealAfterImport(mainWindowOpen: false, revealPending: false))
+        XCTAssertFalse(externalOpenShouldRevealAfterImport(mainWindowOpen: true, revealPending: false))
     }
 
     // MARK: File menu order tools (Slant)
@@ -179,6 +189,37 @@ extension ShellUXTests {
             }
         }
         XCTAssertEqual(checked, 6, "Disconnect (Slant, Shopify), Remove Key (Claude, 3DAPI, Meshy/Tripo) and Forget Statuses")
+    }
+
+    /// Every destructive confirmation or alert in the app, not just the ones listed above: the safe button is the
+    /// Return default and the destructive one never is (AGENTS.md, "Destructive confirmations").
+    func testEveryDestructiveDialogInTheAppDefaultsToTheSafeButton() throws {
+        let folder = shellSourceURL("Theme.swift").deletingLastPathComponent()
+        let files = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".swift") }.sorted()
+        var checked = 0
+        var missing: [String] = []
+        for file in files {
+            let source = try String(contentsOf: folder.appendingPathComponent(file), encoding: .utf8)
+            let lines = source.components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() where line.contains(".confirmationDialog(") || line.contains(".alert(") {
+                // The dialog's buttons: up to its message (or the next modifier), at most 24 lines.
+                var buttons: [String] = []
+                for next in lines[(index + 1)...].prefix(24) {
+                    if next.contains("} message:") || next.trimmingCharacters(in: .whitespaces).hasPrefix("}\n.") { break }
+                    if next.contains(".confirmationDialog(") || next.contains(".alert(") { break }
+                    buttons.append(next)
+                }
+                guard buttons.contains(where: { $0.contains("role: .destructive") }) else { continue }
+                checked += 1
+                guard let shortcut = buttons.firstIndex(where: { $0.contains(".keyboardShortcut(.defaultAction)") }) else {
+                    missing.append("\(file):\(index + 1)"); continue
+                }
+                let owner = buttons[..<shortcut].last { $0.contains("Button(") } ?? ""
+                XCTAssertFalse(owner.contains("role: .destructive"), "\(file):\(index + 1): the destructive button is the default")
+            }
+        }
+        XCTAssertEqual(missing, [], "destructive dialogs without a safe Return default")
+        XCTAssertGreaterThanOrEqual(checked, 15, "the scan found the app's destructive dialogs")
     }
 
     func testShellWording() throws {
