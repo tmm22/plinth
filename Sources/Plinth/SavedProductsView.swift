@@ -57,6 +57,61 @@ func savedProductResolvedLinesSummary(_ lines: [OrderLine], localModels: [LocalM
         .joined(separator: ", ")
 }
 
+/// The Saved Products editor's per-line remove button's accessible name, naming the item: "Remove Bracket".
+func savedProductRemoveItemLabel(_ itemTitle: String) -> String { "Remove \(itemTitle)" }
+
+/// Under a Saved Products quantity that isn't a whole number from 1 to 10,000: the saved value doesn't change.
+func savedProductQuantityInvalidText(_ kept: Int) -> String {
+    "Enter a whole number from 1 to 10,000. The quantity stays \(kept) until then."
+}
+
+/// The quantity field's and stepper's accessible name: "Quantity of Bracket".
+func savedProductQuantityLabel(_ itemTitle: String) -> String { "Quantity of \(itemTitle)" }
+
+/// A saved product line's quantity: a text field read with `printQuantity` (so a typed or dictated "12", " 12 " or
+/// "1,000" works) beside a stepper, both 1 to 10,000. Text that isn't a quantity leaves the last good value in place and
+/// says so; Return or leaving the field puts that value back.
+struct SavedProductQuantityField: View {
+    @Binding var quantity: Int
+    let itemTitle: String
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                // The accessible name is the (hidden) title: in a grouped Form an extra accessibility label is read
+                // after it, doubling the name.
+                TextField(savedProductQuantityLabel(itemTitle), text: $text, prompt: Text("1"))
+                    .labelsHidden()
+                    .frame(width: 64)
+                    .monospacedDigit()
+                    .focused($focused)
+                    .onSubmit { text = "\(quantity)" }
+                    .onChange(of: text) { _, new in
+                        if let value = printQuantity(new), value != quantity { quantity = value }
+                    }
+                    .onChange(of: focused) { _, isFocused in
+                        if !isFocused, printQuantity(text) != quantity { text = "\(quantity)" }
+                    }
+                Stepper(savedProductQuantityLabel(itemTitle), value: $quantity, in: 1...10000)
+                    .labelsHidden()
+                    .accessibilityValue("\(quantity)")
+            }
+            .fixedSize()
+            if printQuantity(text) == nil {
+                Text(savedProductQuantityInvalidText(quantity))
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear { text = "\(quantity)" }
+        .onChange(of: quantity) { _, new in
+            if printQuantity(text) != new { text = "\(new)" }
+        }
+    }
+}
+
 /// Units sold as typed in the Add Saved Product popover: a whole number from 1 to 10,000, otherwise nil.
 func savedProductUnitsSold(_ text: String) -> Int? {
     orderImportQuantity(text)
@@ -283,13 +338,17 @@ struct SavedProductsSheet: View {
                 store.removeSavedProduct(id: product.id)
                 if selection == product.id { selection = nil }
             }
+            // Return cancels: deleting takes a click.
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: { _ in
             Text("The product is removed from Plinth. Models, drafts and orders aren’t changed, and nothing is sent to Slant.")
         }
-        .confirmationDialog("Discard changes to this product?", isPresented: $confirmDiscardEdit) {
+        .confirmationDialog("Discard changes to this product?", isPresented: $confirmDiscardEdit, titleVisibility: .visible) {
             Button("Discard Changes", role: .destructive) { finishEditing() }
+            // Return keeps editing.
             Button("Keep Editing", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("Your changes haven’t been saved.")
         }
@@ -300,7 +359,7 @@ struct SavedProductsSheet: View {
     private var productList: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Saved products").font(.title2.weight(.semibold))
+                Text("Saved products").font(.title2.weight(.bold))
                 Text("Products you sell often, ready to add to an order draft in one step. A product keeps its items, materials and SKU on this Mac — never prices or customer details.")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -371,7 +430,7 @@ struct SavedProductsSheet: View {
                 .font(.callout).foregroundStyle(.orange)
         }
         if catalogsLoading {
-            Text("Loading the catalog to check stock…").font(.caption).foregroundStyle(.secondary)
+            Text("Loading the catalogue to check stock…").font(.caption).foregroundStyle(.secondary)
         } else if let unchecked = savedProductsUncheckedCatalogsText(
             Array(Set(states.values.flatMap(\.uncheckedCatalogs))), loaded: store.loadedCatalogs) {
             Text(unchecked).font(.caption).foregroundStyle(.secondary)
@@ -409,7 +468,7 @@ struct SavedProductsSheet: View {
         let skuConflict = savedProductSKUConflict(product.wrappedValue.sku, for: product.wrappedValue.id, in: store.savedProducts)
         return VStack(spacing: 0) {
             Text(editorIsNew ? "New product" : "Edit product")
-                .font(.title2.weight(.semibold))
+                .font(.title2.weight(.bold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top], 16)
             Form {
@@ -444,15 +503,16 @@ struct SavedProductsSheet: View {
                 }
             }
             .formStyle(.grouped)
+            // Sheet footers: a local save, so Cancel sits just before Save Product in the trailing group.
             HStack {
-                Button("Cancel", role: .cancel) { requestCancelEdit() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
                 if let saveError {
                     Text(saveError).font(.caption).foregroundStyle(.orange).lineLimit(2)
                 } else if let blockedReason {
                     Text(blockedReason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
+                Spacer()
+                Button("Cancel", role: .cancel) { requestCancelEdit() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Save Product") { save() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -467,6 +527,8 @@ struct SavedProductsSheet: View {
 
     @ViewBuilder
     private func lineEditor(_ line: Binding<SavedProductLine>, canRemove: Bool, remove: @escaping () -> Void) -> some View {
+        let itemTitle = savedProductLineTitle(line.wrappedValue, localModels: store.localModels,
+                                              components: store.components, stationery: store.stationery)
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Picker("Type", selection: Binding(
@@ -479,20 +541,17 @@ struct SavedProductsSheet: View {
                     }
                 }
                 .frame(width: 210)
-                // Text plus a label-less stepper: in a grouped Form a labelled Stepper is drawn as a form row, which put
-                // the arrows at the far edge away from the number.
-                HStack(spacing: 4) {
-                    Text("Quantity: \(line.wrappedValue.quantity)").monospacedDigit()
-                    Stepper("Quantity", value: line.quantity, in: 1...10000)
-                        .labelsHidden()
-                        .accessibilityValue("\(line.wrappedValue.quantity)")
+                // A typed (or dictated) number with a label-less stepper beside it: in a grouped Form a labelled Stepper
+                // is drawn as a form row, which put the arrows at the far edge away from the number.
+                SavedProductQuantityField(quantity: line.quantity, itemTitle: itemTitle)
+                Spacer(minLength: 12)
+                Button(role: .destructive, action: remove) {
+                    Label("Remove", systemImage: "minus.circle")
                 }
-                .fixedSize()
-                Spacer(minLength: 0)
-                Button(role: .destructive, action: remove) { Image(systemName: "minus.circle") }
-                    .accessibilityLabel("Remove item")
-                    .help(canRemove ? "Remove item" : "A product needs at least one item.")
-                    .disabled(!canRemove)
+                .buttonStyle(.bordered)
+                .accessibilityLabel(savedProductRemoveItemLabel(itemTitle))
+                .help(canRemove ? "Remove this item from the product" : "A product needs at least one item.")
+                .disabled(!canRemove)
             }
             // Explained once, in the Items footer.
             Toggle("Once per order", isOn: line.perOrder)

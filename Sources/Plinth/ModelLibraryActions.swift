@@ -407,7 +407,7 @@ struct RenameModelSheet: View {
     var body: some View {
         let problem = modelNameProblem(name)
         VStack(alignment: .leading, spacing: 14) {
-            Text("Rename model").font(.title3.weight(.semibold))
+            Text("Rename model").font(.title2.weight(.bold))
             TextField("Model name", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Model name")
@@ -417,10 +417,11 @@ struct RenameModelSheet: View {
             if let note = renameUploadedNote(isUploaded: model.remoteID != nil) {
                 Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            // Sheet footers: a local edit, so Cancel sits just before Rename.
             HStack {
+                Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Spacer()
                 Button("Rename", action: save)
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)

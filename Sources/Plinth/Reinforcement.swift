@@ -82,6 +82,9 @@ enum ReinforcementKind: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Why Reinforce refused a mesh, in the mesh check's plain words (MeshHealth.swift), with Plinth's own fix first.
+let reinforcementNeedsRepairMessage = "Reinforce needs a closed surface whose faces all point outward, and this model has gaps, edges shared by more than two faces, or faces pointing the wrong way. Use Repair & Save Copy, in Improve for printing, then reinforce the repaired copy. If the repaired copy still has problems, fix them in your CAD tool."
+
 /// A Reinforce copy's name: "Name (internal walls)", or "Name (part 1)" and "Name (part 2)" for a split.
 func reinforcementCopyName(_ name: String, kind: ReinforcementKind, part: Int? = nil) -> String {
     studioCopyName(name, suffix: part.map { "\(kind.fileSuffix) \($0)" } ?? kind.fileSuffix)
@@ -209,7 +212,7 @@ extension STLMesh {
         var edgeDirections: [MeshEdge: Int] = [:]
         for i in stride(from: 0, to: vertices.count, by: 9) {
             let points = [0, 3, 6].map { j in Vector(Double(vertices[i+j]), Double(vertices[i+j+1]), Double(vertices[i+j+2])) }
-            guard let polygon = Polygon(points) else { throw StudioError("Use a closed solid STL for reinforcement.") }
+            guard let polygon = Polygon(points) else { throw StudioError(reinforcementNeedsRepairMessage) }
             polygons.append(polygon)
             for j in 0..<3 {
                 let a = point(points[j]), b = point(points[(j+1)%3])
@@ -219,10 +222,10 @@ extension STLMesh {
             }
         }
         guard edgeCounts.values.allSatisfy({ $0 == 2 }), edgeDirections.values.allSatisfy({ $0 == 0 }) else {
-            throw StudioError("Use a consistently oriented, closed manifold STL for reinforcement. Prepare this mesh in CAD first.")
+            throw StudioError(reinforcementNeedsRepairMessage)
         }
         let solid = Mesh(planarizedPolygons() ?? polygons)
-        guard solid.isWatertight, solid.signedVolume > 0 else { throw StudioError("Use a closed, outward-facing solid STL for reinforcement.") }
+        guard solid.isWatertight, solid.signedVolume > 0 else { throw StudioError(reinforcementNeedsRepairMessage) }
         return solid
     }
 

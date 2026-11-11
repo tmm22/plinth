@@ -525,7 +525,12 @@ struct ListingImagesSheet: View {
                     .padding(.vertical, 12)
                 Divider()
             }
+            // Sheet footers: a local save, so the dismiss button sits just before Export… in the trailing group.
             HStack {
+                if let summary = job.summary, !summary.saved.isEmpty, !job.running {
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(summary.saved) }
+                }
+                Spacer()
                 if job.running {
                     Button("Stop") { job.stop() }
                         .keyboardShortcut(.cancelAction)
@@ -533,10 +538,6 @@ struct ListingImagesSheet: View {
                     // Close once images are saved: there's nothing left to abandon.
                     Button(job.summary == nil ? "Cancel" : "Close") { dismiss() }
                         .keyboardShortcut(.cancelAction)
-                }
-                Spacer()
-                if let summary = job.summary, !summary.saved.isEmpty, !job.running {
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(summary.saved) }
                 }
                 Button("Export…") { chooseFolderAndExport() }
                     .buttonStyle(.borderedProminent)

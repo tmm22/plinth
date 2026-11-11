@@ -254,7 +254,7 @@ func savedProductsUncheckedCatalogsText(_ kinds: [Destination], loaded: Set<Dest
     let empty = ordered.filter { loaded.contains($0) }
     var sentences: [String] = []
     if !notLoaded.isEmpty {
-        let reason = notLoaded.count == 1 ? "that catalog isn’t loaded" : "those catalogs aren’t loaded"
+        let reason = notLoaded.count == 1 ? "that catalogue isn’t loaded" : "those catalogues aren’t loaded"
         sentences.append("Stock and availability weren’t checked for \(list(notLoaded)), because \(reason).")
     }
     if !empty.isEmpty {

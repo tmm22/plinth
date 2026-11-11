@@ -135,7 +135,9 @@ struct ModelsView: View {
                 }
                 .disabled(!store.hasKey || store.busy)
             }
+            // Return cancels: removing and deleting take a click.
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: { target in
             Text(modelRemovalMessage(target))
         }
@@ -185,7 +187,22 @@ struct ModelsView: View {
 
     // MARK: Sidebar
 
+    /// The library list with its Show menu in a bar above it: a full-size target outside the collapsible
+    /// "On this Mac" heading, so a slightly missed click can't fold the list away.
     private var librarySidebar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                libraryFilterMenu
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            Divider()
+            libraryList
+        }
+    }
+
+    private var libraryList: some View {
         List(selection: $selection) {
             Section {
                 if let note = libraryUnreadableEntriesNote(store.libraryCarriedEntries.count) {
@@ -207,7 +224,9 @@ struct ModelsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                         if libraryFilter != .all {
                             Button("Show All Models") { libraryFilter = .all }
-                                .controlSize(.small)
+                                .buttonStyle(.bordered)
+                                .controlSize(.regular)
+                                .padding(.top, 2)
                         }
                     }
                 }
@@ -245,11 +264,7 @@ struct ModelsView: View {
                     .onDrag { ModelDragExport.itemProvider(for: model) }
                 }
             } header: {
-                HStack {
-                    Text("On this Mac")
-                    Spacer()
-                    libraryFilterMenu
-                }
+                Text("On this Mac")
             }
             Section("Uploaded to Slant") {
                 if !store.filesLoaded && store.files.isEmpty {
@@ -295,8 +310,7 @@ struct ModelsView: View {
                     Button(showHiddenFiles ? "Stop Showing Hidden Models" : "Show \(hiddenCloudCount) Hidden") {
                         showHiddenFiles.toggle()
                     }
-                    .buttonStyle(.link)
-                    .font(.caption)
+                    .buttonStyle(.bordered)
                 }
                 if store.hasKey {
                     // After a load that found nothing, "No models uploaded yet." stands alone; Refresh reloads.
@@ -333,13 +347,16 @@ struct ModelsView: View {
                 store.removeLocalModels(ids: current, undoManager: undoManager)
             }
             .disabled(ids.isEmpty || ids.contains(where: isUploading))
+            // Return cancels: removing takes a click.
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: { originalID in
             Text(pendingCopiesRemovalMessage(originalID))
         }
     }
 
-    /// Show (filter) and Sort By, in the "On this Mac" heading. The filter lasts the session; the sort is remembered.
+    /// Show (filter) and Sort By, in the bar above the library list. The filter lasts the session; the sort is
+    /// remembered.
     private var libraryFilterMenu: some View {
         Menu {
             Picker("Show", selection: $libraryFilter) {
@@ -352,14 +369,16 @@ struct ModelsView: View {
             .pickerStyle(.inline)
         } label: {
             // A text label as well as the icon: a larger target than the icon alone, and it names the active filter.
-            Label(libraryFilter == .all ? "Show" : libraryFilter.title,
+            Label(libraryFilterMenuTitle(libraryFilter),
                   systemImage: libraryFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
                 .labelStyle(.titleAndIcon)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .controlSize(.regular)
         .fixedSize()
         .help("Filter and sort the models on this Mac")
-        .accessibilityLabel("Filter and Sort Models")
+        // The accessible name starts with the visible label, so Voice Control's "click Show" finds it.
+        .accessibilityLabel(libraryFilterMenuAccessibilityLabel(libraryFilter))
     }
 
     private var librarySort: Binding<LibrarySort> {
@@ -511,8 +530,7 @@ struct ModelsView: View {
                         Button("Show Local Copy") { store.select(linked) }
                             .buttonStyle(.borderedProminent)
                         Button("Download a Separate Copy") { downloadSelected() }
-                            .buttonStyle(.link)
-                            .font(.caption)
+                            .buttonStyle(.bordered)
                             .disabled(store.busy)
                             .help("Adds another copy of this model to your library")
                     } else {
@@ -550,11 +568,12 @@ struct ModelsView: View {
                     cloudModelMenuItems(file.id)
                 }
             } label: {
+                // Visible title and a regular bordered target: the icon alone was 21 × 15 points.
                 Label("More", systemImage: "ellipsis.circle")
+                    .labelStyle(.titleAndIcon)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .labelStyle(.iconOnly)
+            .menuStyle(.button)
+            .controlSize(.regular)
             .fixedSize()
             .help("More actions")
             .accessibilityLabel("More actions")
@@ -1025,9 +1044,9 @@ struct ModelsView: View {
                             .onSubmit { commitQuantityText() }
                             .onChange(of: quantityText) { _, _ in commitQuantityText() }
                             .accessibilityLabel("Quantity")
-                        Stepper("", value: $store.quantity, in: 1...10000)
+                        Stepper("Quantity", value: $store.quantity, in: 1...10000)
                             .labelsHidden()
-                            .accessibilityLabel("Quantity stepper")
+                            .accessibilityLabel("Quantity")
                     }
                 }
                 if printQuantity(quantityText) == nil {
@@ -1537,9 +1556,37 @@ struct PendingReupload: Equatable {
 /// The next-action bar after an upload whose confirm wasn't answered clearly.
 let uploadUnconfirmedStatusText = uploadUnconfirmedMessage
 
+/// The Catalogue's material type chip, read by VoiceOver: "PLA, 1 material", "PETG, 12 materials".
+func materialTypeChipAccessibilityLabel(_ title: String, count: Int) -> String {
+    "\(title), \(count) \(count == 1 ? "material" : "materials")"
+}
+
+/// A print quantity as typed or dictated: a whole number from 1 to 10,000, otherwise nil. Shared by Models, the Get
+/// 3DAPI quote sheet, the 3DAPI composer, Compare estimates and the Saved Products editor. Surrounding spaces are
+/// ignored, as are grouping separators in groups of three ("1,000", "10 000") and a trailing "unit", "units", "x" or
+/// "×" ("12 units", "12x"). Anything else (zero, signs, decimals, other words, a bad grouping such as "1,00") is nil,
+/// never a guess.
 func printQuantity(_ text: String) -> Int? {
-    guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }),
-          let value = Int(text), (1...10000).contains(value) else { return nil }
+    var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let lower = body.lowercased()
+    for word in ["units", "unit", "x", "×"] where lower.hasSuffix(word) {
+        body = String(body.dropLast(word.count)).trimmingCharacters(in: .whitespaces)
+        break
+    }
+    guard !body.isEmpty else { return nil }
+    let isDigit: (Character) -> Bool = { $0.isASCII && $0.isNumber }
+    var digits = body
+    if !body.allSatisfy(isDigit) {
+        // One kind of grouping separator, between groups of exactly three digits after a first group of one to three.
+        let separators: [Character] = [",", " ", "\u{00A0}", "\u{202F}"]
+        guard let separator = body.first(where: { !isDigit($0) }), separators.contains(separator) else { return nil }
+        let groups = body.split(separator: separator, omittingEmptySubsequences: false)
+        guard groups.count >= 2, groups.allSatisfy({ $0.allSatisfy(isDigit) }),
+              (1...3).contains(groups[0].count), groups[0].first != "0",
+              groups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }
+        digits = groups.joined()
+    }
+    guard let value = Int(digits), (1...10000).contains(value) else { return nil }
     return value
 }
 
@@ -2356,7 +2403,7 @@ struct CatalogView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(title), \(count) materials")
+        .accessibilityLabel(materialTypeChipAccessibilityLabel(title, count: count))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 

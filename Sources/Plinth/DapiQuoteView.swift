@@ -203,7 +203,7 @@ struct DapiQuoteSheet: View {
                         .labelsHidden()
                         .frame(width: 72)
                         .accessibilityLabel("Quantity")
-                    Stepper("", value: Binding(get: { quantity ?? 1 }, set: { quantityText = String($0) }), in: 1...10_000)
+                    Stepper("Quantity", value: Binding(get: { quantity ?? 1 }, set: { quantityText = String($0) }), in: 1...10_000)
                         .labelsHidden()
                         .accessibilityLabel("Quantity")
                     if quantity == nil {

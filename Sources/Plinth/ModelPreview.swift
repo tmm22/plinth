@@ -36,6 +36,11 @@ struct ModelPreview: View {
             Color(nsColor: .controlBackgroundColor)
             if let model {
                 STLSceneView(mesh: model.mesh, showsPrintBed: showsPrintBed, overhangs: showOverhangs ? currentOverhangs : nil)
+                    // Named for VoiceOver from what the caption already shows; never the file's path or name.
+                    .accessibilityElement()
+                    .accessibilityLabel("3D preview")
+                    .accessibilityValue(previewAccessibilityValue(model, overhangsShown: showOverhangs && currentOverhangs != nil))
+                    .accessibilityAddTraits(.isImage)
                 VStack {
                     Spacer()
                     VStack(alignment: .leading, spacing: 6) {
@@ -134,6 +139,12 @@ func previewDimensionsLabel(_ model: PreviewModel) -> String {
     let extent = model.mesh.maximum - model.mesh.minimum
     let label = footprintLabel((extent.x, extent.y, extent.z))
     return model.objectCount > 1 ? "Overall \(label)" : label
+}
+
+/// The 3D preview's VoiceOver value, from the caption's own text: dimensions and triangle count (never a path).
+func previewAccessibilityValue(_ model: PreviewModel, overhangsShown: Bool) -> String {
+    let triangles = model.mesh.triangleCount == 1 ? "1 triangle" : "\(model.mesh.triangleCount.formatted()) triangles"
+    return "\(previewDimensionsLabel(model)), \(triangles)\(overhangsShown ? ", overhangs tinted orange" : "")"
 }
 
 /// Checks each placed object, so objects spread across a plate aren't flagged as one oversized part.

@@ -876,5 +876,7 @@ func replicaSavedActivityDetail(service: ImageTo3DService, triangles: Int, estim
 
 /// Activity-safe detail for Meshy's analysis: verdict and counts only.
 func replicaAnalysisActivityDetail(_ report: MeshyPrintabilityReport) -> String {
-    "Meshy: \(report.verdict.rawValue), \(report.errorCount) errors, \(report.warningCount) warnings"
+    let errors = report.errorCount == 1 ? "1 error" : "\(report.errorCount) errors"
+    let warnings = report.warningCount == 1 ? "1 warning" : "\(report.warningCount) warnings"
+    return "Meshy: \(report.verdict.rawValue), \(errors), \(warnings)"
 }

@@ -582,14 +582,13 @@ struct ReplicaGeneratorSheet: View {
                 if let name = slot.name {
                     Text(name).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
-                HStack(spacing: 6) {
+                // Regular-size buttons, one above the other so both fit the slot's column.
+                VStack(alignment: .leading, spacing: 6) {
                     Button(slot.image == nil ? "Choose…" : "Replace…") { pickPhoto(for: view) }
-                        .controlSize(.small)
                         .disabled(inputsLocked || slot.preparing)
                         .accessibilityLabel(slot.image == nil ? "Choose \(view.title.lowercased()) photo" : "Replace \(view.title.lowercased()) photo")
                     if slot.image != nil || slot.problem != nil {
                         Button("Remove") { removePhoto(view) }
-                            .controlSize(.small)
                             .disabled(inputsLocked)
                             .accessibilityLabel("Remove \(view.title.lowercased()) photo")
                     }
@@ -607,15 +606,14 @@ struct ReplicaGeneratorSheet: View {
                 .accessibilityLabel("Name")
             LabeledContent("Real size") {
                 HStack(spacing: 6) {
+                    // Titles only: in a grouped Form an extra accessibility label is read after the hidden title.
                     Picker("Measured along", selection: $axis) {
                         ForEach(ReplicaSizeAxis.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .labelsHidden()
-                    .accessibilityLabel("Measured along")
                     .fixedSize()
                     TextField("Size in millimetres", text: $sizeText, prompt: Text("Such as 120"))
                         .labelsHidden()
-                        .accessibilityLabel("Size in millimetres")
                         .frame(width: 80)
                     Text("mm").foregroundStyle(.secondary)
                 }
@@ -832,8 +830,12 @@ struct ReplicaGeneratorSheet: View {
 
     // MARK: Footer
 
+    /// Sheet footers: Generate is billed, so Close sits at the leading edge, apart from the trailing actions.
     private var footer: some View {
         HStack(alignment: .center, spacing: 12) {
+            Button("Close") { close() }
+                .keyboardShortcut(.cancelAction)
+                .disabled(session.isRunning)
             if [.ready, .stopped, .processingFailed, .processed].contains(session.phase) {
                 if let startProblem {
                     Label(startProblem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -851,9 +853,6 @@ struct ReplicaGeneratorSheet: View {
             if session.isRunning {
                 Button("Stop") { session.stop() }.disabled(session.stopping)
             }
-            Button("Close") { close() }
-                .keyboardShortcut(.cancelAction)
-                .disabled(session.isRunning)
             switch session.phase {
             case .ready:
                 generateButton
@@ -902,7 +901,7 @@ struct ReplicaGeneratorSheet: View {
         .confirmationDialog(closeWarning?.title ?? "", isPresented: closeWarningShown, titleVisibility: .visible,
                             presenting: closeWarning) { warning in
             Button(warning.confirmTitle, role: .destructive) { store.showReplicaGenerator = false }
-            Button("Keep Open", role: .cancel) {}
+            Button("Keep Working", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: { warning in
             Text(warning.message)

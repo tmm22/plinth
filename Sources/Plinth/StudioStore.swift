@@ -1144,7 +1144,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 store.restoreRemovedModel(removed, undoManager: undoManager)
             }
         }
-        undoManager?.setActionName("Remove from Library")
+        undoManager?.setActionName(libraryRemoveModelUndoName)
     }
     /// Undo for `removeLocalModel`: moves the file back from the Trash and reinserts the same entry.
     func restoreRemovedModel(_ removed: RemovedLibraryModel, undoManager: UndoManager? = nil) {
@@ -1169,7 +1169,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 store.removeLocalModel(id: id, undoManager: undoManager)
             }
         }
-        undoManager?.setActionName("Remove from Library")
+        undoManager?.setActionName(libraryRemoveModelUndoName)
     }
     func deleteCloudModel(id: String) async -> Bool {
         guard !id.isEmpty else { return false }
