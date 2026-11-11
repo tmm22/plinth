@@ -146,7 +146,7 @@ struct DapiProfitCheckPanel: View {
                     if showsListingFee { rateField(.listingFeePerItem, "Listing fee ($ per unit sold)") }
                     if preset.offersOffsiteAds { rateField(.offsiteAdsPercent, "Offsite Ads fee (%, max $100)") }
                     if preset != .custom, currentRates != preset.defaultRates || rateTexts.values.contains(where: { $0.isEmpty }) {
-                        Button("Restore \(preset.title) Rates") { restoreDefaults() }.controlSize(.small)
+                        Button("Restore \(preset.title) Rates") { restoreDefaults() }
                     }
                 }
                 .padding(.top, 4)
@@ -332,17 +332,23 @@ struct DapiProblemReportSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
             }
             Spacer(minLength: 0)
+            // Sheet footers: nothing here sends, so Close sits just before Copy Message; Reprint leads.
+            let reprintBlocked = onReprint == nil ? nil : dapiReprintBlockedReason(order, duplicateBlockedReason: reprintBlockedReason)
+            if let caption = orderDisabledActionCaption("Reprint as New Order…", reason: reprintBlocked) {
+                // Visible as well as on hover: why Reprint as New Order… can't be used now.
+                Text(caption).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
-                Button("Close", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 if let onReprint {
-                    let blocked = dapiReprintBlockedReason(order, duplicateBlockedReason: reprintBlockedReason)
                     Button("Reprint as New Order…") { onReprint() }
-                        .disabled(blocked != nil)
-                        .help(blocked ?? dapiReprintButtonHelp)
+                        .disabled(reprintBlocked != nil)
+                        .help(reprintBlocked ?? dapiReprintButtonHelp)
                 }
                 Spacer()
-                if copied { Text("Copied.").font(.caption).foregroundStyle(.secondary) }
+                if copied { Text("Copied").font(.caption).foregroundStyle(.secondary) }
+                Button("Close", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Copy Message") {
                     guard let message else { return }
                     copyToPasteboard(message)
@@ -381,6 +387,8 @@ struct DapiOrdersToolsMenu: View {
         } label: {
             Label("Tools", systemImage: "chart.bar.doc.horizontal")
         }
+        // A toolbar menu shown as its icon is otherwise announced by the symbol's name.
+        .accessibilityLabel("Tools")
         .help("Spending report, export and tracking for the loaded 3DAPI orders")
     }
 }
@@ -471,20 +479,21 @@ struct DapiSpendingReportSheet: View {
                 }
             }
             Divider()
+            // Sheet footers: a report, so Close sits just before Export CSV…; Copy as Text leads.
             HStack {
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Copy as Text") {
+                    copyToPasteboard(dapiSpendReportText(report, notes: notes))
+                    copied = true
+                }
+                .disabled(report.countedOrders == 0 && report.otherCurrencies.isEmpty)
                 Spacer()
                 if let exportError {
                     Label(exportError, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).lineLimit(2)
                 } else if copied {
                     Text("Copied").font(.callout).foregroundStyle(.secondary)
                 }
-                Button("Copy as Text") {
-                    copyToPasteboard(dapiSpendReportText(report, notes: notes))
-                    copied = true
-                }
-                .disabled(report.countedOrders == 0 && report.otherCurrencies.isEmpty)
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Export CSV…") { exportCSV(report) }
                     .disabled(report.countedOrders == 0 && report.otherCurrencies.isEmpty)
             }
@@ -642,6 +651,15 @@ struct DapiSpendingReportSheet: View {
 
 // MARK: - Tracking sheet
 
+/// Each row's Copy, for VoiceOver and Voice Control: the visible title, then the seller's reference the row shows, or
+/// else the row's place in the list (never a customer's details).
+func dapiTrackingCopyAccessibilityLabel(reference: String?, position: Int, count: Int) -> String {
+    if let reference = reference?.trimmingCharacters(in: .whitespacesAndNewlines), !reference.isEmpty {
+        return "Copy, \(reference)"
+    }
+    return "Copy, order \(position) of \(count)"
+}
+
 struct DapiTrackingSheet: View {
     @Environment(\.dismiss) private var dismiss
     let orders: [DapiOrder]
@@ -655,7 +673,7 @@ struct DapiTrackingSheet: View {
         let waiting = groups.listed.filter { !tools.trackingDoneIDs.contains($0.id) }
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Tracking for your shop").font(.title2.bold())
+                Text("Tracking for your shop").font(.title2.weight(.bold))
                 Text("Orders 3DAPI has shipped, with their carrier and tracking number, to copy into Etsy or Shopify. 3DAPI gives no tracking link. Mark an order as done once you’ve added its tracking in your shop; marks last until you quit Plinth. Only loaded orders are listed.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 // Only when Shopify is connected: otherwise there's nothing it could have offered.
@@ -671,16 +689,16 @@ struct DapiTrackingSheet: View {
                 } description: {
                     Text(groups.doneCount > 0
                          ? "Every loaded order with tracking is marked as done in your shop. Show marked orders lists them again."
-                         : "None of the loaded orders has tracking from 3DAPI yet. Refresh Orders later to check again.")
+                         : "None of the loaded orders has tracking from 3DAPI yet. Refresh the list later to check again.")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
                     if !groups.withReference.isEmpty {
-                        Section("Orders with a reference") { ForEach(groups.withReference) { row($0) } }
+                        Section("Orders with a reference") { ForEach(groups.withReference) { row($0, in: groups.listed) } }
                     }
                     if !groups.withoutReference.isEmpty {
-                        Section("Other orders") { ForEach(groups.withoutReference) { row($0) } }
+                        Section("Other orders") { ForEach(groups.withoutReference) { row($0, in: groups.listed) } }
                     }
                 }
                 .frame(minHeight: 240)
@@ -706,7 +724,8 @@ struct DapiTrackingSheet: View {
         .frame(minWidth: 620, idealWidth: 700, minHeight: 440, idealHeight: 560)
     }
 
-    private func row(_ entry: DapiTrackingEntry) -> some View {
+    private func row(_ entry: DapiTrackingEntry, in listed: [DapiTrackingEntry]) -> some View {
+        let position = (listed.firstIndex { $0.id == entry.id } ?? 0) + 1
         let done = Binding(
             get: { tools.trackingDoneIDs.contains(entry.id) },
             set: { ticked in
@@ -714,25 +733,25 @@ struct DapiTrackingSheet: View {
                 copiedAll = false
             })
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Toggle("Done in your shop", isOn: done)
+            // A visible label, so the box can be clicked on its word and spoken (Voice Control: "Done").
+            Toggle("Done", isOn: done)
                 .toggleStyle(.checkbox)
-                .labelsHidden()
-                .accessibilityLabel("Marked as done in your shop, \(dapiTrackingTitle(entry))")
+                .accessibilityLabel("Done, \(dapiTrackingTitle(entry))")
                 .help("Mark as done once you’ve added this order’s tracking in your shop (this session only)")
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(dapiTrackingTitle(entry)).font(.body.weight(.medium)).textSelection(.enabled)
-                    if entry.reference != nil {
-                        Text("· \(entry.number)").foregroundStyle(.secondary)
-                    }
-                    Text("· \(entry.status.label)").foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
+                // One paragraph that wraps, so a long reference or order number is shown in full.
+                (Text(dapiTrackingTitle(entry)).fontWeight(.medium)
+                    + Text((entry.reference != nil ? " · \(entry.number)" : "") + " · \(entry.status.label)")
+                        .foregroundStyle(.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
                 Text(entry.carrier.map { "\($0) \(entry.trackingNumber)" } ?? entry.trackingNumber)
                     .font(.callout.monospaced()).textSelection(.enabled).lineLimit(2)
             }
             Spacer(minLength: 8)
             Button("Copy") { copyToPasteboard(dapiTrackingCopyText(entry)) }
+                .accessibilityLabel(dapiTrackingCopyAccessibilityLabel(reference: entry.reference, position: position,
+                                                                       count: listed.count))
                 .help("Copy “\(dapiTrackingCopyText(entry))”")
         }
         .padding(.vertical, 2)

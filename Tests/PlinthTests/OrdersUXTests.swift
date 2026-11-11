@@ -474,7 +474,7 @@ final class OrdersUXTests: XCTestCase {
         XCTAssertNil(orderConfirmMutationSendAllowed(attempted: false, succeeded: false).1)
         let locked = orderConfirmMutationSendAllowed(attempted: true, succeeded: false)
         XCTAssertFalse(locked.0)
-        XCTAssertEqual(locked.1, "The result is unknown. Reload the order before trying again.")
+        XCTAssertEqual(locked.1, "The result is unknown. Press Refresh Order before trying again.")
         XCTAssertFalse(orderConfirmFinalActionEnabled(
             writeSucceeded: false, writeAttempted: true, loaded: true, status: "DRAFT", isPay: true, order: withTotal
         ))

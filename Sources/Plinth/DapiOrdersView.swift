@@ -152,11 +152,12 @@ struct DapiOrdersView: View {
         Group {
             if !connection.isConfigured {
                 ContentUnavailableView {
-                    Label("Add a 3DAPI key", systemImage: "key")
+                    Label(dapiAddKeyTitle, systemImage: "key")
                 } description: {
                     Text("Save a 3DAPI integrator key in Settings › Account to see and place orders on 3DAPI.")
                 } actions: {
-                    Button("Open Settings") { store.requestSettings(.account) }
+                    Button(dapiAddKeyButtonTitle) { store.requestSettings(.account) }
+                        .buttonStyle(.borderedProminent)
                 }
             } else {
                 HSplitView {
@@ -300,7 +301,6 @@ struct DapiOrdersView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button("Open Settings") { store.requestSettings(.account) }
-                        .controlSize(.small)
                 }
                 .padding(.horizontal, 16).padding(.vertical, 8)
                 .background(.bar)
@@ -423,7 +423,6 @@ struct DapiOrdersView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button("Try Reading Again") { list.reload() }
-                        .controlSize(.small)
                         .disabled(list.loading)
                 }
                 .padding(.horizontal, 16).padding(.top, 6)
@@ -583,7 +582,7 @@ struct DapiOrderDetailView: View {
                         HStack(spacing: 8) {
                             Text(full).foregroundStyle(.secondary).textSelection(.enabled)
                             Button("Copy") { copyToPasteboard(full) }
-                                .controlSize(.small)
+                                .accessibilityLabel("Copy 3DAPI reference")
                                 .help("Copy the reference exactly as 3DAPI holds it")
                         }
                     }
@@ -598,7 +597,7 @@ struct DapiOrderDetailView: View {
             Button {
                 onRefresh()
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Label("Refresh Order", systemImage: "arrow.clockwise")
             }
             .disabled(refreshing)
             .help("Read this order from 3DAPI again")
@@ -666,7 +665,7 @@ struct DapiOrderDetailView: View {
                 }
                 .font(.callout)
             } else if order.items == nil {
-                Text("\(order.itemCount) \(order.itemCount == 1 ? "item" : "items"). Refresh to read the lines.")
+                Text("\(order.itemCount) \(order.itemCount == 1 ? "item" : "items"). Press Refresh Order to read the lines.")
                     .font(.callout).foregroundStyle(.secondary)
             } else {
                 Text("3DAPI listed no lines for this order.").font(.callout).foregroundStyle(.secondary)
@@ -732,11 +731,11 @@ struct DapiOrderDetailView: View {
                             Text("Tracking number").foregroundStyle(.secondary)
                             HStack(spacing: 8) {
                                 Text(tracking).textSelection(.enabled).monospaced()
-                                Button("Copy") { copyToPasteboard(tracking) }.controlSize(.small)
+                                Button("Copy") { copyToPasteboard(tracking) }
+                                    .accessibilityLabel("Copy tracking number")
                                 // Opens the carrier's page in the browser only on this click; Plinth sends nothing.
                                 if let carrier = dapiShippingDetectedCarrier(ship), let url = carrier.trackingURL {
                                     Button("Track Parcel") { NSWorkspace.shared.open(url) }
-                                        .controlSize(.small)
                                         .accessibilityLabel("Track parcel \(tracking) on \(carrier.name)’s website")
                                         .help("Open \(carrier.name)’s tracking page for this number in your browser")
                                 }
@@ -797,6 +796,10 @@ func dapiPaidByText(_ paidBy: String) -> String {
     }
 }
 
+/// The no-key state's title and button, the same wherever 3DAPI needs a key (Orders, Catalog, the Models bar).
+let dapiAddKeyTitle = "Add a 3DAPI key"
+let dapiAddKeyButtonTitle = "Add 3DAPI Key…"
+
 /// The session's unconfirmed 3DAPI orders, each named, with Look for Order on 3DAPI (read-only, by exact reference).
 /// Found orders are confirmed and handed to `onFound`; not-found ones stay. Used by the Orders list and the composer.
 struct DapiUnconfirmedOrdersNotice: View {
@@ -830,7 +833,7 @@ struct DapiUnconfirmedOrdersNotice: View {
                 }
                 HStack(spacing: 8) {
                     if !attempts.isEmpty {
-                        Button("Look for Order on 3DAPI") { lookFor(attempts) }
+                        Button(dapiLookForOrdersButtonTitle(count: attempts.count)) { lookFor(attempts) }
                             .disabled(looking)
                             .help("Search your 3DAPI orders for these attempts’ references. Nothing is sent or placed.")
                     }

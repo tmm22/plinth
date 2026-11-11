@@ -607,13 +607,22 @@ func orderOtherPlatformsHiddenLine(_ hidden: Int) -> String? {
 
 /// The note under the orders list while searching. Typing filters the loaded orders; Return asks Slant, and clearing
 /// the box returns to the normal list. Nil when there's nothing to explain.
-func orderSearchHint(typed: String, searchActive: Bool) -> String? {
+/// `notFound` is the text whose Return lookup Slant answered with no such order (`StudioStore.orderSearchNotFound`):
+/// the loaded list stays, filtered by what was typed, and the note says so in one line.
+func orderSearchHint(typed: String, searchActive: Bool, notFound: String? = nil) -> String? {
+    let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let notFound, !trimmed.isEmpty, notFound == trimmed { return orderSearchNotFoundLine(trimmed) }
     if searchActive { return "Showing what Slant found. Clear the search to return to the list." }
-    guard !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    guard !trimmed.isEmpty else { return nil }
     // A tracking number isn't an order number: Slant's lookup wouldn't find it, so don't suggest Return for one.
     if detectCarrier(typed) != .notRecognised { return "Showing loaded orders that match." }
     // Slant's lookup finds order numbers only (see orderSearchQueryItems), so don't promise more.
     return "Showing loaded orders that match. Press Return to look up an order number on Slant."
+}
+
+/// Return's lookup found no order with the typed number; the loaded orders that match stay listed.
+func orderSearchNotFoundLine(_ typed: String) -> String {
+    "Slant found no order numbered “\(typed.trimmingCharacters(in: .whitespacesAndNewlines))”. Showing loaded orders that match."
 }
 
 /// Tracking is shown for orders being made or shipped, and whenever Slant returned tracking details. Drafts, cancelled
@@ -955,7 +964,7 @@ func ordersCSVDefaultFileName(date: Date = Date()) -> String {
 /// Activity text for an export. Never includes order contents.
 func ordersCSVActivityDetail(count: Int, includeAddresses: Bool) -> String {
     let orders = count == 1 ? "1 order" : "\(count) orders"
-    return includeAddresses ? "\(orders), including recipients, addresses and metadata" : orders
+    return includeAddresses ? "\(orders), including recipients, addresses and reference fields" : orders
 }
 
 extension StudioStore {
@@ -970,7 +979,7 @@ extension StudioStore {
         panel.nameFieldStringValue = ordersCSVDefaultFileName()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.canCreateDirectories = true
-        let checkbox = NSButton(checkboxWithTitle: "Include recipient, address and metadata", target: nil, action: nil)
+        let checkbox = NSButton(checkboxWithTitle: "Include recipient, address and reference fields", target: nil, action: nil)
         checkbox.state = .off
         func smallNote(_ text: String) -> NSTextField {
             let note = NSTextField(wrappingLabelWithString: text)
@@ -979,7 +988,7 @@ extension StudioStore {
             note.preferredMaxLayoutWidth = 360
             return note
         }
-        var views: [NSView] = [checkbox, smallNote("Names, emails, addresses and metadata (which may hold customer references) are left out unless you include them. The file isn’t protected once saved.")]
+        var views: [NSView] = [checkbox, smallNote("Names, emails, addresses and reference fields (which may hold customer references) are left out unless you include them. The file isn’t protected once saved.")]
         if let notice = ordersCSVPartialNotice(moreOnServer: moreOnServer) { views.append(smallNote(notice)) }
         let stack = NSStackView(views: views)
         stack.orientation = .vertical

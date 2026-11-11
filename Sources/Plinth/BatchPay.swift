@@ -98,7 +98,7 @@ func batchPayLockNotice(lockedOrderNumbers: [String]) -> String? {
     case 2, 3: named = "orders " + numbers.joined(separator: ", ")
     default: named = "orders " + numbers.prefix(3).joined(separator: ", ") + " and \(numbers.count - 3) more"
     }
-    return "A payment or cancel request for \(named) didn’t confirm this session, so Plinth won’t pay several drafts at once. Press Reload Order on it (below, or in its own review in Orders); until its result is clear, pay drafts one at a time."
+    return "A payment or cancel request for \(named) didn’t confirm this session, so Plinth won’t pay several drafts at once. Press Refresh Order on it (below, or in its own review in Orders); until its result is clear, pay drafts one at a time."
 }
 
 // MARK: Review
@@ -114,7 +114,7 @@ struct BatchPayReviewedDraft: Identifiable {
 /// Why a reviewed draft is left out of the payment, or nil when it can be paid. Only a loaded draft of this ID, not
 /// locked, with a numeric total and no cost field Studio doesn't add (`orderUnlistedCosts`), is paid.
 func batchPayExclusionReason(orderID: String, order: [String: Any]?, loadFailure: String?, locked: Bool) -> String? {
-    if locked { return "Its last payment or cancel request didn’t confirm. Reload it in its own review first." }
+    if locked { return "Its last payment or cancel request didn’t confirm. Refresh it in its own review first." }
     if let loadFailure { return "Couldn’t load it. \(loadFailure)" }
     guard let order else { return "It wasn’t loaded." }
     guard orderBelongs(order, to: orderID) else { return "Slant returned a different order." }
@@ -303,7 +303,7 @@ func batchPayOutcomeAfterSuccess(_ order: [String: Any]?) -> BatchPayOutcome {
     let raw = ((order?["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     switch raw {
     case "": return .unclear
-    case "DRAFT": return .notPlaced("Slant accepted the request but still shows it as a draft, so it may still be charged. Reload it before paying it again.")
+    case "DRAFT": return .notPlaced("Slant accepted the request but still shows it as a draft, so it may still be charged. Refresh it before paying it again.")
     case "PAYMENT_ERROR": return .notPlaced("Slant reported a payment problem. Check the payment method on your Slant account.")
     case "CANCELED", "CANCELLED": return .notPlaced("Slant shows it as cancelled.")
     default: return orderPlacedStatuses.contains(raw) ? .placed : .unrecognised(raw)
@@ -354,7 +354,7 @@ func batchPayLockedOrderLabel(_ ids: Set<String>) -> String? {
 func batchPayLockedMessage(lockedOrderIDs: [String]) -> String {
     let ids = lockedOrderIDs.sorted()
     let which = ids.count == 1 ? "Order \(ids[0])’s" : ids.isEmpty ? "An order’s" : "\(ids.count) orders’"
-    return "\(which) payment or cancel result is unknown, so nothing is loaded for a batch. Reload it in Orders; if Slant can’t show the result, Plinth keeps this lock until it does or you quit."
+    return "\(which) payment or cancel result is unknown, so nothing is loaded for a batch. Refresh it in Orders; if Slant can’t show the result, Plinth keeps this lock until it does or you quit."
 }
 
 /// Why the Pay button is unavailable, or nil.
@@ -424,13 +424,13 @@ func batchPayNextStep(after outcome: BatchPayOutcome) -> BatchPayNextStep {
     case .refused:
         return .stop("Stopped: Slant refused a payment, so nothing after it was paid.")
     case .unknown:
-        return .stop("Stopped: Slant didn’t confirm a payment, so that order may have been charged. Reload it before paying anything else.")
+        return .stop("Stopped: Slant didn’t confirm a payment, so that order may have been charged. Refresh it before paying anything else.")
     case .notSent:
         return .stop("Stopped before paying a draft, so nothing after it was paid.")
     case .notPlaced:
         return .stop("Stopped: an order wasn’t placed after paying, so nothing after it was paid.")
     case .unclear:
-        return .stop("Stopped: Slant’s reply didn’t show whether an order was placed. Reload Orders and check it before paying anything else.")
+        return .stop("Stopped: Slant’s reply didn’t show whether an order was placed. Refresh the list and check it before paying anything else.")
     case .unrecognised:
         return .stop("Stopped: after paying, Slant showed an order with a status Plinth doesn’t recognise, so nothing after it was paid. Check that order in your Slant dashboard.")
     }
@@ -470,10 +470,10 @@ func batchPayStateText(_ state: BatchPayRowState) -> String {
     case .paying: return "Paying…"
     case .placed: return "Placed"
     case .refused(let reason): return "Refused: \(reason)"
-    case .unknown: return "Not confirmed: this order may have been charged. Reload it before paying anything else."
+    case .unknown: return "Not confirmed: this order may have been charged. Refresh it before paying anything else."
     case .notPaid(let reason): return "Not paid: \(reason)"
-    case .unclear: return "Sent, but Slant’s reply didn’t show whether it was placed. Reload Orders and check it before paying anything else."
-    case .reloaded(let status): return "Reloaded: now \(orderStatusTitle(status))."
+    case .unclear: return "Sent, but Slant’s reply didn’t show whether it was placed. Refresh the list and check it before paying anything else."
+    case .reloaded(let status): return "Refreshed: now \(orderStatusTitle(status))."
     case .unrecognised(let status):
         return "Sent. Slant now shows it as “\(status)”, a status Plinth doesn’t recognise. Check it in your Slant dashboard."
     }
@@ -838,7 +838,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             latest = mergeOrderDraftEnvelope(responseObject(response))
         } catch {
             noteRateLimitError(error)
-            return (.notSent("Couldn’t reload it before paying. \(friendlyAPIMessage(error))"), nil, error)
+            return (.notSent("Couldn’t refresh it before paying. \(friendlyAPIMessage(error))"), nil, error)
         }
         guard orderBelongs(latest, to: id) else { return (.changed("Slant returned a different order."), nil, nil) }
         if let abort = orderConfirmRecheckAbortError(orderConfirmRecheck(method: "POST", shown: reviewed, latest: latest)) {
@@ -902,8 +902,8 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
                 }
             }
             reloadingID = nil
-            guard ran else { reloadMessages[id] = "Wait for the current task to finish, then reload it."; return }
-            if let failure { reloadMessages[id] = "Couldn’t reload it. \(failure)"; return }
+            guard ran else { reloadMessages[id] = "Wait for the current task to finish, then refresh it."; return }
+            if let failure { reloadMessages[id] = "Couldn’t refresh it. \(failure)"; return }
             guard let order = loaded else { return }
             onCompleted(id, order)
             if store.isOutcomeUnknown(orderID: id) {
@@ -1072,7 +1072,8 @@ struct BatchPaySheet: View {
             List(drafts, id: \.id) { record in
                 draftRow(record)
             }
-            .listStyle(.inset(alternatesRowBackgrounds: true))
+            // No alternating stripes: they filled the space under a short list with empty placeholder rows.
+            .listStyle(.inset(alternatesRowBackgrounds: false))
             .frame(maxHeight: .infinity)
         }
     }
@@ -1093,8 +1094,12 @@ struct BatchPaySheet: View {
                     Spacer()
                     Text(row.total == "—" ? "—" : "\(row.total) USD").monospacedDigit()
                 }
-                Text(batchPayItemSummary((order["items"] as? [[String: Any]]) ?? [], modelNames: modelNames))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                // Wraps to a few lines (no measuring layouts in the pay sheets), with the whole summary on hover.
+                let summary = batchPayItemSummary((order["items"] as? [[String: Any]]) ?? [], modelNames: modelNames)
+                Text(summary)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(3).truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(summary)
                 if !details.isEmpty {
                     Text(details).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
@@ -1159,7 +1164,7 @@ struct BatchPaySheet: View {
                                               estimate: runner.phase == .review ? profitEstimate(order) : nil) {
                                 if runner.phase == .done, store.isOutcomeUnknown(orderID: draft.id) {
                                     HStack(spacing: 8) {
-                                        Button("Reload Order") { runner.reloadUnknown(draft.id, store: store, onCompleted: onCompleted) }
+                                        Button("Refresh Order") { runner.reloadUnknown(draft.id, store: store, onCompleted: onCompleted) }
                                             .disabled(store.busy || runner.reloadingID != nil)
                                         if runner.reloadingID == draft.id { ProgressView().controlSize(.small) }
                                     }
@@ -1255,19 +1260,22 @@ struct BatchPaySheet: View {
                     .disabled(runner.stopRequested)
                     .help("Stop before the next order. An order being paid finishes first.")
             case .done:
+                // The work is done and recorded: Close (not Done, which is for edits applied as made), at the
+                // leading edge like every other phase of this paying sheet.
+                Button("Close", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(runner.reloadingID != nil)
+                Spacer()
                 Button("Choose Again") { runner.backToChoose() }
                     .disabled(store.busy)
                     .help("Back to the list of drafts. Nothing is paid until you review and confirm again.")
-                Spacer()
-                Button("Reload Orders") {
+                Button("Refresh") {
                     dismiss()
                     Task { await store.applyOrderFilter(store.orderFilter) }
                 }
                 .disabled(store.busy)
-                .help("Close and reload the orders list from Slant")
-                Button("Done", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(runner.reloadingID != nil)
+                .accessibilityLabel("Refresh Orders")
+                .help("Close this and refresh the Orders list from Slant")
             }
         }
     }
@@ -1305,7 +1313,9 @@ struct BatchPayDraftCard<Extra: View>: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(orderListTitle(order)).font(.headline).lineLimit(1)
+                // The order number keeps its full width; the recipient's name gives way first.
                 Text(orderNumber(order)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    .layoutPriority(1)
                 Spacer()
             }
             if let reference = orderMarketplaceReferenceLine(order) {
@@ -1317,13 +1327,17 @@ struct BatchPayDraftCard<Extra: View>: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     let text = itemText(item)
                     if orderItemHasLargeQuantity(item) {
+                        // Each item wraps to a few lines, so every item can be read before paying.
                         Label(text, systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange).fontWeight(.semibold)
-                            .lineLimit(1).truncationMode(.middle)
+                            .lineLimit(3).truncationMode(.middle)
+                            .fixedSize(horizontal: false, vertical: true)
                             .accessibilityLabel("Large quantity: \(text)")
                             .help(text)
                     } else {
-                        Text(text).lineLimit(1).truncationMode(.middle).help(text)
+                        Text(text).lineLimit(3).truncationMode(.middle)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(text)
                     }
                 }
             }

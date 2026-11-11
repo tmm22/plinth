@@ -85,7 +85,7 @@ struct DapiOrderComposerView: View {
     var body: some View {
         VStack(spacing: 0) {
             Text("New 3DAPI order")
-                .font(.title2.weight(.semibold))
+                .font(.title2.weight(.bold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top], 16)
             form
@@ -96,12 +96,15 @@ struct DapiOrderComposerView: View {
         .onExitCommand {
             if showAddressPaste { showAddressPaste = false } else { requestClose() }
         }
-        .confirmationDialog("Discard this order?", isPresented: $confirmDiscard) {
+        .confirmationDialog("Discard this order?", isPresented: $confirmDiscard, titleVisibility: .visible) {
             Button("Discard Order", role: .destructive) { close() }
+            // Return keeps editing: discarding takes a click.
             Button("Keep Editing", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
-            Text(dapiComposerDiscardMessage(hasUnconfirmedAttempt: !state.sentReferences.isDisjoint(
-                with: session.unconfirmedOrders.map(\.reference))))
+            // Names the button as this composer's notice titles it (every unconfirmed attempt).
+            Text(dapiNamingLookForButton(dapiComposerDiscardMessage(hasUnconfirmedAttempt: !state.sentReferences.isDisjoint(
+                with: session.unconfirmedOrders.map(\.reference))), count: session.unconfirmedOrders.count))
         }
         .confirmationDialog("Replace the delivery details?", isPresented: $confirmUseMyAddress, titleVisibility: .visible) {
             Button("Use My Address") { applyMyAddress() }
@@ -260,7 +263,6 @@ struct DapiOrderComposerView: View {
                     Spacer(minLength: 0)
                     // Never read again by itself: only this press reads the materials again.
                     Button("Try Again") { state.retryMaterials() }
-                        .controlSize(.small)
                         .disabled(state.materialsLoading)
                 }
             }
@@ -286,25 +288,31 @@ struct DapiOrderComposerView: View {
     @ViewBuilder
     private func lineEditor(_ line: Binding<DapiComposerLine>) -> some View {
         let value = line.wrappedValue
+        let lineName = value.name.isEmpty ? "Unnamed quote" : value.name
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(value.name.isEmpty ? "Unnamed quote" : value.name).font(.body.weight(.semibold)).lineLimit(1)
+                Text(lineName).font(.body.weight(.semibold)).lineLimit(1)
                 Spacer()
                 HStack(spacing: 4) {
                     TextField("Quantity", text: line.quantityText)
                         .labelsHidden()
                         .frame(width: 64)
-                        .accessibilityLabel("Quantity for \(value.name)")
+                        .accessibilityLabel("Quantity for \(lineName)")
                     Stepper("Quantity", value: Binding(get: { value.quantity ?? 1 },
                                                        set: { line.wrappedValue.quantityText = String($0) }),
                             in: 1...dapiOrderMaxUnitsPerLine)
                         .labelsHidden()
-                        .accessibilityLabel("Quantity for \(value.name)")
+                        .accessibilityLabel("Quantity for \(lineName)")
                 }
                 .fixedSize()
-                Button(role: .destructive) { state.remove(lineID: value.id) } label: { Image(systemName: "minus.circle") }
+                // Kept apart from the stepper, so a slip on its arrows can't remove the line.
+                Button(role: .destructive) { state.remove(lineID: value.id) } label: {
+                    Image(systemName: "minus.circle").imageScale(.large)
+                        .frame(minWidth: 24, minHeight: 24).contentShape(Rectangle())
+                }
                     .buttonStyle(.borderless)
-                    .accessibilityLabel("Remove \(value.name)")
+                    .padding(.leading, 16)
+                    .accessibilityLabel("Remove \(lineName)")
                     .help("Remove this line")
             }
             if value.quantity == nil {
@@ -323,7 +331,7 @@ struct DapiOrderComposerView: View {
                     Label(reason, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button("Check Again") { state.checkAgain(lineID: value.id) }.controlSize(.small)
+                    Button("Check Again") { state.checkAgain(lineID: value.id) }
                 }
             case .ready:
                 if let quote = value.quote, let price = quote.price {
@@ -378,7 +386,7 @@ struct DapiOrderComposerView: View {
                         }
                     }
                 } else if state.materialsProblem == nil {
-                    Button("Load Materials") { state.loadMaterialsIfNeeded() }.controlSize(.small)
+                    Button("Load Materials") { state.loadMaterialsIfNeeded() }
                 }
             }
         }
@@ -394,7 +402,7 @@ struct DapiOrderComposerView: View {
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button("Open Settings") { store.requestSettings(.account) }.controlSize(.small)
+                    Button("Open Settings") { store.requestSettings(.account) }
                 }
             }
             countryPicker
@@ -433,7 +441,6 @@ struct DapiOrderComposerView: View {
                     } label: {
                         Label("Use My Address", systemImage: "house")
                     }
-                    .controlSize(.small)
                     .help("Fill in your own address from Settings › Account, for a sample sent to you")
                 }
                 // The pasteboard is read only when this is pressed; nothing changes until Use These Details.
@@ -445,7 +452,6 @@ struct DapiOrderComposerView: View {
                 } label: {
                     Label("Paste Address…", systemImage: "doc.on.clipboard")
                 }
-                .controlSize(.small)
                 .help("Fill in an address copied from Etsy, Shopify or an email, after you check it")
                 .popover(isPresented: $showAddressPaste, arrowEdge: .bottom) {
                     AddressPastePopover(initialText: addressPasteText, skippedClipboard: addressPasteSkippedClipboard,
@@ -459,6 +465,7 @@ struct DapiOrderComposerView: View {
                     }, onCancel: {
                         showAddressPaste = false
                     })
+                    .tint(.studioAccent)
                 }
             }
         }
@@ -590,7 +597,8 @@ struct DapiOrderComposerView: View {
             .buttonStyle(.borderedProminent)
             // Not while Look for Order on 3DAPI is looking for one of this sheet's attempts: it may find that order.
             .disabled(reviewBlockedReason != nil || draft == nil || state.isResolving || lookupRunning)
-            .help(reviewBlockedReason ?? (lookupRunning ? "Wait for Look for Order on 3DAPI to finish."
+            .help(reviewBlockedReason ?? (lookupRunning
+                                          ? "Wait for \(dapiLookForOrdersButtonTitle(count: session.unconfirmedOrders.count)) to finish."
                                           : "Check prices, shipping and your account before placing the order"))
         }
         .padding(16)

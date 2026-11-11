@@ -325,7 +325,7 @@ final class OrderToolsTests: XCTestCase {
 
     func testCSVActivityDetailNeverIncludesOrderContents() {
         XCTAssertEqual(ordersCSVActivityDetail(count: 1, includeAddresses: false), "1 order")
-        XCTAssertEqual(ordersCSVActivityDetail(count: 3, includeAddresses: true), "3 orders, including recipients, addresses and metadata")
+        XCTAssertEqual(ordersCSVActivityDetail(count: 3, includeAddresses: true), "3 orders, including recipients, addresses and reference fields")
         XCTAssertTrue(ordersCSVDefaultFileName().hasSuffix(".csv"))
     }
 

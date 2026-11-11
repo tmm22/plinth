@@ -1635,7 +1635,7 @@ struct OrderImportSheet: View {
         let currentChecks = parsed.map(checks(for:)) ?? [:]
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Import orders").font(.title2.bold())
+                Text("Import orders").font(.title2.weight(.bold))
                 Text("Creates Slant order drafts from an Etsy “Sold Order Items” CSV, a Shopify orders export or Plinth’s order template. Each item must match a saved product by SKU, or one you choose under Match products. Drafts aren’t charged: afterwards you review and pay them in Orders, one at a time or together with Pay Several Drafts… in the Orders toolbar’s More menu.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let hint = shopifyImportIntroHint(shop: shopify.shop) {
@@ -1718,7 +1718,6 @@ struct OrderImportSheet: View {
                     if recentReading { ProgressView().controlSize(.small).accessibilityLabel("Checking recent orders") }
                     if !recentReading, recentRead?.finished != true, recentRead != nil || listCoverageNotice != nil {
                         Button(recentRead == nil ? "Check Recent Orders" : "Check Again") { startRecentRead() }
-                            .controlSize(.small)
                             .disabled(store.busy || runner.running || !store.hasKey)
                             .help("Read your \(recentOrdersMaxPages * recentOrdersPageSize) newest orders on Slant, every status and platform, for earlier imports. Read-only: nothing is created or changed.")
                     }
@@ -1735,8 +1734,13 @@ struct OrderImportSheet: View {
         if parse.orders.contains(where: { $0.email.isEmpty }) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
+                    // A visible label (a rounded field outside a Form shows only its prompt), named as the blocker
+                    // text names it (`orderImportMissingEmailBlocker`).
+                    Text("Email for orders without one:")
                     TextField("Email for orders without one", text: $fallbackEmail, prompt: Text("you@yourshop.com"))
                         .textFieldStyle(.roundedBorder)
+                        .labelsHidden()
+                        .accessibilityLabel("Email for orders without one")
                         .frame(maxWidth: 360)
                         .disabled(runner.running)
                     ForEach(emailSuggestions, id: \.title) { suggestion in
@@ -1786,7 +1790,8 @@ struct OrderImportSheet: View {
         List(parse.orders) { order in
             row(order, check: checks[order.id] ?? OrderImportCheck())
         }
-        .listStyle(.inset(alternatesRowBackgrounds: true))
+        // No alternating stripes: they filled the space under a short list with empty placeholder rows.
+        .listStyle(.inset(alternatesRowBackgrounds: false))
         .frame(minHeight: 200)
     }
 
@@ -1804,7 +1809,7 @@ struct OrderImportSheet: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(missingSKUs.joined(separator: "\n"), forType: .string)
                     }
-                    .controlSize(.small)
+                    .accessibilityLabel("Copy missing SKUs")
                     .help("Copy these SKUs, one per line, to set them up in Saved Products.")
                 }
             }
@@ -1938,7 +1943,10 @@ struct OrderImportSheet: View {
             if !runner.running, let importCheckMessage {
                 Text(importCheckMessage).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
+            // Sheet footers: this sheet creates drafts on Slant, so Close sits at the leading edge, apart from Create.
             HStack {
+                Button(runner.running ? "Close and Stop" : "Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 if let reason = store.orderDraftBlockedReason {
                     Text(reason).font(.caption).foregroundStyle(.secondary)
                 }
@@ -1958,8 +1966,6 @@ struct OrderImportSheet: View {
                         .disabled(store.busy && store.orderFilter != drafts)
                         .help("Close and show draft orders in Orders, where you review and pay each one.")
                 }
-                Button(runner.running ? "Close and Stop" : "Close") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 // No default-action shortcut: creating drafts always takes a click and the confirmation.
                 Button(createButtonTitle(count) + "…") { confirmCreate = true }
                     .buttonStyle(.borderedProminent)

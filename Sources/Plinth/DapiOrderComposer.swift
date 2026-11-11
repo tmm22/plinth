@@ -333,6 +333,16 @@ func dapiComposerLineSignature(_ lines: [DapiComposerLine]) -> [String] {
     lines.map { "\($0.id.uuidString)|\($0.quantityText)" }
 }
 
+/// The button that looks for unconfirmed 3DAPI orders by reference: plural for several attempts, like Slant's
+/// `draftCheckButtonTitle`.
+func dapiLookForOrdersButtonTitle(count: Int) -> String {
+    count > 1 ? "Look for Orders on 3DAPI" : "Look for Order on 3DAPI"
+}
+/// A sentence naming that button, kept in step with its title for the `count` attempts the nearby notice lists.
+func dapiNamingLookForButton(_ text: String, count: Int) -> String {
+    text.replacingOccurrences(of: "Look for Order on 3DAPI", with: dapiLookForOrdersButtonTitle(count: count))
+}
+
 /// The composer's Discard Order question: "Nothing was sent" only while no Place Order from this sheet is still
 /// unconfirmed (`DapiComposerState.sentReferences`); otherwise that order may have been placed and charged.
 func dapiComposerDiscardMessage(hasUnconfirmedAttempt: Bool) -> String {

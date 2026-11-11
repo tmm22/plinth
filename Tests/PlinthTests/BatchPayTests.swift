@@ -177,9 +177,9 @@ final class BatchPayTests: XCTestCase {
         XCTAssertEqual(batchPayRowState(for: .notSent("Stopped.")), .notPaid("Stopped."))
         XCTAssertEqual(batchPayStateText(.placed), "Placed")
         XCTAssertEqual(batchPayStateText(.refused("Declined.")), "Refused: Declined.")
-        XCTAssertTrue(batchPayStateText(.unknown).contains("Reload it"))
+        XCTAssertTrue(batchPayStateText(.unknown).contains("Refresh it"))
         XCTAssertEqual(batchPayStateText(.notPaid("Stopped.")), "Not paid: Stopped.")
-        XCTAssertEqual(batchPayStateText(.reloaded("QUEUED")), "Reloaded: now In queue.")
+        XCTAssertEqual(batchPayStateText(.reloaded("QUEUED")), "Refreshed: now In queue.")
     }
 
     func testResultSummaryCountsOnly() {

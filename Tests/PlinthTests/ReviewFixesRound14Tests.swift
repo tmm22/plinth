@@ -17,7 +17,7 @@ final class ReviewFixesRound14Tests: XCTestCase {
     func testUnknownPayOrCancelNamesTheCauseWithoutRetryAdvice() {
         let timeout = URLError(.timedOut)
         let pay = orderConfirmUnknownOutcomeMessage(isPay: true, error: timeout)
-        XCTAssertEqual(pay, "Slant didn’t reply in time, so the result is unknown: the order may have been placed and charged. Reload the order to see what Slant shows.")
+        XCTAssertEqual(pay, "Slant didn’t reply in time, so the result is unknown: the order may have been placed and charged. Press Refresh Order to see what Slant shows.")
         let server = APIError.http(status: 503, body: "", retryAfter: nil, rateLimitReset: nil)
         let cancel = orderConfirmUnknownOutcomeMessage(isPay: false, error: server)
         XCTAssertTrue(cancel.hasPrefix("Slant replied with HTTP 503, so the result is unknown: the cancellation may have gone through."))
@@ -31,7 +31,7 @@ final class ReviewFixesRound14Tests: XCTestCase {
 
     func testReviewDismissTitle() {
         XCTAssertEqual(orderReviewDismissTitle(writeSucceeded: false, payNotPlaced: false), "Go Back")
-        XCTAssertEqual(orderReviewDismissTitle(writeSucceeded: true, payNotPlaced: false), "Done")
+        XCTAssertEqual(orderReviewDismissTitle(writeSucceeded: true, payNotPlaced: false), "Close")
         XCTAssertEqual(orderReviewDismissTitle(writeSucceeded: true, payNotPlaced: true), "Close")
     }
 
