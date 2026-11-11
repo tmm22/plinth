@@ -332,7 +332,7 @@ extension StudioStore {
         switch result {
         case .success(let url):
             if importModel(url, intent: model.partIntent, sourceDetails: sourceDetailsForCopy(of: model, fromFile: sourceDetails),
-                           origin: .stlCopyOfOtherFormat) {
+                           origin: .stlCopyOfOtherFormat, copiedFrom: model.id) {
                 activities.insert(Activity(title: "Save STL copy", detail: model.name, success: true), at: 0)
             }
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent())

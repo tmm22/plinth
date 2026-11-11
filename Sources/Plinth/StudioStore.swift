@@ -115,6 +115,10 @@ struct LocalModel: Codable, Identifiable {
     /// Set on a Make Fit Coupon piece (MeshFitView.swift), which is saved Z-up locked because it keeps the way up the
     /// full part prints: the lock's wording says so instead of naming layer-dependent features. Nil for anything else.
     var fitCoupon: Bool?
+    /// The library model this copy was made from (its immediate source), set by every tool that saves a copy of a
+    /// library model (LibraryLineage.swift). Nil for imports and for copies saved before it existed; older libraries
+    /// load without it.
+    var copiedFromID: UUID?
     var url: URL { URL(fileURLWithPath: filePath) }
     /// A print-ready copy, or a copy made from one.
     var derivesFromPrintReadyCopy: Bool { printPreparation != nil || fromPrintReadyCopy == true }
@@ -164,6 +168,7 @@ extension LocalModel {
         filledPockets = try? c.decodeIfPresent(Bool.self, forKey: .filledPockets)
         fromPrintReadyCopy = try? c.decodeIfPresent(Bool.self, forKey: .fromPrintReadyCopy)
         fitCoupon = try? c.decodeIfPresent(Bool.self, forKey: .fitCoupon)
+        copiedFromID = try? c.decodeIfPresent(UUID.self, forKey: .copiedFromID)
     }
 }
 struct CloudDeleteRefusal: Identifiable, Equatable {
@@ -769,6 +774,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     @Published var error: String?
     @Published var connected = false
     @Published var localModels: [LocalModel] = []
+    /// Library entries this build couldn't read, written back unchanged on every save (LibraryFile.swift).
+    private(set) var libraryCarriedEntries: [Data] = []
+    /// Set when the library file couldn't be read or kept at launch: saving is refused, so it is never replaced.
+    private(set) var librarySaveBlocked = false
     /// Saved products (SavedProducts.swift). References only; persisted to products.json.
     @Published var savedProducts: [SavedProduct] = []
     @Published var showSavedProducts = false
@@ -968,8 +977,17 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             // With no key loaded, the main window shows its Connect Slant Account prompt.
             showError("Plinth couldn’t read your saved Slant API key. Enter it again in Settings.")
         }
-        let path = Self.supportDirectory.appendingPathComponent("models.json")
-        if let data = try? Data(contentsOf: path), let saved = try? JSONDecoder().decode([LocalModel].self, from: data) { localModels = saved }
+        // Read leniently: entries this build can't read are carried through, and a file that wasn't fully read is
+        // kept beside it before any save can replace it (LibraryFile.swift).
+        let library = loadLibraryFile(at: Self.supportDirectory.appendingPathComponent(libraryFileName))
+        localModels = library.read.models
+        libraryCarriedEntries = library.read.carriedEntries
+        librarySaveBlocked = library.saveBlocked
+        if let detail = libraryLoadActivityDetail(library) {
+            activities.insert(Activity(title: "Model library", detail: detail, success: false), at: 0)
+        }
+        // Never hides the key message above: both are shown.
+        if let message = libraryLoadAlertMessage(library) { showError(error.map { "\($0)\n\n\(message)" } ?? message) }
         // A model still pointing into Slant Studio's Models folder uses its copy in this folder when there is one.
         if let remapped = libraryRemappingLegacyModelPaths(localModels, legacy: AppSupportLocation.otherDirectory,
                                                            current: Self.supportDirectory,
@@ -1013,9 +1031,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     func noteBackgroundRateLimit(from response: APIResponse) { noteRateLimit(from: response) }
     // MARK: -
     func saveModels() {
+        // A library file that couldn't be read or kept is never replaced (LibraryFile.swift).
+        guard !librarySaveBlocked else { showError(librarySaveBlockedMessage); return }
         do {
             try FileManager.default.createDirectory(at: Self.supportDirectory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(localModels).write(to: Self.supportDirectory.appendingPathComponent("models.json"), options: .atomic)
+            try libraryFileData(localModels, carrying: libraryCarriedEntries)
+                .write(to: Self.supportDirectory.appendingPathComponent(libraryFileName), options: .atomic)
         } catch { showError("Could not save library: \(error.localizedDescription)") }
     }
     func importModel() {
@@ -1032,18 +1053,19 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Copies a model file into the library. `origin` says where it came from, which decides whether Studio also makes
     /// a print-ready copy of it (`ModelImportOrigin.mayPrepareForPrinting`); every caller states it.
     @discardableResult
-    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, keepsPlacement: Bool = false, fromPrintReadyCopy: Bool = false) -> Bool {
+    func importModel(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, keepsPlacement: Bool = false, fromPrintReadyCopy: Bool = false, copiedFrom: UUID? = nil) -> Bool {
         importModelReturningID(url, recipe: recipe, improvement: improvement, intent: intent, reinforcement: reinforcement,
                                autoImprovement: autoImprovement, sourceDetails: sourceDetails, printPreparation: printPreparation,
                                inheritsZUpLock: inheritsZUpLock,
-                               origin: origin, keepsPlacement: keepsPlacement, fromPrintReadyCopy: fromPrintReadyCopy) != nil
+                               origin: origin, keepsPlacement: keepsPlacement, fromPrintReadyCopy: fromPrintReadyCopy,
+                               copiedFrom: copiedFrom) != nil
     }
     /// `importModel`, returning the new model's ID. `selectsAndShows: false` adds it without changing the selection
     /// or the screen, for copies saved in the background; `insertingBefore` places it next to that model (else first).
     /// `keepsPlacement` carries a replica's chosen way up to a further copy; `filledPockets` marks a Fill Hidden Pockets
-    /// copy.
+    /// copy. `copiedFrom` is the library model a copy was made from (`LocalModel.copiedFromID`).
     @discardableResult
-    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil, keepsPlacement: Bool = false, filledPockets: Bool = false, fromPrintReadyCopy: Bool = false, fitCoupon: Bool = false) -> UUID? {
+    func importModelReturningID(_ url: URL, recipe: PreparedPrintRecipe? = nil, improvement: DesignImprovementRecord? = nil, intent: PartIntent? = nil, reinforcement: ReinforcementRecord? = nil, autoImprovement: AutoImprovementRecord? = nil, sourceDetails: ModelSourceDetails? = nil, printPreparation: PrintPreparationRecord? = nil, inheritsZUpLock: Bool = false, origin: ModelImportOrigin, selectsAndShows: Bool = true, insertingBefore neighbour: UUID? = nil, keepsPlacement: Bool = false, filledPockets: Bool = false, fromPrintReadyCopy: Bool = false, fitCoupon: Bool = false, copiedFrom: UUID? = nil) -> UUID? {
         let ext = url.pathExtension.lowercased()
         guard ["stl", "obj", "3mf"].contains(ext) else {
             showError("Plinth accepts STL, OBJ, and 3MF models.")
@@ -1062,7 +1084,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                                    printPreparation: printPreparation, inheritsZUpLock: inheritsZUpLock ? true : nil,
                                    keepsPlacement: origin == .replica || keepsPlacement ? true : nil,
                                    filledPockets: filledPockets ? true : nil, fromPrintReadyCopy: fromPrintReadyCopy ? true : nil,
-                                   fitCoupon: fitCoupon ? true : nil)
+                                   fitCoupon: fitCoupon ? true : nil, copiedFromID: copiedFrom)
             localModels.insert(model, at: neighbour.flatMap { id in localModels.firstIndex { $0.id == id } } ?? 0)
             if selectsAndShows { select(model) }
             saveModels()
@@ -1123,7 +1145,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             do { try restoreLibraryFile(file, to: removed.model.url, name: removed.model.name) }
             catch { showError(error.localizedDescription); return }
         }
-        let entry = restoredLibraryEntry(removed, deletedCloudFileIDs: deletedCloudFileIDs, currentCount: localModels.count)
+        let entry = restoredLibraryEntry(removed, deletedCloudFileIDs: deletedCloudFileIDs, currentCount: localModels.count,
+                                         linkedFileIDs: Set(localModels.compactMap(\.remoteID)))
         localModels.insert(entry.model, at: entry.index)
         if removed.wasSelected, selectedLocalID == nil, fileID.isEmpty { select(entry.model) }
         saveModels()

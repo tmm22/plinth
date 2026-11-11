@@ -156,7 +156,8 @@ struct HiddenPocketsFillOutcome: Equatable, Sendable {
                                                    sourceDetails: sourceDetailsForCopy(of: original), printPreparation: record,
                                                    inheritsZUpLock: original.requiresZUp, origin: .studioToolCopy,
                                                    keepsPlacement: original.keepsPlacement == true, filledPockets: true,
-                                                   fromPrintReadyCopy: original.derivesFromPrintReadyCopy) != nil else { return }
+                                                   fromPrintReadyCopy: original.derivesFromPrintReadyCopy,
+                                                   copiedFrom: original.id) != nil else { return }
                 store.activities.insert(Activity(title: hiddenPocketsActivityTitle,
                                                  detail: hiddenPocketsActivityDetail(filled: fill.filledPockets, removedInside: fill.removedInnerShells),
                                                  success: true), at: 0)

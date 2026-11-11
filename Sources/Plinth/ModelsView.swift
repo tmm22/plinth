@@ -61,6 +61,11 @@ struct ModelsView: View {
     @State private var uploadFailedIDs: Set<UUID> = []
     @State private var quantityText = "1"
     @State private var pendingRemoval: LibrarySelection?
+    /// Remove Copies of This Model…: the original whose copies wait for the one confirmation (LibraryLineage.swift).
+    @State private var pendingCopiesRemoval: UUID?
+    /// The library list's filter (session only, so no model is hidden by a filter the seller forgot) and its sort.
+    @State private var libraryFilter: LibraryFilter = .all
+    @AppStorage("librarySortOrder") private var librarySortRaw = LibrarySort.newest.rawValue
     @State private var showHiddenFiles = false
     @State private var configurationRequest = 0
     /// Upload Again… when the same-name check found no file with the model's name: the one question before uploading.
@@ -182,21 +187,46 @@ struct ModelsView: View {
 
     private var librarySidebar: some View {
         List(selection: $selection) {
-            Section("On this Mac") {
+            Section {
+                if let note = libraryUnreadableEntriesNote(store.libraryCarriedEntries.count) {
+                    // Entries this build couldn't read stay in models.json unchanged (LibraryFile.swift).
+                    Label(note, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                let shownModels = filteredLocalModels
                 if store.localModels.isEmpty {
                     Text("No models on this Mac yet.").font(.caption).foregroundStyle(.secondary)
-                } else if filteredLocalModels.isEmpty {
-                    Text("No local models match “\(search)”.").font(.caption).foregroundStyle(.secondary)
+                } else if shownModels.isEmpty || libraryFilter != .all {
+                    // Says which filter (or search) left the list empty, or that a filter is on (it may hide the
+                    // selected model), and offers the way back.
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(shownModels.isEmpty ? libraryEmptyListText(filter: libraryFilter, search: search)
+                                                 : libraryFilter.showingText ?? "")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if libraryFilter != .all {
+                            Button("Show All Models") { libraryFilter = .all }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                        }
+                    }
                 }
                 // Same-named models get a format/date line (LibraryNameDetails.swift).
                 let nameDetails = localModelDuplicateNameDetails(store.localModels)
-                ForEach(filteredLocalModels) { model in
+                let modelsByID = libraryModelsByID(store.localModels)
+                ForEach(shownModels) { model in
+                    let copyCaption = libraryCopyCaption(model, modelsByID: modelsByID)
                     HStack(spacing: 10) {
                         LocalModelThumbnail(model: model, size: 30)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(model.name).lineLimit(1)
                             if let detail = nameDetails[model.id] {
                                 Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            // Which library model this copy came from (LibraryLineage.swift).
+                            if let copyCaption {
+                                Text(copyCaption).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                             }
                             // "Preparing for printing…" while the automatic print-ready copy is made (PrintPreparation.swift).
                             PrintPreparationRowNote(queue: store.printPreparationQueue, modelID: model.id)
@@ -210,10 +240,16 @@ struct ModelsView: View {
                     .tag(LibrarySelection.local(model.id))
                     // One element, so VoiceOver reads the row once rather than once per text in it.
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("\(nameWithDetail(model.name, nameDetails[model.id])), \(model.remoteID == nil ? "Ready to upload" : "Uploaded")")
+                    .accessibilityLabel("\(nameWithDetail(model.name, nameDetails[model.id]))\(copyCaption.map { ", \($0)" } ?? ""), \(model.remoteID == nil ? "Ready to upload" : "Uploaded")")
                     .contextMenu { localModelMenuItems(model) }
                     // Drag out to Finder or another app: a named copy of the file, never the library file (ModelDragExport.swift).
                     .onDrag { ModelDragExport.itemProvider(for: model) }
+                }
+            } header: {
+                HStack {
+                    Text("On this Mac")
+                    Spacer()
+                    libraryFilterMenu
                 }
             }
             Section("Uploaded to Slant") {
@@ -283,6 +319,74 @@ struct ModelsView: View {
         .onDeleteCommand {
             if let selection { pendingRemoval = selection }
         }
+        // Remove Copies of This Model…: one confirmation naming the count; one Edit › Undo restores them all.
+        .confirmationDialog(
+            pendingCopiesRemovalTitle,
+            isPresented: Binding(get: { pendingCopiesRemoval != nil }, set: { if !$0 { pendingCopiesRemoval = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingCopiesRemoval
+        ) { originalID in
+            let ids = libraryCopyIDs(of: originalID, in: store.localModels)
+            Button(libraryRemoveCopiesButtonTitle(count: ids.count), role: .destructive) {
+                // Read again at the press: the library may have changed while the dialog was up.
+                let current = libraryCopyIDs(of: originalID, in: store.localModels)
+                guard !current.isEmpty, !current.contains(where: isUploading) else { return }
+                store.removeLocalModels(ids: current, undoManager: undoManager)
+            }
+            .disabled(ids.isEmpty || ids.contains(where: isUploading))
+            Button("Cancel", role: .cancel) {}
+        } message: { originalID in
+            Text(pendingCopiesRemovalMessage(originalID))
+        }
+    }
+
+    /// Show (filter) and Sort By, in the "On this Mac" heading. The filter lasts the session; the sort is remembered.
+    private var libraryFilterMenu: some View {
+        Menu {
+            Picker("Show", selection: $libraryFilter) {
+                ForEach(LibraryFilter.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.inline)
+            Picker("Sort By", selection: librarySort) {
+                ForEach(LibrarySort.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: libraryFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Filter and sort the models on this Mac")
+        .accessibilityLabel("Filter and Sort Models")
+    }
+
+    private var librarySort: Binding<LibrarySort> {
+        Binding(get: { LibrarySort(rawValue: librarySortRaw) ?? .newest }, set: { librarySortRaw = $0.rawValue })
+    }
+
+    private var pendingCopiesRemovalTitle: String {
+        guard let id = pendingCopiesRemoval else { return "" }
+        let name = store.localModels.first { $0.id == id }?.name ?? "this model"
+        return libraryRemoveCopiesTitle(count: libraryCopyIDs(of: id, in: store.localModels).count, originalName: name)
+    }
+
+    private func pendingCopiesRemovalMessage(_ originalID: UUID) -> String {
+        let ids = Set(libraryCopyIDs(of: originalID, in: store.localModels))
+        let copies = store.localModels.filter { ids.contains($0.id) }
+        let name = store.localModels.first { $0.id == originalID }?.name ?? "This model"
+        return libraryRemoveCopiesMessage(
+            count: copies.count, originalName: name, uploadedCount: copies.filter { $0.remoteID != nil }.count,
+            movesToTrash: copies.isEmpty || copies.contains { isManagedModelCopy($0.url, supportDirectory: StudioStore.supportDirectory) })
+    }
+
+    /// Show Original: selects the model a copy came from, first turning off a filter or search that hides it.
+    private func showOriginal(_ original: LocalModel) {
+        if !filteredLocalModels.contains(where: { $0.id == original.id }) {
+            libraryFilter = .all
+            search = ""
+        }
+        store.select(original)
     }
 
     // MARK: Inspector
@@ -502,6 +606,12 @@ struct ModelsView: View {
     /// The More menu and a library row's context menu for a local model. Destructive items come last.
     @ViewBuilder
     private func localModelMenuItems(_ model: LocalModel) -> some View {
+        if let originalID = model.originalModelID, originalID != model.id,
+           let original = store.localModels.first(where: { $0.id == originalID }) {
+            // Selection only (LibraryLineage.swift).
+            Button("Show Original") { showOriginal(original) }
+            Divider()
+        }
         Button("Rename…") { store.renamingModelID = model.id }
         Button("Export…") { store.exportLocalModel(id: model.id) }
         // Listing assets (ListingAssets.swift): local renders and clipboard text only; nothing is sent to Slant.
@@ -538,6 +648,12 @@ struct ModelsView: View {
             .disabled(store.busy || !store.hasKey || store.platformID.isEmpty)
         }
         Divider()
+        let copyIDs = libraryCopyIDs(of: model.id, in: store.localModels)
+        if !copyIDs.isEmpty {
+            // Asks first: one confirmation naming the count; files go to the Trash, and one Edit › Undo restores them.
+            Button(libraryRemoveCopiesMenuTitle(count: copyIDs.count), role: .destructive) { pendingCopiesRemoval = model.id }
+                .disabled(copyIDs.contains(where: isUploading))
+        }
         Button("Remove from Library…", role: .destructive) { pendingRemoval = .local(model.id) }
             .disabled(isUploading(model.id))
     }
@@ -1028,9 +1144,7 @@ struct ModelsView: View {
     // MARK: Derived
 
     private var filteredLocalModels: [LocalModel] {
-        let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return store.localModels }
-        return store.localModels.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+        libraryModelsShown(store.localModels, search: search, filter: libraryFilter, sort: librarySort.wrappedValue)
     }
 
     private var filteredCloudFiles: [Record] {
@@ -1329,7 +1443,7 @@ struct ModelsView: View {
                 let lineage = studioCopyLineage(model)
                 store.importModel(url, intent: intent, sourceDetails: details, inheritsZUpLock: lineage.inheritsZUpLock,
                                   origin: .studioToolCopy, keepsPlacement: lineage.keepsPlacement,
-                                  fromPrintReadyCopy: lineage.fromPrintReadyCopy)
+                                  fromPrintReadyCopy: lineage.fromPrintReadyCopy, copiedFrom: model.id)
                 try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
             case .failure(let error):
                 store.showError(error.localizedDescription)

@@ -1583,7 +1583,8 @@ extension StudioStore {
         }
         guard let copyID = importModelReturningID(named, intent: original.partIntent,
                                                   sourceDetails: sourceDetailsForCopy(of: original), printPreparation: record,
-                                                  origin: .studioToolCopy, selectsAndShows: false, insertingBefore: original.id) else {
+                                                  origin: .studioToolCopy, selectsAndShows: false, insertingBefore: original.id,
+                                                  copiedFrom: original.id) else {
             finishPrintPreparation(job, status: PrintPreparationStatus(outcome: .noCopy, lines: ["The copy couldn’t be added to your library."], date: Date()), counts: (0, 0))
             return false
         }

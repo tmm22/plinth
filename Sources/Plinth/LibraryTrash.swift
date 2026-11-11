@@ -94,9 +94,12 @@ func restoreLibraryFile(_ file: TrashedLibraryFile, to original: URL, name: Stri
     }
 }
 
-/// The entry to put back: same position (clamped), and no link to a Slant file deleted since it was removed.
-func restoredLibraryEntry(_ removed: RemovedLibraryModel, deletedCloudFileIDs: Set<String>, currentCount: Int) -> (model: LocalModel, index: Int) {
+/// The entry to put back: same position (clamped), and no link to a Slant file deleted since it was removed, or to one
+/// another library model is linked to now (`linkedFileIDs`; such as after an upload Slant saved in that file), so two
+/// library models are never linked to one file.
+func restoredLibraryEntry(_ removed: RemovedLibraryModel, deletedCloudFileIDs: Set<String>, currentCount: Int,
+                          linkedFileIDs: Set<String> = []) -> (model: LocalModel, index: Int) {
     var model = removed.model
-    if let remote = model.remoteID, deletedCloudFileIDs.contains(remote) { model.remoteID = nil }
+    if let remote = model.remoteID, deletedCloudFileIDs.contains(remote) || linkedFileIDs.contains(remote) { model.remoteID = nil }
     return (model, min(max(0, removed.index), currentCount))
 }

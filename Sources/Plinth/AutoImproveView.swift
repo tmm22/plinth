@@ -222,7 +222,8 @@ extension AutoImproveRun {
                     // A Z-up-locked model's further copy keeps the lock (`LocalModel.inheritsZUpLock`).
                     store.importModel(url, recipe: recipe, improvement: model.designImprovement, intent: intent,
                                       reinforcement: model.reinforcement, autoImprovement: record, sourceDetails: model.sourceDetails,
-                                      inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy)
+                                      inheritsZUpLock: model.requiresZUp, origin: .studioToolCopy, keepsPlacement: model.keepsPlacement == true, fromPrintReadyCopy: model.derivesFromPrintReadyCopy,
+                                      copiedFrom: model.id)
                 case .failure(let error):
                     store.showError(error.localizedDescription)
                 }
