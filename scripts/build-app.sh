@@ -9,6 +9,47 @@ APP_DIR="$PROJECT_DIR/dist/Plinth.app"
 # Plinth was called Slant Studio. A build of the old app is never removed here: it is the owner's way back, and it
 # may be running. The script only mentions it once Plinth is built (see the end).
 LEGACY_APP_DIR="$PROJECT_DIR/dist/Slant Studio.app"
+# Optional: a code-signing identity on this Mac (its name as Keychain Access shows it, or its SHA-1 hash), such as a
+# self-signed "Plinth Local" certificate (see README, "A stable signature for local builds"). Unset or empty signs ad
+# hoc, as before: that signature changes with every build, so macOS asks again for Keychain access after each rebuild.
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+SIGN_HASH=""
+
+# Prints the SHA-1 hash of the one valid code-signing identity whose name or hash is exactly $1. Returns 1 when there
+# is none (missing, expired, revoked or not trusted for code signing) and 2 when more than one has that name.
+find_signing_identity() {
+    local wanted="$1" line hash name found="" count=0
+    local pattern='^[[:space:]]*[0-9]+\)[[:space:]]+([0-9A-Fa-f]{40})[[:space:]]+"(.*)"$'
+    local wanted_upper
+    wanted_upper="$(printf '%s' "$wanted" | tr '[:lower:]' '[:upper:]')"
+    while IFS= read -r line; do
+        [[ $line =~ $pattern ]] || continue
+        hash="${BASH_REMATCH[1]}"
+        name="${BASH_REMATCH[2]}"
+        if [ "$name" = "$wanted" ] || [ "$(printf '%s' "$hash" | tr '[:lower:]' '[:upper:]')" = "$wanted_upper" ]; then
+            if [ "$hash" != "$found" ]; then
+                count=$((count + 1))
+                found="$hash"
+            fi
+        fi
+    done < <(security find-identity -v -p codesigning 2>/dev/null)
+    [ "$count" -eq 0 ] && return 1
+    [ "$count" -gt 1 ] && return 2
+    printf '%s\n' "$found"
+}
+
+# Checked before building, so a mistyped name stops at once rather than after the release build.
+if [ -n "$SIGN_IDENTITY" ]; then
+    FIND_STATUS=0
+    SIGN_HASH="$(find_signing_identity "$SIGN_IDENTITY")" || FIND_STATUS=$?
+    if [ "$FIND_STATUS" -eq 2 ]; then
+        printf 'SIGN_IDENTITY="%s" matches more than one code-signing identity. Delete the extra certificate in Keychain Access, or set SIGN_IDENTITY to the SHA-1 hash shown by: security find-identity -v -p codesigning\n' "$SIGN_IDENTITY" >&2
+        exit 1
+    elif [ "$FIND_STATUS" -ne 0 ] || [ -z "$SIGN_HASH" ]; then
+        printf 'SIGN_IDENTITY="%s" isn'"'"'t a valid code-signing identity on this Mac (missing, expired, or not trusted for code signing).\nList the valid ones with: security find-identity -v -p codesigning\nOr leave SIGN_IDENTITY unset to sign ad hoc.\n' "$SIGN_IDENTITY" >&2
+        exit 1
+    fi
+fi
 
 swift build -c release
 BIN_DIR="$(swift build -c release --show-bin-path)"
@@ -96,9 +137,19 @@ for SIZE in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICON_TEMP/AppIcon.iconset" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP_DIR/Contents/Info.plist"
-codesign --force --deep --sign - "$APP_DIR"
+if [ -n "$SIGN_IDENTITY" ]; then
+    # By hash, so a second certificate whose name contains this one can't make codesign's name match ambiguous.
+    codesign --force --deep --sign "$SIGN_HASH" "$APP_DIR"
+else
+    codesign --force --deep --sign - "$APP_DIR"
+fi
 codesign --verify --deep --strict "$APP_DIR"
 printf 'Built %s\nLaunch with: open "%s"\n' "$APP_DIR" "$APP_DIR"
+if [ -n "$SIGN_IDENTITY" ]; then
+    printf 'Signed with the code-signing identity "%s" (%s). Once you allow Keychain access for this build, later builds signed with it shouldn'"'"'t ask again.\n' "$SIGN_IDENTITY" "$SIGN_HASH"
+else
+    printf 'Signed ad hoc: macOS asks again for Keychain access after each rebuild. Set SIGN_IDENTITY to sign with a stable identity (see README).\n'
+fi
 if [ -d "$LEGACY_APP_DIR" ]; then
     printf 'Note: %s is still there and was left alone. Delete it once you no longer need it; until then Open With may list the app twice.\n' "$LEGACY_APP_DIR"
 fi

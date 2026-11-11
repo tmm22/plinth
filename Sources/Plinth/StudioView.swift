@@ -35,6 +35,8 @@ struct StudioView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // A saved product's material is out of stock or gone (MaterialStock.swift); below the migration notice.
+            .safeAreaInset(edge: .top, spacing: 0) { SavedProductStockNotice() }
             // Only when something from Slant Studio needs attention (LegacyMigration.swift); otherwise takes no space.
             .safeAreaInset(edge: .top, spacing: 0) { LegacyMigrationNoticeView() }
             .background(Color.studioCanvas)
@@ -125,6 +127,8 @@ struct StudioView: View {
         .onAppear { OrderWatch.shared.attach(store) }
         // The daily check of Slant's public API description (SlantAPIChanges.swift): keyless, never `store.run`.
         .onAppear { SlantAPIWatch.shared.attach(store) }
+        // Saved products' materials: the notice's dismissal and a read-only daily re-read (MaterialStock.swift).
+        .onAppear { MaterialStockWatch.shared.attach(store) }
         // The 3DAPI order watch runs only while 3DAPI is the print service with a saved key (PrintService.swift).
         .onAppear { printChoice.startCoordinatingDapiOrderWatch() }
         // Restored at launch by `StudioStore.destination`'s initial value.
