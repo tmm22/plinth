@@ -227,7 +227,9 @@ let studioHelpSections: [StudioHelpSection] = [
         Import an STL, OBJ or 3MF model with **File › Import Model…** (⌘O) or by dropping it on the window. Select a \
         model to preview it and check its mesh; the action bar leads through **Upload Model**, **Get Estimate** and \
         **New Order Draft…**, or with 3DAPI through **Get 3DAPI Quote…** and **Order with 3DAPI…**. The tools under \
-        **Improve for printing** work on STL models and always save a separate copy: the original is never changed.
+        **Improve for printing** work on STL models and always save a separate copy: the original is never changed. \
+        **Show Overhangs** in the preview tints faces steeper than Slant’s 50° limit, with the model as its file is \
+        oriented; it only changes the picture.
         """),
     StudioHelpSection(title: "Orders", body: """
         **New Order Draft…** (⌘N) creates a draft on Slant. A draft isn’t charged until you choose **Review & Place \
@@ -244,7 +246,8 @@ let studioHelpSections: [StudioHelpSection] = [
         **Review for Printing with Claude…**, **Design an Accessory from a Photo…** and **Generate a Replica from an \
         Image…** use your own Claude (Anthropic), Meshy or Tripo account, set up in **Settings › Design Tools**. Each \
         request that costs money is a button you press, with an estimate shown first, and Plinth never resends one by \
-        itself.
+        itself. These sheets keep their work in memory, so quitting with a replica, design or plan you haven’t saved, \
+        or a 3D generation Plinth couldn’t confirm, asks first.
         """),
     StudioHelpSection(title: "Printing with 3DAPI (optional)", body: """
         3DAPI is a separate print service. With a key from a 3DAPI integrator account, saved in \
@@ -401,22 +404,31 @@ func dapiUnclearOrdersQuitQuestion(unconfirmedOrders: Int, unknownCancels: Int) 
 }
 
 /// The quit question, or nil to quit at once: writes still waiting for a reply come first (`slantWritesQuitQuestion`,
-/// unchanged), then 3DAPI orders or cancellations whose outcome is unknown (`dapiUnclearOrdersQuitQuestion`).
-func plinthQuitQuestion(writes: [SlantWriteKind], dapiUnconfirmedOrders: Int,
-                        dapiUnknownCancels: Int) -> (title: String, message: String)? {
+/// unchanged), then 3DAPI orders or cancellations whose outcome is unknown (`dapiUnclearOrdersQuitQuestion`), then
+/// paid design work that quitting would lose (`designWorkQuitQuestion`, DesignQuitGuard.swift).
+func plinthQuitQuestion(writes: [SlantWriteKind], dapiUnconfirmedOrders: Int, dapiUnknownCancels: Int,
+                        designWork: [DesignQuitItem] = [], unconfirmedGenerations: Int = 0,
+                        unconfirmedGenerationsOverflowed: Bool = false) -> (title: String, message: String)? {
     slantWritesQuitQuestion(writes)
         ?? dapiUnclearOrdersQuitQuestion(unconfirmedOrders: dapiUnconfirmedOrders, unknownCancels: dapiUnknownCancels)
+        ?? designWorkQuitQuestion(items: designWork, unconfirmedGenerations: unconfirmedGenerations,
+                                  unconfirmedOverflowed: unconfirmedGenerationsOverflowed)
 }
 
 extension PlinthAppDelegate {
-    /// Asks before quitting while a write is in flight, or while a 3DAPI order or cancellation has an unknown outcome,
-    /// with Don't Quit as the default; quits at once otherwise.
+    /// Asks before quitting while a write is in flight, while a 3DAPI order or cancellation has an unknown outcome, or
+    /// while paid design work would be lost, with Don't Quit as the default; quits at once otherwise. Asking never
+    /// stops or cancels anything.
     @objc func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
             let session = DapiOrderSession.shared
+            let generations = ImageTo3DConnection.shared
             guard let question = plinthQuitQuestion(writes: SlantWritesInFlight.shared.kinds,
                                                     dapiUnconfirmedOrders: session.unconfirmedOrders.count,
-                                                    dapiUnknownCancels: session.cancelOutcomeUnknown.count) else {
+                                                    dapiUnknownCancels: session.cancelOutcomeUnknown.count,
+                                                    designWork: DesignQuitRegistry.shared.items,
+                                                    unconfirmedGenerations: generations.unconfirmedRequests.count,
+                                                    unconfirmedGenerationsOverflowed: generations.unconfirmedRequestsOverflowed) else {
                 return .terminateNow
             }
             let alert = NSAlert()
