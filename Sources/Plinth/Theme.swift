@@ -3,16 +3,94 @@ import AppKit
 
 // MARK: - Palette
 
-extension Color {
-    /// Slant 3D orange. Slightly deeper in light mode so text and glyphs keep contrast on white.
-    static let studioAccent = Color(nsColor: NSColor(name: "studioAccent") { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.984, green: 0.573, blue: 0.235, alpha: 1)
-            : NSColor(srgbRed: 0.918, green: 0.345, blue: 0.047, alpha: 1)
+/// An sRGB colour in 0–255 components, so the palette's contrast can be checked by plain arithmetic in tests.
+struct StudioRGB: Equatable {
+    let red: Double
+    let green: Double
+    let blue: Double
+
+    init(_ red: Double, _ green: Double, _ blue: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+    }
+
+    var nsColor: NSColor { NSColor(srgbRed: red / 255, green: green / 255, blue: blue / 255, alpha: 1) }
+}
+
+/// WCAG 2.2 relative luminance of an sRGB colour (0 for black, 1 for white).
+func wcagRelativeLuminance(_ color: StudioRGB) -> Double {
+    func channel(_ value: Double) -> Double {
+        let c = value / 255
+        return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+    }
+    return 0.2126 * channel(color.red) + 0.7152 * channel(color.green) + 0.0722 * channel(color.blue)
+}
+
+/// WCAG 2.2 contrast ratio between two colours, from 1 (none) to 21 (black on white). 1.4.3 asks 4.5 for text, 1.4.11
+/// asks 3 for icons and the parts of controls.
+func wcagContrastRatio(_ first: StudioRGB, _ second: StudioRGB) -> Double {
+    let a = wcagRelativeLuminance(first), b = wcagRelativeLuminance(second)
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+}
+
+/// `color` drawn at `opacity` over `background` (as a tinted capsule or notice strip is), in sRGB.
+func wcagComposite(_ color: StudioRGB, opacity: Double, over background: StudioRGB) -> StudioRGB {
+    StudioRGB(color.red * opacity + background.red * (1 - opacity),
+              color.green * opacity + background.green * (1 - opacity),
+              color.blue * opacity + background.blue * (1 - opacity))
+}
+
+/// The app's own colours in light and dark mode. `ThemeContrastTests` pins every pair against the window, grouped-form
+/// and sidebar greys (WCAG 4.5:1 for text), so a change can't drift below it.
+enum StudioPalette {
+    /// The accent, as text or an icon on white, and with white text on it (filled buttons): both at least 4.5:1.
+    static let accentLight = StudioRGB(206, 70, 8)
+    /// The dark accent: white text on it at least 3.5:1, and as text or an icon on the dark window at least 4.5:1.
+    static let accentDark = StudioRGB(220, 98, 22)
+    /// Warnings (amber/orange), successes (green) and errors (red) as text, icons and badge text.
+    static let warningLight = StudioRGB(160, 72, 6)
+    static let warningDark = StudioRGB(245, 158, 11)
+    static let successLight = StudioRGB(21, 110, 50)
+    static let successDark = StudioRGB(52, 199, 89)
+    static let errorLight = StudioRGB(180, 30, 30)
+    static let errorDark = StudioRGB(255, 130, 120)
+
+    /// What the colours are checked against: white, the window and grouped-form grey, and the sidebar grey (light);
+    /// the dark window, a dark grouped row and the dark sidebar (dark).
+    static let lightBackgrounds = [StudioRGB(255, 255, 255), StudioRGB(236, 236, 236), StudioRGB(229, 229, 229)]
+    static let darkBackgrounds = [StudioRGB(30, 30, 30), StudioRGB(45, 45, 45), StudioRGB(50, 50, 50)]
+    /// `StudioBadge`'s tint behind its text, and the warning notice strip's.
+    static let badgeTintOpacity = 0.14
+    static let noticeTintOpacity = 0.08
+}
+
+/// One colour for light mode and another for dark mode (including the high-contrast appearances).
+private func studioDynamicColor(_ name: String, light: StudioRGB, dark: StudioRGB) -> Color {
+    Color(nsColor: NSColor(name: NSColor.Name(name)) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark.nsColor : light.nsColor
     })
+}
+
+private let studioWarningColor = studioDynamicColor("studioWarning", light: StudioPalette.warningLight, dark: StudioPalette.warningDark)
+private let studioSuccessColor = studioDynamicColor("studioSuccess", light: StudioPalette.successLight, dark: StudioPalette.successDark)
+private let studioErrorColor = studioDynamicColor("studioError", light: StudioPalette.errorLight, dark: StudioPalette.errorDark)
+
+extension Color {
+    /// Slant 3D orange, deeper in light mode so text and glyphs, and white text on filled buttons, keep contrast.
+    static let studioAccent = studioDynamicColor("studioAccent", light: StudioPalette.accentLight, dark: StudioPalette.accentDark)
     static let studioCanvas = Color(nsColor: .windowBackgroundColor)
     static let studioCard = Color(nsColor: .controlBackgroundColor)
     static let studioHairline = Color.primary.opacity(0.08)
+}
+
+/// Readable replacements for the system `.orange`, `.green` and `.red`, which are too faint as text on a light window
+/// (about 2:1). They work wherever those do: `.foregroundStyle(.studioWarning)`, `.tint(.studioError)`,
+/// `Color.studioSuccess.opacity(0.1)`.
+extension ShapeStyle where Self == Color {
+    static var studioWarning: Color { studioWarningColor }
+    static var studioSuccess: Color { studioSuccessColor }
+    static var studioError: Color { studioErrorColor }
 }
 
 enum StudioMetrics {
@@ -57,8 +135,8 @@ struct StudioBadge: View {
         switch tone {
         case .neutral: .secondary
         case .accent: .studioAccent
-        case .success: .green
-        case .warning: .orange
+        case .success: .studioSuccess
+        case .warning: .studioWarning
         }
     }
 
@@ -78,7 +156,7 @@ func studioBadgeUsesSelectedStyle(_ prominence: BackgroundProminence) -> Bool {
     prominence == .increased
 }
 
-/// Square thumbnail used for every list row and catalog card, so items share one silhouette.
+/// Square thumbnail used for every list row and catalogue card, so items share one silhouette.
 struct StudioTile: View {
     let symbol: String
     var imageURL: URL? = nil
@@ -124,5 +202,58 @@ struct PrimaryToolbarButton: View {
             Label(title, systemImage: symbol).labelStyle(.titleAndIcon)
         }
         .buttonStyle(.borderedProminent)
+    }
+}
+
+// MARK: - Notices
+
+/// A notice strip's kind: a warning (amber triangle on an amber tint) or information (accent "i" on a neutral tint).
+enum StudioNoticeKind {
+    case warning, information
+
+    var symbol: String { self == .warning ? "exclamationmark.triangle.fill" : "info.circle.fill" }
+    var iconColor: Color { self == .warning ? .studioWarning : .studioAccent }
+    var background: Color {
+        self == .warning ? Color.studioWarning.opacity(StudioPalette.noticeTintOpacity) : Color.primary.opacity(0.04)
+    }
+}
+
+/// The accessibility label of a notice's button: the visible title first (so Voice Control's "Click Dismiss" still
+/// works), then which notice it belongs to, because several notices can show at once with the same button titles.
+func studioNoticeButtonAccessibilityLabel(_ visibleTitle: String, notice: String) -> String {
+    "\(visibleTitle) \(notice)"
+}
+
+/// The one look for the main window's notices (Orders' order updates and Slant API change, the saved products' material
+/// notice and the migration notices): a full-width strip with an icon, the message and trailing buttons, and a hairline
+/// below so stacked notices stay apart. Callers keep their own text, conditions and button actions.
+struct StudioNoticeStrip<Message: View, Buttons: View>: View {
+    let kind: StudioNoticeKind
+    @ViewBuilder let message: () -> Message
+    @ViewBuilder let buttons: () -> Buttons
+
+    init(_ kind: StudioNoticeKind, @ViewBuilder message: @escaping () -> Message,
+         @ViewBuilder buttons: @escaping () -> Buttons) {
+        self.kind = kind
+        self.message = message
+        self.buttons = buttons
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: kind.symbol)
+                .foregroundStyle(kind.iconColor)
+                .accessibilityHidden(true)
+            message()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            // The buttons keep their size; the message wraps instead.
+            HStack(spacing: 8) { buttons() }
+                .fixedSize()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(kind.background)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }

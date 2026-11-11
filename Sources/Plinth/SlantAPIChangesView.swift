@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Orders: Slant changed its API
 
 /// Above the orders list when Slant's public API description differs from the one this version was made for, or a
-/// reply had an order status Studio doesn't recognise or couldn't be read. Non-modal; Details… opens Settings ›
+/// reply had an order status Studio doesn't recognise or couldn't be read. Non-modal; Details opens Settings ›
 /// Advanced, Dismiss hides it until something new is noticed. It changes nothing about how Studio behaves.
 struct SlantAPIChangeNotice: View {
     @EnvironmentObject var store: StudioStore
@@ -12,10 +12,7 @@ struct SlantAPIChangeNotice: View {
     var body: some View {
         let lines = watch.noticeLines
         if !lines.isEmpty {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-                    .accessibilityHidden(true)
+            StudioNoticeStrip(.warning) {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(lines, id: \.self) { line in
                         Text(line)
@@ -23,20 +20,23 @@ struct SlantAPIChangeNotice: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Spacer(minLength: 8)
-                Button("Details…") { store.requestSettings(.advanced) }
+            } buttons: {
+                // Only opens Settings, so no ellipsis.
+                Button("Details") { store.requestSettings(.advanced) }
                     .help("Open Settings › Advanced › Slant API")
+                    .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Details", notice: slantAPINoticeAccessibilityName))
                 Button("Dismiss") { watch.dismissNotice() }
                     .help("Hide this until Plinth notices another change")
+                    .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Dismiss", notice: slantAPINoticeAccessibilityName))
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(Color.orange.opacity(0.08))
             .accessibilityElement(children: .contain)
             .accessibilityLabel(lines.joined(separator: " "))
         }
     }
 }
+
+/// Names the Slant API notice in its buttons' accessibility labels ("Dismiss Slant API Notice").
+let slantAPINoticeAccessibilityName = "Slant API Notice"
 
 // MARK: - Settings › Advanced › Slant API
 

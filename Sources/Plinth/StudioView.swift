@@ -21,7 +21,7 @@ struct StudioView: View {
                     case .models: ModelsView()
                     case .orders:
                         if printChoice.service == .dapi { DapiOrdersView() } else { OrdersView() }
-                    // `.platforms` never stays selected (it opens Settings); Catalog shows its saved kind, or with 3DAPI
+                    // `.platforms` never stays selected (it opens Settings); Catalogue shows its saved kind, or with 3DAPI
                     // its materials only (3DAPI has no components or stationery; the saved kind is kept for Slant).
                     case .catalog, .materials, .components, .stationery, .platforms:
                         if printChoice.service == .dapi {
@@ -75,7 +75,7 @@ struct StudioView: View {
                 }
             }
         }
-        .alert("Unable to complete request", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
+        .alert("Couldn’t complete the request", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
             if store.canRetry {
                 Button("Try Again") { Task { await store.retryLast() } }.keyboardShortcut(.defaultAction)
             }
@@ -142,8 +142,17 @@ struct StudioView: View {
         .onChange(of: store.settingsOpenRequest) { _, _ in openSettings() }
     }
 
-    var detailTitle: String {
-        store.destination == .catalog ? "Catalog" : store.destination.rawValue
+    var detailTitle: String { store.destination.title }
+}
+
+extension Destination {
+    /// The name the seller sees: the sidebar, the Go menu, the window title and help. The raw value stays as it was,
+    /// because it is saved as `lastSidebarDestination` (a saved "Catalog" still restores Catalogue).
+    var title: String {
+        switch self {
+        case .catalog: "Catalogue"
+        default: rawValue
+        }
     }
 }
 
@@ -254,13 +263,13 @@ struct StudioSidebar: View {
     }
 
     private func row(_ item: Destination) -> some View {
-        Label(item.rawValue, systemImage: item.icon)
+        Label(item.title, systemImage: item.icon)
             // Unseen order changes that need attention or reached the customer, from the chosen service's order watch
             // (OrderWatch.swift, DapiOrderWatch.swift); 0 shows nothing.
             .badge(item == .orders ? ordersSidebarBadgeCount(service: printChoice.service, slantCount: orderWatch.badgeCount,
                                                              dapiCount: dapiOrderWatch.badgeCount) : 0)
             .tag(item)
-            .help(goMenuShortcut(for: item).map { "\(item.rawValue) (⌘\($0))" } ?? item.rawValue)
+            .help(goMenuShortcut(for: item).map { "\(item.title) (⌘\($0))" } ?? item.title)
     }
 }
 
@@ -291,7 +300,7 @@ struct ConnectionStatusFooter: View {
         Button { store.requestSettings(.account) } label: {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(state.ready ? Color.green : (state.hasKey ? Color.orange : Color.secondary.opacity(0.6)))
+                    .fill(state.ready ? Color.studioSuccess : (state.hasKey ? Color.studioWarning : Color.secondary.opacity(0.6)))
                     .frame(width: 7, height: 7)
                 Text(status)
                     .font(.caption)
@@ -349,7 +358,7 @@ struct JSONView: View {
     var body: some View {
         ScrollView([.vertical, .horizontal]) {
             Text(text)
-                .font(.system(size: 11, design: .monospaced))
+                .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
@@ -377,14 +386,14 @@ struct ActivityView: View {
     var body: some View {
         Group {
             if store.activities.isEmpty {
-                EmptyState(icon: "waveform.path", title: "A fresh session", detail: "Your requests will appear here. Credentials and request bodies are never written to the activity history.")
+                EmptyState(icon: "waveform.path", title: "No activity yet", detail: "Your requests will appear here. Credentials and request bodies are never written to the activity history.")
             } else if filtered.isEmpty {
-                EmptyState(icon: "magnifyingglass", title: "No matches", detail: "Nothing in Activity matches “\(search)”.")
+                ContentUnavailableView.search(text: search.trimmingCharacters(in: .whitespacesAndNewlines))
             } else {
                 List(filtered) { event in
                     HStack(alignment: .top, spacing: 14) {
                         Image(systemName: event.success ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                            .foregroundStyle(event.success ? .green : .orange)
+                            .foregroundStyle(event.success ? .studioSuccess : .studioWarning)
                             // Otherwise VoiceOver reads the symbol's own name ("Selected").
                             .accessibilityLabel(activityStatusAccessibilityLabel(success: event.success))
                         VStack(alignment: .leading, spacing: 5) {

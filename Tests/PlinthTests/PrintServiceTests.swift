@@ -261,7 +261,7 @@ final class PrintServiceTests: XCTestCase {
         XCTAssertEqual(step(), .ready)
 
         XCTAssertEqual(dapiModelsNextStepStatus(.needsKey, orderingProblem: nil),
-                       "Add your 3DAPI integrator key in Settings › Account to quote and order with 3DAPI.")
+                       "Add a 3DAPI key in Settings › Account to quote and order with 3DAPI.")
         XCTAssertTrue(dapiModelsNextStepStatus(.ready, orderingProblem: nil).contains("press Place Order"))
         // One ready line, whichever way the bar asks for it.
         for ready in [false, true] {

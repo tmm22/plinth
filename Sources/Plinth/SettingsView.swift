@@ -137,7 +137,7 @@ struct AccountSettingsTab: View {
                     Link("Get an API Key", destination: URL(string: "https://slant3dapi.com")!)
                 }
                 if store.connected {
-                    Label("Connection verified", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    Label("Connection verified", systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess)
                 } else if store.hasKey {
                     Label(connectionFooterStatus(hasKey: true, connected: false, accountLoaded: store.accountLoaded, busy: store.busy),
                           systemImage: "antenna.radiowaves.left.and.right")
@@ -151,7 +151,7 @@ struct AccountSettingsTab: View {
                 if let connectError {
                     Label(connectError, systemImage: "exclamationmark.triangle")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.studioWarning)
                 }
             } header: {
                 Text("Slant account")
@@ -184,7 +184,9 @@ struct AccountSettingsTab: View {
         .confirmationDialog("Disconnect this Mac?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
             Button("Disconnect", role: .destructive) { store.disconnect(); key = ""; connectError = nil }
                 .disabled(store.busy)
+            // Never the destructive button: Return keeps the key.
             Button("Keep Connected", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("This removes the saved API key from the Keychain on this Mac.")
         }

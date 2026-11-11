@@ -896,32 +896,34 @@ struct LegacyMigrationNoticeView: View {
 
     var body: some View {
         let shown = notices
-        VStack(spacing: 8) {
+        // The main window's shared notice strip (Theme.swift); each Dismiss says which notice it belongs to.
+        VStack(spacing: 0) {
             ForEach(shown) { notice in
                 switch notice {
                 case .slantStudioOpen:
-                    row(legacySlantStudioOpenNoticeText, symbol: "exclamationmark.triangle") { EmptyView() }
+                    row(legacySlantStudioOpenNoticeText, kind: .warning) { EmptyView() }
                 case .folderNotMoved:
-                    row(legacyFolderNotMovedNoticeText, symbol: "exclamationmark.triangle") {
+                    row(legacyFolderNotMovedNoticeText, kind: .warning) {
                         Button("Dismiss") { state.dismissFolderNotice() }
+                            .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Dismiss", notice: "Library Folder Notice"))
                     }
                 case .libraryKeptSeparate:
-                    row(legacyLibraryKeptSeparateNoticeText, symbol: "info.circle") {
+                    row(legacyLibraryKeptSeparateNoticeText, kind: .information) {
                         Button("Dismiss") { state.dismissLibraryNotice() }
+                            .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Dismiss", notice: "Separate Library Notice"))
                     }
                 case .notificationsOff:
-                    row(legacyNotificationsOffNoticeText, symbol: "bell.slash") {
+                    row(legacyNotificationsOffNoticeText, kind: .information) {
                         Button("Turn On Notifications…") {
                             state.clearNotificationsFlag()
                             orderWatch.setNotify(true)
                         }
                         Button("Dismiss") { state.clearNotificationsFlag() }
+                            .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Dismiss", notice: "Notifications Notice"))
                     }
                 }
             }
         }
-        .padding(.horizontal, shown.isEmpty ? 0 : 12)
-        .padding(.top, shown.isEmpty ? 0 : 8)
         .onAppear {
             clearSpentFlag()
             state.startWatchingForSlantStudio()
@@ -937,16 +939,16 @@ struct LegacyMigrationNoticeView: View {
         }
     }
 
-    private func row<Buttons: View>(_ text: String, symbol: String, @ViewBuilder buttons: () -> Buttons) -> some View {
-        HStack(spacing: 10) {
-            Label(text, systemImage: symbol)
+    private func row<Buttons: View>(_ text: String, kind: StudioNoticeKind,
+                                    @ViewBuilder buttons: @escaping () -> Buttons) -> some View {
+        StudioNoticeStrip(kind) {
+            Text(text)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
+        } buttons: {
             buttons()
         }
-        .padding(10)
-        .background(Color.studioCard, in: RoundedRectangle(cornerRadius: StudioMetrics.cardRadius))
-        .overlay(RoundedRectangle(cornerRadius: StudioMetrics.cardRadius).stroke(Color.studioHairline))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(text)
     }
 }
