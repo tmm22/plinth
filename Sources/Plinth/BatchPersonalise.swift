@@ -2,7 +2,7 @@ import Foundation
 
 // Batch personalised imports: Import Orders can make each buyer's model from an OpenSCAD template with OpenSCAD on this
 // Mac, upload it to Slant and use it in that buyer's draft in place of the saved product's plain model. Only local
-// OpenSCAD is used: Slant's generator allows 5 an hour, too few for a batch. The buyer's text and the generated
+// OpenSCAD is used: Slant's generator has an hourly limit (5 when this was built) and takes one at a time. The buyer's text and the generated
 // geometry stay in memory and in a temporary folder (removed after the upload, a failure or at the next launch); the
 // generated model isn't added to the library, its upload is named by order number, and Activity records counts only.
 

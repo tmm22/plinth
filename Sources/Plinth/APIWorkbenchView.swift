@@ -342,7 +342,7 @@ struct EndpointView: View {
                     return
                 }
             }
-            // Slant's OpenSCAD allowance is shared with Personalise from Template (5 an hour, one at a time).
+            // Slant's OpenSCAD allowance is shared with Personalise from Template (`OpenSCADQuota`, one at a time).
             if endpoint.path == "/files/openScad", let reason = PersonalisationSession.shared.quota.blockedReason(now: Date()) {
                 validation = reason
                 return
@@ -588,6 +588,8 @@ struct EndpointView: View {
                     draftAttempt = .succeeded
                 }
                 wrote = true
+                // As Personalise: the reply's own hourly limit sets Plinth's OpenSCAD cap.
+                if isOpenSCAD { openSCAD.quota.noteSlantLimit(rateLimitInfo(from: response.headers).limit) }
                 guard !Task.isCancelled else { return }
                 responseData = response.data; responseStatus = response.statusCode
                 if isOpenSCAD {

@@ -475,13 +475,19 @@ func personalisedModelName(templateName: String, parameters: [ScadParameter], va
 
 // MARK: Slant quota
 
-/// Plinth's own cap on Slant's OpenSCAD generations this session: 5 an hour, one at a time. Slant's limit was 5 an
-/// hour until its spec changed to 100 on 9 Nov 2026; that figure isn't verified live, so the cap stays at the lower one. Every request sent
-/// counts, whatever its outcome, because Slant may count one that didn't reply. The API Workbench's sends count too;
-/// Studio can't see generations made with the same key elsewhere, so Slant may refuse sooner. Memory only.
+/// Plinth's own cap on Slant's OpenSCAD generations this session, one at a time. Slant's limit was 5 an hour until
+/// its spec changed to 100 on 9 Nov 2026, and that figure isn't verified live. So the cap starts at 5 each session and
+/// then follows the hourly limit Slant's own reply states (`noteSlantLimit`, from `X-RateLimit-Limit` on a generation
+/// Slant answered), never above the spec's 100. Every request sent counts, whatever its outcome, because Slant may
+/// count one that didn't reply. The API Workbench's sends count too; Plinth can't see generations made with the same
+/// key elsewhere, so Slant may refuse sooner. Memory only.
 struct OpenSCADQuota: Equatable {
-    static let generationsPerHour = 5
+    /// The cap until a reply from Slant states its limit: Slant's earlier, lower figure.
+    static let defaultGenerationsPerHour = 5
+    /// The most a reply can raise the cap to: the hourly figure in Slant's spec (9 Nov 2026).
+    static let maximumGenerationsPerHour = 100
     static let window: TimeInterval = 3600
+    private(set) var generationsPerHour = OpenSCADQuota.defaultGenerationsPerHour
     private(set) var sentAt: [Date] = []
     private(set) var limitedUntil: Date?
     private(set) var inFlight = false
@@ -491,15 +497,16 @@ struct OpenSCADQuota: Equatable {
         sentAt.filter { now.timeIntervalSince($0) < Self.window }
     }
 
-    func remaining(now: Date) -> Int { max(0, Self.generationsPerHour - counted(now: now).count) }
+    func remaining(now: Date) -> Int { max(0, generationsPerHour - counted(now: now).count) }
 
     /// When the next generation becomes available, or nil when one is available now.
     func nextAvailable(now: Date) -> Date? {
         var dates: [Date] = []
         if let limitedUntil, limitedUntil > now { dates.append(limitedUntil) }
         let recent = counted(now: now).sorted()
-        if recent.count >= Self.generationsPerHour, let oldest = recent.first {
-            dates.append(oldest.addingTimeInterval(Self.window))
+        // With the cap lowered below what was already sent, the next slot opens when enough of them have aged out.
+        if recent.count >= generationsPerHour, generationsPerHour > 0 {
+            dates.append(recent[recent.count - generationsPerHour].addingTimeInterval(Self.window))
         }
         return dates.max()
     }
@@ -511,7 +518,8 @@ struct OpenSCADQuota: Equatable {
         if let limitedUntil, limitedUntil > now {
             return "Slant’s OpenSCAD limit was reached. Try again after \(time)."
         }
-        return "Plinth has sent \(Self.generationsPerHour) generations to Slant in the last hour. The next is available after \(time)."
+        let sent = counted(now: now).count
+        return "Plinth has sent \(sent) \(sent == 1 ? "generation" : "generations") to Slant in the last hour. The next is available after \(time)."
     }
 
     /// Records a send and marks it in flight; false (nothing recorded) when no generation is available.
@@ -524,10 +532,26 @@ struct OpenSCADQuota: Equatable {
 
     mutating func finish() { inFlight = false }
 
+    /// After a generation Slant answered: its reply's hourly limit (`X-RateLimit-Limit`, OpenSCAD's own limiter on this
+    /// path) becomes the cap, lower or higher, when it is a figure Plinth will follow (`openSCADLimitToFollow`).
+    /// Anything else leaves the cap as it was.
+    mutating func noteSlantLimit(_ limit: Int?) {
+        guard let limit = openSCADLimitToFollow(limit) else { return }
+        generationsPerHour = limit
+    }
+
     /// After a 429: blocked until `until`.
     mutating func noteRateLimited(until: Date) {
         limitedUntil = max(limitedUntil ?? until, until)
     }
+}
+
+/// The hourly limit from a generation reply that Plinth follows: 1 to `maximumGenerationsPerHour`. A missing,
+/// unreadable, zero or larger figure is ignored, so a header from some other limiter never lifts the cap past the
+/// figure Slant's spec gives.
+func openSCADLimitToFollow(_ limit: Int?) -> Int? {
+    guard let limit, (1...OpenSCADQuota.maximumGenerationsPerHour).contains(limit) else { return nil }
+    return limit
 }
 
 /// After Slant refuses a generation with 429: a numeric Retry-After or a future `X-RateLimit-Reset` (each at most an
@@ -1011,6 +1035,8 @@ extension StudioStore {
                 }
                 defer { session.quota.finish() }
                 let response = try await client.request("POST", path: "/files/openScad", body: ["scadCode": source])
+                // The reply's own hourly limit sets Plinth's cap (never the shared per-minute figure: see above).
+                session.quota.noteSlantLimit(rateLimitInfo(from: response.headers).limit)
                 bytes = response.data
             } catch {
                 failure = error

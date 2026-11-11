@@ -193,6 +193,43 @@ final class PersonalisationTests: XCTestCase {
 
     // MARK: Quota
 
+    func testTheCapStartsAtFiveAndFollowsTheLimitSlantsReplyStates() {
+        var quota = OpenSCADQuota()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(quota.generationsPerHour, 5, "until Slant's own reply says otherwise")
+        // Figures Plinth won't follow leave the cap alone: none, zero, negative, or above the spec's 100.
+        for ignored in [nil, 0, -1, 101, 6_000] as [Int?] {
+            quota.noteSlantLimit(ignored)
+            XCTAssertEqual(quota.generationsPerHour, 5)
+            XCTAssertNil(openSCADLimitToFollow(ignored))
+        }
+        XCTAssertTrue(quota.begin(now: start))
+        quota.finish()
+        // Slant's reply states 100 an hour: the cap follows it, and what was already sent still counts.
+        quota.noteSlantLimit(100)
+        XCTAssertEqual(quota.generationsPerHour, 100)
+        XCTAssertEqual(quota.remaining(now: start), 99)
+        for second in 1...5 {
+            XCTAssertTrue(quota.begin(now: start.addingTimeInterval(Double(second))), "past the old five")
+            quota.finish()
+        }
+        XCTAssertEqual(quota.remaining(now: start.addingTimeInterval(6)), 94)
+        // A lower figure is followed too, at once: six were sent, so the third-from-last must age out first.
+        quota.noteSlantLimit(3)
+        let now = start.addingTimeInterval(10)
+        XCTAssertEqual(quota.remaining(now: now), 0)
+        XCTAssertFalse(quota.begin(now: now))
+        XCTAssertEqual(quota.nextAvailable(now: now), start.addingTimeInterval(3 + 3600))
+        XCTAssertEqual(quota.blockedReason(now: now)?.hasPrefix("Plinth has sent 6 generations to Slant in the last hour."), true)
+        XCTAssertNil(quota.blockedReason(now: start.addingTimeInterval(3 + 3601)))
+        // One in flight at a time, whatever the cap.
+        quota.noteSlantLimit(100)
+        XCTAssertTrue(quota.begin(now: now))
+        XCTAssertFalse(quota.begin(now: now))
+        // A new session starts at five again: nothing about the limit is saved.
+        XCTAssertEqual(OpenSCADQuota().generationsPerHour, 5)
+    }
+
     func testQuotaCountsFivePerHourOneInFlight() {
         var quota = OpenSCADQuota()
         let start = Date(timeIntervalSince1970: 1_000_000)
