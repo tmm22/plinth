@@ -270,6 +270,9 @@ struct SavedProductsSheet: View {
         .onAppear(perform: seedIfNeeded)
         .onDisappear { store.pendingSavedProductDraft = nil }
         .task(id: neededLineTypes.sorted().joined(separator: ",")) { startCatalogLoads() }
+        // As in the composer and Import Orders: materials older than a minute are read again, so the list agrees with
+        // the main window's stock notice (MaterialStock.swift), which may have read newer ones.
+        .task { await store.refreshFilamentsIfStale() }
         .confirmationDialog(
             "Delete “\(pendingDelete.map(savedProductDisplayName) ?? "")”?",
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
