@@ -132,19 +132,9 @@ func dapiIdempotencyKeyIsValid(_ key: String) -> Bool {
 
 /// Why Plinth won't PUT a file to this presigned `upload_url`, or nil. It must be https to a named host (not an IP
 /// literal in any spelling, a single-label name or a local one: `networkHostIsLocalOrLiteral`) on the default port,
-/// with no user name, password or fragment, and it must not contain the key.
+/// with no user name, password or fragment, and it must not contain the key: the shared `storageLinkProblem`.
 func dapiUploadURLProblem(_ url: URL, apiKey: String = "") -> String? {
-    guard url.scheme?.lowercased() == "https" else { return "it isn’t a secure (https) link" }
-    guard let rawHost = url.host, !rawHost.isEmpty else { return "it has no host" }
-    guard url.user == nil, url.password == nil else { return "it carries sign-in details" }
-    guard url.fragment == nil else { return "it is an unusual link" }
-    if let port = url.port, port != 443 { return "it uses an unusual port" }
-    if networkHostIsLocalOrLiteral(rawHost) {
-        return "it points to a local or numeric address"
-    }
-    let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    if key.count >= 4, url.absoluteString.contains(key) { return "it contains your API key" }
-    return nil
+    storageLinkProblem(url, apiKey: apiKey)
 }
 
 /// Header names never copied from 3DAPI's upload reply onto the storage PUT: credentials, cookies, and the headers

@@ -406,6 +406,8 @@ struct EndpointView: View {
                 }
                 let ran = await store.run("Load order for review") {
                     let response = try await store.client.request("GET", path: request.path, query: request.query)
+                    // The shared allowance figure the paced reads and the order watch start from.
+                    store.noteBackgroundRateLimit(from: response)
                     guard generation == previewGeneration else { return }
                     let order = workbenchUnwrapOrder(responseObject(response))
                     let orderID = workbenchPathParameter(request.path, after: "/orders/")
@@ -464,6 +466,7 @@ struct EndpointView: View {
                     throw StudioError(workbenchUnknownOutcomeBlockMessage)
                 }
                 let freshResponse = try await store.client.request("GET", path: request.path, query: request.query)
+                store.noteBackgroundRateLimit(from: freshResponse)
                 guard !Task.isCancelled else { return }
                 let fresh = workbenchUnwrapOrder(responseObject(freshResponse))
                 guard workbenchOrderMatchesRequestedID(fresh, requested: orderID) else {
@@ -502,9 +505,12 @@ struct EndpointView: View {
                         store.clearOutcomeUnknown(orderID: orderID)
                         mutationAttempted = false
                         note = orderConfirmRefusalMessage(isPay: isPay, error: error)
+                        throw error
                     }
-                    throw error
+                    // The outcome is unknown: Activity says so, never "try again" (the sheet keeps Send locked).
+                    throw StudioError("\(slantUnclearReplyCause(error)), so the result is unknown")
                 }
+                store.noteBackgroundRateLimit(from: response)
                 wrote = true
                 responseData = response.data; responseStatus = response.statusCode
                 responseJSON = response.json
@@ -515,6 +521,7 @@ struct EndpointView: View {
                     let replied = workbenchUnwrapOrder(responseObject(response))
                     var refreshed: [String: Any]?
                     if let reread = try? await store.client.request("GET", path: request.path, query: request.query) {
+                        store.noteBackgroundRateLimit(from: reread)
                         refreshed = workbenchUnwrapOrder(responseObject(reread))
                     }
                     let judged = workbenchPayAcceptedOrder(replied: replied, refreshed: refreshed, requested: orderID)
@@ -554,6 +561,8 @@ struct EndpointView: View {
             var sheetFailure: Error?
             let fromSheet = request.endpoint.method != "GET"
             let attemptDate = Date()
+            // The confirmed reply, for the guided screens' bookkeeping (`applyGuidedBookkeeping`).
+            var replyObject: [String: Any] = [:]
             let ran = await store.run(request.endpoint.title, handlesError: { error in
                 guard fromSheet else { return false }
                 sheetFailure = error
@@ -578,6 +587,8 @@ struct EndpointView: View {
                     openSCADFailure = error
                     throw error
                 }
+                // The shared allowance figure (`APIResponse.rateLimit` is empty for OpenSCAD's own hourly figures).
+                store.noteBackgroundRateLimit(from: response)
                 if request.isDraftCreate {
                     // As the composer: a draft is confirmed only by a reply naming it (`publicId` or `id`). Without
                     // one the outcome stays unknown, so this isn't a success and the sheet keeps Send locked.
@@ -596,6 +607,7 @@ struct EndpointView: View {
                 if isOpenSCAD { openSCAD.quota.noteSlantLimit(rateLimitInfo(from: response.headers), now: Date()) }
                 guard !Task.isCancelled else { return }
                 responseData = response.data; responseStatus = response.statusCode
+                if !isOpenSCAD { replyObject = responseObject(response) }
                 if isOpenSCAD {
                     responseText = "STL generated successfully · \(ByteCountFormatter.string(fromByteCount: Int64(response.data.count), countStyle: .file))\nSave the STL or import it into your model library."
                 } else {
@@ -624,7 +636,7 @@ struct EndpointView: View {
             }
             guard !Task.isCancelled else { return }
             if ran, wrote {
-                await applyGuidedBookkeeping(after: request)
+                await applyGuidedBookkeeping(after: request, reply: replyObject)
                 mutationSucceeded = true
                 dismissConfirm()
             } else if let sheetFailure {
@@ -633,9 +645,25 @@ struct EndpointView: View {
             }
         }
     }
-    /// What the guided screens do after the same write succeeds, so Settings and Models stay in step.
-    func applyGuidedBookkeeping(after request: PreparedRequest) async {
+    /// What the guided screens do after the same write succeeds, so Settings and Models stay in step. `reply` is
+    /// Slant's reply (its `data` object), empty when it had none.
+    func applyGuidedBookkeeping(after request: PreparedRequest, reply: [String: Any]) async {
         let platformID = workbenchPathParameter(request.path, after: "/platforms/")
+        // As Models: a file that may now hold another model keeps no library link; a deleted one leaves the list.
+        switch workbenchFileBookkeeping(endpointID: request.endpoint.id, path: request.path, reply: reply) {
+        case .contentsChanged(let fileID):
+            let name = workbenchUploadedName(reply: reply, body: request.body)
+            store.noteFileContentsReplaced(fileID: fileID, uploadedName: name, alreadyUnlinked: [])
+        case .deleted(let fileID):
+            store.noteCloudFileDeleted(id: fileID)
+            store.saveModels()
+        case .none:
+            break
+        }
+        // A new secret this reply may not show: Show and Copy go until a read shows it (the reload below clears it).
+        if workbenchSetsWebhookSecret(endpointID: request.endpoint.id, body: request.body) {
+            store.markWebhookSecretUncertain(platformID: platformID)
+        }
         switch request.endpoint.id {
         case "DELETE /platforms/{platformId}":
             // As Settings' Disable: listed under Disabled platforms, and no longer the default.
@@ -647,9 +675,6 @@ struct EndpointView: View {
         case "POST /platforms", "PATCH /platforms/{platformId}", "PATCH /platforms/{platformId}/webhook-secret":
             // One read so Settings shows the platform (and its secret) as Slant now has it.
             await store.loadCatalog(.platforms)
-        case "DELETE /files/{publicFileId}":
-            let id = workbenchPathParameter(request.path, after: "/files/")
-            if !id.isEmpty, store.fileID == id { store.fileID = "" }
         default:
             break
         }
@@ -731,16 +756,56 @@ func workbenchSendFailureNote(_ error: Error, method: String, sent: Bool) -> Str
     return "\(slantUnclearReplyCause(error)), so the result is unknown: Slant may already have made this change. Check what Slant shows before sending it again."
 }
 
+/// Whether a Workbench request changes a platform's webhook secret: a rotate, or a platform edit whose body sets
+/// `webhookSecret`.
+func workbenchSetsWebhookSecret(endpointID: String, body: Any?) -> Bool {
+    switch endpointID {
+    case "PATCH /platforms/{platformId}/webhook-secret": return true
+    case "PATCH /platforms/{platformId}": return (body as? [String: Any])?["webhookSecret"] != nil
+    default: return false
+    }
+}
+
 /// Whether a failed Workbench send may have changed a platform's webhook secret without Studio seeing the new one: a
 /// rotate, or a platform edit whose body sets `webhookSecret`, that Slant didn't definitely refuse.
 func workbenchSecretChangeMayHaveHappened(endpointID: String, body: Any?, error: Error) -> Bool {
+    workbenchSetsWebhookSecret(endpointID: endpointID, body: body) && webhookSecretMayHaveChanged(after: error)
+}
+
+/// What a confirmed Workbench file write means for the library (`applyGuidedBookkeeping`).
+enum WorkbenchFileBookkeeping: Equatable {
+    /// `POST /files` or `confirm-upload` stored a model in this file (Slant keeps one file per owner and name, so it
+    /// may be a file library models are linked to).
+    case contentsChanged(String)
+    /// `DELETE /files/{publicFileId}` deleted this file.
+    case deleted(String)
+    case none
+}
+
+/// The file a confirmed Workbench write changed: for an upload, the reply's own file ID (`uploadedFileID`, never a
+/// name); for a delete, the path's. `.none` for every other request, or when the ID is missing.
+func workbenchFileBookkeeping(endpointID: String, path: String, reply: [String: Any]) -> WorkbenchFileBookkeeping {
     switch endpointID {
-    case "PATCH /platforms/{platformId}/webhook-secret": break
-    case "PATCH /platforms/{platformId}":
-        guard (body as? [String: Any])?["webhookSecret"] != nil else { return false }
-    default: return false
+    case "POST /files", "POST /files/confirm-upload":
+        return uploadedFileID(reply).map { .contentsChanged($0) } ?? .none
+    case "DELETE /files/{publicFileId}":
+        let id = workbenchPathParameter(path, after: "/files/")
+        return id.isEmpty ? .none : .deleted(id)
+    default:
+        return .none
     }
-    return webhookSecretMayHaveChanged(after: error)
+}
+
+/// The name a Workbench upload's notice gives the model: the reply's, else the body's (`confirm-upload` sends it
+/// inside `filePlaceholder`), else "the uploaded model".
+func workbenchUploadedName(reply: [String: Any], body: Any?) -> String {
+    let bodyObject = body as? [String: Any]
+    let candidates: [Any?] = [reply["name"], bodyObject?["name"], (bodyObject?["filePlaceholder"] as? [String: Any])?["name"]]
+    for name in candidates.compactMap({ $0 as? String }) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+    }
+    return "the uploaded model"
 }
 
 /// The review sheet's title in sentence case: Slant's summary with only its first letter lowered, so names inside
