@@ -70,16 +70,27 @@ func productCostCatalogPrice(_ record: Record, stationery: Bool = false) -> Resu
     return .success(price)
 }
 
-/// The row's note for stationery counted as free: Slant's docs say "can be", not "is", so neither does Plinth.
+/// The row's note for stationery counted as free: Slant's docs say "can be", not "is", so neither does Plinth. Every
+/// note about it says "free" (never "free of charge" in one and "free" in another).
 let productCostStationeryFreeText = "Counted as free: Slant lists no price, and its docs say stationery can be included free."
 
-/// The note under the total and in the listing price check while any part is counted as free; nil otherwise.
+/// The note under the total while any part is counted as free; nil otherwise.
 func productCostFreeStationeryNote(_ parts: [ProductCostPart]) -> String? {
     let count = parts.filter(\.countedAsFree).count
     guard count > 0 else { return nil }
     return count == 1
-        ? "Includes 1 stationery part counted as free: Slant lists no price for it, and its docs say stationery can be included free of charge."
-        : "Includes \(count) stationery parts counted as free: Slant lists no price for them, and its docs say stationery can be included free of charge."
+        ? "Includes 1 stationery part counted as free: Slant lists no price for it, and its docs say stationery can be included free."
+        : "Includes \(count) stationery parts counted as free: Slant lists no price for them, and its docs say stationery can be included free."
+}
+
+/// The listing price check's short line while any part is counted as free, in the style of its delivery line (the note
+/// under the total says why); nil otherwise.
+func listingPriceFreeStationeryNote(_ parts: [ProductCostPart]) -> String? {
+    let count = parts.filter(\.countedAsFree).count
+    guard count > 0 else { return nil }
+    return count == 1
+        ? "Stationery: 1 part counted as free (Slant lists no price)."
+        : "Stationery: \(count) parts counted as free (Slant lists no prices)."
 }
 
 /// The parts of `product` for an order of `units`, each with a catalog price, a print still to estimate, or the
@@ -195,7 +206,9 @@ func productCostSummary(_ parts: [ProductCostPart], units: Int) -> ProductCostSu
 func productCostUnpricedText(_ summary: ProductCostSummary) -> String? {
     guard !summary.complete, summary.partCount > 0 else { return nil }
     let missing = summary.partCount - summary.pricedCount
-    return "\(missing) of \(summary.partCount) parts aren’t priced, so the real cost is higher."
+    // "1 of 3 parts isn’t priced", "2 of 3 parts aren’t priced", "1 of 1 part isn’t priced".
+    let parts = summary.partCount == 1 ? "part" : "parts"
+    return "\(missing) of \(summary.partCount) \(parts) \(missing == 1 ? "isn’t" : "aren’t") priced, so the real cost is higher."
 }
 
 /// "$12.40 per unit", or "At least $9.93 per unit" while some parts aren't priced.
@@ -521,7 +534,7 @@ struct ProductCostCheckView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Divider()
                     listingPriceSection(summary, units: shownUnits, deliveryHint: deliveryHint,
-                                        freeStationeryNote: productCostFreeStationeryNote(parts))
+                                        freeStationeryNote: listingPriceFreeStationeryNote(parts))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)

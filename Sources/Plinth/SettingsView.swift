@@ -96,6 +96,8 @@ struct AccountSettingsTab: View {
     /// Save & Test's test of a new key is running. The saved key stays connected meanwhile (`connect(key:)` changes
     /// nothing until the new key passes), so the status line says the new key is being tested.
     @State private var testingKey = false
+    /// Whether this tab is on screen, read by Save & Test's task when the test ends (`slantKeyTestFailureShowsInSettings`).
+    @State private var visibility = SettingsTabVisibility()
 
     private var prominent: ConnectionProminentAction {
         connectionProminentAction(
@@ -139,17 +141,24 @@ struct AccountSettingsTab: View {
                     Spacer()
                     Link("Get an API Key", destination: URL(string: "https://slant3dapi.com")!)
                 }
-                if testingKey && keyChanges {
+                switch slantKeyStatusLine(keyField: key, savedKey: store.apiKey, testing: testingKey,
+                                          errorShown: connectError != nil, connected: store.connected) {
+                case .testing:
                     Label("Testing the key…", systemImage: "antenna.radiowaves.left.and.right")
                         .foregroundStyle(.secondary)
-                } else if store.connected {
+                case .notSavedYet:
+                    Label(slantKeyNotSavedYetText, systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                case .verified:
                     Label("Connection verified", systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess)
-                } else if store.hasKey {
+                case .connectionStatus:
                     Label(connectionFooterStatus(hasKey: true, connected: false, accountLoaded: store.accountLoaded, busy: store.busy),
                           systemImage: "antenna.radiowaves.left.and.right")
                         .foregroundStyle(.secondary)
-                } else {
+                case .notConnected:
                     Text("Not connected").foregroundStyle(.secondary)
+                case .hidden:
+                    EmptyView()
                 }
                 if store.hasKey || keyChanges, let keyChangeBlocked, !store.busy {
                     Text(keyChangeBlocked).font(.caption).foregroundStyle(.secondary)
@@ -175,7 +184,12 @@ struct AccountSettingsTab: View {
         }
         .formStyle(.grouped)
         .frame(width: 620, height: settingsTabHeight)
-        .onAppear { key = store.apiKey }
+        .onAppear {
+            visibility.shown = true
+            key = store.apiKey
+        }
+        // Another tab chosen or the window closed: a Save & Test still running reports to the main window instead.
+        .onDisappear { visibility.shown = false }
         .task {
             // The window assigns its initial first responder after this view appears, so release it on the next
             // turns of the run loop too. Only within the first moments after opening, so a deliberate click stays.
@@ -207,29 +221,92 @@ struct AccountSettingsTab: View {
             return
         }
         let savedKey = store.apiKey
+        let visibility = self.visibility
         testingKey = true
         Task {
             let passed = await store.connect(key: key)
             testingKey = false
-            // Show the failure here; the main window's alert would sit unseen behind this window. Judged by the test
-            // itself, not `connected`: a key that fails leaves the saved key connected as it was.
-            if !passed, let message = takeStoreErrorForSettings(store) {
-                connectError = slantKeyTestFailureText(
-                    message, savedKeyKept: !savedKey.isEmpty && savedKey != trimmed && store.apiKey == savedKey)
+            // Judged by the test itself, not `connected`: a key that fails leaves the saved key connected as it was.
+            guard !passed, let message = store.error else { return }
+            let text = slantKeyTestFailureText(
+                message, savedKeyKept: !savedKey.isEmpty && savedKey != trimmed && store.apiKey == savedKey)
+            if slantKeyTestFailureShowsInSettings(tabShown: visibility.shown, selectedTab: store.settingsTab) {
+                // Shown here; the main window's alert would sit unseen behind this window.
+                _ = takeStoreErrorForSettings(store)
+                connectError = text
+            } else {
+                // The tab has gone (another tab, or Settings closed) during the test: never lost, but in the main
+                // window's alert, worded for the typed key, with no Try Again (`showError`), since the key is
+                // changed only from here.
+                store.showError(text)
             }
         }
     }
 }
 
+/// Whether this view is on screen. A class held in `@State`, so a task started by the view reads the live value even
+/// after the view has gone (its last `onDisappear` left it false).
+@MainActor final class SettingsTabVisibility {
+    var shown = false
+}
+
+/// Where Save & Test's failure is shown when the test ends: under the key field while the Account tab is on screen,
+/// otherwise in the main window's alert, so a failed test of a new key is never lost (the saved key stays in use).
+func slantKeyTestFailureShowsInSettings(tabShown: Bool, selectedTab: SettingsTab) -> Bool {
+    tabShown && selectedTab == .account
+}
+
 /// Save & Test's failure under the Slant key field. Slant's 401 copy speaks of the saved key and says to reconnect in
 /// Settings, but here the key Slant refused is the one just typed. A key that fails its test changes nothing
-/// (`StudioStore.connect(key:)`), so when another key is saved, the text says that key is still in use.
+/// (`StudioStore.connect(key:)`), so when another key is saved, the text says that key is still in use, after a full
+/// stop when Slant's own text ends without one.
 func slantKeyTestFailureText(_ message: String, savedKeyKept: Bool) -> String {
     let base = message == unauthorizedUserMessage(body: "") ? slantKeyTestRejectedText : message
-    return savedKeyKept ? "\(base) \(slantKeyTestSavedKeyKeptText)" : base
+    guard savedKeyKept else { return base }
+    let lead = slantSentenceEndingWithStop(base)
+    return lead.isEmpty ? slantKeyTestSavedKeyKeptText : "\(lead) \(slantKeyTestSavedKeyKeptText)"
 }
 let slantKeyTestRejectedText = "Slant didn’t accept this key. Check it, then press Save & Test again."
 let slantKeyTestSavedKeyKeptText = "Your saved key is unchanged and still in use."
+
+/// `text` trimmed, with a full stop added unless it already ends in `.`, `!`, `?` or `…`, before any closing quotes or
+/// brackets (“Invalid key.” stays as it is; “Invalid key” becomes “Invalid key”.).
+func slantSentenceEndingWithStop(_ text: String) -> String {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let closers: Set<Character> = ["”", "’", "\"", "'", "»", ")", "]"]
+    guard let last = trimmed.reversed().first(where: { !closers.contains($0) }) else { return trimmed }
+    return ".!?…".contains(last) ? trimmed : trimmed + "."
+}
+
+/// The line under the Slant key field in Settings › Account (`slantKeyStatusLine`).
+enum SlantKeyStatusLine: Equatable {
+    /// “Testing the key…”: Save & Test is testing a key other than the saved one.
+    case testing
+    /// `slantKeyNotSavedYetText`: the field holds a key other than the saved one, and no test is running.
+    case notSavedYet
+    /// “Connection verified”.
+    case verified
+    /// `connectionFooterStatus` for a saved key that isn't connected.
+    case connectionStatus
+    /// “Not connected”.
+    case notConnected
+    /// No line: a Save & Test error is shown under a connected key, so a green “Connection verified” would contradict
+    /// it (the error says whether the saved key is still in use).
+    case hidden
+}
+let slantKeyNotSavedYetText = "Not saved yet: press Save & Test."
+
+/// Which line shows under the Slant key field. A typed key other than the saved one says it isn't saved yet (Return
+/// doesn't save it), or that it is being tested; “Connection verified” shows only while no Save & Test error is shown.
+func slantKeyStatusLine(keyField: String, savedKey: String, testing: Bool, errorShown: Bool, connected: Bool) -> SlantKeyStatusLine {
+    let typed = keyField.trimmingCharacters(in: .whitespacesAndNewlines)
+    let saved = savedKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    let changes = typed != saved
+    if testing && changes { return .testing }
+    if changes && !typed.isEmpty { return .notSavedYet }
+    if connected { return errorShown ? .hidden : .verified }
+    return saved.isEmpty ? .notConnected : .connectionStatus
+}
 
 // MARK: - Advanced
 

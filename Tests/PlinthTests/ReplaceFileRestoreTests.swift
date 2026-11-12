@@ -124,11 +124,15 @@ final class ReplaceFileRestoreTests: XCTestCase {
                        uploadReplacementUnlinkedNote(fileName: "Bracket", modelNames: ["Bracket (old)"]))
         XCTAssertEqual(uploadReplacementRestoreNote(fileName: "Bracket", leftUnlinked: ["Bracket (old)"], restoreNotSaved: false),
                        "Before sending, Plinth unlinked “Bracket (old)” to replace “Bracket”, and it stays unlinked: upload it again before you use it in an order.")
-        // A restore that couldn't be saved says so first (the save's own alert is replaced by the upload's message).
+        // A restore that couldn't be saved says so first, with the disk-space advice the save's own alert would have
+        // given (the upload's message replaces it), agreeing in number with the models named after it.
         XCTAssertEqual(uploadReplacementRestoreNote(fileName: " ", leftUnlinked: ["A", "B"], restoreNotSaved: true),
-                       "Plinth couldn’t save your library to put back the links it cleared. Before sending, Plinth unlinked 2 models in your library to replace your Slant file, and they stay unlinked: upload them again before you use them in an order.")
+                       "Plinth couldn’t save your library (check that your Mac has free disk space), so it couldn’t link these models again. Before sending, Plinth unlinked 2 models in your library to replace your Slant file, and they stay unlinked: upload them again before you use them in an order.")
+        XCTAssertEqual(uploadReplacementRestoreNote(fileName: "Bracket", leftUnlinked: ["Bracket (old)"], restoreNotSaved: true),
+                       "Plinth couldn’t save your library (check that your Mac has free disk space), so it couldn’t link this model again. Before sending, Plinth unlinked “Bracket (old)” to replace “Bracket”, and it stays unlinked: upload it again before you use it in an order.")
         XCTAssertEqual(uploadReplacementRestoreNote(fileName: "Bracket", leftUnlinked: [], restoreNotSaved: true),
-                       uploadReplacementRestoreNotSavedNote)
+                       uploadReplacementRestoreNotSavedNote(modelCount: 0))
+        XCTAssertFalse(uploadReplacementRestoreNotSavedNote(modelCount: 2).contains("cleared"), "the seller's word is unlinked")
     }
 
     // MARK: Where it runs

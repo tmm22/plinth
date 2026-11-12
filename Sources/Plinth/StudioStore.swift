@@ -1515,7 +1515,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                                                            marker: marker, platformID: platformID)
     }
     /// Tests `key` with a read-only `GET /filaments` and, only once Slant accepts it and the Keychain holds it, makes it
-    /// the key in use. True when the key passed (and wasn't superseded); the refresh that follows doesn't change that.
+    /// the key in use. A new key is refused after its test, before the save, while a sheet or other modal UI is shown
+    /// (`accountKeyChangeBlockedReason`, as Settings checks at the press), so nothing changes under it. True when the
+    /// key passed (and wasn't superseded or refused); the refresh that follows doesn't change that.
     @discardableResult
     func connect(key: String) async -> Bool {
         // `run` refuses while busy (Try Again can reach this while another task holds `busy`; Settings' Save & Test is
@@ -1531,6 +1533,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         _ = await run("Connect to Slant 3D", retryable: true, retry: .connect(key)) {
             let response = try await probe.request("GET", path: "/filaments")
             guard generation == connectGeneration else { throw ConnectSuperseded() }
+            // Settings checked this when Save & Test was pressed, but a sheet or dialog may have opened during the
+            // test: a new key never resets the account under it. Refused before the Keychain save, so nothing changes.
+            if keyChanged, let reason = accountKeyChangeBlockedReason(busy: false, modalUIShown: isPresentingSheet || appIsPresentingModalUI()) {
+                throw StudioError(reason)
+            }
             do { try KeychainStore.save(trimmed) } catch { throw StudioError(slantKeySaveFailedMessage) }
             if keyChanged {
                 // Only now that Slant accepted the new key and the Keychain holds it: a test that fails or is
@@ -2827,9 +2834,13 @@ func replaceFileSelectedFileAfterRestore(selectedLocalID: UUID?, fileID: String,
     return clearedSelection.fileID
 }
 
-/// Leads the note when the links a Replace File cleared couldn't be put back because the library couldn't be saved
-/// (`saveModels`' own alert text is replaced by the upload's failure message).
-let uploadReplacementRestoreNotSavedNote = "Plinth couldn’t save your library to put back the links it cleared."
+/// Leads the note when the links a Replace File cleared couldn't be put back because the library couldn't be saved.
+/// `saveModels`' own alert, with its disk-space advice, is replaced by the upload's failure message, so this gives the
+/// advice. The sentence after it (`uploadReplacementUnlinkedNote`) names the `modelCount` models, so the two agree.
+func uploadReplacementRestoreNotSavedNote(modelCount: Int) -> String {
+    let models = modelCount == 1 ? "this model" : "these models"
+    return "Plinth couldn’t save your library (check that your Mac has free disk space), so it couldn’t link \(models) again."
+}
 
 /// Added to a Models Replace File's failure copy after a stop before any bytes could be sent: nil when every cleared
 /// link came back (the failure copy already says nothing was uploaded), else `uploadReplacementUnlinkedNote` naming the
@@ -2837,7 +2848,7 @@ let uploadReplacementRestoreNotSavedNote = "Plinth couldn’t save your library 
 func uploadReplacementRestoreNote(fileName: String, leftUnlinked: [String], restoreNotSaved: Bool) -> String? {
     let note = uploadReplacementUnlinkedNote(fileName: fileName, modelNames: leftUnlinked)
     guard restoreNotSaved else { return note }
-    return [uploadReplacementRestoreNotSavedNote, note].compactMap { $0 }.joined(separator: " ")
+    return [uploadReplacementRestoreNotSavedNote(modelCount: leftUnlinked.count), note].compactMap { $0 }.joined(separator: " ")
 }
 
 /// Whether a `GET /files` page can be used for the same-name check: a list (empty is fine), and when it has rows, at

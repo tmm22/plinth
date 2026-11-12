@@ -238,7 +238,8 @@ final class ReviewFixesRound22Tests: XCTestCase {
         XCTAssertEqual(parts[3].state, .unavailable("Slant lists no price for it."), "a component's null is never free")
         XCTAssertFalse(parts[3].countedAsFree)
 
-        // The note under the total and in the listing price check, singular and plural.
+        // The note under the total, singular and plural, saying "free" as the row does (never "free of charge" in one
+        // and "free" in another), and "can be", never "is".
         func part(_ id: Int, _ state: ProductCostPartState, free: Bool = false) -> ProductCostPart {
             ProductCostPart(id: id, type: free ? "STATIONERY" : "PRINT", title: "Part \(id)", quantity: 1, perOrder: false,
                             state: state, countedAsFree: free)
@@ -249,14 +250,30 @@ final class ReviewFixesRound22Tests: XCTestCase {
         let unloaded = part(3, .unavailable("Load Stationery in Catalogue to include its price."))
         XCTAssertNil(productCostFreeStationeryNote([print]))
         XCTAssertEqual(productCostFreeStationeryNote([print, card]),
-                       "Includes 1 stationery part counted as free: Slant lists no price for it, and its docs say stationery can be included free of charge.")
+                       "Includes 1 stationery part counted as free: Slant lists no price for it, and its docs say stationery can be included free.")
         XCTAssertEqual(productCostFreeStationeryNote([print, card, label]),
-                       "Includes 2 stationery parts counted as free: Slant lists no price for them, and its docs say stationery can be included free of charge.")
+                       "Includes 2 stationery parts counted as free: Slant lists no price for them, and its docs say stationery can be included free.")
+        // The listing price check's own line is short, in its delivery line's style, and never repeats the note above.
+        XCTAssertNil(listingPriceFreeStationeryNote([print]))
+        XCTAssertEqual(listingPriceFreeStationeryNote([print, card]), "Stationery: 1 part counted as free (Slant lists no price).")
+        XCTAssertEqual(listingPriceFreeStationeryNote([print, card, label, unloaded]),
+                       "Stationery: 2 parts counted as free (Slant lists no prices).")
+        XCTAssertNotEqual(listingPriceFreeStationeryNote([print, card]), productCostFreeStationeryNote([print, card]))
+        for text in [productCostStationeryFreeText, productCostFreeStationeryNote([print, card]) ?? "",
+                     productCostFreeStationeryNote([card, label]) ?? "", listingPriceFreeStationeryNote([card]) ?? ""] {
+            XCTAssertFalse(text.contains("free of charge"), text)
+            XCTAssertFalse(text.contains(" is included"), text)
+        }
 
         // The unpriced line never says "may be higher" any more: every unpriced part makes the real cost higher.
         XCTAssertNil(productCostUnpricedText(productCostSummary([print, card], units: 1)), "everything priced")
         XCTAssertEqual(productCostUnpricedText(productCostSummary([print, card, unloaded], units: 1)),
-                       "1 of 3 parts aren’t priced, so the real cost is higher.")
+                       "1 of 3 parts isn’t priced, so the real cost is higher.")
+        let unloadedToo = part(4, .failed("Slant didn’t answer."))
+        XCTAssertEqual(productCostUnpricedText(productCostSummary([print, unloaded, unloadedToo], units: 1)),
+                       "2 of 3 parts aren’t priced, so the real cost is higher.")
+        XCTAssertEqual(productCostUnpricedText(productCostSummary([unloaded], units: 1)),
+                       "1 of 1 part isn’t priced, so the real cost is higher.")
         let source = try? String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources/Plinth/ProductCostCheck.swift"), encoding: .utf8)
         XCTAssertFalse(source?.contains("may be higher") ?? true, "no text contradicts the rule")
