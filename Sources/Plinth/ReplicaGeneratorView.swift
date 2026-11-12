@@ -90,6 +90,11 @@ struct GeneratedReplicaFile {
     private var control: ReplicaRunControl?
     private var task: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
+    /// The latest Check Printability run; a reply from an earlier one (or for an earlier model) is dropped.
+    private var analysisID: UUID?
+    /// Whether this sheet holds `connection`'s key session: from its first send until it closes, `provider` keeps the
+    /// key for Keep Waiting, Try Conversion Again and Check Printability, so Settings can't replace or remove it.
+    private var holdsKeySession = false
     let connection: ImageTo3DConnection
     private let wallThicknessSamples: Int
 
@@ -118,6 +123,10 @@ struct GeneratedReplicaFile {
                host: ReplicaLibraryHost) {
         guard !isRunning, imageTo3DViewsProblem(views) == nil else { return }
         self.provider = provider
+        if !holdsKeySession {
+            holdsKeySession = true
+            connection.beginSession()
+        }
         let options = replicaGenerationOptions(for: provider.service, purpose: inputs.purpose, higherDetail: higherDetail)
         self.options = options
         estimate = provider.estimatedCost(for: options, photoCount: views.count)
@@ -140,8 +149,9 @@ struct GeneratedReplicaFile {
     func resume(inputs: ReplicaInputs, host: ReplicaLibraryHost) {
         guard !isRunning, let stop = lastStop, let point = stop.resumePoint, replicaResumeAction(for: stop) != nil,
               let provider, provider.service == stop.service, let options else { return }
-        runRemote(inputs: inputs, host: host) { sleep, _, report in
-            await resumeImageTo3DGeneration(provider: provider, from: point, options: options, sleep: sleep, progress: report)
+        runRemote(inputs: inputs, host: host) { sleep, proceed, report in
+            await resumeImageTo3DGeneration(provider: provider, from: point, options: options, sleep: sleep, proceed: proceed,
+                                            progress: report)
         }
     }
 
@@ -155,6 +165,9 @@ struct GeneratedReplicaFile {
         progress = nil
         stopping = false
         processingProblem = nil
+        // A Check Printability still running belongs to the model this run replaces: stop it, so its report can't
+        // land on the new model (or reach Review for Printing with it).
+        cancelAnalysis()
         let sleep = replicaInterruptibleSleep(control)
         // Asked before each Tripo upload and before the create: a Stop pressed by then sends nothing more.
         let proceed: @Sendable () -> Bool = { !control.isStopRequested }
@@ -257,14 +270,27 @@ struct GeneratedReplicaFile {
         control?.requestStop()
     }
 
-    /// The sheet closed: stop everything now.
+    /// The sheet closed: stop everything now, and let Settings change the key again.
     func cancelAll() {
         control?.cancelImmediately()
         control = nil
         task?.cancel()
         task = nil
+        cancelAnalysis()
+        if holdsKeySession {
+            holdsKeySession = false
+            connection.endSession()
+        }
+    }
+
+    /// Stops Check Printability and clears what it showed.
+    private func cancelAnalysis() {
         analysisTask?.cancel()
         analysisTask = nil
+        analysisID = nil
+        analyzing = false
+        meshyReport = nil
+        analysisProblem = nil
     }
 
     // MARK: Local
@@ -377,22 +403,42 @@ struct GeneratedReplicaFile {
               generated.sourceKind.isGeneration else { return }
         analyzing = true
         analysisProblem = nil
+        let id = UUID()
+        analysisID = id
+        let analysed = generated.sourceTaskID
         let connection = connection
         connection.beginWork()
         analysisTask = Task { @MainActor [weak self] in
             defer { connection.endWork() }
+            let outcome: Result<MeshyPrintabilityReport, Error>
             do {
-                let report = try await client.analyzePrintability(ofTask: generated.sourceTaskID, longestSideMM: longestSideMM)
-                self?.meshyReport = report
-                host.addReplicaActivity(Activity(title: "Check Printability", detail: replicaAnalysisActivityDetail(report), success: true))
-            } catch is CancellationError {
-                self?.analysisProblem = "Stopped."
+                outcome = .success(try await client.analyzePrintability(ofTask: analysed, longestSideMM: longestSideMM))
             } catch {
-                self?.analysisProblem = imageTo3DRedacted((error as? ImageTo3DError)?.userMessage ?? error.localizedDescription)
+                outcome = .failure(error)
+            }
+            switch outcome {
+            case .success(let report):
+                host.addReplicaActivity(Activity(title: "Check Printability", detail: replicaAnalysisActivityDetail(report), success: true))
+            case .failure(let error) where !(error is CancellationError):
                 host.addReplicaActivity(Activity(title: "Check Printability",
                                                  detail: "Meshy: \((error as? ImageTo3DError)?.activityDetail ?? "failed")", success: false))
+            case .failure:
+                break
             }
-            self?.analyzing = false
+            // Only this run, for the model it analysed, may change what the sheet shows: Generate Again cancels it and
+            // clears its state, and a reply arriving after a newer model must not be shown with that model.
+            guard let self, self.analysisID == id else { return }
+            self.analysisID = nil
+            self.analyzing = false
+            guard self.generated?.sourceTaskID == analysed else { return }
+            switch outcome {
+            case .success(let report):
+                self.meshyReport = report
+            case .failure(let error) where error is CancellationError:
+                self.analysisProblem = "Stopped."
+            case .failure(let error):
+                self.analysisProblem = imageTo3DRedacted((error as? ImageTo3DError)?.userMessage ?? error.localizedDescription)
+            }
         }
     }
 }
@@ -1028,7 +1074,7 @@ struct ReplicaGeneratorSheet: View {
         runWithImageSharingConsent(plan.service.sharingService, request: $consentRequest) { start(plan) }
     }
 
-    /// Sends only what the seller saw priced: the same service, photos, Higher detail and touch-up choice.
+    /// Sends only what the seller saw priced: the same service, photos and Higher detail (`ReplicaRequestPlan`).
     private func start(_ plan: ReplicaRequestPlan) {
         guard blockedReasons.isEmpty, !session.isRunning, let inputs else { return }
         guard currentPlan == plan else {

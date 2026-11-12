@@ -337,6 +337,9 @@ final class ImageTo3DMultiViewTests: XCTestCase {
         XCTAssertTrue(replicaHigherDetailNote(service: .meshy).contains("Ultra 2K"))
         XCTAssertTrue(replicaHigherDetailNote(service: .meshy).contains("Plinth keeps up to 200,000 triangles"))
         XCTAssertTrue(replicaHigherDetailNote(service: .tripo).contains("20 more credits"))
+        // Meshy's Ultra models aren't remeshed and their size isn't documented: say plainly what a too-large one costs.
+        XCTAssertTrue(replicaHigherDetailNote(service: .meshy).contains("if it is over 128 MB, Plinth can’t download it, and the credits are spent"))
+        XCTAssertFalse(replicaHigherDetailNote(service: .tripo).contains("128 MB"), "Tripo's face limit keeps it small")
     }
 
     func testAModelTooLargeToDownloadIsAFinalStop() async {
@@ -358,7 +361,7 @@ final class ImageTo3DMultiViewTests: XCTestCase {
                        "Meshy keeps it for 3 days", "without Higher detail"] {
             XCTAssertTrue(stop.userMessage.contains(phrase), "\(phrase): \(stop.userMessage)")
         }
-        XCTAssertEqual(stop.activityDetail, "Meshy: downloading, model too large, task m1")
+        XCTAssertEqual(stop.activityDetail, "Meshy: downloading, model too large")
         XCTAssertFalse(imageTo3DCreateOutcomeUnknown(ImageTo3DError.modelTooLarge))
     }
 

@@ -134,19 +134,22 @@ final class DesignQuitGuardTests: XCTestCase {
     }
 
     /// An unsaved replica asks on both paths. Every stop the replica's Close warns about whose outcome is unknown is
-    /// recorded in the session's unconfirmed requests, which the quit question counts; the known outcomes (a task the
-    /// service ended, a model too large to read) lose nothing on quitting.
+    /// recorded in the session's unconfirmed requests, which the quit question counts; a model too large to read loses
+    /// nothing on quitting. A task the service ended asks on neither path.
     func testReplicaAgreesWithItsClose() {
         XCTAssertEqual(replicaDesignQuitItems(hasUnsavedModel: true), [.unsavedReplica])
         XCTAssertNotNil(replicaCloseWarning(hasUnsavedModel: true, lastStop: nil, service: .meshy))
         XCTAssertEqual(replicaDesignQuitItems(hasUnsavedModel: false), [])
         XCTAssertNil(replicaCloseWarning(hasUnsavedModel: false, lastStop: nil, service: .meshy))
 
-        let reasons: [ImageTo3DStopReason] = [.notSent, .outcomeUnknown, .taskEnded(.failed), .conversionRefused, .timedOut,
-                                              .statusUnreadable, .downloadFailed, .modelTooLarge, .cancelled]
+        let reasons: [ImageTo3DStopReason] = [.notSent, .outcomeUnknown, .taskEnded(.failed), .taskEnded(.banned), .taskEnded(.expired),
+                                              .taskEnded(.cancelled), .conversionRefused, .timedOut, .statusUnreadable, .downloadFailed,
+                                              .modelTooLarge, .cancelled]
         for reason in reasons {
             for taskID in [nil, "t1"] as [String?] {
-                let stop = ImageTo3DStop(reason: reason, stage: .generating, service: .tripo, taskID: taskID, detail: "")
+                let point = ImageTo3DResumePoint(sourceTaskID: taskID ?? "t0", sourceKind: .generation, conversionTaskID: nil)
+                let stop = ImageTo3DStop(reason: reason, stage: .generating, service: .tripo, taskID: taskID, detail: "",
+                                         resumePoint: reason == .conversionRefused ? point : nil)
                 let closeWarns = replicaCloseWarning(hasUnsavedModel: false, lastStop: stop, service: .tripo) != nil
                 let suite = testDefaultsSuiteName("DesignQuit")
                 let defaults = UserDefaults(suiteName: suite)!
@@ -156,8 +159,12 @@ final class DesignQuitGuardTests: XCTestCase {
                 let quitAsks = designWorkQuitQuestion(items: [], unconfirmedGenerations: connection.unconfirmedRequests.count,
                                                       unconfirmedOverflowed: connection.unconfirmedRequestsOverflowed) != nil
                 if quitAsks { XCTAssertTrue(closeWarns, "\(reason) \(String(describing: taskID))") }
-                if closeWarns, reason != .modelTooLarge, reason != .taskEnded(.failed) {
+                if closeWarns, reason != .modelTooLarge {
                     XCTAssertTrue(quitAsks, "\(reason) \(String(describing: taskID))")
+                }
+                if case .taskEnded = reason {
+                    XCTAssertFalse(closeWarns, "\(reason): the service ended the task, so nothing is lost")
+                    XCTAssertFalse(quitAsks, "\(reason)")
                 }
             }
         }

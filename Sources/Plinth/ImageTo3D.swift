@@ -15,8 +15,10 @@ import Security
 //     UI can send the seller to the service's dashboard rather than send it again.
 //   - Status reads may be sent again after transient failures, with a bounded backoff, waiting out 429 Retry-After,
 //     within an overall limit (`imageTo3DPollTimeout`), and they stop when the Swift task is cancelled.
-//   - Keys live in their own Keychain items (this device only), are sent only to the service's API host and never to
-//     download hosts, and never appear in errors, logs or Activity (`imageTo3DRedacted`).
+//   - Keys live in their own Keychain items (`AIServiceKeychainItem`, in the login keychain; they are added with
+//     `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, which has no effect on that file-based keychain, so nothing
+//     here promises "this device only"), are sent only to the service's API host and never to download hosts, and
+//     never appear in errors, logs or Activity (`imageTo3DRedacted`).
 //   - Downloads are https only, capped at `imageTo3DMaxDownloadBytes`, carry no credentials or cookies and follow a
 //     redirect only to another https host.
 //   - Nothing here touches Slant, `store.run`, `busy` or the unknown-outcome lock.
@@ -29,8 +31,13 @@ let imageTo3DMaxResponseBytes = 2 * 1024 * 1024
 let imageTo3DMaxImageBytes = 20 * 1024 * 1024
 /// Most photos one generation takes: Meshy's Multi-Image to 3D and Tripo's multiview-to-model both take up to four.
 let imageTo3DMaxPhotos = 4
-/// Per-request timeout for API calls. A create can take a while to answer under load.
+/// Per-request timeout for API calls. A create can take a while to answer under load. It is an idle limit: it fires
+/// only when no bytes move for this long (status reads use 30 s).
 let imageTo3DRequestTimeout: TimeInterval = 60
+/// Longest one API request or download may take in all. A four-photo Meshy create is one JSON body of up to about
+/// 32 MB, and Tripo uploads each photo; 15 minutes lets that finish on an uplink of about 300 kbit/s, where a shorter
+/// limit would cut off an upload that is still moving and leave a create's outcome unknown.
+let imageTo3DResourceTimeout: TimeInterval = 15 * 60
 /// Longest Studio waits for one task (generation, conversion or repair) to finish.
 let imageTo3DPollTimeout: TimeInterval = 10 * 60
 /// Gap between status reads while a task runs.
@@ -68,12 +75,13 @@ enum ImageTo3DService: String, CaseIterable, Identifiable, Codable, Sendable {
         }
     }
 
-    /// How Meshy's keys begin (`msy_`, docs.meshy.ai/llms.txt). Tripo's docs disagree (`tsk_…` and `sk-…`), so
-    /// Studio only uses these to spot a key pasted into the wrong service's field.
+    /// How each service's keys begin: Meshy's `msy_` (docs.meshy.ai/llms.txt), Tripo's `tsk_` (its docs and CLI,
+    /// 12 Nov 2026; earlier pages also showed `sk-`). Advisory only: Studio uses these to spot a key pasted into the
+    /// wrong field and never refuses a key for its prefix.
     var keyPrefix: String? {
         switch self {
         case .meshy: return "msy_"
-        case .tripo: return nil
+        case .tripo: return "tsk_"
         }
     }
 }
@@ -105,7 +113,8 @@ struct ImageTo3DImage: Equatable, Sendable {
 }
 
 /// The view a photo shows, in slot order. The names are Tripo's multiview keys; Meshy only needs the front first.
-/// Left and right are the object's own sides (from the front, its left side is on the viewer's right).
+/// Plinth takes left and right as the object's own sides (from the front, its left side is on the viewer's right).
+/// Tripo doesn't say which it means, so that convention is unconfirmed.
 enum ImageTo3DPhotoView: String, CaseIterable, Identifiable, Sendable {
     case front, left, back, right
 
@@ -467,23 +476,18 @@ func imageTo3DPollDelay(consecutiveFailures: Int, retryAfter: TimeInterval?, sug
 
 // MARK: Links
 
-/// A model link Studio may download: https, a host, no user, password or fragment. The key is never sent with it.
+/// A model link Studio may download: https, a named public host (`networkHostIsLocalOrLiteral`: no local name, IP
+/// literal in any spelling or single-label name), no user, password or fragment. The key is never sent with it. Used
+/// for links read from replies, the download itself and every redirect.
 func imageTo3DDownloadURLProblem(_ url: URL) -> String? {
     guard url.scheme?.lowercased() == "https" else { return "The service didn’t return a secure (https) model link." }
     guard let host = url.host, !host.isEmpty else { return "The service returned a model link without a host." }
     guard url.user == nil, url.password == nil else { return "The service returned a model link with sign-in details, so Plinth didn’t follow it." }
     guard url.fragment == nil else { return "The service returned an unusual model link, so Plinth didn’t follow it." }
-    if host == "localhost" || host.hasSuffix(".local") || host.hasSuffix(".localhost") || imageTo3DHostIsIPLiteral(host) {
+    if networkHostIsLocalOrLiteral(host) {
         return "The service returned a model link to a local address, so Plinth didn’t follow it."
     }
     return nil
-}
-
-/// True for IPv4 or IPv6 literals: real model links name a host.
-func imageTo3DHostIsIPLiteral(_ host: String) -> Bool {
-    if host.contains(":") { return true }
-    let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-    return parts.count == 4 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy(\.isNumber) }
 }
 
 /// Whether a download may follow a redirect to `target`: same (https) scheme, another valid model link.
@@ -564,7 +568,7 @@ func imageTo3DSessionConfiguration(timeout: TimeInterval) -> URLSessionConfigura
     configuration.urlCache = nil
     configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
     configuration.timeoutIntervalForRequest = timeout
-    configuration.timeoutIntervalForResource = timeout * 3
+    configuration.timeoutIntervalForResource = imageTo3DResourceTimeout
     return configuration
 }
 
@@ -636,7 +640,6 @@ private final class ImageTo3DBoundedDownload: NSObject, URLSessionDataDelegate, 
     func run() async throws -> URL {
         try Task.checkCancellation()
         let configuration = imageTo3DSessionConfiguration(timeout: imageTo3DRequestTimeout)
-        configuration.timeoutIntervalForResource = 15 * 60
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         guard FileManager.default.createFile(atPath: destination.path, contents: nil),
@@ -895,6 +898,10 @@ extension ImageTo3DService {
     @Published private(set) var savedKeys: Set<ImageTo3DService>
     /// Generations, repairs or key tests running now. Keys can't be replaced or removed meanwhile.
     @Published private(set) var activeWork = 0
+    /// Open Generate a Replica sheets that hold a key: once a sheet has sent its first request it keeps that client for
+    /// Keep Waiting, Try Conversion Again (paid) and Check Printability, so the key can't change until the sheet closes,
+    /// even between requests. A sheet that hasn't sent anything holds none, so Settings can add a key meanwhile.
+    @Published private(set) var openSessions = 0
 
     private let defaults: UserDefaults
 
@@ -908,6 +915,9 @@ extension ImageTo3DService {
     var busy: Bool { activeWork > 0 }
     func beginWork() { activeWork += 1 }
     func endWork() { activeWork = max(0, activeWork - 1) }
+    /// A replica sheet took hold of the key (its first send); `endSession` when the sheet closes.
+    func beginSession() { openSessions += 1 }
+    func endSession() { openSessions = max(0, openSessions - 1) }
 
     /// Paid requests this session whose outcome is unconfirmed, oldest first. Memory only: never saved, and kept
     /// through key and service changes until quit.
@@ -953,7 +963,7 @@ extension ImageTo3DService {
 
     /// Why a key can't be saved or removed now, or nil.
     var keyChangeBlockedReason: String? {
-        busy ? "Wait for the current 3D generation task to finish." : nil
+        imageTo3DKeyChangeBlockedReason(busy: busy, openSessions: openSessions)
     }
 
     /// The client for the saved key, reading the Keychain now.
@@ -987,6 +997,14 @@ extension ImageTo3DService {
     }
 }
 
+/// Why a 3D service key can't be saved or removed now, or nil: work using it is running, or a replica sheet that holds
+/// it is open (`ImageTo3DConnection.openSessions`; the same rule as `anthropicKeyChangeBlockedReason`).
+func imageTo3DKeyChangeBlockedReason(busy: Bool, openSessions: Int) -> String? {
+    if busy { return "Wait for the current 3D generation task to finish." }
+    if openSessions > 0 { return "Close Generate a Replica first." }
+    return nil
+}
+
 // MARK: Provider
 
 /// Which kind of task a status read is for (Meshy reads each kind from its own endpoint; Tripo has one).
@@ -1018,10 +1036,11 @@ protocol ImageTo3DProvider: Sendable {
                           proceed: @escaping @Sendable () -> Bool) async -> ImageTo3DCreateResult
     /// One status read.
     func readTask(_ taskID: String, kind: ImageTo3DTaskKind) async throws -> ImageTo3DTaskStatus
-    /// Whether a finished task needs a conversion task before `format` can be downloaded (Tripo always; Meshy after
-    /// a repair, which gives GLB only).
+    /// Whether a finished task needs a conversion task before `format` can be downloaded: Tripo after every generation
+    /// (it gives GLB only), Meshy only after a repair (likewise GLB only). The conversion is a paid create that the
+    /// replica's cost already includes for Tripo; a Meshy generation without a printable link never converts.
     func needsConversion(after status: ImageTo3DTaskStatus, kind: ImageTo3DTaskKind, to format: ImageTo3DOutputFormat) -> Bool
-    /// Sends the conversion of a finished task once. Only called when `needsConversion` is true.
+    /// Sends the conversion of a finished task once, never retried. Only called when `needsConversion` is true.
     func createConversion(of status: ImageTo3DTaskStatus, kind: ImageTo3DTaskKind, options: ImageTo3DOptions) async -> ImageTo3DCreateResult
     /// The link to download from a finished task, and the format it gives. Never GLB, OBJ or FBX.
     func modelLink(in status: ImageTo3DTaskStatus, kind: ImageTo3DTaskKind, preferred: ImageTo3DOutputFormat) -> ImageTo3DModelLink?
@@ -1115,9 +1134,11 @@ enum ImageTo3DStopReason: Equatable, Sendable {
     case notSent
     /// A create may have gone through; Studio didn't send it again.
     case outcomeUnknown
-    /// The task finished without a model (failed, banned, expired, cancelled).
+    /// The generation (or repair) task finished without a model (failed, banned, expired, cancelled). The service
+    /// usually refunds it, and nothing is recorded: there is nothing to duplicate.
     case taskEnded(ImageTo3DTaskState)
-    /// The conversion was refused after the generation was made (and charged).
+    /// The model was made (and charged), but its conversion was refused or its conversion task ended without a file.
+    /// Try Conversion Again can send a new conversion of the same generation.
     case conversionRefused
     /// The task was still running when Studio stopped waiting.
     case timedOut
@@ -1141,7 +1162,7 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
     let detail: String
     /// Set when `resumeImageTo3DGeneration` can carry on (Keep Waiting, Try Download Again) without resending
     /// anything that may already exist. Nil after an unknown create outcome, a refusal of the first create or a
-    /// task that ended.
+    /// generation (or repair) task that ended.
     var resumePoint: ImageTo3DResumePoint? = nil
     /// The kind of the run's source request (single- or multi-image generation, or repair), also when there's no
     /// resume point, so an unconfirmed record names it.
@@ -1168,7 +1189,7 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
         case .taskEnded(let state):
             return "\(service.title) stopped the task: \(state.title.lowercased()).\(detailText)"
         case .conversionRefused:
-            return "\(service.title) made the model but refused to convert it, so nothing more was sent.\(detailText)"
+            return "\(service.title) made the model, but its conversion to a printable file didn’t go through, so nothing more was sent.\(detailText)"
         case .timedOut:
             return "\(service.title) was still working after 10 minutes, so Plinth stopped waiting. The task carries on at \(service.title)."
         case .statusUnreadable:
@@ -1187,10 +1208,10 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
         }
     }
 
-    /// Activity-safe line: service, stage, reason and task ID only.
+    /// Activity-safe line: service, stage and reason only (design-tool Activity gets titles, counts, cost and status).
+    /// The task ID stays in the sheet's message and the unconfirmed-request notice, where the seller needs it.
     var activityDetail: String {
-        let id = taskID.map { ", task \($0)" } ?? ""
-        return "\(service.title): \(stage.rawValue), \(reasonCode)\(id)"
+        "\(service.title): \(stage.rawValue), \(reasonCode)"
     }
 
     private var reasonCode: String {
@@ -1294,7 +1315,7 @@ func runImageTo3DGeneration(provider: ImageTo3DProvider, views: [ImageTo3DViewIm
         return await resumeImageTo3DGeneration(provider: provider,
                                                from: ImageTo3DResumePoint(sourceTaskID: id, sourceKind: kind, conversionTaskID: nil),
                                                options: options, timeout: timeout, sleep: sleep, now: now,
-                                               makeFolder: makeFolder, progress: progress)
+                                               makeFolder: makeFolder, proceed: proceed, progress: progress)
     case .notSent(.invalidInput(imageTo3DStoppedBeforeSendingMessage)):
         return halt(.cancelled, nil, "")
     case .notSent(let error):
@@ -1316,11 +1337,13 @@ func runImageTo3DGeneration(provider: ImageTo3DProvider, image: ImageTo3DImage, 
 
 /// Carries a run on from `point`: waits for the source task, sends the conversion once when the service needs one
 /// (and it hasn't been sent), waits for it, then downloads the printable file into a new temporary folder. Used for
-/// the first run and for Keep Waiting / Try Download Again after a stop with a `resumePoint`.
+/// the first run and for Keep Waiting / Try Download Again after a stop with a `resumePoint`. `proceed` is asked right
+/// before the conversion is sent: false (Stop pressed) stops with nothing more sent, and Keep Waiting can carry on.
 func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3DResumePoint, options: ImageTo3DOptions,
                                timeout: TimeInterval = imageTo3DPollTimeout,
                                sleep: ImageTo3DSleep = imageTo3DRealSleep, now: ImageTo3DClock = { Date() },
                                makeFolder: () throws -> URL = makeImageTo3DTempFolder,
+                               proceed: @escaping @Sendable () -> Bool = { true },
                                progress: @escaping @Sendable (ImageTo3DProgress) -> Void = { _ in }) async -> Result<ImageTo3DGeneratedModel, ImageTo3DStop> {
     let service = provider.service
     let sourceStage: ImageTo3DStage = point.sourceKind == .repair ? .repairing : .generating
@@ -1349,7 +1372,8 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
             return stop(.taskEnded(finished.state), sourceStage, point.sourceTaskID, finished.message ?? "", resume: nil)
         }
         if provider.needsConversion(after: finished, kind: point.sourceKind, to: options.format) {
-            if Task.isCancelled { return stop(.cancelled, .converting, point.sourceTaskID, "", resume: point) }
+            // A Stop pressed after the last status report hasn't cancelled the task yet: ask before spending credits.
+            if Task.isCancelled || !proceed() { return stop(.cancelled, .converting, point.sourceTaskID, "", resume: point) }
             progress(ImageTo3DProgress(stage: .converting, taskID: point.sourceTaskID, state: nil, percent: nil))
             switch await provider.createConversion(of: finished, kind: point.sourceKind, options: options) {
             case .created(let id):
@@ -1371,7 +1395,12 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
         case .failure(let halt): return .failure(halt.resumable(from: canCarryOn(halt.reason) ? converting : nil).kind(point.sourceKind))
         }
         guard finished.state == .succeeded else {
-            return stop(.taskEnded(finished.state), .converting, conversionID, finished.message ?? "", resume: nil)
+            // The model was made and charged; only its conversion ended (a failed or cancelled task isn't charged).
+            // Like a refusal, nothing is sent again by itself: Try Conversion Again sends one new conversion of the
+            // same generation, priced, on a press. The resume point leaves out the ended conversion, which re-reading
+            // would only find ended again, and the stop names the generation, where the model is on the dashboard.
+            let retry = ImageTo3DResumePoint(sourceTaskID: point.sourceTaskID, sourceKind: point.sourceKind, conversionTaskID: nil)
+            return stop(.conversionRefused, .converting, point.sourceTaskID, finished.message ?? "", resume: retry)
         }
         finishedKind = .conversion
     }

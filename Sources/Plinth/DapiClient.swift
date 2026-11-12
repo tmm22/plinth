@@ -131,19 +131,15 @@ func dapiIdempotencyKeyIsValid(_ key: String) -> Bool {
 }
 
 /// Why Plinth won't PUT a file to this presigned `upload_url`, or nil. It must be https to a named host (not an IP
-/// literal, a single-label name or a local one) on the default port, with no user name, password or fragment, and
-/// it must not contain the key.
+/// literal in any spelling, a single-label name or a local one: `networkHostIsLocalOrLiteral`) on the default port,
+/// with no user name, password or fragment, and it must not contain the key.
 func dapiUploadURLProblem(_ url: URL, apiKey: String = "") -> String? {
     guard url.scheme?.lowercased() == "https" else { return "it isn’t a secure (https) link" }
     guard let rawHost = url.host, !rawHost.isEmpty else { return "it has no host" }
-    let host = rawHost.lowercased()
     guard url.user == nil, url.password == nil else { return "it carries sign-in details" }
     guard url.fragment == nil else { return "it is an unusual link" }
     if let port = url.port, port != 443 { return "it uses an unusual port" }
-    let labels = host.split(separator: ".", omittingEmptySubsequences: false)
-    if host == "localhost" || host.hasSuffix(".local") || host.hasSuffix(".localhost") || host.hasSuffix(".internal")
-        || imageTo3DHostIsIPLiteral(host) || labels.count < 2 || labels.contains(where: \.isEmpty)
-        || (labels.last?.allSatisfy(\.isNumber) ?? true) || host.contains("%") {
+    if networkHostIsLocalOrLiteral(rawHost) {
         return "it points to a local or numeric address"
     }
     let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)

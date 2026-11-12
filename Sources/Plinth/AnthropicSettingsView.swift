@@ -28,8 +28,8 @@ struct AnthropicSettingsSection: View {
             if connection.isConfigured {
                 LabeledContent("API key", value: "Saved in the Keychain")
             }
+            // No onSubmit: Return never sends the key anywhere.
             SecureField(connection.isConfigured ? "Replace key" : "API key", text: $key, prompt: Text("sk-ant-…"))
-                .onSubmit { saveAndTest() }
             HStack {
                 Button("Save & Test") { saveAndTest() }
                     .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || testing

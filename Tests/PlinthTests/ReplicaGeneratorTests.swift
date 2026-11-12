@@ -922,6 +922,69 @@ final class ReplicaGeneratorTests: XCTestCase {
         session.cancelAll()
     }
 
+    func testKeyChangeRuleNamesTheSheet() {
+        XCTAssertNil(imageTo3DKeyChangeBlockedReason(busy: false, openSessions: 0))
+        XCTAssertEqual(imageTo3DKeyChangeBlockedReason(busy: false, openSessions: 1), "Close Generate a Replica first.")
+        XCTAssertEqual(imageTo3DKeyChangeBlockedReason(busy: true, openSessions: 1), "Wait for the current 3D generation task to finish.")
+    }
+
+    @MainActor func testAnOpenSheetHoldsItsKeyUntilItCloses() async throws {
+        let connection = makeTestConnection()
+        let fresh = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        XCTAssertNil(connection.keyChangeBlockedReason, "a sheet that sent nothing holds no key, so Settings can add one")
+        fresh.cancelAll()
+        XCTAssertEqual(connection.openSessions, 0, "closing a sheet that held nothing releases nothing")
+
+        // A refused create: the sheet keeps its client for whatever the seller does next, so the key stays put.
+        let transport = ReplicaScriptedTransport([(402, #"{"message":"Not enough credits"}"#), (402, #"{"message":"Still not"}"#)])
+        let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        let provider = MeshyClient(apiKey: "msy_secretkey1", transport: transport)
+        session.start(provider: provider, image: jpeg, inputs: cat, host: ReplicaTestHost())
+        try await waitFor(session, [.stopped])
+        XCTAssertFalse(connection.busy)
+        XCTAssertEqual(connection.keyChangeBlockedReason, "Close Generate a Replica first.")
+        session.start(provider: provider, image: jpeg, inputs: cat, host: ReplicaTestHost())
+        try await waitFor(session, [.stopped])
+        XCTAssertEqual(connection.openSessions, 1, "one hold per sheet, however many sends")
+        session.cancelAll()
+        XCTAssertNil(connection.keyChangeBlockedReason)
+        session.cancelAll()
+        XCTAssertEqual(connection.openSessions, 0)
+    }
+
+    @MainActor func testGenerateAgainDropsAnEarlierPrintabilityCheck() async throws {
+        let transport = ReplicaStallingTransport([(202, #"{"result":"t1"}"#), (200, meshyFinished)],
+                                                 modelData: try MeshRepairTests.cube(size: 0.05).binarySTL())
+        let connection = makeTestConnection()
+        let host = ReplicaTestHost()
+        let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        session.start(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), image: jpeg, inputs: cat, host: host)
+        try await waitFor(session, [.processed, .stopped, .processingFailed])
+        XCTAssertEqual(session.phase, .processed, "\(String(describing: session.lastStop))")
+
+        // Check Printability is sent and Meshy hasn't answered yet.
+        session.analyzeWithMeshy(longestSideMM: 25, host: host)
+        XCTAssertTrue(session.analyzing)
+        let deadline = Date().addingTimeInterval(10)
+        while transport.requestCount < 3, Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertEqual(transport.requestCount, 3)
+
+        // Generate Again (refused at once here): the earlier check is cancelled and nothing of it is shown.
+        let refused = ReplicaScriptedTransport([(402, #"{"message":"Not enough credits"}"#)])
+        session.start(provider: MeshyClient(apiKey: "msy_secretkey1", transport: refused), image: jpeg, inputs: cat, host: host)
+        XCTAssertFalse(session.analyzing)
+        XCTAssertNil(session.meshyReport)
+        XCTAssertNil(session.analysisProblem)
+        try await waitFor(session, [.stopped])
+        while connection.busy, Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertFalse(connection.busy, "the cancelled check has finished")
+        XCTAssertFalse(session.analyzing)
+        XCTAssertNil(session.meshyReport)
+        XCTAssertNil(session.analysisProblem, "the cancelled check doesn't say Stopped. over the new run")
+        XCTAssertFalse(host.activities.contains { $0.title == "Check Printability" }, "a cancelled check isn't logged")
+        session.cancelAll()
+    }
+
     func testTripoLinkWithoutAnExtensionIsAccepted() {
         let client = TripoClient(apiKey: "tsk_secretkey1", transport: ReplicaScriptedTransport([]))
         let status = ImageTo3DTaskStatus(taskID: "c1", state: .succeeded, modelURLs: ["bin": URL(string: "https://cdn.tripo3d.ai/o/abc.bin")!])
@@ -945,6 +1008,39 @@ final class ReplicaGeneratorTests: XCTestCase {
         guard (try? STLMesh.parse(Data(contentsOf: url))) != nil else { return nil }
         imported.append(url.lastPathComponent)
         return UUID()
+    }
+}
+
+/// Takes the scripted replies in order, then never answers until cancelled; downloads write `modelData`.
+private final class ReplicaStallingTransport: ImageTo3DTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var replies: [(Int, String)]
+    private var count = 0
+    let modelData: Data
+
+    init(_ replies: [(Int, String)], modelData: Data) {
+        self.replies = replies
+        self.modelData = modelData
+    }
+
+    var requestCount: Int { lock.withLock { count } }
+
+    func send(_ request: URLRequest) async throws -> ImageTo3DHTTPReply {
+        let next: (Int, String)? = lock.withLock {
+            count += 1
+            return replies.isEmpty ? nil : replies.removeFirst()
+        }
+        guard let next else {
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+            throw ImageTo3DError.transport("No reply")
+        }
+        return ImageTo3DHTTPReply(status: next.0, headers: [:], body: Data(next.1.utf8))
+    }
+
+    func download(_ url: URL, into folder: URL, fileName: String, maxBytes: Int64) async throws -> URL {
+        let file = folder.appendingPathComponent(fileName)
+        try modelData.write(to: file)
+        return file
     }
 }
 
