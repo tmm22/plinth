@@ -19,7 +19,7 @@
       "order-workflow": "Upload files → Draft order → Process Order → Fulfillment Label Created Internally → Webhook Order Updates",
       "webhooks": "Configure webhook URLs on platforms for order status updates",
       "platform-workflow": "A Platform ID is required on most requests, as it is the organizational foundation of the API. Create or utilize one of the already created platforms and attach the ID to requests where it is required according to individual endpoint specifications.",
-      "openscad-rate-limit": "5 OpenSCAD generations per hour, one in flight",
+      "openscad-rate-limit": "100 OpenSCAD generations per hour, one in flight (Slant's docs and spec since 9 Nov 2026; 5 before)",
       "webhook-signature": "HMAC-SHA256 over `${timestamp}.${rawBody}` with the platform's webhookSecret, where timestamp is the X-Webhook-Timestamp header exactly as sent (Unix milliseconds) and rawBody is the exact bytes received; header X-Webhook-Signature-256 is sha256=<hex>; reject when Date.now() − timestamp is 300000 ms or more",
       "x-plinth-source": "docs"
     }
@@ -1169,7 +1169,8 @@
           },
           "provider": {
             "type": "string",
-            "description": "Fulfillment / label provider"
+            "description": "Slant's docs: who is carrying the shipment. Live (29 Oct and 1 Nov 2026): SHIPPO, the label service, not the carrier.",
+            "x-plinth-source": "live"
           },
           "deliveryMethod": {
             "type": "string"
@@ -1450,7 +1451,7 @@
           "Files"
         ],
         "summary": "Import file from URL",
-        "description": "Import an STL from an accessible download URL. Documented on the Files page; this operation supplements the published OpenAPI document, which no longer lists it (checked 23 Oct 2026).",
+        "description": "Import an STL from an accessible download URL. Documented on the Files page; this operation supplements the published OpenAPI document, which no longer lists it (checked 23 Oct 2026; still documented as the Files page's Server Upload in the docs bundle of 9 Nov 2026).",
         "security": [
           {
             "ApiKeyAuth": []
@@ -3532,7 +3533,7 @@
           "Orders"
         ],
         "summary": "Cancel order",
-        "description": "Cancel an order if it hasn't started production. Docs: cancelling an order will also refund it as well as cancel associated fulfillment. If already shipped then the order will only refund. A separate refund endpoint exists in docs but is not integrated in this OpenAPI.",
+        "description": "Cancel an order if it hasn't started production. Docs: cancelling an order will also refund it as well as cancel associated fulfillment. If already shipped then the order will only refund since it has already left the warehouse. The docs' Refund an Order section says \"Not Integrated yet. Use Cancel Order\".",
         "security": [
           {
             "ApiKeyAuth": []
@@ -4191,7 +4192,7 @@
           "Files"
         ],
         "summary": "Convert OpenSCAD code to STL",
-        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 100 generations per hour with one generation in flight at a time. Docs example from before 9 Nov 2026, when this read 5 generations per hour: a 200 reply carries X-RateLimit-Limit: 5 and X-RateLimit-Remaining: 4.",
+        "description": "Generate an STL Model file from OpenSCAD code. Provide the full OpenSCAD code as a string and the raw STL bytes are streamed back as application/sla, ready to write to disk or hand to the upload endpoint. Limited to 100 generations per hour with one generation in flight at a time. Docs example (bundle of 9 Nov 2026): a 200 reply carries Content-Type: application/sla, Content-Disposition: attachment; filename=\"model.stl\", X-RateLimit-Limit: 100 and X-RateLimit-Remaining: 99, with no X-RateLimit-Reset (5 and 4 before 9 Nov 2026); errors (validation, rate limit) come back as JSON.",
         "security": [
           {
             "ApiKeyAuth": []

@@ -85,7 +85,7 @@ final class ProductCostCheckTests: XCTestCase {
         XCTAssertEqual(reason(4), "Its material is out of stock, so Slant can’t print it now.")
         XCTAssertEqual(reason(5), "Load Components in Catalogue to include its price.")
         XCTAssertEqual(reason(6), "It’s no longer offered in the catalogue.")
-        XCTAssertEqual(reason(7), "Slant lists no price for it.")
+        XCTAssertEqual(reason(7), productCostStationeryNoPriceText, "Slant's null stationery price is still not counted")
         XCTAssertEqual(reason(8), "This item has an unknown type.")
         let summary = productCostSummary(parts, units: 1)
         XCTAssertFalse(summary.complete)

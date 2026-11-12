@@ -42,15 +42,23 @@ struct ProductCostPart: Equatable, Identifiable {
 }
 
 /// Price of a component or stationery record in USD, or why it can't be used. Components document `priceUnit` as a
-/// currency (always USD); stationery has no unit field, so its `price` is read as Slant's USD price.
-func productCostCatalogPrice(_ record: Record) -> Result<Decimal, StudioError> {
+/// currency (always USD); stationery has no unit field, so its `price` is read as Slant's USD price. Stationery whose
+/// price is null stays unpriced (Slant's docs say stationery can be included free of charge and show a null price,
+/// but counting it as free is the owner's decision), and its reason says what the docs say.
+func productCostCatalogPrice(_ record: Record, stationery: Bool = false) -> Result<Decimal, StudioError> {
     guard let price = estimateAmount(record.values["price"]), price >= 0 else {
+        if stationery, record.values["price"] is NSNull {
+            return .failure(StudioError(productCostStationeryNoPriceText))
+        }
         return .failure(StudioError("Slant lists no price for it."))
     }
     let unit = record.string("priceUnit").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     guard unit.isEmpty || unit == "USD" else { return .failure(StudioError("Slant prices it in \(unit), so it isn’t added.")) }
     return .success(price)
 }
+
+/// Why a stationery item whose price Slant lists as null isn't counted.
+let productCostStationeryNoPriceText = "Slant lists no price for it, though Slant’s docs say stationery can be included free of charge."
 
 /// The parts of `product` for an order of `units`, each with a catalog price, a print still to estimate, or the
 /// reason it can't be priced. Never guesses: a missing upload, material or catalog is explained instead.
@@ -127,7 +135,7 @@ func productCostParts(
                 parts.append(part(.unavailable("Slant marks it as not available, so its price isn’t counted.")))
                 continue
             }
-            switch productCostCatalogPrice(record) {
+            switch productCostCatalogPrice(record, stationery: kind == .stationery) {
             case .success(let price):
                 let each = money(NSDecimalNumber(decimal: price))
                 parts.append(part(.priced(total: price * Decimal(quantity), detail: "Catalogue price, \(each) each")))

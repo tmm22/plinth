@@ -105,15 +105,22 @@ func orderShippingOptions(provider: String) -> [String: Any] {
     return ["shippingProvider": trimmed]
 }
 
+/// The composer's reference fields as Slant metadata. Refuses two fields Slant would store as one: the same name, or
+/// names that differ only by underscores or case (`orderMetadataKeyFolded`: Slant turns `order_id` into `orderId`, so
+/// one value would be lost).
 func orderMetadataDictionary(_ fields: [OrderMetadataField]) throws -> [String: Any] {
     guard fields.count <= 10 else { throw StudioError("Add up to 10 reference fields.") }
     var result: [String: Any] = [:]
-    var seen = Set<String>()
+    var seen: [String: String] = [:]
     for field in fields {
         let key = field.key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw StudioError("Give every reference field a name.") }
-        guard !seen.contains(key) else { throw StudioError("Each reference field needs a different name.") }
-        seen.insert(key)
+        guard result[key] == nil else { throw StudioError("Each reference field needs a different name.") }
+        let folded = orderMetadataKeyFolded(key)
+        if let earlier = seen[folded] {
+            throw StudioError("“\(earlier)” and “\(key)” are the same field on Slant. Rename one.")
+        }
+        seen[folded] = key
         result[key] = field.value
     }
     return result
@@ -2630,20 +2637,22 @@ func orderPayActivityDetail(_ outcome: BatchPayOutcome) -> String {
     case .changed, .refused, .unknown, .notSent: return "Not confirmed"
     }
 }
-/// The pay review's warning when this draft's marketplace order (`batchPayMarketplaceKey`) already has a placed order
-/// among the loaded orders, or another loaded draft is for it. Advisory only: it never changes whether Pay is enabled
-/// or which button is the default. Nil when the draft has no marketplace reference or nothing matches.
+/// The pay review's warning when this draft's marketplace order (`batchPayMarketplaceKey`, matched as Pay Several
+/// Drafts matches it, `batchPayMarketplaceKeysMatch`) already has a placed order among the loaded orders, or another
+/// loaded draft is for it. Advisory only: it never changes whether Pay is enabled or which button is the default. Nil
+/// when the draft has no marketplace reference or nothing matches.
 func orderReviewMarketplaceDuplicateNotice(_ order: [String: Any], orderID: String, loaded: [Record]) -> String? {
     guard let key = batchPayMarketplaceKey(order), let line = orderMarketplaceReferenceLine(order) else { return nil }
     let others = loaded.filter { record in
         !record.id.isEmpty && record.id != orderID && !orderBelongs(orderObject(record.values), to: orderID)
     }
-    if batchPayPlacedMarketplaceKeys(others).contains(key) {
+    if batchPayPlacedMarketplaceKeys(others).contains(where: { batchPayMarketplaceKeysMatch($0, key) }) {
         return "Possible duplicate: \(line) already has a placed order."
     }
     let otherDraft = others.contains { record in
         let other = orderObject(record.values)
-        return batchPayIsDraft(other) && batchPayMarketplaceKey(other) == key
+        guard batchPayIsDraft(other), let otherKey = batchPayMarketplaceKey(other) else { return false }
+        return batchPayMarketplaceKeysMatch(otherKey, key)
     }
     return otherDraft ? "Possible duplicate: another draft is also for \(line)." : nil
 }

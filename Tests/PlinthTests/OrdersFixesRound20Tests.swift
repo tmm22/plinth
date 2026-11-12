@@ -145,7 +145,7 @@ final class OrdersFixesRound20Tests: XCTestCase {
         XCTAssertEqual(orderLineRemoveAccessibilityLabel("Bracket"), "Remove Bracket")
         XCTAssertTrue(orderLineRemoveAccessibilityLabel("Bracket").hasPrefix(orderLineRemoveTitle))
         XCTAssertEqual(orderReferenceFieldsCaption,
-                       "Your own notes saved with the order on Slant, such as your shop’s order number. Each has a name and a value; up to 10.")
+                       "Your own notes saved with the order on Slant, such as your shop’s order number. Each has a name and a value; up to 10. Don’t put passwords or keys here.")
     }
 
     func testTrackingRowsAreNotAnotherDoneButton() {

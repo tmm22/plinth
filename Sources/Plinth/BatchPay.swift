@@ -144,19 +144,115 @@ func batchPayGrandTotal(_ orders: [[String: Any]]) -> Decimal? {
 
 // MARK: Duplicates
 
-/// Two drafts for the same marketplace order share this key (source in lower case and the order ID); nil without one.
+/// The parts of a marketplace reference that Pay Several Drafts' duplicate check compares: `source` (trimmed, lower
+/// case), the order ID (trimmed), `sourceShop` (trimmed, lower case) and `sourceItems` as written. Empty means absent.
+struct BatchPayMarketplaceRef: Equatable {
+    let source: String
+    let id: String
+    let shop: String
+    let items: String
+
+    /// Nil without a marketplace order ID (`orderMarketplaceReference`).
+    init?(order: [String: Any]) {
+        guard let reference = orderMarketplaceReference(order) else { return nil }
+        let metadata = order["metadata"] as? [String: Any] ?? [:]
+        source = (reference.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        id = reference.id
+        shop = ((metadata["sourceShop"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        items = (metadata["sourceItems"] as? String) ?? ""
+    }
+
+    init(source: String, id: String, shop: String, items: String) {
+        (self.source, self.id, self.shop, self.items) = (source, id, shop, items)
+    }
+
+    /// Reads `key` back. Nil for text `key` never writes (a dangling escape, fewer than four parts).
+    init?(key: String) {
+        var parts: [String] = []
+        var current = ""
+        var index = key.startIndex
+        while index < key.endIndex, parts.count < 3 {
+            let character = key[index]
+            index = key.index(after: index)
+            if character == "\\" {
+                guard index < key.endIndex else { return nil }
+                current.append(key[index])
+                index = key.index(after: index)
+            } else if character == "|" {
+                parts.append(current)
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        guard parts.count == 3 else { return nil }
+        self.init(source: parts[0], id: parts[1], shop: parts[2], items: String(key[index...]))
+    }
+
+    /// One string per reference, "source|id|shop|items" ("etsy|3141||" for a CSV Etsy order). A `|` or `\` in the
+    /// first three parts is escaped with `\`, so `init?(key:)` reads every part back exactly; `items` comes last and is
+    /// kept as written.
+    var key: String {
+        func escaped(_ text: String) -> String {
+            text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "|", with: "\\|")
+        }
+        return [escaped(source), escaped(id), escaped(shop), items].joined(separator: "|")
+    }
+
+    /// The parts joined without escaping: the key before round 22, which two different references could share.
+    var unescapedKey: String { [source, id, shop, items].joined(separator: "|") }
+}
+
+/// Two drafts for the same marketplace order share this key (`BatchPayMarketplaceRef.key`); nil without one. Exact
+/// keys can miss a duplicate: compare them with `batchPayMarketplaceKeysMatch`.
 func batchPayMarketplaceKey(_ order: [String: Any]) -> String? {
-    guard let reference = orderMarketplaceReference(order) else { return nil }
-    let metadata = order["metadata"] as? [String: Any] ?? [:]
-    // Another store's order with the same name, or a deliberate split (different items), isn't a duplicate.
-    let shop = ((metadata["sourceShop"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let items = (metadata["sourceItems"] as? String) ?? ""
-    return [(reference.source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), reference.id, shop, items]
-        .joined(separator: "|")
+    BatchPayMarketplaceRef(order: order)?.key
+}
+
+/// Whether two references may be the same sale, for Pay Several Drafts' duplicate check and the pay review's advisory.
+/// True for the same reference (and for any two that shared a key before round 22), and otherwise when the order IDs
+/// are equal in any case and nothing tells the sales apart: the sources, the stores and the items are each equal or
+/// missing on one side. A Shopify order drafted from a CSV (no store, items by SKU) and again by Fetch from Shopify
+/// (the store, items by line item) is one sale. Items tell two drafts apart (a deliberate split) only when both lists
+/// can be read (`shopifySourceItems(fromMetadata:)`), differ, and are recorded the same way: both by line item, or both
+/// by SKU or name. Missing or unreadable items, or items recorded differently, count as the same sale. Another
+/// store's order with the same name, or another marketplace's, is a different sale.
+///
+/// It matches everything exact keys matched and more, so the duplicate check only ever leaves more drafts out.
+func batchPayMarketplaceRefsMatch(_ lhs: BatchPayMarketplaceRef, _ rhs: BatchPayMarketplaceRef) -> Bool {
+    if lhs == rhs || lhs.unescapedKey == rhs.unescapedKey { return true }
+    guard lhs.id.lowercased() == rhs.id.lowercased() else { return false }
+    func compatible(_ a: String, _ b: String) -> Bool { a.isEmpty || b.isEmpty || a == b }
+    guard compatible(lhs.source, rhs.source), compatible(lhs.shop, rhs.shop) else { return false }
+    if compatible(lhs.items, rhs.items) { return true }
+    guard let left = shopifySourceItems(fromMetadata: lhs.items), let right = shopifySourceItems(fromMetadata: rhs.items),
+          left != right else { return true }
+    return batchPaySourceItemsRecording(left) == nil || batchPaySourceItemsRecording(left) != batchPaySourceItemsRecording(right)
+}
+
+/// `batchPayMarketplaceRefsMatch` for two keys from `batchPayMarketplaceKey`. A key that can't be read back matches
+/// only an equal key.
+func batchPayMarketplaceKeysMatch(_ lhs: String, _ rhs: String) -> Bool {
+    if lhs == rhs { return true }
+    guard let left = BatchPayMarketplaceRef(key: lhs), let right = BatchPayMarketplaceRef(key: rhs) else { return false }
+    return batchPayMarketplaceRefsMatch(left, right)
+}
+
+/// How a draft's items were recorded: by Shopify line item (Fetch from Shopify), or by SKU or name (a CSV). Nil for a
+/// list that mixes the two.
+private enum BatchPaySourceItemsRecording { case lineItem, skuOrName }
+
+private func batchPaySourceItemsRecording(_ items: [ShopifySourceItem]) -> BatchPaySourceItemsRecording? {
+    let kinds = Set(items.map { item -> Bool in
+        if case .lineItem = item.key { return true }
+        return false
+    })
+    guard kinds.count == 1, let byLineItem = kinds.first else { return nil }
+    return byLineItem ? .lineItem : .skuOrName
 }
 
 /// Marketplace keys of loaded orders that were already placed (anything past a draft except a cancellation or a
-/// payment problem): a draft for the same marketplace order is probably a duplicate.
+/// payment problem): a draft for the same marketplace order (`batchPayMarketplaceKeysMatch`) is probably a duplicate.
 func batchPayPlacedMarketplaceKeys(_ orders: [Record]) -> Set<String> {
     var keys = Set<String>()
     for record in orders {
@@ -172,37 +268,41 @@ func batchPayPlacedMarketplaceKeys(_ orders: [Record]) -> Set<String> {
 /// Why a payable draft is left out as a likely duplicate, by draft ID: every draft after the first in the review for
 /// the same marketplace order, and any draft whose marketplace order already has a placed order. A timed-out create
 /// followed by Create Anyway or a re-import can leave two drafts for one sale; a batch must never pay both. The seller
-/// can still pay one in its own review after checking.
+/// can still pay one in its own review after checking. "The same marketplace order" is `batchPayMarketplaceKeysMatch`,
+/// so a CSV draft and a fetched draft of one Shopify sale count as one.
 ///
 /// `drafts` is every draft in the review, in the review's order, including those already left out for another reason
 /// (`excludedIDs`: a lock, a failed load, an unlisted cost, already sent for payment and so on). Such a draft still
 /// holds its marketplace order, so every other draft for that order is left out too, before or after it in the list:
 /// otherwise the batch would pay one and the seller, paying the left-out one on its own after checking it, would pay
 /// one sale twice. Reasons are returned only for drafts not in `excludedIDs`, so this never includes anything; it only
-/// leaves more out.
+/// leaves more out. Every earlier draft counts against later ones, including one this check left out: the match isn't
+/// transitive (a CSV draft matches drafts from two stores that don't match each other), so a draft left out here still
+/// holds its sale.
 ///
 /// `hiddenKeys` are the marketplace orders of drafts the seller hid in Orders that aren't in this review
 /// (`batchPayHiddenDraftMarketplaceKeys`, HiddenDrafts.swift): each holds its sale like a draft left out of the review,
 /// so hiding one of two drafts for a sale never lets the batch pay the other unchecked.
 func batchPayDuplicateExclusions(_ drafts: [(id: String, order: [String: Any])], placedKeys: Set<String>,
                                  excludedIDs: Set<String> = [], hiddenKeys: Set<String> = []) -> [String: String] {
-    var leftOutKeys = Set<String>()
-    for draft in drafts where excludedIDs.contains(draft.id) {
-        if let key = batchPayMarketplaceKey(draft.order) { leftOutKeys.insert(key) }
+    func matches(_ keys: some Sequence<String>, _ key: String) -> Bool {
+        keys.contains { batchPayMarketplaceKeysMatch($0, key) }
     }
-    var seen = Set<String>()
+    let leftOutKeys = drafts.filter { excludedIDs.contains($0.id) }.compactMap { batchPayMarketplaceKey($0.order) }
+    var seen: [String] = []
     var reasons: [String: String] = [:]
     for draft in drafts where !excludedIDs.contains(draft.id) {
         guard let key = batchPayMarketplaceKey(draft.order), let line = orderMarketplaceReferenceLine(draft.order) else { continue }
-        if placedKeys.contains(key) {
+        if matches(placedKeys, key) {
             reasons[draft.id] = "An order for \(line) was already placed, so this draft may be a duplicate. Check it in its own review."
-        } else if leftOutKeys.contains(key) {
+        } else if matches(leftOutKeys, key) {
             reasons[draft.id] = "Another draft in this review is also for \(line) and was left out, so this one may be a duplicate. Check them in Orders."
-        } else if hiddenKeys.contains(key) {
+        } else if matches(hiddenKeys, key) {
             reasons[draft.id] = "A draft you hid in Orders is also for \(line), so this one may be a duplicate. Check them in Orders (Status › Show Hidden Drafts)."
-        } else if !seen.insert(key).inserted {
+        } else if matches(seen, key) {
             reasons[draft.id] = "Another draft in this review is also for \(line). Only the first is included; check them in Orders."
         }
+        seen.append(key)
     }
     return reasons
 }

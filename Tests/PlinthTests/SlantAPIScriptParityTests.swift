@@ -40,6 +40,19 @@ final class SlantAPIScriptParityTests: XCTestCase {
         XCTAssertTrue(source.contains("MAX_BYTES = 2 * 1024 * 1024") && slantAPISpecMaxBytes == 2 * 1024 * 1024)
     }
 
+    /// The docs site's bundle name that the script compares with (`--record-docs` writes it): kept beside the script, so
+    /// the app never bundles it, and naming one bundle as the script reads it.
+    func testTheDocsBundleRecordIsBesideTheScript() throws {
+        let record = Self.repositoryRoot.appendingPathComponent("scripts/slant-docs-bundle.json")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: record)) as? [String: Any])
+        let bundle = try XCTUnwrap(object["bundle"] as? String)
+        XCTAssertNotNil(bundle.range(of: #"^assets/index-[A-Za-z0-9_-]+\.js$"#, options: .regularExpression), bundle)
+        let source = try String(contentsOf: Self.script, encoding: .utf8)
+        XCTAssertTrue(source.contains(#"DOCS_RECORD = Path(__file__).resolve().parent / "slant-docs-bundle.json""#))
+        let package = try String(contentsOf: Self.repositoryRoot.appendingPathComponent("Package.swift"), encoding: .utf8)
+        XCTAssertFalse(package.contains("slant-docs-bundle"), "the record is for the release check, not the app")
+    }
+
     /// The script's own fixtures, offline: every exit code and comparison rule, with no request and nothing written
     /// outside a temporary folder. Skipped only where no Python 3 is installed.
     func testTheScriptsSelfTestPasses() throws {

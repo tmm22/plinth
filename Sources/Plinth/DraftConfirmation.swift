@@ -5,8 +5,9 @@ import SwiftUI
 // Every Create Draft (`POST /orders`) from the composer and from Import Orders carries a fresh random marker in
 // `metadata.studioDraftId`. When Slant doesn't confirm a create, the marker is kept with the in-memory record of
 // that attempt, and Check Slant looks for it with read-only `GET /orders` requests (newest first, up to 3 pages of
-// 100). A found marker confirms that the draft was created (owner decision, 24 Oct 2026); not finding one proves
-// nothing — the order may be older than the pages read, or not listed yet — so the attempt stays unconfirmed.
+// 100 per platform, at least 0.6 s apart). A found marker confirms that the draft was created (owner decision, 24 Oct
+// 2026); not finding one proves nothing — the order may be older than the pages read, or not listed yet — so the
+// attempt stays unconfirmed.
 // Nothing here ever creates, retries or changes an order.
 
 /// The metadata key that carries a draft's marker.
@@ -19,13 +20,19 @@ let draftMarkerCheckPageSize = 100
 /// Check Slant stops paging when Slant's figures show this many requests or fewer left in the current window.
 let draftMarkerCheckRateLimitReserve = 10
 
-/// Whether the metadata already holds `key` as Slant would read it: Slant turns snake_case keys into camelCase, so
-/// `studio_draft_id` and `studioDraftId` are the same field. Compared without underscores and in any case, which can
-/// only make Plinth leave its own field out more often, never overwrite the seller's.
+/// A metadata key as Plinth compares it with another: Slant turns snake_case keys into camelCase, so `order_id` and
+/// `orderId` are the same field. Underscores removed and in any case, so two keys that fold alike are treated as one
+/// field even where Slant might keep them apart: that can only refuse or leave out more, never lose a value.
+func orderMetadataKeyFolded(_ key: String) -> String {
+    key.replacingOccurrences(of: "_", with: "").lowercased()
+}
+
+/// Whether the metadata already holds `key` as Slant would read it (`orderMetadataKeyFolded`): `studio_draft_id` and
+/// `studioDraftId` are the same field. This can only make Plinth leave its own field out more often, never overwrite
+/// the seller's.
 func orderMetadataHasKey(_ metadata: [String: Any], _ key: String) -> Bool {
-    func folded(_ text: String) -> String { text.replacingOccurrences(of: "_", with: "").lowercased() }
-    let target = folded(key)
-    return metadata.keys.contains { folded($0) == target }
+    let target = orderMetadataKeyFolded(key)
+    return metadata.keys.contains { orderMetadataKeyFolded($0) == target }
 }
 
 /// A fresh marker for one Create Draft press. Random, so it says nothing about the order or the customer.
@@ -168,11 +175,42 @@ func draftMarkerCheckRateLimitLow(_ rateLimit: RateLimitInfo?, now: Date) -> Boo
     return true
 }
 
+/// What Check Slant does before sending a request.
+enum DraftMarkerCheckStep: Equatable {
+    /// Send it after waiting this many seconds (0 for at once).
+    case send(wait: TimeInterval)
+    /// Stop reading, to keep Slant's remaining requests for the seller's orders and uploads.
+    case stop
+}
+
+/// Before each request of Check Slant: the first (`lastStart` nil, the seller's own press) goes at once. Every later
+/// one, another page or another platform's first page, stops while Slant's figures run low
+/// (`draftMarkerCheckRateLimitLow`) and otherwise waits out the rest of `comparisonMinimumSpacing` since the previous
+/// request started, as the other paced reads do.
+func draftMarkerCheckBeforeRequest(lastStart: Date?, rateLimit: RateLimitInfo?, now: Date) -> DraftMarkerCheckStep {
+    guard let lastStart else { return .send(wait: 0) }
+    if draftMarkerCheckRateLimitLow(rateLimit, now: now) { return .stop }
+    return .send(wait: max(0, comparisonMinimumSpacing - now.timeIntervalSince(lastStart)))
+}
+
+/// How many different orders the pages hold. Slant can't be relied on to filter `GET /orders` by platform, so each
+/// platform's pages may list the same orders again: each order ID counts once, and a row without one counts as its
+/// own order.
+func draftMarkerDistinctOrderCount(_ pages: [[Record]]) -> Int {
+    var ids = Set<String>()
+    var withoutID = 0
+    for record in pages.joined() {
+        if record.id.isEmpty { withoutID += 1 } else { ids.insert(record.id) }
+    }
+    return ids.count + withoutID
+}
+
 /// What one Check Slant found.
 struct DraftMarkerSearchResult {
     /// Marker → the order carrying it.
     var found: [String: Record] = [:]
-    /// Orders read from Slant (not counting the loaded list, which is checked first).
+    /// Different orders read from Slant (`draftMarkerDistinctOrderCount`; not counting the loaded list, which is
+    /// checked first).
     var ordersRead = 0
     /// Paging stopped early to keep within Slant's rate limit.
     var stoppedForRateLimit = false
@@ -278,7 +316,8 @@ func draftMarkerSearchFailureText(_ message: String) -> String {
 extension StudioStore {
     /// Looks for orders carrying `markers` (marker → the platform its draft was sent to). The loaded list is checked
     /// first, without a request; then, through `run` (so never while busy), read-only `GET /orders` newest first, up to
-    /// 3 pages of 100 per platform, stopping as soon as every marker is found or the rate limit runs low. Nil when it
+    /// 3 pages of 100 per platform, at least 0.6 s apart (`draftMarkerCheckBeforeRequest`), stopping as soon as every
+    /// marker is found or, before any request after the first, when the rate limit runs low. Nil when it
     /// didn't run or a request failed. A failure goes to `onFailure` (the sheet that asked shows it) instead of the
     /// window's alert, which would wait behind that sheet. Never retried, never writes an order.
     func searchOrdersForDraftMarkers(_ markers: [String: String],
@@ -299,15 +338,27 @@ extension StudioStore {
             onFailure(friendlyAPIMessage(error))
             return true
         }) {
-            for platform in platforms.keys.sorted() {
-                guard let platformMarkers = platforms[platform] else { continue }
+            var lastStart: Date?
+            var pagesRead: [[Record]] = []
+            platformLoop: for platform in platforms.keys.sorted() {
+                // A platform whose markers all turned up on another platform's pages has nothing left to look for.
+                guard let platformMarkers = platforms[platform], !platformMarkers.isDisjoint(with: missing) else { continue }
                 var page = 1
                 while true {
+                    switch draftMarkerCheckBeforeRequest(lastStart: lastStart, rateLimit: rateLimit, now: Date()) {
+                    case .stop:
+                        result.stoppedForRateLimit = true
+                        break platformLoop
+                    case .send(let wait):
+                        if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                    }
+                    lastStart = Date()
                     let query = orderFilterQueryItems(OrderFilter(), page: page, limit: draftMarkerCheckPageSize, platformID: platform)
                     let response = try await client.request("GET", path: "/orders", query: query)
                     noteBackgroundRateLimit(from: response)
                     let records = responseRecords(response)
-                    result.ordersRead += records.count
+                    pagesRead.append(records)
+                    result.ordersRead = draftMarkerDistinctOrderCount(pagesRead)
                     for (marker, record) in ordersCarryingDraftMarkers(records, markers: missing) where result.found[marker] == nil {
                         result.found[marker] = record
                     }
