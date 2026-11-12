@@ -934,6 +934,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Shown once by Models after an upload Slant stored in a file other library models were linked to
     /// (`uploadLinkMovedNotice`); their links were cleared.
     @Published var uploadLinkMovedMessage: String?
+    /// The title of the alert that shows `uploadLinkMovedMessage`.
+    var uploadLinkMovedTitle = uploadLinkMovedAlertTitle
     @Published var componentCategories: [Record] = []
     @Published var hiddenFileIDs = Set(UserDefaults.standard.stringArray(forKey: "hiddenFileIDs") ?? []) {
         didSet { UserDefaults.standard.set(hiddenFileIDs.sorted(), forKey: "hiddenFileIDs") }
@@ -1073,9 +1075,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Background order checks report the allowance they used, so the next check and Settings see it.
     func noteBackgroundRateLimit(from response: APIResponse) { noteRateLimit(from: response) }
     // MARK: -
-    func saveModels() {
+    /// Writes the library file. False when saving is refused this session or the write failed (the reason is in
+    /// `error`); a Replace File checks it before sending anything (`clearLinksBeforeReplacing`).
+    @discardableResult
+    func saveModels() -> Bool {
         // A library file that couldn't be read or kept is never replaced (LibraryFile.swift).
-        guard !librarySaveBlocked else { showError(librarySaveBlockedMessage); return }
+        guard !librarySaveBlocked else { showError(librarySaveBlockedMessage); return false }
         do {
             try FileManager.default.createDirectory(at: Self.supportDirectory, withIntermediateDirectories: true)
             // A carried entry never keeps a link to a file whose links were cleared, or that a listed model links.
@@ -1083,7 +1088,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 libraryCarriedEntries, toFileIDs: libraryUnlinkedFileIDs.union(localModels.compactMap(\.remoteID)))
             try libraryFileData(localModels, carrying: libraryCarriedEntries)
                 .write(to: Self.supportDirectory.appendingPathComponent(libraryFileName), options: .atomic)
-        } catch { showError("Could not save library: \(error.localizedDescription)") }
+            return true
+        } catch {
+            showError("Could not save library: \(error.localizedDescription)")
+            return false
+        }
     }
     func importModel() {
         let panel = NSOpenPanel()
@@ -1219,21 +1228,27 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             return true
         }) {
             _ = try await client.request("DELETE", path: "/files/\(encodedSegment(id))")
-            deletedCloudFileIDs.insert(id)
-            files.removeAll { $0.id == id }
-            hiddenFileIDs.remove(id)
-            for index in localModels.indices where localModels[index].remoteID == id {
-                localModels[index].remoteID = nil
-            }
-            libraryUnlinkedFileIDs.insert(id)
-            if fileID == id {
-                fileID = ""
-                estimate = nil
-            }
+            noteCloudFileDeleted(id: id)
             ok = true
         }
         if ok { saveModels() }
         return ran && ok
+    }
+    /// The bookkeeping after Slant confirmed a file's deletion, from Models or the API Workbench: the file leaves the
+    /// list, and no library model (or the selection and its estimate) keeps a link to it. The caller saves the library.
+    func noteCloudFileDeleted(id: String) {
+        guard !id.isEmpty else { return }
+        deletedCloudFileIDs.insert(id)
+        files.removeAll { $0.id == id }
+        hiddenFileIDs.remove(id)
+        for index in localModels.indices where localModels[index].remoteID == id {
+            localModels[index].remoteID = nil
+        }
+        libraryUnlinkedFileIDs.insert(id)
+        if fileID == id {
+            fileID = ""
+            estimate = nil
+        }
     }
     /// Hides an uploaded model from the library on this Mac only; the file stays in the Slant account.
     func hideCloudModel(id: String) {
@@ -1800,7 +1815,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         // Library links are protected too (a linked file may be missing from the list just read); only the file the
         // seller chose to replace may be written over.
         let guarded = uploadProtectedFilesAddingLibraryLinks(protectedFiles, models: localModels, replacing: replacing?.fileID)
+        let replacedFileID = replacing?.fileID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // This model's own link, which a Replace File clears before sending too.
+        let modelWasLinked = !(model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
         var unlinkedBeforeSending: [String] = []
+        var linksClearedBeforeSending = false
         let ran = await run("Upload \(capturedName)", handlesError: { error in
             // Worded by the step that failed; a confirm with an unknown outcome is remembered for this model.
             let failedStage = stage.value
@@ -1819,7 +1838,14 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             if uploadOutcomeUnknown(stage: failedStage, error: error) {
                 unconfirmedUploadModelIDs.insert(capturedID)
             }
-            self.error = uploadFailureMessage(stage: failedStage, error: error)
+            var message = uploadFailureMessage(stage: failedStage, error: error)
+            // A Replace File that stopped before any bytes were sent: the links cleared before asking Slant stay cleared.
+            if linksClearedBeforeSending,
+               let note = uploadReplacementUnlinkedNote(fileName: replacing?.fileName ?? "",
+                                                        modelNames: unlinkedBeforeSending + (modelWasLinked ? [model.name] : [])) {
+                message += " \(note)"
+            }
+            self.error = message
             return true
         }) {
             // Quit asks first until the upload has its answer (PlinthApp.swift).
@@ -1827,16 +1853,21 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             defer { SlantWritesInFlight.shared.end(write) }
             // A Replace File unlinks every model from the replaced file before anything is sent, and saves that, so a
             // quit or crash mid-upload never leaves a model linked to a file that may hold another model's bytes. A
-            // confirmed upload links this model again.
-            if let replacedID = replacing?.fileID?.trimmingCharacters(in: .whitespacesAndNewlines), !replacedID.isEmpty {
-                unlinkedBeforeSending = clearLinks(toFileIDs: [replacedID], alsoUnlinking: capturedID)
-                saveModels()
+            // confirmed upload links this model again. When that can't be saved, nothing is sent.
+            if !replacedFileID.isEmpty {
+                unlinkedBeforeSending = try clearLinksBeforeReplacing(fileID: replacedFileID, alsoUnlinking: capturedID)
+                linksClearedBeforeSending = true
             }
             let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID,
                                                    checkPlaceholder: { placeholder in
                 target.value = uploadPlaceholderFileID(placeholder)
                 if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: guarded) {
                     throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
+                }
+                // A Replace File goes only into the file the seller chose: a placeholder naming another file (a new
+                // one, when Slant's name match differs from Plinth's) stops here, before any bytes are sent.
+                if uploadReplacePlaceholderMismatch(placeholder, replacingFileID: replacing?.fileID) {
+                    throw UploadReplaceWouldCreateNewFile(fileName: replacing?.fileName ?? "")
                 }
             }) { [weak self] next in
                 stage.value = next
@@ -1851,7 +1882,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             // Slant keeps one file per owner and name, so it may have stored this upload in a file other library models
             // are linked to: that file now holds this model, so only this model keeps the link.
             let unlinked = modelsLosingLinkAfterUpload(fileID: remoteID, uploadedModelID: capturedID, in: localModels)
-            let unlinkedNames = unlinkedBeforeSending + localModels.filter { unlinked.contains($0.id) }.map(\.name)
+            // A Replace File that Slant confirmed under another file: the chosen file wasn't replaced, and the models
+            // unlinked from it before sending stay unlinked (`noteReplaceSavedElsewhere`).
+            let savedElsewhere = linksClearedBeforeSending && remoteID != replacedFileID
+            let movedNames = localModels.filter { unlinked.contains($0.id) }.map(\.name)
             for index in localModels.indices where unlinked.contains(localModels[index].id) {
                 localModels[index].remoteID = nil
             }
@@ -1866,7 +1900,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             } else if let selected = selectedLocalID, unlinked.contains(selected) {
                 fileID = ""
             }
-            uploadLinkMovedMessage = uploadLinkMovedNotice(uploadedName: model.name, otherNames: unlinkedNames)
+            if savedElsewhere {
+                noteReplaceSavedElsewhere(uploadedName: model.name, fileName: replacing?.fileName ?? "", unlinkedNames: unlinkedBeforeSending,
+                                          moved: uploadLinkMovedNotice(uploadedName: model.name, otherNames: movedNames))
+            } else {
+                showUploadLinkMoved(uploadLinkMovedNotice(uploadedName: model.name, otherNames: unlinkedBeforeSending + movedNames))
+            }
             files.removeAll { $0.id == remoteID }; files.insert(record, at: 0)
             saveModels()
         }
@@ -1888,6 +1927,37 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             estimate = nil
         }
         return others
+    }
+    /// A Replace File's unlinking before anything is sent (`clearLinks`), saved. When the save fails, everything it
+    /// changed (links, the selected file and estimate, the unlinked IDs and carried entries) is put back as it was and
+    /// `LibraryNotSavedBeforeUpload` is thrown, so nothing is sent. Synchronous, while `busy` is held: nothing else
+    /// changes the library between the snapshot and the restore. The names of the other models unlinked.
+    private func clearLinksBeforeReplacing(fileID replacedID: String, alsoUnlinking modelID: UUID?) throws -> [String] {
+        let models = localModels, selectedFile = fileID, selectedEstimate = estimate
+        let unlinkedIDs = libraryUnlinkedFileIDs, carried = libraryCarriedEntries
+        let others = clearLinks(toFileIDs: [replacedID], alsoUnlinking: modelID)
+        guard saveModels() else {
+            localModels = models
+            fileID = selectedFile
+            estimate = selectedEstimate
+            libraryUnlinkedFileIDs = unlinkedIDs
+            libraryCarriedEntries = carried
+            throw LibraryNotSavedBeforeUpload()
+        }
+        return others
+    }
+    /// Shows the notice after an upload took over a file other library models were linked to (nil: nothing to say).
+    private func showUploadLinkMoved(_ notice: String?) {
+        guard let notice else { return }
+        uploadLinkMovedTitle = uploadLinkMovedAlertTitle
+        uploadLinkMovedMessage = notice
+    }
+    /// The notice after a Replace File that Slant confirmed under another file than the one chosen, followed by
+    /// `moved` (models linked to the file Slant used, which lost their links).
+    private func noteReplaceSavedElsewhere(uploadedName: String, fileName: String, unlinkedNames: [String], moved: String?) {
+        let notice = uploadReplaceSavedElsewhereNotice(uploadedName: uploadedName, fileName: fileName, unlinkedNames: unlinkedNames)
+        uploadLinkMovedTitle = uploadReplaceSavedElsewhereAlertTitle
+        uploadLinkMovedMessage = [notice, moved].compactMap { $0 }.joined(separator: " ")
     }
     func quote() async {
         applyDefaultFilamentIfNeeded()
@@ -1967,6 +2037,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             if let returnedID = platformRecordID(object) {
                 platforms.removeAll { $0.id == returnedID }
                 platforms.insert(Record(values: object), at: 0)
+            }
+            // Slant saved a new secret, but a reply that doesn't show it can't replace the cached one: Show and Copy
+            // go until the reload below (or Refresh Platform) reads it. Nothing is re-sent.
+            if setsSecret, platformRecordID(object) == nil || extractedWebhookSecret(from: object) == nil {
+                markWebhookSecretUncertain(platformID: id)
             }
             updated = true
         }
@@ -2108,28 +2183,37 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// `POST /files` (one step: Slant fetches the link itself). The pre-PUT guard can't run here, because Slant
     /// returns no placeholder before it stores the file. `replacingFileID`/`replacingFileName` name the file the seller
     /// chose to replace (nil: not a Replace File; blank: its ID isn't known): when the outcome is unclear, every library
-    /// model linked to it loses its link.
+    /// model linked to it loses its link. `typeHintName` is the name the seller typed, which gives the `type` when the
+    /// link has no model extension (a Replace File sends the listed file's own name, which may have none); nil: `name`.
     @discardableResult
-    func importModelFromURL(_ url: String, name: String, replacingFileID: String? = nil, replacingFileName: String = "") async -> Bool {
+    func importModelFromURL(_ url: String, name: String, typeHintName: String? = nil, replacingFileID: String? = nil,
+                            replacingFileName: String = "") async -> Bool {
         let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmedURL.lowercased().hasPrefix("https://") else { showError("Use an https:// link to upload a model."); return false }
         guard !trimmedName.isEmpty else { showError("Enter a name for the uploaded model."); return false }
         guard !platformID.isEmpty else { showError("Choose a default platform in Settings › Account."); return false }
         guard !librarySaveBlocked else { showError(libraryUploadBlockedMessage); return false }
-        let type = importModelType(url: trimmedURL, name: trimmedName)
+        let hint = typeHintName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let type = importModelType(url: trimmedURL, name: hint.isEmpty ? trimmedName : hint)
         // Nil: not a Replace File. Blank: a Replace File whose file ID isn't known (no link can be cleared by it).
         let replaced = replacingFileID?.trimmingCharacters(in: .whitespacesAndNewlines)
         var ok = false
         var unlinkedBeforeSending: [String] = []
         let ran = await run("Upload model from URL", handlesError: { error in
+            // A Replace File that Slant definitely didn't act on: the links cleared before sending stay cleared.
+            let unlinkedNote = uploadReplacementUnlinkedNote(fileName: replacingFileName, modelNames: unlinkedBeforeSending)
             // `POST /files` has left the live OpenAPI; a 404 or 405 means Slant no longer takes links. An unclear reply
             // may still have added the file, so that copy says to refresh before uploading again.
             if let message = uploadFromURLUnavailableMessage(error) {
-                self.error = message
+                self.error = [message, unlinkedNote].compactMap { $0 }.joined(separator: " ")
                 return true
             }
-            guard uploadFromURLUnclearMessage(error) != nil else { return false }
+            guard uploadFromURLUnclearMessage(error) != nil else {
+                guard let unlinkedNote else { return false }
+                self.error = "\(friendlyAPIMessage(error)) \(unlinkedNote)"
+                return true
+            }
             if let replaced {
                 // A Replace File with an unclear outcome: the replaced file may now hold this link's model.
                 let others = unlinkedBeforeSending + self.clearLinks(toFileIDs: replaced.isEmpty ? [] : [replaced], alsoUnlinking: nil)
@@ -2148,9 +2232,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             defer { SlantWritesInFlight.shared.end(write) }
             // A Replace File unlinks every model from the replaced file before sending (saved), so neither a quit, a
             // crash nor a reply without a file ID leaves a model linked to a file that may now hold this link's model.
+            // When that can't be saved, nothing is sent.
             if let replaced, !replaced.isEmpty {
-                unlinkedBeforeSending = clearLinks(toFileIDs: [replaced], alsoUnlinking: nil)
-                saveModels()
+                unlinkedBeforeSending = try clearLinksBeforeReplacing(fileID: replaced, alsoUnlinking: nil)
             }
             let response = try await client.request("POST", path: "/files", body: body)
             noteRateLimit(from: response)
@@ -2158,26 +2242,44 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             // Slant keeps one file per owner and name: a library model linked to the file it returns no longer has its
             // own contents there, so its link is cleared (the seller chose Replace File to get here).
             if let returnedID = uploadedFileID(responseObject(response)) {
-                // The same file ID may now hold different contents, so an estimate for it is no longer current.
-                if fileID == returnedID { estimate = nil }
-                let unlinked = modelsLosingLinkAfterUpload(fileID: returnedID, uploadedModelID: nil, in: localModels)
-                // A carried entry linked to that file loses its link too (at this save, or the next one).
-                let carriedBefore = libraryCarriedEntries
-                libraryUnlinkedFileIDs.insert(returnedID)
-                libraryCarriedEntries = libraryCarriedEntriesDroppingLinks(libraryCarriedEntries, toFileIDs: [returnedID])
-                if !unlinked.isEmpty || !unlinkedBeforeSending.isEmpty || libraryCarriedEntries != carriedBefore {
-                    let names = unlinkedBeforeSending + localModels.filter { unlinked.contains($0.id) }.map(\.name)
-                    for index in localModels.indices where unlinked.contains(localModels[index].id) {
-                        localModels[index].remoteID = nil
-                    }
-                    if let selected = selectedLocalID, unlinked.contains(selected) { fileID = "" }
-                    saveModels()
-                    uploadLinkMovedMessage = uploadLinkMovedNotice(uploadedName: trimmedName, otherNames: names)
+                // A Replace File that Slant confirmed under another file: the chosen file wasn't replaced, and the models
+                // unlinked from it before sending stay unlinked.
+                let savedElsewhere = !(replaced ?? "").isEmpty && returnedID != replaced
+                let moved = noteFileContentsReplaced(fileID: returnedID, uploadedName: trimmedName,
+                                                     alreadyUnlinked: savedElsewhere ? [] : unlinkedBeforeSending)
+                if savedElsewhere {
+                    noteReplaceSavedElsewhere(uploadedName: trimmedName, fileName: replacingFileName,
+                                              unlinkedNames: unlinkedBeforeSending, moved: moved)
                 }
             }
         }
         if ok { await refresh() }
         return ran && ok
+    }
+    /// After Slant confirmed that `fileID` now holds a model uploaded from outside the library (Upload from URL, or a
+    /// Workbench `POST /files` or `confirm-upload`): Slant keeps one file per owner and name, so no library model (or
+    /// carried entry) keeps a link to that file, and an estimate for it is no longer current. `alreadyUnlinked` names
+    /// the models a Replace File unlinked from it before sending. Saves the library and shows the notice when anything
+    /// changed, and returns that notice (nil when no model lost a link).
+    @discardableResult
+    func noteFileContentsReplaced(fileID returnedID: String, uploadedName: String, alreadyUnlinked: [String]) -> String? {
+        // The same file ID may now hold different contents, so an estimate for it is no longer current.
+        if fileID == returnedID { estimate = nil }
+        let unlinked = modelsLosingLinkAfterUpload(fileID: returnedID, uploadedModelID: nil, in: localModels)
+        // A carried entry linked to that file loses its link too (at this save, or the next one).
+        let carriedBefore = libraryCarriedEntries
+        libraryUnlinkedFileIDs.insert(returnedID)
+        libraryCarriedEntries = libraryCarriedEntriesDroppingLinks(libraryCarriedEntries, toFileIDs: [returnedID])
+        guard !unlinked.isEmpty || !alreadyUnlinked.isEmpty || libraryCarriedEntries != carriedBefore else { return nil }
+        let names = alreadyUnlinked + localModels.filter { unlinked.contains($0.id) }.map(\.name)
+        for index in localModels.indices where unlinked.contains(localModels[index].id) {
+            localModels[index].remoteID = nil
+        }
+        if let selected = selectedLocalID, unlinked.contains(selected) { fileID = "" }
+        saveModels()
+        let notice = uploadLinkMovedNotice(uploadedName: uploadedName, otherNames: names)
+        showUploadLinkMoved(notice)
+        return notice
     }
     func loadUsage() async {
         _ = await run("Load usage", retryable: true, retry: .loadUsage) {
@@ -2379,14 +2481,18 @@ func uploadedFileID(_ object: [String: Any]) -> String? {
 
 // MARK: Upload names
 
-/// The form of a file name the same-name check compares: trimmed, runs of spacing collapsed, any case, and without a
-/// trailing model extension. Slant keeps one file per owner and name (an upload whose name matched an earlier one
-/// reused that file, 30 Oct 2026), and its exact matching rule is unknown, so this errs towards finding a match.
+/// The form of a file name the same-name check compares: trimmed, runs of spacing collapsed, any case, and without
+/// trailing model extensions (".stl", ".obj" and ".3mf", any number of them, so "Bracket.3mf.stl" matches "Bracket"),
+/// but never stripped to nothing: an empty key would match no file. Slant keeps one file per owner and name (an upload
+/// whose name matched an earlier one reused that file, 30 Oct 2026), and its exact matching rule is unknown, so this
+/// errs towards finding a match.
 func slantUploadNameKey(_ name: String) -> String {
     var words = name.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-    let ext = (words as NSString).pathExtension.lowercased()
-    if ["stl", "obj", "3mf"].contains(ext) {
-        words = (words as NSString).deletingPathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+    while ["stl", "obj", "3mf"].contains((words as NSString).pathExtension.lowercased()) {
+        let stem = (words as NSString).deletingPathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Each pass shortens the name, so this ends; a name that is all extension keeps its last one.
+        guard !stem.isEmpty, stem.count < words.count else { break }
+        words = stem
     }
     return words.folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
 }
@@ -2568,6 +2674,11 @@ func modelsLosingLinkAfterUpload(fileID: String, uploadedModelID: UUID?, in mode
         $0.id != uploadedModelID && $0.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
     }.map(\.id)
 }
+
+/// The titles of the alert after an upload: Slant stored it in a file other library models were linked to, or a
+/// Replace File went into another file than the one chosen (`uploadReplaceSavedElsewhereNotice`).
+let uploadLinkMovedAlertTitle = "Slant saved this upload in an existing file"
+let uploadReplaceSavedElsewhereAlertTitle = "Slant didn’t replace the file you chose"
 
 /// The notice after an upload took over a file other library models were linked to; nil when none were.
 func uploadLinkMovedNotice(uploadedName: String, otherNames: [String]) -> String? {

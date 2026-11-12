@@ -82,4 +82,27 @@ final class NetworkHostSafetyTests: XCTestCase {
         XCTAssertNotNil(dapiUploadURLProblem(URL(string: "https://files.example.com/a.stl#x")!))
         XCTAssertNotNil(dapiUploadURLProblem(URL(string: "https://files.example.com/a.stl?k=dapi-test-key-1234")!, apiKey: "dapi-test-key-1234"))
     }
+
+    /// Round 22: Slant's storage links (`presignedUrl`, `fileURL`) and Models' pictures share 3DAPI's link check.
+    func testStorageLinkProblemIsTheSharedCheck() {
+        for raw in ["https://localhost/x", "https://127.1/x", "https://[::1]/x", "https://printer.local/x", "https://storage.example:8443/x",
+                    "https://u:p@storage.example/x", "https://storage.example/x#f", "http://storage.example/x", "https://router/x"] {
+            XCTAssertNotNil(storageLinkProblem(URL(string: raw)!), raw)
+        }
+        XCTAssertEqual(storageLinkProblem(URL(string: "https://127.1/x")!), "it points to a local or numeric address")
+        XCTAssertEqual(storageLinkProblem(URL(string: "https://storage.example/x?sig=sl_test_key_1")!, apiKey: " sl_test_key_1 "),
+                       "it contains your API key")
+        XCTAssertNil(storageLinkProblem(URL(string: "https://storage.example/x?sig=sl_test_key_1")!), "no key given, nothing to find")
+        // The docs' storage hosts pass, signed or on an explicit 443.
+        for raw in ["https://slant-gatekeeper.s3.us-west-2.amazonaws.com/u/m.stl?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc",
+                    "https://krakensystem.s3.us-west-2.amazonaws.com/c.png", "https://cdn.slant3dapi.com/c.png", "https://storage.example:443/x"] {
+            XCTAssertNil(storageLinkProblem(URL(string: raw)!, apiKey: "sl_test_key_1"), raw)
+        }
+        // 3DAPI's check is the same function, word for word.
+        for host in Self.hostile + Self.real {
+            guard let url = URL(string: "https://\(host)/a.stl?k=dapi-test-key-1234") else { continue }
+            XCTAssertEqual(dapiUploadURLProblem(url), storageLinkProblem(url), host)
+            XCTAssertEqual(dapiUploadURLProblem(url, apiKey: "dapi-test-key-1234"), storageLinkProblem(url, apiKey: "dapi-test-key-1234"), host)
+        }
+    }
 }

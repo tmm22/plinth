@@ -152,9 +152,10 @@ struct ModelsView: View {
         } message: { refusal in
             Text(cloudDeleteRefusalMessage(refusal))
         }
-        // After an upload Slant stored in a file other library models were linked to (StudioStore.uploadModel).
+        // After an upload Slant stored in a file other library models were linked to, or a Replace File that went into
+        // another file than the one chosen (StudioStore.uploadModel, importModelFromURL).
         .alert(
-            "Slant saved this upload in an existing file",
+            store.uploadLinkMovedTitle,
             isPresented: Binding(get: { store.uploadLinkMovedMessage != nil }, set: { if !$0 { store.uploadLinkMovedMessage = nil } })
         ) {
             Button("OK", role: .cancel) {}
@@ -1384,6 +1385,11 @@ struct ModelsView: View {
     /// when the name is free, so a menu item never uploads by itself.
     private func startUpload(_ requestedID: UUID? = nil, reupload: Bool = false) {
         guard let model = requestedID.flatMap({ id in store.localModels.first { $0.id == id } }) ?? store.selectedLocal else { return }
+        // Nothing can be uploaded while library saves are refused: say so before reading the file list or asking.
+        if store.librarySaveBlocked {
+            store.showError(libraryUploadBlockedMessage)
+            return
+        }
         if store.selectedLocalID != model.id { store.select(model) }
         let modelID = model.id
         let linkedFileID = model.remoteID
@@ -1412,13 +1418,14 @@ struct ModelsView: View {
         }
     }
 
-    /// After the same-name choice: uploads under the suggested name or, for Replace File, the checked name.
+    /// After the same-name choice: uploads under the suggested name or, for Replace File, the listed file's own name
+    /// (`uploadReplaceFileName`).
     private func uploadAfterNameChoice(_ conflict: UploadNameConflict, replacing: Bool) {
         guard let modelID = conflict.modelID, store.localModels.contains(where: { $0.id == modelID }) else { return }
         uploadFocusID = modelID
         Task {
             if replacing {
-                await upload(modelID, as: conflict.name, replacing: conflict.replacement,
+                await upload(modelID, as: uploadReplaceFileName(conflict), replacing: conflict.replacement,
                              protectedFiles: conflict.protectedWhenReplacing)
             } else {
                 await upload(modelID, as: conflict.suggested, protectedFiles: conflict.protectedFiles)
@@ -1487,7 +1494,13 @@ struct ModelsView: View {
                 guard let source = file["fileURL"] as? String, let url = URL(string: source), url.scheme?.lowercased() == "https" else {
                     throw StudioError("No download URL was returned for this model.")
                 }
-                let temp = try await store.client.downloadModel(from: url)
+                // Storage's refusal is about the download link, never the API key (`slantDownloadFailureMessage`).
+                let temp: URL
+                do {
+                    temp = try await store.client.downloadModel(from: url)
+                } catch APIError.http(let status, _, _, _) {
+                    throw StudioError(slantDownloadFailureMessage(status: status))
+                }
                 let ext = cloudDownloadExtension(recordType: (file["type"] as? String) ?? typeHint, downloadURL: url)
                 let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".\(ext)")
                 var moved = false
@@ -1515,7 +1528,7 @@ struct ModelsView: View {
 struct UploadNameConflict: Equatable {
     /// The library model to upload (Models), or nil for Upload from URL.
     var modelID: UUID?
-    /// The checked name; Replace File uploads under it.
+    /// The checked name; Upload Again's confirmation uses it. Replace File sends `existing` (`uploadReplaceFileName`).
     var name: String
     /// The listed Slant file's name.
     var existing: String
@@ -1543,6 +1556,15 @@ extension UploadNameConflict {
                   earlierUploadUnconfirmed: earlierUploadUnconfirmed && !result.conflictIsLinkedFile,
                   protectedFiles: result.protectedFiles(), protectedWhenReplacing: result.protectedFiles(replacing: result.conflictFileID))
     }
+}
+
+/// The name a Replace File sends: the listed file's own name, the one form Slant is known to match (an upload under
+/// an identical name reused that file, 30 Oct 2026), since the check matches more loosely (any case, spacing, model
+/// endings). The checked name only when the listed name is blank. The pre-PUT guard still stops an upload Slant
+/// would put in another file (`uploadReplacePlaceholderMismatch`).
+func uploadReplaceFileName(_ conflict: UploadNameConflict) -> String {
+    let listed = conflict.existing.trimmingCharacters(in: .whitespacesAndNewlines)
+    return listed.isEmpty ? conflict.name : listed
 }
 
 /// Upload Again… with no file of that name listed: waiting for its one confirmation.
@@ -1795,8 +1817,11 @@ struct ImportFromURLSheet: View {
             }
             .disabled(store.busy || !store.hasKey)
             // `POST /files` is one step, so the pre-PUT guard can't run here; an unclear outcome unlinks the file's models.
-            Button("Replace File", role: .destructive) { Task { await send(url, name: conflict.name, replacing: conflict.replacement) } }
-                .disabled(store.busy || !store.hasKey)
+            // Sent under the listed file's own name, with the `type` still read from the name the seller typed.
+            Button("Replace File", role: .destructive) {
+                Task { await send(url, name: uploadReplaceFileName(conflict), typeHint: conflict.name, replacing: conflict.replacement) }
+            }
+            .disabled(store.busy || !store.hasKey)
             // Return and Escape cancel: no keyboard shortcut may upload (AGENTS.md), so either upload takes a click.
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
@@ -1806,6 +1831,11 @@ struct ImportFromURLSheet: View {
     }
 
     private func importModel() {
+        // Nothing can be uploaded while library saves are refused: say so before reading the file list or asking.
+        if store.librarySaveBlocked {
+            validation = libraryUploadBlockedMessage
+            return
+        }
         if let problem = importFromURLValidation(url: url, name: name) {
             validation = problem
             return
@@ -1833,8 +1863,8 @@ struct ImportFromURLSheet: View {
         }
     }
 
-    private func send(_ link: String, name: String, replacing: UploadReplacement? = nil) async {
-        if await store.importModelFromURL(link, name: name, replacingFileID: replacing.map { $0.fileID ?? "" },
+    private func send(_ link: String, name: String, typeHint: String? = nil, replacing: UploadReplacement? = nil) async {
+        if await store.importModelFromURL(link, name: name, typeHintName: typeHint, replacingFileID: replacing.map { $0.fileID ?? "" },
                                           replacingFileName: replacing?.fileName ?? "") {
             dismiss()
         } else if let message = takeStoreErrorForSettings(store) {
@@ -2123,10 +2153,12 @@ func supportRequiredCaption(_ record: Record) -> String? {
     supportRequiredFlag(record).map { $0 ? "Needs supports · Yes" : "Needs supports · No" }
 }
 
+/// A file's preview picture from Slant's reply, loaded automatically by `AsyncImage`: only a link that passes
+/// `storageLinkProblem` (https to a named, non-local host on the default port, no sign-in details or fragment).
 func httpsPreviewImageURL(_ record: Record) -> URL? {
     let nested = (record.metrics["imageURL"] as? String) ?? (record.metrics["imageUrl"] as? String) ?? ""
     let raw = nested.isEmpty ? record.string("imageURL", "imageUrl") : nested
-    guard let url = URL(string: raw), url.scheme?.lowercased() == "https" else { return nil }
+    guard let url = URL(string: raw), url.scheme?.lowercased() == "https", storageLinkProblem(url) == nil else { return nil }
     return url
 }
 
@@ -2215,9 +2247,11 @@ func catalogItemSymbol(_ record: Record, kind: Destination, categoryName: String
     return kind.icon
 }
 
+/// A component or stationery picture from Slant's catalogue, loaded automatically: only a link that passes
+/// `storageLinkProblem`, as for file previews.
 func catalogItemImageURL(_ record: Record) -> URL? {
     let raw = record.string("imageUrl", "imageURL", "image_url")
-    guard let url = URL(string: raw), url.scheme?.lowercased() == "https" else { return nil }
+    guard let url = URL(string: raw), url.scheme?.lowercased() == "https", storageLinkProblem(url) == nil else { return nil }
     return url
 }
 

@@ -463,10 +463,66 @@ func uploadWouldOverwriteMessage(fileName: String) -> String {
     return "Nothing was uploaded: Slant would have saved this into \(file). Choose another name and upload again."
 }
 
+/// True when a Replace File's placeholder names a file other than the one the seller chose to replace: Slant would
+/// store the upload somewhere else (a new file, or one Plinth didn't read), so the chosen file wouldn't be replaced.
+/// Only when both IDs are known (trimmed): a placeholder without a string `publicFileServiceId` passes, as the pre-PUT
+/// guard lets it pass, and so does an upload that isn't a Replace File or whose file's ID wasn't listed.
+func uploadReplacePlaceholderMismatch(_ placeholder: [String: Any], replacingFileID: String?) -> Bool {
+    let replacing = replacingFileID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !replacing.isEmpty, let offered = uploadPlaceholderFileID(placeholder) else { return false }
+    return offered != replacing
+}
+
+/// A Replace File stopped before the PUT because Slant's placeholder named another file than the one chosen
+/// (`uploadReplacePlaceholderMismatch`): no bytes were sent and the chosen file wasn't replaced.
+struct UploadReplaceWouldCreateNewFile: LocalizedError, Equatable {
+    let fileName: String
+    var errorDescription: String? { uploadReplaceWouldCreateNewFileMessage(fileName: fileName) }
+}
+
+func uploadReplaceWouldCreateNewFileMessage(fileName: String) -> String {
+    let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let file = trimmed.isEmpty ? "the file you chose" : "“\(trimmed)”"
+    return "Nothing was uploaded: Slant would have saved this as a new file instead of replacing \(file). Upload again and choose Upload as “…” to add it as a new file."
+}
+
+/// A Replace File's unlinking couldn't be saved before sending, so nothing was sent and the links were put back as they
+/// were: a quit or crash must never leave the library on disk linking a model to a file that may hold another
+/// model's bytes.
+struct LibraryNotSavedBeforeUpload: LocalizedError, Equatable {
+    var errorDescription: String? { libraryNotSavedBeforeUploadMessage }
+}
+
+let libraryNotSavedBeforeUploadMessage = "Plinth couldn’t save your library, so nothing was uploaded and your Slant file wasn’t replaced. Check that your Mac has free disk space, then upload again."
+
+/// Added to the failure copy when a Replace File stopped before any of the model's bytes were sent: the library models
+/// Plinth unlinked just before asking Slant (to replace `fileName`) stay unlinked. Nil when it unlinked none.
+func uploadReplacementUnlinkedNote(fileName: String, modelNames: [String]) -> String? {
+    guard let first = modelNames.first else { return nil }
+    let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let file = trimmed.isEmpty ? "your Slant file" : "“\(trimmed)”"
+    if modelNames.count == 1 {
+        return "Before sending, Plinth unlinked “\(first)” to replace \(file), and it stays unlinked: upload it again before you use it in an order."
+    }
+    return "Before sending, Plinth unlinked \(modelNames.count) models in your library to replace \(file), and they stay unlinked: upload them again before you use them in an order."
+}
+
+/// After a Replace File that Slant confirmed under another file than the one chosen: that file wasn't replaced, and
+/// the models unlinked before sending (`unlinkedNames`) stay unlinked.
+func uploadReplaceSavedElsewhereNotice(uploadedName: String, fileName: String, unlinkedNames: [String]) -> String {
+    let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let file = trimmed.isEmpty ? "the file you chose" : "“\(trimmed)”"
+    let lead = "Slant saved “\(uploadedName)” in another file instead of replacing \(file), so drafts that use \(file) may still print the earlier model."
+    guard let note = uploadReplacementUnlinkedNote(fileName: fileName, modelNames: unlinkedNames) else { return lead }
+    return "\(lead) \(note)"
+}
+
 /// Upload failure copy by the step that failed. A storage refusal isn't about the API key, and a local file is never
 /// told to use a secure link.
 func uploadFailureMessage(stage: UploadStage?, error: Error) -> String {
     if let guarded = error as? UploadWouldOverwriteExistingFile { return uploadWouldOverwriteMessage(fileName: guarded.fileName) }
+    if let mismatch = error as? UploadReplaceWouldCreateNewFile { return uploadReplaceWouldCreateNewFileMessage(fileName: mismatch.fileName) }
+    if error is LibraryNotSavedBeforeUpload { return libraryNotSavedBeforeUploadMessage }
     if uploadOutcomeUnknown(stage: stage, error: error) { return uploadUnconfirmedMessage }
     switch stage {
     case .preparing?:
@@ -487,6 +543,21 @@ func uploadFailureMessage(stage: UploadStage?, error: Error) -> String {
         return friendlyAPIMessage(error)
     case .confirming?, nil:
         return friendlyAPIMessage(error)
+    }
+}
+
+/// Download into Library's copy when Slant's storage answered the model's download link with an error: about the
+/// storage link, never the API key (the `GET /files/{id}` before it keeps the API's own wording).
+func slantDownloadFailureMessage(status: Int) -> String {
+    switch status {
+    case 403:
+        return "Slant’s storage refused the download (HTTP 403), so nothing was added to your library. Try again: Plinth asks Slant for a fresh link each time."
+    case 404:
+        return "Slant’s storage doesn’t have this model’s file (HTTP 404), so nothing was added to your library."
+    case 500...599:
+        return "Slant’s storage had a problem (HTTP \(status)), so nothing was added to your library. Try again in a moment."
+    default:
+        return "Slant’s storage didn’t send the model (HTTP \(status)), so nothing was added to your library."
     }
 }
 
@@ -704,10 +775,11 @@ struct APIClient {
             body["type"] = type
         }
         let prepared = try await request("POST", path: "/files/direct-upload", body: body)
+        // The storage link must pass `storageLinkProblem` (https to a named, non-local host on the default port, no
+        // sign-in details or fragment, never the key): refused here, at `.preparing`, before any bytes are sent.
         guard let root = prepared.json as? [String: Any], let payload = root["data"] as? [String: Any],
               let urlString = payload["presignedUrl"] as? String,
-              let url = URL(string: urlString), url.scheme?.lowercased() == "https",
-              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil, url.fragment == nil,
+              let url = URL(string: urlString), storageLinkProblem(url, apiKey: apiKey) == nil,
               let placeholder = payload["filePlaceholder"] as? [String: Any] else {
             throw APIError.invalidResponse(uploadLinkMissingMessage)
         }
@@ -726,10 +798,10 @@ struct APIClient {
     }
 
     /// Downloads a Slant file's model to a temporary file, at most `slantDownloadMaxBytes` (checked against
-    /// `Content-Length` and while reading). No Authorization header is sent and redirects are refused.
+    /// `Content-Length` and while reading). No Authorization header is sent and redirects are refused. The link must
+    /// pass `storageLinkProblem`, or nothing is requested.
     func downloadModel(from url: URL, maxBytes: Int64 = slantDownloadMaxBytes) async throws -> URL {
-        guard url.scheme?.lowercased() == "https", let host = url.host, !host.isEmpty,
-              url.user == nil, url.password == nil, url.fragment == nil else {
+        guard storageLinkProblem(url, apiKey: apiKey) == nil else {
             throw APIError.invalidResponse("Slant didn’t return a secure HTTPS download link. Try again.")
         }
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Plinth-Download-\(UUID().uuidString)")
