@@ -152,13 +152,20 @@ final class PrintServiceTests: XCTestCase {
             XCTAssertFalse(enabled(tool, keySaved: false))
             XCTAssertFalse(enabled(tool, service: .slant))
         }
-        // Export Orders… and Tracking for Your Shop… work on the listed orders, like the Orders toolbar's Tools menu:
-        // only with Orders shown and rows read for the filter shown, so they never do nothing visible.
+        // Export Orders… and Tracking for Your Shop… work on the listed orders: only with rows read for the filter
+        // shown, so they never do nothing visible.
         for tool in [DapiOrderToolRequest.exportOrders, .trackingForYourShop] {
-            XCTAssertFalse(enabled(tool, loaded: false), "\(tool) with no rows")
-            for destination in [Destination.models, .catalog] {
-                XCTAssertFalse(enabled(tool, destination: destination), "\(tool) from \(destination)")
+            for destination in [Destination.models, .orders, .catalog] {
+                XCTAssertFalse(enabled(tool, destination: destination, loaded: false), "\(tool) with no rows from \(destination)")
             }
+        }
+        // Export Orders… saves the rows Orders lists, so only with Orders shown (as Slant's); Tracking for Your Shop…
+        // opens from any screen once rows are read, showing Orders first (as Slant's).
+        for destination in [Destination.models, .catalog] {
+            XCTAssertFalse(enabled(.exportOrders, destination: destination), "Export Orders from \(destination)")
+            XCTAssertTrue(enabled(.trackingForYourShop, destination: destination), "Tracking for Your Shop from \(destination)")
+            XCTAssertEqual(enabled(.trackingForYourShop, destination: destination),
+                           slantOrderToolMenuEnabled(.trackingForYourShop, destination: destination, ordersLoaded: true, modalUIShown: false))
         }
         // Spending Report… reads its own period, so it opens from anywhere, rows or not.
         for destination in [Destination.models, .orders, .catalog] {

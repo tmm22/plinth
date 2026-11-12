@@ -22,9 +22,9 @@ struct SlantAPIChangeNotice: View {
                 }
             } buttons: {
                 // Only opens Settings, so no ellipsis.
-                Button("Details") { store.requestSettings(.advanced) }
+                Button("Open Settings") { store.requestSettings(.advanced) }
                     .help("Open Settings › Advanced › Slant API")
-                    .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Details", notice: slantAPINoticeAccessibilityName))
+                    .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Open Settings", notice: slantAPINoticeAccessibilityName))
                 Button("Dismiss") { watch.dismissNotice() }
                     .help("Hide this until Plinth notices another change")
                     .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Dismiss", notice: slantAPINoticeAccessibilityName))

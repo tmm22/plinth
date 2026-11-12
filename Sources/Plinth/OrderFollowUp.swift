@@ -453,8 +453,12 @@ func shopFollowUpCarrierCaption(_ entry: ShopFollowUpEntry) -> (text: String, he
     return nil
 }
 
+/// Each row's checkbox. Not "Done", the sheet's dismiss button: Voice Control's "Click Done" would match every row.
+let shopFollowUpAddedTitle = "Added to Shop"
+/// Its spoken name starts with the visible title and names the row.
+func shopFollowUpAddedAccessibilityLabel(_ rowDescription: String) -> String { "\(shopFollowUpAddedTitle), \(rowDescription)" }
 /// Help for the done tick: what is remembered, where, and until when.
-let shopFollowUpDoneHelp = "Mark as done once you’ve added this order’s tracking in your shop. Plinth remembers your marks on this Mac (order IDs only) until you disconnect or change the API key."
+let shopFollowUpDoneHelp = "Tick once you’ve added this order’s tracking in your shop. Plinth remembers your marks on this Mac (order IDs only) until you disconnect or change the API key."
 
 
 // MARK: - Shopify tracking CSV
@@ -565,7 +569,7 @@ func shopFollowUpListLimitText(statusFilter: String?, datesFiltered: Bool, searc
 func shopFollowUpEmptyText(doneCount: Int, listLimit: String?, reading: Bool, recent: RecentOrdersRead?,
                            dateText: (Date) -> String = recentOrdersDateText) -> String {
     if doneCount > 0 {
-        return "Every listed order with tracking is marked as done in your shop. Show marked orders lists them again."
+        return "Every listed order with tracking is marked Added to Shop. Show marked orders lists them again."
     }
     if reading { return "Loading your recent orders from Slant…" }
     if let recent, recent.finished {
@@ -663,7 +667,7 @@ struct ShopFollowUpSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if listed.isEmpty {
                 ContentUnavailableView {
-                    Label(groups.doneCount > 0 ? "All orders marked as done" : "No tracking yet", systemImage: "shippingbox")
+                    Label(groups.doneCount > 0 ? "All orders added to your shop" : "No tracking yet", systemImage: "shippingbox")
                 } description: {
                     Text(shopFollowUpEmptyText(
                         doneCount: groups.doneCount,
@@ -760,10 +764,10 @@ struct ShopFollowUpSheet: View {
                 if ticked { store.shopFollowUpDoneIDs.insert(entry.id) } else { store.shopFollowUpDoneIDs.remove(entry.id) }
             })
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            // A visible label, so the box can be clicked on its word and spoken (Voice Control: "Done").
-            Toggle("Done", isOn: done)
+            // A visible label, so the box can be clicked on its word and spoken (Voice Control: "Added to Shop").
+            Toggle(shopFollowUpAddedTitle, isOn: done)
                 .toggleStyle(.checkbox)
-                .accessibilityLabel("Done, \(shopFollowUpOrderTitle(entry))")
+                .accessibilityLabel(shopFollowUpAddedAccessibilityLabel(shopFollowUpOrderTitle(entry)))
                 .help(shopFollowUpDoneHelp)
             VStack(alignment: .leading, spacing: 3) {
                 // One paragraph that wraps, so a long order number is shown in full rather than cut off.

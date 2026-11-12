@@ -57,7 +57,7 @@ func dapiVATRateText(_ rate: Decimal) -> String {
 /// The notice above the list about whether this account can order, or nil when it can (or before the first check).
 func dapiOrdersAccountNotice(configured: Bool, checked: Bool, account: DapiAccount?, onboarding: DapiOnboarding?,
                              checkFailure: String?) -> String? {
-    guard configured else { return "Add a 3DAPI integrator key in Settings › Account to see and place 3DAPI orders." }
+    guard configured else { return dapiAddKeySentence("see and place 3DAPI orders") }
     guard checked else { return nil }
     guard let account else {
         return "Plinth couldn’t check your 3DAPI account" + (checkFailure.map { ": \($0)" } ?? ".")
@@ -142,7 +142,7 @@ struct DapiOrdersView: View {
                                 onboarding: connection.onboarding, checkFailure: accountCheckFailure)
     }
     private var newOrderBlockedReason: String? {
-        if !connection.isConfigured { return "Add a 3DAPI key in Settings first." }
+        if !connection.isConfigured { return dapiAddKeySentence("place 3DAPI orders") }
         if composer != nil || cancelRequest != nil { return "Close the open 3DAPI order sheet first." }
         return nil
     }
@@ -154,7 +154,7 @@ struct DapiOrdersView: View {
                 ContentUnavailableView {
                     Label(dapiAddKeyTitle, systemImage: "key")
                 } description: {
-                    Text("Save a 3DAPI integrator key in Settings › Account to see and place orders on 3DAPI.")
+                    Text(dapiAddKeySentence("see and place 3DAPI orders"))
                 } actions: {
                     Button(dapiAddKeyButtonTitle) { store.requestSettings(.account) }
                         .buttonStyle(.borderedProminent)
@@ -295,22 +295,22 @@ struct DapiOrdersView: View {
     private var notices: some View {
         VStack(spacing: 0) {
             if connection.isConfigured, let accountNotice {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Label(accountNotice, systemImage: "info.circle")
+                StudioNoticeStrip(.information) {
+                    Text(accountNotice)
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
+                } buttons: {
                     Button("Open Settings") { store.requestSettings(.account) }
+                        .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Open Settings", notice: dapiAccountNoticeAccessibilityName))
                 }
-                .padding(.horizontal, 16).padding(.vertical, 8)
-                .background(.bar)
-                Divider()
             }
             if !session.unconfirmedOrders.isEmpty {
-                DapiUnconfirmedOrdersNotice { order in list.insertAndSelect(order) }
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(.bar)
-                Divider()
+                // The notice keeps its own Look for Order(s) on 3DAPI button and its result line, beside its list.
+                StudioNoticeStrip(.warning) {
+                    DapiUnconfirmedOrdersNotice(inNoticeStrip: true) { order in list.insertAndSelect(order) }
+                } buttons: {
+                    EmptyView()
+                }
             }
         }
     }
@@ -736,7 +736,7 @@ struct DapiOrderDetailView: View {
                                 // Opens the carrier's page in the browser only on this click; Plinth sends nothing.
                                 if let carrier = dapiShippingDetectedCarrier(ship), let url = carrier.trackingURL {
                                     Button("Track Parcel") { NSWorkspace.shared.open(url) }
-                                        .accessibilityLabel("Track parcel \(tracking) on \(carrier.name)’s website")
+                                        .accessibilityLabel("Track Parcel \(tracking) on \(carrier.name)’s website")
                                         .help("Open \(carrier.name)’s tracking page for this number in your browser")
                                 }
                             }
@@ -799,6 +799,15 @@ func dapiPaidByText(_ paidBy: String) -> String {
 /// The no-key state's title and button, the same wherever 3DAPI needs a key (Orders, Catalog, the Models bar).
 let dapiAddKeyTitle = "Add a 3DAPI key"
 let dapiAddKeyButtonTitle = "Add 3DAPI Key…"
+/// The one no-key sentence, wherever 3DAPI needs a key: "Add a 3DAPI key in Settings › Account to <purpose>." Settings
+/// itself names its own section as the place instead.
+func dapiAddKeySentence(_ purpose: String, in place: String = "Settings › Account") -> String {
+    "Add a 3DAPI key in \(place) to \(purpose)."
+}
+
+/// Name the 3DAPI Orders notices in their buttons' accessibility labels ("Open Settings 3DAPI Account Notice").
+let dapiAccountNoticeAccessibilityName = "3DAPI Account Notice"
+let dapiUnconfirmedOrdersNoticeAccessibilityName = "Unconfirmed 3DAPI Orders Notice"
 
 /// The session's unconfirmed 3DAPI orders, each named, with Look for Order on 3DAPI (read-only, by exact reference).
 /// Found orders are confirmed and handed to `onFound`; not-found ones stay. Used by the Orders list and the composer.
@@ -806,6 +815,9 @@ struct DapiUnconfirmedOrdersNotice: View {
     @ObservedObject private var session = DapiOrderSession.shared
     /// Only these attempts (the review's own), or every unconfirmed attempt when nil.
     var only: Set<UUID>? = nil
+    /// Inside the Orders screen's `StudioNoticeStrip(.warning)`, which draws the warning icon and tint: the heading is
+    /// plain text, and the button's spoken name names the notice.
+    var inNoticeStrip = false
     let onFound: (DapiOrder) -> Void
     /// Told when a lookup starts and ends (the composer keeps Review Order… off meanwhile).
     var onLookingChange: ((Bool) -> Void)? = nil
@@ -821,19 +833,28 @@ struct DapiUnconfirmedOrdersNotice: View {
         if !attempts.isEmpty || summary != nil {
             VStack(alignment: .leading, spacing: 6) {
                 if !attempts.isEmpty {
-                    Label(attempts.count == 1
-                          ? "This order was sent without a clear answer. 3DAPI may have charged and placed it:"
-                          : "These orders were sent without a clear answer. 3DAPI may have charged and placed them:",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(.studioWarning)
-                        .fixedSize(horizontal: false, vertical: true)
+                    let heading = attempts.count == 1
+                        ? "This order was sent without a clear answer. 3DAPI may have charged and placed it:"
+                        : "These orders were sent without a clear answer. 3DAPI may have charged and placed them:"
+                    if inNoticeStrip {
+                        Text(heading).font(.callout.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Label(heading, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout).foregroundStyle(.studioWarning)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     ForEach(attempts) { attempt in
-                        Text(dapiUnconfirmedOrderLine(attempt)).font(.callout).padding(.leading, 20)
+                        Text(dapiUnconfirmedOrderLine(attempt)).font(.callout).padding(.leading, inNoticeStrip ? 0 : 20)
                     }
                 }
                 HStack(spacing: 8) {
                     if !attempts.isEmpty {
-                        Button(dapiLookForOrdersButtonTitle(count: attempts.count)) { lookFor(attempts) }
+                        let lookTitle = dapiLookForOrdersButtonTitle(count: attempts.count)
+                        Button(lookTitle) { lookFor(attempts) }
+                            .accessibilityLabel(inNoticeStrip
+                                                ? studioNoticeButtonAccessibilityLabel(lookTitle, notice: dapiUnconfirmedOrdersNoticeAccessibilityName)
+                                                : lookTitle)
                             .disabled(looking)
                             .help("Search your 3DAPI orders for these attempts’ references. Nothing is sent or placed.")
                     }

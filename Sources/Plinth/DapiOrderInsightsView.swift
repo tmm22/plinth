@@ -685,10 +685,10 @@ struct DapiTrackingSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if groups.listed.isEmpty {
                 ContentUnavailableView {
-                    Label(groups.doneCount > 0 ? "All orders marked as done" : "No tracking yet", systemImage: "shippingbox")
+                    Label(groups.doneCount > 0 ? "All orders added to your shop" : "No tracking yet", systemImage: "shippingbox")
                 } description: {
                     Text(groups.doneCount > 0
-                         ? "Every loaded order with tracking is marked as done in your shop. Show marked orders lists them again."
+                         ? "Every loaded order with tracking is marked Added to Shop. Show marked orders lists them again."
                          : "None of the loaded orders has tracking from 3DAPI yet. Refresh the list later to check again.")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -733,11 +733,11 @@ struct DapiTrackingSheet: View {
                 copiedAll = false
             })
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
-            // A visible label, so the box can be clicked on its word and spoken (Voice Control: "Done").
-            Toggle("Done", isOn: done)
+            // A visible label, so the box can be clicked on its word and spoken (Voice Control: "Added to Shop").
+            Toggle(shopFollowUpAddedTitle, isOn: done)
                 .toggleStyle(.checkbox)
-                .accessibilityLabel("Done, \(dapiTrackingTitle(entry))")
-                .help("Mark as done once you’ve added this order’s tracking in your shop (this session only)")
+                .accessibilityLabel(shopFollowUpAddedAccessibilityLabel(dapiTrackingTitle(entry)))
+                .help("Tick once you’ve added this order’s tracking in your shop (this session only)")
             VStack(alignment: .leading, spacing: 3) {
                 // One paragraph that wraps, so a long reference or order number is shown in full.
                 (Text(dapiTrackingTitle(entry)).fontWeight(.medium)

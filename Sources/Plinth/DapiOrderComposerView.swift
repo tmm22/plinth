@@ -53,7 +53,7 @@ struct DapiOrderComposerView: View {
     }
     /// Why Review Order… is off: the first problem, lines first.
     private var reviewBlockedReason: String? {
-        if !connection.isConfigured { return "Add a 3DAPI key in Settings first." }
+        if !connection.isConfigured { return dapiAddKeySentence("place 3DAPI orders") }
         if let linesProblem { return linesProblem }
         let order: [DapiComposerField] = [.country, .name, .email, .line1, .city, .line2, .state, .postcode, .phone, .notes]
         for field in order { if let problem = problems[field] { return problem } }
@@ -293,26 +293,26 @@ struct DapiOrderComposerView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(lineName).font(.body.weight(.semibold)).lineLimit(1)
                 Spacer()
+                // Named for the line by their own hidden titles (inside a grouped Form VoiceOver reads a hidden
+                // title; an extra accessibility label would be read after it, "Quantity, Quantity for …").
                 HStack(spacing: 4) {
-                    TextField("Quantity", text: line.quantityText)
+                    TextField(orderLineQuantityTitle(lineName), text: line.quantityText)
                         .labelsHidden()
                         .frame(width: 64)
-                        .accessibilityLabel("Quantity for \(lineName)")
-                    Stepper("Quantity", value: Binding(get: { value.quantity ?? 1 },
+                    Stepper(orderLineQuantityTitle(lineName), value: Binding(get: { value.quantity ?? 1 },
                                                        set: { line.wrappedValue.quantityText = String($0) }),
                             in: 1...dapiOrderMaxUnitsPerLine)
                         .labelsHidden()
-                        .accessibilityLabel("Quantity for \(lineName)")
                 }
                 .fixedSize()
-                // Kept apart from the stepper, so a slip on its arrows can't remove the line.
+                // Saved Products' look: a bordered Remove, kept apart from the stepper, so a slip on its arrows can't
+                // remove the line.
                 Button(role: .destructive) { state.remove(lineID: value.id) } label: {
-                    Image(systemName: "minus.circle").imageScale(.large)
-                        .frame(minWidth: 24, minHeight: 24).contentShape(Rectangle())
+                    Label(orderLineRemoveTitle, systemImage: "minus.circle")
                 }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.bordered)
                     .padding(.leading, 16)
-                    .accessibilityLabel("Remove \(lineName)")
+                    .accessibilityLabel(orderLineRemoveAccessibilityLabel(lineName))
                     .help("Remove this line")
             }
             if value.quantity == nil {

@@ -139,7 +139,7 @@ func printServiceChangeBlockedReason(dapiOrderSessionReason: String?, writesInFl
 let printServiceSettingsFooter = "Choose who prints your orders. This changes Models’ next steps, the Orders section and Catalogue’s materials; your model library and Get 3DAPI Quote… stay as they are. The two services never share data: no price, ID or file from one is sent to the other."
 
 /// Shown under the picker while 3DAPI is chosen without a saved 3DAPI key.
-let printServiceDapiKeyMissingNote = "Add a 3DAPI key (from an integrator account) under 3DAPI below to quote and order with 3DAPI."
+let printServiceDapiKeyMissingNote = dapiAddKeySentence("quote and order with 3DAPI", in: "the 3DAPI section below")
 
 /// Settings › Account's first section: the print service picker. A change goes through
 /// `PrintServiceChoice.select(_:blockedReason:)` with the reason computed at the moment of the change.
@@ -299,7 +299,7 @@ func dapiModelsNextStepStatus(_ step: DapiModelsNextStep, hasReadyQuote: Bool = 
     case .needsModel: return "Import a model to quote and order it with 3DAPI."
     case .needsLocalCopy: return "3DAPI prints models from this Mac. Download this model into the library first."
     case .fileMissing: return "This model’s file is missing from the library, so 3DAPI can’t quote or print it. Import it again."
-    case .needsKey: return "Add a 3DAPI key in Settings › Account to quote and order with 3DAPI."
+    case .needsKey: return dapiAddKeySentence("quote and order with 3DAPI")
     case .invalidQuantity: return "Enter a whole-number quantity from 1 to 10,000."
     case .ready: return dapiModelsReadyStatus(hasReadyQuote: hasReadyQuote, orderingProblem: orderingProblem)
     }
@@ -341,9 +341,14 @@ func dapiOrderToolMenuEnabled(_ tool: DapiOrderToolRequest, service: PrintServic
         // Refresh reloads what is shown: on Models and Catalog there is no 3DAPI list to reload (and the developer
         // screens keep Slant's Refresh, `slantRefreshAvailable`).
         return destination == .orders
-    case .exportOrders, .trackingForYourShop:
-        // Like the Orders toolbar's Tools menu: they work on the orders listed, so only with Orders shown and rows read.
+    case .exportOrders:
+        // Saves the orders listed, so only with Orders shown and rows read (as Slant's Export Orders…).
         return destination == .orders && ordersLoaded
+    case .trackingForYourShop:
+        // Like Slant's: from any screen once rows are read. `performDapiOrderToolFromMenu` shows Orders first, and the
+        // rows outlive a visit elsewhere (`DapiOrderListState.shared`, forgotten at once on a key change), so the sheet
+        // gets the same rows the list would show (`canUseRowsForTools`).
+        return ordersLoaded
     case .spendingReport:
         // Reads its own period (Load the Whole Period), so it opens from anywhere.
         return true

@@ -5,9 +5,13 @@ import AppKit
 
 /// Names the order updates notice in its buttons' accessibility labels ("Dismiss Order Updates Notice").
 let orderWatchNoticeAccessibilityName = "Order Updates Notice"
+/// The banner's Show Changes: it refreshes the list and focuses it on the changed orders (it doesn't reveal the notice),
+/// so its spoken name starts with the visible title and says which changes.
+let orderWatchShowChangesTitle = "Show Changes"
+let orderWatchShowChangesAccessibilityLabel = "Show Changes, order updates"
 
-/// Above the orders list while checks have found changes the seller hasn't seen. Changes stay until Show or Dismiss,
-/// so glancing at Orders never loses them. Show reloads the newest orders (a user action, like Show All Orders) and
+/// Above the orders list while checks have found changes the seller hasn't seen. Changes stay until Show Changes or Dismiss,
+/// so glancing at Orders never loses them. Show Changes refreshes the newest orders (a user action, like Show All Orders) and
 /// focuses the list on the changed ones.
 struct OrderWatchBanner: View {
     @EnvironmentObject var store: StudioStore
@@ -27,14 +31,13 @@ struct OrderWatchBanner: View {
                 // Shipped orders have tracking to copy into the shop. Opens the local list only; nothing is sent.
                 if orderWatchChangesIncludeShipped(changes) {
                     Button("Tracking for Your Shop…") { store.openShopFollowUpFromMenu() }
-                        .buttonStyle(.link)
                         .disabled(store.orders.isEmpty)
                         .help(store.orders.isEmpty ? "Load orders first" : "Copy shipped orders’ tracking into Etsy or Shopify")
                 }
-                Button("Show") { onShow(Set(changes.map(\.id))) }
+                Button(orderWatchShowChangesTitle) { onShow(Set(changes.map(\.id))) }
                     .disabled(!store.hasKey || store.busy)
-                    .help("Reload the newest orders and list the ones that changed")
-                    .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Show", notice: orderWatchNoticeAccessibilityName))
+                    .help("Refresh the list and show only the orders that changed")
+                    .accessibilityLabel(orderWatchShowChangesAccessibilityLabel)
                 Button("Dismiss") { watch.acknowledge() }
                     .help("Mark these changes as seen")
                     .accessibilityLabel(studioNoticeButtonAccessibilityLabel("Dismiss", notice: orderWatchNoticeAccessibilityName))
@@ -45,7 +48,7 @@ struct OrderWatchBanner: View {
     }
 }
 
-/// Under the banner while Show has focused the list on changed orders.
+/// Under the banner while Show Changes has focused the list on changed orders.
 struct OrderWatchFocusBar: View {
     let count: Int
     let onShowAll: () -> Void
@@ -54,7 +57,7 @@ struct OrderWatchFocusBar: View {
         HStack {
             Text(orderWatchFocusCaption(count: count)).font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Button("Show All Orders", action: onShowAll).controlSize(.small)
+            Button("Show All Orders", action: onShowAll)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
