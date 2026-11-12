@@ -85,11 +85,15 @@ final class ProductCostCheckTests: XCTestCase {
         XCTAssertEqual(reason(4), "Its material is out of stock, so Slant can’t print it now.")
         XCTAssertEqual(reason(5), "Load Components in Catalogue to include its price.")
         XCTAssertEqual(reason(6), "It’s no longer offered in the catalogue.")
-        XCTAssertEqual(reason(7), productCostStationeryNoPriceText, "Slant's null stationery price is still not counted")
+        // Slant's null stationery price counts as $0, and the row says why (owner decision, delegated, 13 Nov 2026).
+        XCTAssertNil(reason(7))
+        XCTAssertEqual(parts[7].state, .priced(total: 0, detail: productCostStationeryFreeText))
+        XCTAssertTrue(parts[7].countedAsFree)
         XCTAssertEqual(reason(8), "This item has an unknown type.")
+        XCTAssertEqual(parts.filter(\.countedAsFree).map(\.id), [7], "only the null-priced stationery")
         let summary = productCostSummary(parts, units: 1)
         XCTAssertFalse(summary.complete)
-        XCTAssertEqual(summary.pricedCount, 0)
+        XCTAssertEqual(summary.pricedCount, 1)
     }
 
     func testUnloadedMaterialsStillEstimateAndOversizeIsRefused() {
