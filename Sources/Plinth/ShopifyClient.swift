@@ -189,7 +189,9 @@ enum ShopifyError: LocalizedError, Equatable {
             switch status {
             case 401: return "Shopify rejected Plinth’s access. Check the app is still installed, then connect again in Settings."
             case 402: return "Shopify says this store is frozen or unpaid."
-            case 403: return "Shopify refused this request. Check the app has the access scopes in Plinth’s Shopify setup steps (Settings › Account, shown while disconnected). \(message)".trimmingCharacters(in: .whitespaces)
+            // On the GraphQL Admin API a 403 means the store is marked as fraudulent, or (since 27 Oct 2026) the request
+            // came from outside the app's IP allowlist; a missing scope is a 200 with ACCESS_DENIED instead.
+            case 403: return "Shopify refused requests from this Mac (HTTP 403). If your app has an IP allowlist in the Dev Dashboard, add this network to it; otherwise contact Shopify. \(message)".trimmingCharacters(in: .whitespaces)
             case 404: return "Shopify couldn’t find that store. Check the store address in Settings."
             case 423: return "Shopify says this store is locked."
             case 300...399: return "Shopify redirected the request, so Plinth stopped. Check the store address in Settings."
@@ -204,7 +206,9 @@ enum ShopifyError: LocalizedError, Equatable {
             }
             return "Shopify couldn’t complete that request: \(messages.first ?? "unknown error")"
         case .protectedCustomerData:
-            return "Shopify didn’t share customers’ names and addresses with the app you connected. Shopify gives them to custom apps on its Grow plan or higher; check the app’s protected customer data access in the Dev Dashboard."
+            // A merchant's own Dev Dashboard app has no protected-data setting to change (Shopify staff on its forum,
+            // Jun–Jul 2026; unverified), so the advice is the plan and the CSV export.
+            return "Shopify didn’t share customers’ names and addresses with the app you connected. Shopify gives them to custom apps on its Grow plan or higher. You can export the orders from Shopify admin (Orders › Export) and choose that CSV file in Import Orders instead."
         case .tokenRefused(let message):
             return message
         case .invalidResponse(let message):
@@ -223,7 +227,8 @@ enum ShopifyError: LocalizedError, Equatable {
 
 /// True when a mutation that failed this way may still have been carried out: no readable reply, a timeout, a
 /// conflict or a server error. Throttles, auth failures, validation errors and other 4xx refusals happen before
-/// Shopify acts.
+/// Shopify acts. A mutation reply carrying GraphQL `errors` is judged first by `shopifyMutationErrorReplyMayHaveRun`,
+/// which turns one that may have run into `.invalidResponse` (unknown) before it gets here.
 func shopifyMutationOutcomeUnknown(_ error: Error) -> Bool {
     switch error as? ShopifyError {
     case .http(let status, _)?:
@@ -294,9 +299,38 @@ func shopifyGraphQLError(fromResponse root: [String: Any], secrets: [String] = [
     let messages = list.map { shopifyRedacted(($0["message"] as? String) ?? "Unknown error", secrets: secrets) }
     let codes = list.compactMap { ($0["extensions"] as? [String: Any])?["code"] as? String }
     if codes.contains("THROTTLED") { return .throttled }
-    // Protected customer data refusals name the object the app isn't approved for.
-    if messages.contains(where: { $0.lowercased().contains("not approved to access") }) { return .protectedCustomerData }
+    // Protected customer data refusals name the object ("This app is not approved to access the Customer object") or,
+    // field by field and without a code, the field ("This app is not approved to use the name field").
+    if messages.contains(where: shopifyMessageIsProtectedCustomerData) { return .protectedCustomerData }
     return .graphQL(messages: messages, codes: codes)
+}
+
+func shopifyMessageIsProtectedCustomerData(_ message: String) -> Bool {
+    let text = message.lowercased()
+    return text.contains("not approved to access") || (text.contains("not approved to use") && text.contains("field"))
+}
+
+/// Error codes after which a mutation reply without a `data` object is a definite refusal: Shopify checks access,
+/// the store's state and the query's cost before running anything.
+let shopifyMutationRefusalCodes: Set<String> = ["ACCESS_DENIED", "SHOP_INACTIVE", "MAX_COST_EXCEEDED"]
+
+/// Whether a mutation reply carrying top-level `errors` may still have run, so its outcome is unknown rather than a
+/// refusal. Shopify says other codes may appear, so anything not known to be refused before execution counts. In order:
+/// THROTTLED was refused before running; a `data` object means execution started; an error without a code, or
+/// INTERNAL_SERVER_ERROR, may have run; ACCESS_DENIED, SHOP_INACTIVE and MAX_COST_EXCEEDED (every code one of these)
+/// are refusals; any other code is a refusal only when `data` is absent altogether (GraphQL leaves it out when a request
+/// fails validation, before execution), and unknown with `data: null`.
+func shopifyMutationErrorReplyMayHaveRun(_ root: [String: Any]) -> Bool {
+    let list: [[String: Any]]
+    if let array = root["errors"] as? [[String: Any]] { list = array }
+    else if let text = root["errors"] as? String { list = [["message": text]] }
+    else { return true }
+    let codes = list.map { ($0["extensions"] as? [String: Any])?["code"] as? String }
+    if codes.contains("THROTTLED") { return false }
+    if root["data"] is [String: Any] { return true }
+    if list.isEmpty || codes.contains(where: { $0 == nil || $0 == "INTERNAL_SERVER_ERROR" }) { return true }
+    if codes.allSatisfy({ shopifyMutationRefusalCodes.contains($0 ?? "") }) { return false }
+    return root.keys.contains("data")
 }
 
 /// Seconds from a `Retry-After` header given in seconds, capped; nil when absent or unreadable.
@@ -360,6 +394,8 @@ struct ShopifyScopeSummary: Equatable {
     var canFulfil: Bool
 }
 
+/// Any one of these lets the app call `fulfillmentCreate` (its documented requirement). The fulfilment-order reads Send
+/// Tracking makes first also need `read_orders`.
 let shopifyFulfilmentScopes: Set<String> = [
     "write_merchant_managed_fulfillment_orders", "write_assigned_fulfillment_orders", "write_third_party_fulfillment_orders"
 ]
@@ -367,6 +403,14 @@ let shopifyFulfilmentScopes: Set<String> = [
 func shopifyScopeSummary(_ scopes: Set<String>) -> ShopifyScopeSummary {
     ShopifyScopeSummary(canReadOrders: scopes.contains("read_orders") || scopes.contains("write_orders"),
                         canFulfil: !scopes.isDisjoint(with: shopifyFulfilmentScopes))
+}
+
+/// Whether Send Tracking should read the granted scopes again rather than trust the ones this connection remembers:
+/// none are remembered, or the remembered ones can't fulfil (the seller may have added the scope since, as the sheet
+/// tells them to). Remembered scopes that can fulfil are used as they are, so the usual check costs nothing extra.
+func shopifyScopesNeedReread(_ cached: Set<String>?) -> Bool {
+    guard let cached else { return true }
+    return !shopifyScopeSummary(cached).canFulfil
 }
 
 // MARK: Client
@@ -389,11 +433,17 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
     /// From the token reply (Dev Dashboard apps) or `currentAppInstallation` (both), once known.
     private(set) var grantedScopes: Set<String>?
 
-    init?(shop: String, credential: ShopifyCredential) {
+    convenience init?(shop: String, credential: ShopifyCredential) {
+        self.init(shop: shop, credential: credential, protocolClasses: nil)
+    }
+
+    /// `protocolClasses` is for tests only (a stubbed transport); the app always passes nil.
+    init?(shop: String, credential: ShopifyCredential, protocolClasses: [AnyClass]?) {
         guard shopifyShopDomain(shop) == shop else { return nil }
         self.shop = shop
         self.credential = credential
         let configuration = URLSessionConfiguration.ephemeral
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
         configuration.urlCredentialStorage = nil
@@ -436,8 +486,10 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
     }
 
     /// A mutation, sent exactly once. Waits beforehand if the bucket is low, but never resends: Shopify's
-    /// `fulfillmentCreate` has no idempotency key, so a second send could fulfil twice.
-    func mutate(_ mutation: String, variables: [String: Any], estimatedCost: Double = 10) async throws -> [String: Any] {
+    /// `fulfillmentCreate` has no idempotency key, so a second send could fulfil twice. `proceed` is asked once more
+    /// after that wait and the token fetch, just before sending: false stops it with nothing sent (`.notSent`).
+    func mutate(_ mutation: String, variables: [String: Any], estimatedCost: Double = 10,
+                proceed: () -> Bool = { true }) async throws -> [String: Any] {
         let tokenValue: String
         do {
             let wait = shopifyThrottleWait(cost: estimatedCost, status: lastThrottle)
@@ -451,15 +503,31 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
         } catch {
             throw ShopifyError.notSent("Not sent: Plinth couldn’t get access to Shopify. \(shopifyRedacted(error.localizedDescription, secrets: secrets))")
         }
+        guard proceed() else { throw ShopifyError.notSent("Stopped before anything was sent to Shopify.") }
         do {
-            return try await send(mutation, variables: variables, token: tokenValue)
+            return try await send(mutation, variables: variables, token: tokenValue, isMutation: true)
         } catch is CancellationError {
             // Cancelled on the way: Shopify may have acted, so it counts as unconfirmed, never as not sent.
             throw ShopifyError.transport("The request was cancelled before Shopify replied.")
         }
     }
 
-    /// The installation's granted scopes, read once and remembered for this connection.
+    /// Forgets the remembered scopes, so `accessScopes()` reads them again. A Dev Dashboard app's token also goes: its
+    /// `scope` was fixed when it was issued, so a scope approved since needs a new token.
+    func forgetScopes() {
+        grantedScopes = nil
+        if case .app = credential { token = nil }
+    }
+
+    /// Scopes just read live (Test Connection), so Send Tracking agrees with what Settings showed. A Dev Dashboard
+    /// app's token issued without one of them is dropped, so the next request carries a token with them all.
+    func noteScopes(_ scopes: Set<String>) {
+        grantedScopes = scopes
+        if case .app = credential, let token, !scopes.isSubset(of: token.scopes) { self.token = nil }
+    }
+
+    /// The installation's granted scopes, read once and remembered for this connection (`forgetScopes` reads them
+    /// again).
     func accessScopes() async throws -> Set<String> {
         if let grantedScopes { return grantedScopes }
         let data = try await query("query StudioScopes { currentAppInstallation { accessScopes { handle } } }", estimatedCost: 5)
@@ -492,8 +560,11 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
         }
     }
 
-    /// `token`, when given, was fetched just before (mutations); otherwise the current one is used or fetched.
-    private func send(_ document: String, variables: [String: Any], token preparedToken: String? = nil) async throws -> [String: Any] {
+    /// `token`, when given, was fetched just before (mutations); otherwise the current one is used or fetched. A
+    /// mutation's reply with GraphQL errors that may still have run (`shopifyMutationErrorReplyMayHaveRun`) is thrown as
+    /// `.invalidResponse`, an unknown outcome, never as a refusal.
+    private func send(_ document: String, variables: [String: Any], token preparedToken: String? = nil,
+                      isMutation: Bool = false) async throws -> [String: Any] {
         guard let url = shopifyGraphQLURL(shop: shop) else { throw ShopifyError.notConnected }
         let tokenValue: String
         if let preparedToken { tokenValue = preparedToken } else { tokenValue = try await accessTokenValue() }
@@ -524,7 +595,13 @@ private final class ShopifyNoRedirectDelegate: NSObject, URLSessionTaskDelegate 
         }
         if let throttle = shopifyThrottleStatus(fromResponse: root) { lastThrottle = throttle }
         lastRequestedCost = shopifyRequestedCost(fromResponse: root)
-        if let error = shopifyGraphQLError(fromResponse: root, secrets: secrets) { throw error }
+        if let error = shopifyGraphQLError(fromResponse: root, secrets: secrets) {
+            if isMutation, shopifyMutationErrorReplyMayHaveRun(root) {
+                let detail = error.errorDescription.map { " \($0)" } ?? ""
+                throw ShopifyError.invalidResponse("Shopify answered with an error and didn’t confirm whether it made the change.\(detail)")
+            }
+            throw error
+        }
         guard let payload = root["data"] as? [String: Any] else { throw ShopifyError.invalidResponse("Shopify’s reply had no data.") }
         return payload
     }

@@ -32,7 +32,8 @@ func shopifyScopeStatusLine(_ scopes: ShopifyScopeSummary) -> String {
     switch (scopes.canReadOrders, scopes.canFulfil) {
     case (true, true): return "Plinth can import orders and send tracking."
     case (true, false): return "Plinth can import orders. To send tracking too, add write_merchant_managed_fulfillment_orders."
-    case (false, true): return "Plinth can send tracking, but can’t read orders: add read_orders."
+    // Send Tracking finds and checks each order first, which needs read_orders too.
+    case (false, true): return "Plinth needs read_orders to import orders or send tracking. Add it to the app’s scopes."
     case (false, false): return "The app has neither read_orders nor a fulfilment scope, so Plinth can’t use it yet."
     }
 }
@@ -174,7 +175,8 @@ struct ShopifySettingsSection: View {
         problem = result.customerDataLikelyWithheld ? shopifyCustomerDataPlanAdvice : nil
     }
 
-    /// The read-only shop query. Marks the connection busy, so a fetch or send can't start alongside.
+    /// The read-only shop query. Marks the connection busy, so a fetch or send can't start alongside. The live scopes
+    /// it reads are kept on the client, so Send Tracking agrees with what Settings shows.
     private func run(_ client: ShopifyClient, success: @escaping (ShopifyConnectionTest) -> Void, failure: @escaping () -> Void) {
         guard !connection.busy, !testing else { return }
         testing = true
@@ -183,7 +185,9 @@ struct ShopifySettingsSection: View {
             defer { testing = false; connection.busy = false }
             do {
                 let data = try await client.query(shopifyTestQuery, estimatedCost: 5)
-                success(try shopifyConnectionTest(data, expectedShop: client.shop))
+                let result = try shopifyConnectionTest(data, expectedShop: client.shop)
+                client.noteScopes(shopifyInstallationScopes(data))
+                success(result)
             } catch {
                 problem = shopifyRedacted(error.localizedDescription)
                 failure()
