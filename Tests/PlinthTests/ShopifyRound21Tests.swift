@@ -85,6 +85,18 @@ final class ShopifyRound21Tests: XCTestCase {
         }
         XCTAssertNil(orderImportAlreadyHandledReason(format: .template, dateShipped: "", fulfillmentStatus: "partial",
                                                      cancelledAt: "", financialStatus: ""))
+        // The wording follows where the order came from, whatever the status's spelling.
+        for status in ["partial", "Partially Fulfilled", "PARTIALLY_FULFILLED", "partially-fulfilled"] {
+            XCTAssertEqual(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: status,
+                                                           cancelledAt: "", financialStatus: "paid"),
+                           "Shopify shows part of this order as fulfilled, and the export lists every item.", status)
+            XCTAssertEqual(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: status,
+                                                           cancelledAt: "", financialStatus: "paid", fetched: true),
+                           "Shopify shows part of this order as fulfilled. Only the items still to fulfil are listed.", status)
+        }
+        XCTAssertEqual(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: "In Progress",
+                                                       cancelledAt: "", financialStatus: "paid"),
+                       "Shopify shows this order as sent to a fulfilment service.")
     }
 
     func testAPartialCSVExportSaysItListsEveryItem() throws {

@@ -200,7 +200,7 @@ func shopifyImportOrder(_ node: [String: Any], nextRow: inout Int) -> (order: Or
     if let sale = shopifyImportSaleRow(node) { order.saleRows = [sale] }
     order.alreadyHandled = orderImportAlreadyHandledReason(
         format: .shopify, dateShipped: "", fulfillmentStatus: shopifyText(node["displayFulfillmentStatus"]),
-        cancelledAt: shopifyText(node["cancelledAt"]), financialStatus: shopifyText(node["displayFinancialStatus"]))
+        cancelledAt: shopifyText(node["cancelledAt"]), financialStatus: shopifyText(node["displayFinancialStatus"]), fetched: true)
     return (order, nil)
 }
 

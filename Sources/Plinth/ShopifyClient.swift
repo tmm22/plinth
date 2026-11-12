@@ -164,8 +164,9 @@ enum ShopifyError: LocalizedError, Equatable {
     case notConnected
     /// Shopify answered with this HTTP status. `message` is already redacted.
     case http(status: Int, message: String)
-    /// The request was throttled (HTTP 429 or a THROTTLED error). Shopify checks the cost before running a query,
-    /// so a throttled request did nothing.
+    /// The request was throttled: a THROTTLED error (how the GraphQL Admin API reports it, with HTTP 200) or HTTP 429
+    /// (kept for Shopify's resource-based limits). Shopify checks the cost before running a query, so a throttled
+    /// request did nothing.
     case throttled
     /// Top-level GraphQL errors, redacted, with their `extensions.code` values.
     case graphQL(messages: [String], codes: [String])

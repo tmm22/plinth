@@ -616,8 +616,9 @@ enum ShopifyTrackingRowState: Equatable {
             ? ShopifyIdentityExpectation(recipientName: candidate.recipientName, postcode: candidate.postcode) : nil
         let detail: [String: Any]
         do {
+            // About 400 points with 5 fulfillment orders of 30 lines, well under Shopify's 1,000-point cap per query.
             detail = try await client(for: shop).query(shopifyFulfilmentCheckQuery(includeAddress: identity != nil),
-                                                            variables: ["id": id], estimatedCost: 250)
+                                                            variables: ["id": id], estimatedCost: 400)
         } catch ShopifyError.protectedCustomerData where identity != nil {
             // Only this order needs the address; the others can still be checked.
             return .unavailable("Shopify didn’t share this order’s address with the app you connected, so Plinth can’t confirm it’s the order this draft was imported from. Add its tracking in Shopify.")
