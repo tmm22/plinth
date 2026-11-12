@@ -37,7 +37,7 @@ final class ReviewFixesRound14Tests: XCTestCase {
 
     func testWorkbenchReloadNoteNamesTheStatus() {
         XCTAssertEqual(workbenchReloadResolvedNote(status: "SUBMITTED"),
-                       "The reload shows the outcome: Slant now lists this order as “Submitted”.")
+                       "Refreshed: Slant now lists this order as “Submitted”.")
     }
 
     func testCreatesThatMayExistSayToCheckFirst() {

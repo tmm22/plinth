@@ -196,13 +196,13 @@ struct EndpointView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(mutationNote).font(.callout).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
                     if crossSheetUnknown {
-                        Button("Reload Order") { startOrderPreview(pending) }.disabled(store.busy || previewLoading)
+                        Button("Refresh Order") { startOrderPreview(pending) }.disabled(store.busy || previewLoading)
                     }
                 }
             } else if crossSheetUnknown {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(workbenchUnknownOutcomeBlockMessage).font(.callout).foregroundStyle(.studioWarning)
-                    Button("Reload Order") { startOrderPreview(pending) }.disabled(store.busy || previewLoading)
+                    Button("Refresh Order") { startOrderPreview(pending) }.disabled(store.busy || previewLoading)
                 }
             } else if let unknownReason {
                 Text(unknownReason).font(.callout).foregroundStyle(.studioWarning)
@@ -518,7 +518,7 @@ struct EndpointView: View {
                     keepsLock = workbenchPayAcceptedKeepsLock(replied: replied, refreshed: refreshed, requested: orderID)
                     let outcome = batchPayOutcomeAfterSuccess(judged)
                     if keepsLock {
-                        note = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Reload the order before doing anything else."
+                        note = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Press Refresh Order before doing anything else."
                     } else if let message = orderPayAcceptedMessage(outcome), outcome != .placed {
                         note = message
                     }
@@ -751,12 +751,12 @@ func workbenchReviewTitle(_ summary: String) -> String {
 
 /// Replaces the review's unknown-outcome note once a reload shows the recorded action's outcome and lifts the lock.
 func workbenchReloadResolvedNote(status: String) -> String {
-    "The reload shows the outcome: Slant now lists this order as “\(orderStatusTitle(status))”."
+    "Refreshed: Slant now lists this order as “\(orderStatusTitle(status))”."
 }
 
 /// Cross-sheet lock copy when `StudioStore.isOutcomeUnknown` is set for this order.
 let workbenchUnknownOutcomeBlockMessage =
-    "A previous attempt for this order has an unknown result. Reload the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
+    "A previous attempt for this order has an unknown result. Press Refresh Order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
 
 /// Gating for DELETE /orders/{publicOrderId}. Uses the same cancellation eligibility as OrdersView.
 func workbenchCancelAllowed(status: String?, loaded: Bool) -> (Bool, String?) {

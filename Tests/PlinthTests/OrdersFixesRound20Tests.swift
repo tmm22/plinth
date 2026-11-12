@@ -119,6 +119,13 @@ final class OrdersFixesRound20Tests: XCTestCase {
         // What both the current and the stricter shared parser agree on.
         XCTAssertEqual(orderQuantityFromText("12 units"), 12, "Models accepts it, so the composer does too")
         XCTAssertEqual(orderQuantityFromText("12x"), 12)
+        // Dictation writes small numbers as words; the composer reads them as Models does, and no further.
+        XCTAssertEqual(orderQuantityFromText("twelve"), 12)
+        XCTAssertEqual(orderQuantityFromText("One"), 1)
+        XCTAssertEqual(orderQuantityFromText("five units"), 5)
+        XCTAssertNil(orderQuantityFromText("twenty-one"))
+        XCTAssertNil(orderQuantityFromText("forty"))
+        XCTAssertNil(orderQuantityFromText("10,00x"))
         XCTAssertEqual(orderQuantityFromText("1,000"), 1000)
         XCTAssertEqual(orderQuantityFromText("10 000"), 10000)
         for text in ["0,500", "10,00x", "1,00", "1,000 units 2", "0", "10001", "1.5", "+5"] {
