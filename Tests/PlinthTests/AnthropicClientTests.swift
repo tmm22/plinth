@@ -479,8 +479,10 @@ final class AnthropicStreamTests: XCTestCase {
         XCTAssertTrue(message.fallbackServed)
         XCTAssertTrue(progress.contains(.fallback(from: "claude-opus-5-5", to: "claude-opus-5")))
         XCTAssertEqual(message.text, "Before after")
-        XCTAssertEqual(message.historyContent.map { $0["type"]?.stringValue }, ["text", "thinking", "text"])
-        XCTAssertEqual(message.historyContent[1]["signature"]?.stringValue, "S2")
+        // The fallback block stays exactly where it appeared; the thinking before it is dropped.
+        XCTAssertEqual(message.historyContent.map { $0["type"]?.stringValue }, ["text", "fallback", "thinking", "text"])
+        XCTAssertEqual(message.historyContent[1]["to"]?["model"]?.stringValue, "claude-opus-5")
+        XCTAssertEqual(message.historyContent[2]["signature"]?.stringValue, "S2")
     }
 }
 
@@ -523,6 +525,33 @@ final class AnthropicSupportTests: XCTestCase {
         XCTAssertEqual(anthropicRetryAfterSeconds("99999"), 3600)
         XCTAssertNil(anthropicRetryAfterSeconds("soon"))
         XCTAssertNil(anthropicRetryAfterSeconds(nil))
+    }
+
+    func testSpendCapRateLimitSaysWhyAndIsntTemporary() {
+        // Anthropic's documented spend-cap reply: a 429 with details.error_code and no retry-after.
+        let body = Data(#"{"type":"error","error":{"type":"rate_limit_error","message":"You have reached your API usage limits: your organization has crossed its monthly API usage threshold, set based on your organization's API tier. You will regain access on 2026-12-01 at 00:00 UTC.","details":{"error_code":"enforced_spend_limit_reached"}},"request_id":"req_1"}"#.utf8)
+        let details = anthropicErrorDetails(fromBody: body, secrets: [])
+        XCTAssertEqual(details.code, anthropicSpendLimitErrorCode)
+        XCTAssertEqual(details.type, "rate_limit_error")
+        let error = AnthropicError.http(status: 429, type: details.type, message: details.message, retryAfter: nil, code: details.code)
+        XCTAssertFalse(error.isTemporary)
+        let text = error.errorDescription ?? ""
+        XCTAssertTrue(text.contains("spend limit"), text)
+        XCTAssertTrue(text.contains("You will regain access on 2026-12-01"), text)
+        XCTAssertFalse(text.contains("Try again"), text)
+        XCTAssertTrue(text.contains("platform.claude.com"), text)
+
+        // A plain rate limit with retry-after is unchanged, and stays temporary.
+        let plain = AnthropicError.http(status: 429, type: "rate_limit_error", message: "Slow down", retryAfter: 30)
+        XCTAssertTrue(plain.isTemporary)
+        XCTAssertEqual(plain.errorDescription, "Anthropic is limiting requests right now. Try again in 30 seconds.")
+        XCTAssertNil(anthropicErrorDetails(fromBody: Data(#"{"type":"error","error":{"type":"rate_limit_error","message":"x"}}"#.utf8), secrets: []).code)
+        // Without a retry-after, Anthropic's own words follow.
+        XCTAssertEqual(AnthropicError.http(status: 429, type: nil, message: "Workspace limit until 1 Dec.", retryAfter: nil).errorDescription,
+                       "Anthropic is limiting requests right now. Try again in a minute. Anthropic said: Workspace limit until 1 Dec.")
+        // A code that isn't a plain identifier is ignored.
+        let odd = Data(#"{"type":"error","error":{"type":"x","message":"m","details":{"error_code":"<b>no</b>"}}}"#.utf8)
+        XCTAssertNil(anthropicErrorDetails(fromBody: odd, secrets: []).code)
     }
 
     func testKeyProblems() {

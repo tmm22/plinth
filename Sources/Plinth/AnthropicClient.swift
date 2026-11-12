@@ -474,15 +474,16 @@ struct AnthropicMessage: Equatable, Sendable {
     }
 
     /// The reply's blocks as they go back in the next assistant turn. Unchanged, except that after a mid-reply
-    /// fallback only the text blocks before the last switch point are kept (the fallback model can't use the
-    /// thinking or tool calls of the model it replaced), the switch markers themselves are left out, and empty text
-    /// blocks (which Anthropic refuses in a request) are dropped.
+    /// fallback only the text blocks and switch markers before the last switch point are kept (the fallback model
+    /// can't use the thinking or tool calls of the model it replaced), and empty text blocks (which Anthropic refuses
+    /// in a request) are dropped. Each `fallback` block stays exactly where it appeared, as Anthropic's docs require:
+    /// the API uses its position to validate the thinking blocks around it.
     var historyContent: [AnthropicJSON] {
         let lastFallback = blocks.lastIndex { if case .fallback = $0.content { return true }; return false }
         var result: [AnthropicJSON] = []
         for (index, block) in blocks.enumerated() {
-            if case .fallback = block.content { continue }
             if case .text(let text) = block.content, text.isEmpty { continue }
+            if case .fallback = block.content { result.append(block.raw); continue }
             if let lastFallback, index < lastFallback {
                 guard case .text = block.content else { continue }
             }
@@ -490,6 +491,9 @@ struct AnthropicMessage: Equatable, Sendable {
         }
         return result
     }
+
+    /// The history holds something besides switch markers: a reply that is only a `fallback` block counts as empty.
+    var historyHasContent: Bool { historyContent.contains { $0["type"]?.stringValue != "fallback" } }
 }
 
 /// What to tell the seller when Claude declined. Any partial reply must be discarded.
@@ -522,8 +526,9 @@ enum AnthropicError: LocalizedError, Equatable {
     case missingKey
     /// Not sent: the request couldn't be built or was refused locally. Nothing was spent.
     case notSent(String)
-    /// Anthropic answered with this HTTP status. `message` is already redacted.
-    case http(status: Int, type: String?, message: String, retryAfter: TimeInterval?)
+    /// Anthropic answered with this HTTP status. `message` is already redacted; `code` is the body's
+    /// `error.details.error_code` when it has one (`anthropicSpendLimitErrorCode`).
+    case http(status: Int, type: String?, message: String, retryAfter: TimeInterval?, code: String? = nil)
     /// An `error` event part-way through the stream (for example `overloaded_error`). Any partial reply is discarded.
     case stream(type: String, message: String)
     case transport(String)
@@ -539,8 +544,8 @@ enum AnthropicError: LocalizedError, Equatable {
             return "Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic) first."
         case .notSent(let message):
             return message
-        case .http(let status, let type, let message, let retryAfter):
-            return anthropicHTTPErrorMessage(status: status, type: type, message: message, retryAfter: retryAfter)
+        case .http(let status, let type, let message, let retryAfter, let code):
+            return anthropicHTTPErrorMessage(status: status, type: type, message: message, retryAfter: retryAfter, code: code)
         case .stream(let type, let message):
             switch type {
             case "overloaded_error": return "Anthropic is overloaded right now, so Claude stopped part-way. Try again in a few minutes."
@@ -563,15 +568,18 @@ enum AnthropicError: LocalizedError, Equatable {
 
     /// Seconds Anthropic asked Studio to wait, when it said.
     var retryAfter: TimeInterval? {
-        if case .http(_, _, _, let seconds) = self { return seconds }
+        if case .http(_, _, _, let seconds, _) = self { return seconds }
         return nil
     }
 
     /// The failure is likely to pass (rate limit, overload, server or connection trouble), so offering Try Again is
-    /// reasonable. The client itself never resends: every request is billed.
+    /// reasonable. The client itself never resends: every request is billed. A spend-cap 429 isn't: it fails until
+    /// the cap resets (the first of next month) or is raised.
     var isTemporary: Bool {
         switch self {
-        case .http(let status, _, _, _): return status == 429 || status == 408 || status >= 500
+        case .http(let status, _, _, _, let code):
+            if code == anthropicSpendLimitErrorCode { return false }
+            return status == 429 || status == 408 || status >= 500
         case .stream(let type, _): return ["overloaded_error", "rate_limit_error", "api_error"].contains(type)
         case .transport, .timedOut, .incomplete: return true
         case .missingKey, .notSent, .invalidResponse, .responseTooLarge: return false
@@ -579,7 +587,11 @@ enum AnthropicError: LocalizedError, Equatable {
     }
 }
 
-func anthropicHTTPErrorMessage(status: Int, type: String?, message: String, retryAfter: TimeInterval?) -> String {
+/// `error.details.error_code` of the 429 Anthropic sends once an organisation reaches its tier's monthly spend cap.
+/// It has no `retry-after` and keeps failing until access resumes, so it isn't a rate limit to wait out.
+let anthropicSpendLimitErrorCode = "enforced_spend_limit_reached"
+
+func anthropicHTTPErrorMessage(status: Int, type: String?, message: String, retryAfter: TimeInterval?, code: String? = nil) -> String {
     let detail = message.isEmpty ? "" : " Anthropic said: \(message)"
     switch status {
     case 400:
@@ -587,7 +599,7 @@ func anthropicHTTPErrorMessage(status: Int, type: String?, message: String, retr
     case 401:
         return "Anthropic rejected the API key. Check it in Settings › Design Tools › Claude (Anthropic)."
     case 402:
-        return "Anthropic reported a billing problem with this account. Check its credit balance at console.anthropic.com."
+        return "Anthropic reported a billing problem with this account. Check its credit balance in the Claude Console (platform.claude.com)."
     case 403:
         return "This API key isn’t allowed to do that.\(detail)"
     case 404:
@@ -597,10 +609,14 @@ func anthropicHTTPErrorMessage(status: Int, type: String?, message: String, retr
     case 413:
         return "The request was too large for Anthropic. Use a smaller photo or fewer pictures."
     case 429:
+        if code == anthropicSpendLimitErrorCode {
+            return "Anthropic has paused API use for this account until its spend limit resets.\(detail) Check Spend limits in the Claude Console (platform.claude.com)."
+        }
         if let retryAfter, retryAfter > 0 {
             return "Anthropic is limiting requests right now. Try again in \(anthropicWaitDescription(retryAfter))."
         }
-        return "Anthropic is limiting requests right now. Try again in a minute."
+        // Without a retry-after, Anthropic's own words may say when access resumes (a workspace spend limit, say).
+        return "Anthropic is limiting requests right now. Try again in a minute.\(detail)"
     case 529:
         return "Anthropic is overloaded right now. Try again in a few minutes."
     case 300...399:
@@ -626,12 +642,19 @@ func anthropicRetryAfterSeconds(_ raw: String?) -> TimeInterval? {
     return min(value, 3600)
 }
 
-/// The error type and message from an Anthropic error body (`{"type":"error","error":{"type":…,"message":…}}`).
-func anthropicErrorDetails(fromBody data: Data, secrets: [String]) -> (type: String?, message: String) {
+/// The error type, message and `details.error_code` from an Anthropic error body
+/// (`{"type":"error","error":{"type":…,"message":…,"details":{"error_code":…}}}`). The code is kept only when it is a
+/// plain identifier (`a-z`, `0-9`, `_`, at most 64 characters).
+func anthropicErrorDetails(fromBody data: Data, secrets: [String]) -> (type: String?, message: String, code: String?) {
     guard let json = try? AnthropicJSON.parse(data), let error = json["error"] else {
-        return (nil, "")
+        return (nil, "", nil)
     }
-    return (error["type"]?.stringValue, aiServiceRedacted(error["message"]?.stringValue ?? "", secrets: secrets))
+    let code = error["details"]?["error_code"]?.stringValue?.lowercased()
+    let plainCode = code.flatMap { code in
+        !code.isEmpty && code.count <= 64 && code.unicodeScalars.allSatisfy({ ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "_" })
+            ? code : nil
+    }
+    return (error["type"]?.stringValue, aiServiceRedacted(error["message"]?.stringValue ?? "", secrets: secrets), plainCode)
 }
 
 /// Text safe to show or record: every credential in `secrets`, anything shaped like an Anthropic, Meshy or Tripo key
@@ -1075,7 +1098,8 @@ final class AnthropicClient: @unchecked Sendable {
                 }
                 let details = anthropicErrorDetails(fromBody: body, secrets: secrets)
                 throw AnthropicError.http(status: http.statusCode, type: details.type, message: details.message,
-                                          retryAfter: anthropicRetryAfterSeconds(http.value(forHTTPHeaderField: "retry-after")))
+                                          retryAfter: anthropicRetryAfterSeconds(http.value(forHTTPHeaderField: "retry-after")),
+                                          code: details.code)
             }
             if http.expectedContentLength > Int64(anthropicMaxResponseBytes) { throw AnthropicError.responseTooLarge }
             var parser = AnthropicSSEParser()

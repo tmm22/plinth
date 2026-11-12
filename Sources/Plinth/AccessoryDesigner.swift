@@ -1683,7 +1683,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
                 halt(accessorySetAsideText(reply.stopReason))
                 return
             }
-            guard !reply.historyContent.isEmpty else {
+            guard reply.historyHasContent else {
                 halt("Claude sent an empty reply. Send Again sends the same request.")
                 return
             }

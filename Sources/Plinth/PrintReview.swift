@@ -1233,7 +1233,7 @@ func printReviewAnthropicRequest(views: [PrintReviewRender], factLines: [String]
 /// unusable call, or a reminder when there was no call. Effort medium. Nil after a refusal, or a reply that can't join
 /// the conversation (`canJoinHistory`: cut off at max_tokens, the context window or any other early stop).
 func printReviewFollowUpRequest(_ previous: AnthropicRequest, reply: AnthropicMessage) -> AnthropicRequest? {
-    guard !reply.isRefusal, reply.canJoinHistory, !reply.historyContent.isEmpty else { return nil }
+    guard !reply.isRefusal, reply.canJoinHistory, reply.historyHasContent else { return nil }
     var request = previous
     request.messages.append(.assistant(reply))
     let uses = reply.toolUses
