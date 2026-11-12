@@ -258,9 +258,10 @@ struct DesignImprovementsCard: View {
             VStack(alignment: .leading, spacing: 16) {
                 Toggle("These edges are not mating, locating or dimension-critical surfaces", isOn: $edgesAreFree)
                     .fixedSize(horizontal: false, vertical: true)
+                // Sheet footers: a local save, so Cancel sits just before the primary button in a trailing group.
                 HStack {
-                    Button("Cancel") { review = false }.keyboardShortcut(.cancelAction)
                     Spacer()
+                    Button("Cancel") { review = false }.keyboardShortcut(.cancelAction)
                     Button(saving ? "Saving…" : "Apply to New Copy") { saveCopy() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!edgesAreFree || preview == nil || store.busy || saving)

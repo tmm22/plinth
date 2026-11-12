@@ -666,10 +666,10 @@ struct LayFlatPlan: Equatable, Sendable {
             : "It already lies along its length as imported, so the placement stays as it is and layers run along its length.")
         let laid = placement.assessment
         if let asImported, changesPlacement {
-            result.append(String(format: "Overhangs steeper than 45°: about %.0f mm² as imported, %.0f mm² laid flat. Bed contact: about %.0f mm².",
+            result.append(String(format: "Overhangs steeper than 45° (\(plinthOverhangMarginNote)): about %.0f mm² as imported, %.0f mm² laid flat. Bed contact: about %.0f mm².",
                                  asImported.overhangArea, laid.overhangArea, laid.contactArea))
         } else {
-            result.append(String(format: "Overhangs steeper than 45°: about %.0f mm². Bed contact: about %.0f mm².",
+            result.append(String(format: "Overhangs steeper than 45° (\(plinthOverhangMarginNote)): about %.0f mm². Bed contact: about %.0f mm².",
                                  laid.overhangArea, laid.contactArea))
         }
         return result + placement.lines + [layFlatSaveLine]

@@ -891,7 +891,7 @@ func preparePrintReadyCopy(_ source: STLMesh, input: PrintPreparationInput, now:
                     // The placement without its turn: the step's sentence gives the turn, once.
                     var lines = ["\(chosen.orientation.base.label).", placement.note]
                     if let asImported {
-                        lines.append(String(format: "Overhangs steeper than 45°: %.0f mm² as imported, %.0f mm² now. Bed contact: %.0f mm².",
+                        lines.append(String(format: "Overhangs steeper than 45° (\(plinthOverhangMarginNote)): %.0f mm² as imported, %.0f mm² now. Bed contact: %.0f mm².",
                                             asImported.overhangArea, chosen.assessment.overhangArea, chosen.assessment.contactArea))
                     }
                     steps.append(PrintPreparationStepRecord(step: .orientation, applied: true, lines: lines))

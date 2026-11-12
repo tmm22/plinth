@@ -600,9 +600,9 @@ func accessoryOverhangLocation(_ mesh: STLMesh) -> AccessoryOverhangLocation? {
 /// more steeply than 45° from vertical, between Z = 12.0 and 30.5 mm; most at Z 12–13 mm (80 mm²)."
 func accessoryOverhangLine(_ share: OverhangShare, location: AccessoryOverhangLocation?) -> String {
     guard share.overhangAreaMM2 > 0, let location else {
-        return "Overhangs: no downward faces steeper than 45° from vertical."
+        return "Overhangs: no downward faces steeper than 45° from vertical (\(plinthOverhangMarginNote))."
     }
-    var line = "Overhangs: \(percentLabel(share.fraction)) of the surface (\(Int(share.overhangAreaMM2.rounded()).formatted()) mm²) faces down more steeply than 45° from vertical"
+    var line = "Overhangs: \(percentLabel(share.fraction)) of the surface (\(Int(share.overhangAreaMM2.rounded()).formatted()) mm²) faces down more steeply than 45° from vertical (\(plinthOverhangMarginNote))"
     line += location.highestZ - location.lowestZ < 0.05
         ? ", at Z = \(accessoryOneDecimal(location.lowestZ)) mm"
         : ", between Z = \(accessoryOneDecimal(location.lowestZ)) and \(accessoryOneDecimal(location.highestZ)) mm"

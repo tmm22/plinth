@@ -60,20 +60,29 @@ func savedProductResolvedLinesSummary(_ lines: [OrderLine], localModels: [LocalM
 /// The Saved Products editor's per-line remove button's accessible name, naming the item: "Remove Bracket".
 func savedProductRemoveItemLabel(_ itemTitle: String) -> String { "Remove \(itemTitle)" }
 
-/// Under a Saved Products quantity that isn't a whole number from 1 to 10,000: the saved value doesn't change.
-func savedProductQuantityInvalidText(_ kept: Int) -> String {
-    "Enter a whole number from 1 to 10,000. The quantity stays \(kept) until then."
+/// Under a Saved Products quantity that isn't a whole number from 1 to 10,000: Save Product waits until it is.
+let savedProductQuantityInvalidText = "Enter a whole number from 1 to 10,000. Save Product waits until then."
+
+/// The editor's footer reason while a typed quantity isn't usable, like the Slant composer's Create Draft.
+let savedProductQuantityBlockedReason = "Enter a whole number from 1 to 10,000 for every quantity."
+
+/// Whether a line's typed quantity isn't usable, so Save Product waits (lines no longer in the product don't count).
+func savedProductQuantityTextsBlockSave(invalidLineIDs: Set<UUID>, lineIDs: [UUID]) -> Bool {
+    lineIDs.contains { invalidLineIDs.contains($0) }
 }
 
-/// The quantity field's and stepper's accessible name: "Quantity of Bracket".
-func savedProductQuantityLabel(_ itemTitle: String) -> String { "Quantity of \(itemTitle)" }
+/// The quantity field's and stepper's accessible name: "Quantity for Bracket", as in the composers.
+func savedProductQuantityLabel(_ itemTitle: String) -> String { "Quantity for \(itemTitle)" }
 
 /// A saved product line's quantity: a text field read with `printQuantity` (so a typed or dictated "12", " 12 " or
-/// "1,000" works) beside a stepper, both 1 to 10,000. Text that isn't a quantity leaves the last good value in place and
-/// says so; Return or leaving the field puts that value back.
+/// "1,000" works) beside a stepper, both 1 to 10,000. Text that isn't a quantity leaves the last good value in place,
+/// says so and reports it through `onValidityChange`, so the editor holds Save Product; Return or leaving the field puts
+/// that value back.
 struct SavedProductQuantityField: View {
     @Binding var quantity: Int
     let itemTitle: String
+    /// Called with false while the typed text isn't a quantity, and with true once it is again or the field goes.
+    var onValidityChange: (Bool) -> Void = { _ in }
     @State private var text = ""
     @FocusState private var focused: Bool
 
@@ -89,7 +98,9 @@ struct SavedProductQuantityField: View {
                     .focused($focused)
                     .onSubmit { text = "\(quantity)" }
                     .onChange(of: text) { _, new in
-                        if let value = printQuantity(new), value != quantity { quantity = value }
+                        let value = printQuantity(new)
+                        if let value, value != quantity { quantity = value }
+                        onValidityChange(value != nil)
                     }
                     .onChange(of: focused) { _, isFocused in
                         if !isFocused, printQuantity(text) != quantity { text = "\(quantity)" }
@@ -100,12 +111,13 @@ struct SavedProductQuantityField: View {
             }
             .fixedSize()
             if printQuantity(text) == nil {
-                Text(savedProductQuantityInvalidText(quantity))
+                Text(savedProductQuantityInvalidText)
                     .font(.caption).foregroundStyle(.studioWarning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .onAppear { text = "\(quantity)" }
+        .onDisappear { onValidityChange(true) }
         .onChange(of: quantity) { _, new in
             if printQuantity(text) != new { text = "\(new)" }
         }
@@ -287,6 +299,8 @@ struct SavedProductsSheet: View {
     @State private var pendingDelete: SavedProduct?
     @State private var confirmDiscardEdit = false
     @State private var saveError: String?
+    /// Lines whose typed quantity isn't usable: Save Product waits while any is still in the product.
+    @State private var invalidQuantityLineIDs: Set<UUID> = []
     @State private var catalogsLoading = false
     /// A catalog load started here that failed: shown in the sheet, since the window's alert waits behind it.
     @State private var catalogLoadError: String?
@@ -464,7 +478,10 @@ struct SavedProductsSheet: View {
     // MARK: Editor
 
     private func editor(_ product: Binding<SavedProduct>) -> some View {
-        let blockedReason = savedProductSaveBlockedReason(product.wrappedValue, in: store.savedProducts, localModels: store.localModels)
+        let quantityBlocked = savedProductQuantityTextsBlockSave(invalidLineIDs: invalidQuantityLineIDs,
+                                                                 lineIDs: product.wrappedValue.lines.map(\.id))
+        let blockedReason = quantityBlocked ? savedProductQuantityBlockedReason
+            : savedProductSaveBlockedReason(product.wrappedValue, in: store.savedProducts, localModels: store.localModels)
         let skuConflict = savedProductSKUConflict(product.wrappedValue.sku, for: product.wrappedValue.id, in: store.savedProducts)
         return VStack(spacing: 0) {
             Text(editorIsNew ? "New product" : "Edit product")
@@ -543,7 +560,10 @@ struct SavedProductsSheet: View {
                 .frame(width: 210)
                 // A typed (or dictated) number with a label-less stepper beside it: in a grouped Form a labelled Stepper
                 // is drawn as a form row, which put the arrows at the far edge away from the number.
-                SavedProductQuantityField(quantity: line.quantity, itemTitle: itemTitle)
+                let lineID = line.wrappedValue.id
+                SavedProductQuantityField(quantity: line.quantity, itemTitle: itemTitle) { valid in
+                    if valid { invalidQuantityLineIDs.remove(lineID) } else { invalidQuantityLineIDs.insert(lineID) }
+                }
                 Spacer(minLength: 12)
                 Button(role: .destructive, action: remove) {
                     Label("Remove", systemImage: "minus.circle")
@@ -711,6 +731,7 @@ struct SavedProductsSheet: View {
 
     private func beginEditing(_ product: SavedProduct, isNew: Bool) {
         saveError = nil
+        invalidQuantityLineIDs = []
         editorIsNew = isNew
         editingBaseline = product
         editing = product
@@ -721,13 +742,16 @@ struct SavedProductsSheet: View {
     }
 
     private func finishEditing() {
+        invalidQuantityLineIDs = []
         editing = nil
         editingBaseline = nil
         if openedForPrefill { dismiss() }
     }
 
     private func save() {
-        guard let editing else { return }
+        guard let editing,
+              !savedProductQuantityTextsBlockSave(invalidLineIDs: invalidQuantityLineIDs, lineIDs: editing.lines.map(\.id))
+        else { return }
         let product = savedProductForSaving(editing, localModels: store.localModels)
         guard savedProductSaveBlockedReason(product, in: store.savedProducts, localModels: store.localModels) == nil else { return }
         do {
@@ -790,7 +814,7 @@ struct AddSavedProductPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add Saved Product").font(.headline)
+            Text("Add saved product").font(.headline)
             if products.isEmpty {
                 Text("You have no saved products yet. Create them with Saved Products… in the Orders toolbar, or Save as Product… in a model’s More actions menu.")
                     .font(.callout).foregroundStyle(.secondary)

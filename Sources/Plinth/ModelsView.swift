@@ -301,9 +301,9 @@ struct ModelsView: View {
                     .padding(.vertical, 3)
                     .tag(LibrarySelection.cloud(row.record.id))
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel(linked == nil
-                                        ? nameWithDetail(cloudModelDisplayName(row.record), cloudNameDetails[row.record.id])
-                                        : "\(nameWithDetail(cloudModelDisplayName(row.record), cloudNameDetails[row.record.id])), also on this Mac")
+                    // The name first, then what the badges show (Hidden, On this Mac), which the combined label replaces.
+                    .accessibilityLabel(nameWithDetail(cloudModelDisplayName(row.record), cloudNameDetails[row.record.id])
+                                        + (hidden ? ", hidden" : "") + (linked == nil ? "" : ", also on this Mac"))
                     .contextMenu { cloudModelMenuItems(row.record.id) }
                 }
                 if hiddenCloudCount > 0 {
@@ -1561,16 +1561,31 @@ func materialTypeChipAccessibilityLabel(_ title: String, count: Int) -> String {
     "\(title), \(count) \(count == 1 ? "material" : "materials")"
 }
 
-/// A print quantity as typed or dictated: a whole number from 1 to 10,000, otherwise nil. Shared by Models, the Get
-/// 3DAPI quote sheet, the 3DAPI composer, Compare estimates and the Saved Products editor. Surrounding spaces are
-/// ignored, as are grouping separators in groups of three ("1,000", "10 000") and a trailing "unit", "units", "x" or
-/// "×" ("12 units", "12x"). Anything else (zero, signs, decimals, other words, a bad grouping such as "1,00") is nil,
-/// never a guess.
+/// The English words macOS Dictation often writes for small numbers, which `printQuantity` reads ("five", "Twelve").
+let printQuantityWords: [String: Int] = [
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19, "twenty": 20,
+]
+
+/// A print quantity as typed or dictated: a whole number from 1 to 10,000, otherwise nil. Shared by every quantity
+/// field: Models, the Get 3DAPI quote sheet, the 3DAPI composer, the Slant composer (`orderQuantityFromText`), Compare
+/// estimates and the Saved Products editor. Surrounding spaces are ignored, as are grouping separators in groups of
+/// three ("1,000", "10 000"), a trailing "unit", "units", "x" or "×" ("12 units", "12x"), and leading zeros ("012" is
+/// 12, as it always was: a zero in front can't change the number). The words one to twenty, in any case, are read as
+/// their numbers ("five", "Twelve units", "twenty x"; the suffix needs a space after a word). Anything else (zero,
+/// signs, decimals, other words, a bad grouping such as "1,00", "0,500" or "1,0000") is nil, never a guess.
 func printQuantity(_ text: String) -> Int? {
     var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let word = printQuantityWords[body.lowercased()] { return word }
     let lower = body.lowercased()
-    for word in ["units", "unit", "x", "×"] where lower.hasSuffix(word) {
-        body = String(body.dropLast(word.count)).trimmingCharacters(in: .whitespaces)
+    for suffix in ["units", "unit", "x", "×"] where lower.hasSuffix(suffix) {
+        let rest = String(body.dropLast(suffix.count))
+        body = rest.trimmingCharacters(in: .whitespaces)
+        if let word = printQuantityWords[body.lowercased()] {
+            // "five units", "six x"; never "fivex" or "sixunits".
+            return rest.last?.isWhitespace == true ? word : nil
+        }
         break
     }
     guard !body.isEmpty else { return nil }

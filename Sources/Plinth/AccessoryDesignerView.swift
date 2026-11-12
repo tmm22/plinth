@@ -27,14 +27,14 @@ func accessoryStudioCheckLines(_ facts: AccessoryRenderFacts) -> [String] {
         lines.append(contentsOf: wall.details)
     }
     if facts.overhang.overhangAreaMM2 <= 0 || facts.overhangLocation == nil {
-        lines.append("Overhangs: none steeper than 45° from vertical")
+        lines.append("Overhangs: none steeper than 45° from vertical (\(plinthOverhangMarginNote))")
     } else if facts.hasNotableOverhangs, let location = facts.overhangLocation {
         let low = String(format: "%.0f", location.lowestZ), high = String(format: "%.0f", location.highestZ)
         let place = low == high ? "at \(low) mm up" : "between \(low) and \(high) mm up"
-        lines.append("Overhangs: \(percentLabel(facts.overhang.fraction)) of the surface faces down more steeply than 45°, \(place); "
+        lines.append("Overhangs: \(percentLabel(facts.overhang.fraction)) of the surface faces down more steeply than 45° (\(plinthOverhangMarginNote)), \(place); "
                      + "it may need supports. Ask Claude to fix them")
     } else {
-        lines.append("Overhangs: small (under \(percentLabel(accessoryOverhangNotableShare)) of the surface steeper than 45°)")
+        lines.append("Overhangs: small (under \(percentLabel(accessoryOverhangNotableShare)) of the surface steeper than 45°, \(plinthOverhangMarginNote))")
     }
     lines.append(facts.customizerValues.isEmpty
                  ? "No values to adjust were found, so Personalise from Template can’t change this design’s sizes"
@@ -78,7 +78,7 @@ func accessoryFitTestCheckLines(_ piece: AccessoryFitTestPiece) -> [String] {
             lines.append("Its code reports the same fit sizes as the part (\(check.partFitSizeCount) of \(check.partFitSizeCount)); check the Fit Test preview shows the slot or hole.")
         }
         if check.overhang.overhangAreaMM2 > 0, check.overhang.fraction >= accessoryOverhangNotableShare {
-            lines.append("Overhangs: \(percentLabel(check.overhang.fraction)) of its surface faces down more steeply than 45°; it may need supports")
+            lines.append("Overhangs: \(percentLabel(check.overhang.fraction)) of its surface faces down more steeply than 45° (\(plinthOverhangMarginNote)); it may need supports")
         }
         if check.isLargerThanNeeded {
             lines.append("Larger than it needs to be: you can ask Claude to cut it down to just the part that must fit")
@@ -544,14 +544,14 @@ struct AccessoryDesignerSheet: View {
                 Text(line).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !identification.alternatives.isEmpty {
-                HStack(spacing: 6) {
+                // Regular-size buttons, one per line (up to three), so each is an easy target and none is cut off.
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Or it could be:").font(.caption).foregroundStyle(.secondary)
                     ForEach(Array(identification.alternatives.enumerated()), id: \.offset) { _, alternative in
                         Button(accessoryAlternativeButtonTitle(alternative)) { objectHint = alternative }
-                            .controlSize(.small)
                             .lineLimit(1)
                             .help("Puts “\(alternative)” in What is it? Nothing is sent.")
-                            .accessibilityLabel("Use \(alternative) as What is it?")
+                            .accessibilityLabel(accessoryAlternativeAccessibilityLabel(alternative))
                     }
                 }
             }
@@ -958,15 +958,23 @@ private struct AccessoryDesignRunView: View {
         }
     }
 
+    /// Sheet footers: every send from the conversation is billed, so Close sits at the leading edge of the button row,
+    /// apart from the sends, as in the brief's footer. Escape too; the sheet asks before discarding anything.
+    private var conversationCloseButton: some View {
+        Button("Close") { close() }
+            .keyboardShortcut(.cancelAction)
+    }
+
     @ViewBuilder
     private var conversationFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
             switch run.phase {
             case .working(let status):
                 HStack {
+                    conversationCloseButton
+                    Spacer(minLength: 12)
                     ProgressView().controlSize(.small)
                     Text(status).font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                    Spacer()
                     Button("Stop") { run.stop() }
                 }
             case .waitingForSeller:
@@ -977,6 +985,7 @@ private struct AccessoryDesignRunView: View {
                     .accessibilityLabel("Answer to Claude’s question")
                 nextSendEstimate(newRound: false)
                 HStack {
+                    conversationCloseButton
                     Spacer()
                     // Both carry on with Claude, so both are billed; neither is the default or has a shortcut.
                     Button("Skip") { send(answer: nil) }
@@ -997,6 +1006,7 @@ private struct AccessoryDesignRunView: View {
                     nextSendEstimate(newRound: true)
                 }
                 HStack {
+                    conversationCloseButton
                     if case .stopped = run.phase {
                         Button("Start Over") { startOver() }
                             .help("Back to your photos and measurements, to change them and start a new design.")
@@ -1022,12 +1032,6 @@ private struct AccessoryDesignRunView: View {
                 }
             }
             .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                // Escape too; the sheet asks before discarding anything.
-                Button("Close") { close() }
-                    .keyboardShortcut(.cancelAction)
-            }
         }
     }
 

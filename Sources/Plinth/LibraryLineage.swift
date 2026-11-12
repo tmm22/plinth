@@ -24,11 +24,12 @@ extension LocalModel {
 /// The bracketed endings Plinth's tools give the copies they save (`studioCopyName`, `stlCopyName`, the Size and base,
 /// print-ready, reviewed and pockets-filled names and Reinforce's `fileSuffix`), so a copy saved before lineage was
 /// recorded still shows under Copies. A replica, a design and a fit test are originals, so their endings are not here.
+/// A split always saves two numbered parts, so a bare "(part)" is never a Plinth ending.
 let libraryCopyNameSuffixes: Set<String> = [
     "repaired", "simplified", "STL copy", "auto-improved", "prepared", "edge-improved", "print-ready",
     "print-ready, teardrop holes", "reviewed", "pockets filled", "flat base", "plinth", "fit coupon",
     "experimental cells", "experimental shell", "experimental hole ring", "teardrop holes", "bridging",
-    "overhang chamfer", "matched walls", "part", "internal walls", "reinforced",
+    "overhang chamfer", "matched walls", "internal walls", "reinforced",
 ]
 
 /// Reinforce's endings that may carry a part number, "Name (part 2)" (`reinforcementCopyName`).
@@ -37,29 +38,72 @@ private let libraryCopyNumberedSuffixes: Set<String> = [
     "overhang chamfer", "matched walls", "part", "internal walls", "reinforced",
 ]
 
-/// Whether a library name ends the way a copy saved by Plinth's tools does: one of `libraryCopyNameSuffixes` in
-/// brackets after a name, "(scaled to 50 mm)" or "(scaled to 50 mm wide)" from Scale to Size, "(part 2)" from a split,
-/// or the scale check's "-scaled-x25.4". Display only: it puts such a model under the Copies filter, and nothing else
-/// (Remove Copies, captions, Show Original) treats it as a copy, because its original isn't known.
-func libraryNameLooksLikeCopy(_ name: String) -> Bool {
+/// The name before the copy ending Plinth's tools add, or nil when the name doesn't end like a copy's: one of
+/// `libraryCopyNameSuffixes` in brackets after a name, "(scaled to 50 mm)" or "(scaled to 50 mm wide)" from Scale to
+/// Size, "(part 2)" from a split, or the scale check's "-scaled-x25.4". "Owl (print-ready) (auto-improved)" gives
+/// "Owl (print-ready)".
+func libraryCopyNameBase(_ name: String) -> String? {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed.range(of: #"^.*\S-scaled-x[0-9][0-9.eE+-]*$"#, options: .regularExpression) != nil { return true }
+    if let scaled = trimmed.range(of: #"-scaled-x[0-9][0-9.eE+-]*$"#, options: .regularExpression),
+       scaled.lowerBound > trimmed.startIndex, !trimmed[trimmed.index(before: scaled.lowerBound)].isWhitespace {
+        return String(trimmed[..<scaled.lowerBound])
+    }
     guard trimmed.hasSuffix(")"), let open = trimmed.range(of: " (", options: .backwards), open.lowerBound > trimmed.startIndex
-    else { return false }
+    else { return nil }
+    let base = String(trimmed[..<open.lowerBound])
     let inner = String(trimmed[open.upperBound..<trimmed.index(before: trimmed.endIndex)])
-    if libraryCopyNameSuffixes.contains(inner) { return true }
-    if inner.range(of: #"^scaled to [0-9]+(\.[0-9]+)? mm( wide| deep| tall)?$"#, options: .regularExpression) != nil { return true }
+    if libraryCopyNameSuffixes.contains(inner) { return base }
+    if inner.range(of: #"^scaled to [0-9]+(\.[0-9]+)? mm( wide| deep| tall)?$"#, options: .regularExpression) != nil { return base }
     if let space = inner.lastIndex(of: " "), libraryCopyNumberedSuffixes.contains(String(inner[..<space])) {
         let number = inner[inner.index(after: space)...]
-        return !number.isEmpty && number.count <= 4 && number.allSatisfy { $0.isASCII && $0.isNumber }
+        if !number.isEmpty && number.count <= 4 && number.allSatisfy({ $0.isASCII && $0.isNumber }) { return base }
     }
-    return false
+    return nil
 }
 
+/// Whether a library name ends the way a copy saved by Plinth's tools does (`libraryCopyNameBase`). On its own this
+/// proves nothing: a downloaded "Benchy (simplified)" ends the same way, so the filter also asks for evidence
+/// (`isShownAsLibraryCopy`).
+func libraryNameLooksLikeCopy(_ name: String) -> Bool { libraryCopyNameBase(name) != nil }
+
+/// How a name is compared with a copy's base: as `studioCopyName` writes it (slashes and colons as hyphens, trimmed),
+/// any case, without a trailing .stl/.obj/.3mf (which `stlCopyName` and `scaledCopyName` drop).
+func libraryCopyNameKey(_ name: String) -> String {
+    var key = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if let dot = key.lastIndex(of: "."), dot > key.startIndex, modelNameFileExtensions.contains(String(key[key.index(after: dot)...])) {
+        key = String(key[..<dot]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return key
+}
+
+/// The library's names as `libraryCopyNameKey`s, for `isShownAsLibraryCopy`.
+func libraryCopyNameKeys(_ models: [LocalModel]) -> Set<String> { Set(models.map { libraryCopyNameKey($0.name) }) }
+
 extension LocalModel {
-    /// What the library's Copies and Originals filters go by: a known copy (`isLibraryCopy`), or a model whose name
-    /// ends the way a copy's does (`libraryNameLooksLikeCopy`). Display only.
-    var isShownAsLibraryCopy: Bool { isLibraryCopy || libraryNameLooksLikeCopy(name) }
+    /// What the library's Copies and Originals filters go by (display only). A known copy (`isLibraryCopy`) is a copy.
+    /// A copy-like name (`libraryNameLooksLikeCopy`) counts only with evidence that Plinth made it, because every
+    /// library file, an import's included, is kept in Plinth's Models folder under a new name, so the folder proves
+    /// nothing: the model inherited a Z-up lock (only tool copies do), or the library still holds an original whose
+    /// name is the copy's less one or more copy endings ("Owl" for "Owl (simplified)" or "Owl (print-ready)
+    /// (auto-improved)"). So a downloaded "Benchy (simplified)" stays an original unless "Benchy" is in the library,
+    /// and an old copy whose original was removed shows under Originals, like any model nothing ties to another.
+    /// Every tool saves its copy as an STL, so an OBJ or 3MF file is never a copy by its name.
+    func isShownAsLibraryCopy(libraryNameKeys: Set<String>) -> Bool {
+        if isLibraryCopy { return true }
+        guard url.pathExtension.lowercased() == "stl", var base = libraryCopyNameBase(name) else { return false }
+        if inheritsZUpLock == true { return true }
+        let ownKey = libraryCopyNameKey(name)
+        var steps = 0
+        while steps < 16 {
+            let key = libraryCopyNameKey(base)
+            if !key.isEmpty, key != ownKey, libraryNameKeys.contains(key) { return true }
+            guard let next = libraryCopyNameBase(base) else { return false }
+            base = next
+            steps += 1
+        }
+        return false
+    }
 }
 
 /// Library models by ID (the first of any repeated ID).
@@ -110,11 +154,12 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
         case .readyToUpload: return "Ready to Upload"
         }
     }
-    func includes(_ model: LocalModel) -> Bool {
+    /// `libraryNameKeys` is `libraryCopyNameKeys` of the whole library (`isShownAsLibraryCopy`).
+    func includes(_ model: LocalModel, libraryNameKeys: Set<String> = []) -> Bool {
         switch self {
         case .all: return true
-        case .originals: return !model.isShownAsLibraryCopy
-        case .copies: return model.isShownAsLibraryCopy
+        case .originals: return !model.isShownAsLibraryCopy(libraryNameKeys: libraryNameKeys)
+        case .copies: return model.isShownAsLibraryCopy(libraryNameKeys: libraryNameKeys)
         case .uploaded: return model.remoteID != nil
         case .readyToUpload: return model.remoteID == nil
         }
@@ -158,8 +203,9 @@ enum LibrarySort: String, CaseIterable, Identifiable {
 /// sort keep the library's order.
 func libraryModelsShown(_ models: [LocalModel], search: String, filter: LibraryFilter, sort: LibrarySort) -> [LocalModel] {
     let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
+    let nameKeys = filter == .originals || filter == .copies ? libraryCopyNameKeys(models) : []
     let matching = models.filter { model in
-        filter.includes(model) && (trimmed.isEmpty || model.name.localizedCaseInsensitiveContains(trimmed))
+        filter.includes(model, libraryNameKeys: nameKeys) && (trimmed.isEmpty || model.name.localizedCaseInsensitiveContains(trimmed))
     }
     switch sort {
     case .newest:
@@ -336,9 +382,10 @@ extension StudioStore {
     }
 }
 
-/// Edit › Undo / Redo's action names (HIG: name what is undone): "Undo Remove Copies", "Redo Remove Model".
+/// Edit › Undo / Redo's action names, naming the operation as its command does (HIG: Undo and redo): "Undo Remove
+/// Copies" for Remove Copies of This Model…, "Undo Remove from Library" for Remove from Library….
 let libraryRemoveCopiesUndoName = "Remove Copies"
-let libraryRemoveModelUndoName = "Remove Model"
+let libraryRemoveModelUndoName = "Remove from Library"
 
 /// "1 model" / "3 models", for Activity (counts only).
 func libraryModelCountText(_ count: Int) -> String {

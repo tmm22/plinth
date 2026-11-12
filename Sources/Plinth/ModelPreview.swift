@@ -52,11 +52,15 @@ struct ModelPreview: View {
                         HStack(alignment: .firstTextBaseline) {
                             Text(previewDimensionsLabel(model))
                             Spacer(minLength: 8)
+                            // A regular-size control (the overlay's captions beside it keep the caption style).
                             Toggle(previewShowOverhangsTitle, isOn: $showOverhangs)
                                 .toggleStyle(.checkbox)
+                                .controlSize(.regular)
+                                .font(.body)
+                                .foregroundStyle(.primary)
                                 .accessibilityLabel(previewShowOverhangsTitle)
                                 .accessibilityValue(previewOverhangAccessibilityValue(isOn: showOverhangs, share: currentOverhangs?.share))
-                                .help("Tints faces that point down more steeply than Slant’s 50° limit, the same rule as Plinth’s 50° overhang check. Display only: the model isn’t changed.")
+                                .help(previewShowOverhangsHelp)
                         }
                         if showOverhangs {
                             Text(previewOverhangCaption(currentOverhangs?.share, forDapi: printChoice.service == .dapi))
@@ -484,3 +488,7 @@ struct STLSceneView: NSViewRepresentable {
         return scene
     }
 }
+
+/// Show Overhangs' help: the tint is Slant's 50° limit (`overhangTriangleMask`, the same faces as Plinth's advisory
+/// for overhangs past that limit), while Plinth's other overhang figures use 45°, a margin under it.
+let previewShowOverhangsHelp = "Tints faces that point down more steeply than Slant’s 50° overhang limit, the same faces as Plinth’s note about overhangs past that limit. Plinth’s other overhang figures use 45°, a margin under Slant’s limit, so they can be larger. Display only: the model isn’t changed."

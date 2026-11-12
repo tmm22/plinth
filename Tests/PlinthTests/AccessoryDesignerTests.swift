@@ -659,15 +659,15 @@ final class AccessoryDesignerTests: XCTestCase {
         XCTAssertEqual(location.highestZ, 5)
         XCTAssertEqual(location.mainBands, [AccessoryOverhangBand(bottomZ: 5, areaMM2: 100)])
         let text = accessoryRenderFactsText(result.facts, renderNumber: 1, maxRenders: 4)
-        XCTAssertTrue(text.contains("Overhangs: 10% of the surface (100 mm²) faces down more steeply than 45° from vertical, at Z = 5.0 mm; most at Z 5–6 mm (100 mm²)."), text)
+        XCTAssertTrue(text.contains("Overhangs: 10% of the surface (100 mm²) faces down more steeply than 45° from vertical (Plinth’s margin under Slant’s 50° limit), at Z = 5.0 mm; most at Z 5–6 mm (100 mm²)."), text)
         XCTAssertTrue(text.contains("These need supports"))
         XCTAssertTrue(accessoryStudioCheckLines(result.facts).contains { $0.hasPrefix("Overhangs: 10% of the surface") && $0.contains("at 5 mm up") })
         // A box on the bed has none: its underside is on the bed.
         let box = try render(try boxSTL())
         XCTAssertNil(box.facts.overhangLocation)
         XCTAssertFalse(box.facts.hasNotableOverhangs)
-        XCTAssertTrue(accessoryRenderFactsText(box.facts, renderNumber: 1, maxRenders: 4).contains("Overhangs: no downward faces steeper than 45° from vertical."))
-        XCTAssertTrue(accessoryStudioCheckLines(box.facts).contains("Overhangs: none steeper than 45° from vertical"))
+        XCTAssertTrue(accessoryRenderFactsText(box.facts, renderNumber: 1, maxRenders: 4).contains("Overhangs: no downward faces steeper than 45° from vertical (Plinth’s margin under Slant’s 50° limit)."))
+        XCTAssertTrue(accessoryStudioCheckLines(box.facts).contains("Overhangs: none steeper than 45° from vertical (Plinth’s margin under Slant’s 50° limit)"))
         XCTAssertEqual(accessoryOverhangLocation(mesh), accessoryOverhangLocation(mesh))
     }
 
