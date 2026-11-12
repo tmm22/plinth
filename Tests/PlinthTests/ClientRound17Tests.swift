@@ -218,7 +218,7 @@ final class PlatformRound17Tests: XCTestCase {
         }
         let missing = webhookSecretUnclearMessage(WebhookSecretNotReturned(), saving: false) ?? ""
         XCTAssertTrue(missing.hasPrefix("Slant didn’t return the new secret, so"), missing)
-        XCTAssertTrue(missing.contains("Reload Platform"), missing)
+        XCTAssertTrue(missing.contains("Refresh Platform"), missing)
         XCTAssertFalse(missing.lowercased().contains("try again"), "never suggests rotating again")
         let saving = webhookSecretUnclearMessage(http(503), saving: true) ?? ""
         XCTAssertTrue(saving.contains("may already have saved the new webhook secret"), saving)

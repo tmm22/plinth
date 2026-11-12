@@ -545,7 +545,7 @@ func webhookSecretUnclearMessage(_ error: Error, saving: Bool) -> String? {
     guard webhookSecretMayHaveChanged(after: error) else { return nil }
     let cause = error is WebhookSecretNotReturned ? "Slant didn’t return the new secret" : slantUnclearReplyCause(error)
     let effect = saving ? "Slant may already have saved the new webhook secret" : "this platform’s webhook secret may already have changed"
-    return "\(cause), so \(effect). Use Reload Platform in the platform’s details to see the current secret before you update your receiver."
+    return "\(cause), so \(effect). Use Refresh Platform in the platform’s details to see the current secret before you update your receiver."
 }
 func parseWebhookTestResult(from data: [String: Any]) -> WebhookTestResult {
     let attempted: Bool
@@ -682,6 +682,34 @@ func orderSearchQueryItems(_ typed: String, platformID: String) -> [String: Stri
 enum OrderSearchLookupOutcome: Equatable { case showFound, keepLoadedList }
 func orderSearchLookupOutcome(matchCount: Int) -> OrderSearchLookupOutcome {
     matchCount > 0 ? .showFound : .keepLoadedList
+}
+/// The whole step after Return's lookup. A lookup that finds nothing while the list holds an earlier lookup's result
+/// (`searchActive`) would otherwise leave that one order filtered by the new text, an empty list that says no loaded
+/// order matches: so the list is restored first (the reload clearing the search does, `applyOrderFilter`), and only then
+/// filtered by the typed text with the not-found line.
+enum OrderSearchLookupStep: Equatable { case showFound, keepLoadedList, restoreLoadedList }
+func orderSearchLookupStep(matchCount: Int, searchActive: Bool) -> OrderSearchLookupStep {
+    switch orderSearchLookupOutcome(matchCount: matchCount) {
+    case .showFound: return .showFound
+    case .keepLoadedList: return searchActive ? .restoreLoadedList : .keepLoadedList
+    }
+}
+/// The search state once a `.restoreLoadedList` reload has answered. It succeeded: the normal list, filtered by the typed
+/// text, with the not-found line. It failed (or didn't run): the search stays as it is now (`searchActiveNow`): still
+/// active, the earlier result is still listed and the not-found note says so (`orderSearchListMode`'s `.earlierResult`,
+/// with Clear Search); no longer active (another reload restored the list meanwhile), the typed filter and its line.
+func orderSearchStateAfterRestore(reloaded: Bool, searchActiveNow: Bool, typed: String) -> (searchActive: Bool, notFound: String) {
+    (reloaded ? false : searchActiveNow, typed.trimmingCharacters(in: .whitespacesAndNewlines))
+}
+/// What the Orders list shows for the search state. `.foundOrder`: a lookup's result, whatever is typed.
+/// `.typedFilter`: the loaded orders that match the typed text. `.earlierResult`: Slant found nothing for the typed text
+/// and the list couldn't be restored, so it still shows the earlier lookup's result, unfiltered and said plainly.
+enum OrderSearchListMode: Equatable { case foundOrder, typedFilter, earlierResult }
+func orderSearchListMode(searchActive: Bool, notFound: String?, typed: String) -> OrderSearchListMode {
+    guard searchActive else { return .typedFilter }
+    let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let notFound, !trimmed.isEmpty, notFound == trimmed { return .earlierResult }
+    return .foundOrder
 }
 /// Only rows whose order number is the one looked up (ignoring case), so a reply that ignored `publicId` (the newest
 /// orders) is never shown as search results.
@@ -1258,7 +1286,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             noteRateLimit(from: response)
             let order = mergeOrderDraftEnvelope(responseObject(response))
             SlantAPIWatch.shared.noteOrder(order)
-            guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return that order. Reload Orders and try again.") }
+            guard !Record(values: order).id.isEmpty else { throw StudioError("Slant didn’t return that order. Refresh the list and try again.") }
             prefill = orderComposerPrefill(reordering: Record(values: order), asReprint: asReprint)
         }
         guard let prefill else { return }
@@ -1554,15 +1582,22 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             }
             return
         }
+        var restoreList = false
         _ = await run("Search orders", retryable: true, retry: .searchOrders(trimmed)) {
             let response = try await client.request("GET", path: "/orders", query: orderSearchQueryItems(trimmed, platformID: platformID))
             noteRateLimit(from: response)
             SlantAPIWatch.shared.noteOrderList(response, firstPage: false)
             let matches = orderSearchMatchingRecords(responseRecords(response), typed: trimmed)
             // No order with that number: keep the loaded list (and the typed filter over it), so a name that matched
-            // loaded orders never empties the list. Only a found order replaces it.
-            guard orderSearchLookupOutcome(matchCount: matches.count) == .showFound else {
+            // loaded orders never empties the list. Only a found order replaces it. When the list holds an earlier
+            // lookup's result, it is restored first (below), outside this request.
+            switch orderSearchLookupStep(matchCount: matches.count, searchActive: orderSearchActive) {
+            case .showFound: break
+            case .keepLoadedList:
                 orderSearchNotFound = trimmed
+                return
+            case .restoreLoadedList:
+                restoreList = true
                 return
             }
             orderSearchNotFound = nil
@@ -1574,6 +1609,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             ordersFirstPageCount = nil
             ordersLoaded = true
         }
+        guard restoreList else { return }
+        let reloaded = await applyOrderFilter(orderFilter)
+        let after = orderSearchStateAfterRestore(reloaded: reloaded, searchActiveNow: orderSearchActive, typed: trimmed)
+        orderSearchActive = after.searchActive
+        orderSearchNotFound = after.notFound
     }
     /// True only when the reload ran and succeeded (the order watch's Show acknowledges changes only then).
     @discardableResult
@@ -1585,12 +1625,13 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         var reloaded = false
         _ = await run("Filter orders", retryable: true, retry: .applyOrderFilter) {
             orderFilter = filter
-            orderSearchActive = false
-            orderSearchNotFound = nil
             let query = orderFilterQueryItems(filter, page: 1, limit: listPageSize, platformID: platformID)
             let response = try await client.request("GET", path: "/orders", query: query)
             noteRateLimit(from: response)
             SlantAPIWatch.shared.noteOrderList(response, firstPage: true)
+            // Only once the list is read again: a failed reload leaves a search result listed, so the search stays.
+            orderSearchActive = false
+            orderSearchNotFound = nil
             let records = responseRecords(response)
             orders = orderFilterTrimmed(records, filter: filter)
             orderPage = 1
@@ -1874,7 +1915,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let object = responseObject(response)
             // A real platform ID only: `Record.id` would fall back to the name.
             guard let newID = platformRecordID(object) else {
-                throw StudioError("Slant didn’t return the new platform’s ID. Reload platforms to check before creating another.")
+                throw StudioError("Slant didn’t return the new platform’s ID. Refresh Platforms in Settings › Account to check before creating another.")
             }
             let record = Record(values: object)
             platforms.removeAll { $0.id == newID }
@@ -2569,7 +2610,7 @@ func uploadFromURLReplaceUnclearMessage(_ error: Error, fileName: String, modelN
 /// Create Platform's copy when Slant may have made the platform anyway, else nil.
 func platformCreateUnclearMessage(_ error: Error) -> String? {
     guard slantCreateOutcomeUnclear(error) else { return nil }
-    return "\(slantUnclearReplyCause(error)), so the platform may already exist. Use Reload Platforms in Settings › Account to check before creating it again."
+    return "\(slantUnclearReplyCause(error)), so the platform may already exist. Use Refresh Platforms in Settings › Account to check before creating it again."
 }
 /// The file ID Slant's upload placeholder named (`uploadPlaceholderFileID`), set from `APIClient.upload`'s check.
 final class UploadTargetBox: @unchecked Sendable {

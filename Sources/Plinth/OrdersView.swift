@@ -510,11 +510,9 @@ struct OrderComposerView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Text("Reference fields").padding(.top, 4)
-                        Text("Your own notes saved with the order on Slant, such as a shop order number. Each has a name and a value.")
+                        Text(orderReferenceFieldsCaption)
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("Optional notes saved with the order, such as your shop’s order number. Up to 10.")
-                            .font(.caption).foregroundStyle(.secondary)
                         ForEach($metadataFields) { $field in
                             HStack {
                                 TextField("Name", text: $field.key)
@@ -653,12 +651,13 @@ struct OrderComposerView: View {
                 }.frame(width: 210)
                 // A field to type or dictate the number, plus a label-less stepper (in a grouped Form a labelled
                 // Stepper is drawn as a form row, which put the arrows at the far edge away from the number), as in
-                // the 3DAPI composer. Both are named for the item.
+                // the 3DAPI composer. Both are named for the item by their own hidden titles: inside a grouped Form
+                // VoiceOver reads a hidden title, and an extra accessibility label would be read after it.
                 let lineName = orderLineAccessibilityName(item.wrappedValue)
                 let lineID = item.wrappedValue.id
                 HStack(spacing: 4) {
                     Text("Quantity:")
-                    TextField("Quantity", text: Binding(
+                    TextField(orderLineQuantityTitle(lineName), text: Binding(
                         get: { quantityTexts[lineID] ?? String(item.wrappedValue.quantity) },
                         set: { text in
                             quantityTexts[lineID] = text
@@ -667,18 +666,20 @@ struct OrderComposerView: View {
                         .labelsHidden()
                         .monospacedDigit()
                         .frame(width: 64)
-                        .accessibilityLabel("Quantity for \(lineName)")
-                    Stepper("Quantity", value: Binding(
+                    Stepper(orderLineQuantityTitle(lineName), value: Binding(
                         get: { item.wrappedValue.quantity },
                         set: { item.wrappedValue.quantity = $0; quantityTexts[lineID] = nil }), in: 1...10000)
                         .labelsHidden()
-                        .accessibilityLabel("Quantity for \(lineName)")
                         .accessibilityValue("\(item.wrappedValue.quantity)")
                 }
                 .fixedSize()
                 Spacer(minLength: 16)
-                Button(role: .destructive) { lines.removeAll { $0.id == lineID } } label: { Image(systemName: "minus.circle") }
-                    .accessibilityLabel("Remove \(lineName)")
+                // Saved Products' look: a bordered Remove, kept apart from the stepper.
+                Button(role: .destructive) { lines.removeAll { $0.id == lineID } } label: {
+                    Label(orderLineRemoveTitle, systemImage: "minus.circle")
+                }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel(orderLineRemoveAccessibilityLabel(lineName))
                     .help(lines.count < 2 ? "An order needs at least one item." : "Remove this item")
                     .disabled(lines.count < 2)
             }
@@ -1142,15 +1143,22 @@ struct OrdersView: View {
     var listRecords: [Record] { listRecords(from: store.ordersShownInList) }
     func listRecords(from orders: [Record]) -> [Record] {
         if let focused = orderWatchFocusedRecords(orders, focus: watchFocus) { return focused }
-        // A found order is shown whatever was typed; after a lookup that found nothing, the typed text filters
-        // whatever is loaded (a previous search's result included), so the list never claims Slant found it.
-        if store.orderSearchActive, !orderSearchIsNotFound { return attentionFiltered(orders) }
-        let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
-        return attentionFiltered(orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) })
+        // A found order is shown whatever was typed. After a lookup that found nothing, the loaded list (restored
+        // first when it held an earlier lookup's result, `orderSearchLookupStep`) is filtered by the typed text; if
+        // that restore failed, the earlier result stays listed, unfiltered, and the note under the list says so.
+        switch orderSearchListMode(searchActive: store.orderSearchActive, notFound: store.orderSearchNotFound, typed: search) {
+        case .foundOrder, .earlierResult:
+            return attentionFiltered(orders)
+        case .typedFilter:
+            let modelNames = orderItemModelNames(localModels: store.localModels, files: store.files)
+            return attentionFiltered(orders.filter { orderMatchesSearch($0, query: search, modelNames: modelNames) })
+        }
     }
-    /// Return's lookup found no order with the text in the box (`store.orderSearchNotFound`).
+    /// Return's lookup found no order with the text in the box (`store.orderSearchNotFound`), and the list shows the
+    /// loaded orders filtered by it (not an earlier lookup's result kept after a failed reload).
     var orderSearchIsNotFound: Bool {
-        guard let notFound = store.orderSearchNotFound else { return false }
+        guard let notFound = store.orderSearchNotFound,
+              orderSearchListMode(searchActive: store.orderSearchActive, notFound: notFound, typed: search) == .typedFilter else { return false }
         return notFound == search.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     /// Needs Attention never counts a hidden draft, even while Show Hidden Drafts lists them.
@@ -1232,17 +1240,20 @@ struct OrdersView: View {
                             }
                         }
                     }
-                    // Status, Created, Total and the order number have minimums that fit their content ("Submitted"
-                    // with the attention marker, "23 Oct 2026", "$12,345.67", a full 19-character order number), so
-                    // they are never cut off; the recipient (free text, with a tooltip) gives way first. Their
-                    // minimums pass the 360 pt pane, so only the narrowest windows scroll sideways.
+                    // Status, Created, Total and the order number have minimums that fit their content at the
+                    // table's 13 pt font (measured: "Submitted" 62 pt plus the attention marker, "30 Sept 2026" 84,
+                    // "$12,345.67" 72, a 19-character order number such as SLANT_1000000000001 154), so they are
+                    // never cut off; the recipient (free text, with a tooltip) gives way first. The minimums add up
+                    // to 470 pt (530 with Arrive by), about 555 (632) with the 17 pt column spacing: inside the list
+                    // pane's 640 pt ideal width, so the default window (1,360 pt) shows every column without
+                    // scrolling sideways; only windows narrowed below that do.
                     .width(min: 64, ideal: 160)
                     TableColumn("Status", value: \.status) { (row: OrderTableRow) in
                         // With the Needs Attention marker when the order is late or stuck (OrderFollowUp.swift), and
                         // a hover hint when the status shown comes from Slant's shipping record.
                         OrderStatusCell(status: row.status, attention: row.attention, note: row.statusNote)
                     }
-                    .width(min: 100, ideal: 112, max: 160)
+                    .width(min: 88, ideal: 112, max: 160)
                     TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
                         Text(row.created.isEmpty ? "—" : row.created).lineLimit(1)
                     }
@@ -1259,12 +1270,12 @@ struct OrdersView: View {
                     TableColumn("Total", value: \.totalSortKey) { (row: OrderTableRow) in
                         Text(row.total).monospacedDigit().lineLimit(1)
                     }
-                    .width(min: 84, ideal: 88, max: 120)
+                    .width(min: 76, ideal: 88, max: 120)
                     TableColumn("Order number", value: \.number) { (row: OrderTableRow) in
                         Text(row.number).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
                             .truncationMode(.middle).help(row.number)
                     }
-                    .width(min: 164, ideal: 168)
+                    .width(min: 158, ideal: 168)
                 }
                 .contextMenu(forSelectionType: String.self) { ids in
                     if ids.count == 1, let id = ids.first, let record = store.orders.first(where: { $0.id == id }) {
@@ -1329,12 +1340,21 @@ struct OrdersView: View {
                     .padding(.top, 6)
                 }
                 if let hint = orderSearchHint(typed: search, searchActive: store.orderSearchActive, notFound: store.orderSearchNotFound) {
-                    Text(hint)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
+                    HStack(spacing: 8) {
+                        Text(hint)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // While the list shows a lookup's result (found, or an earlier one kept after a lookup found
+                        // nothing and the list couldn't be read again): the way back to the list, as clearing the box.
+                        if store.orderSearchActive {
+                            Button("Clear Search") { search = "" }
+                                .disabled(store.busy)
+                                .help("Clear the search and show the list again")
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
                 }
                 if !store.orderSearchActive, store.ordersChangedWhileLoading {
                     // A later page's count differed from page 1's: some orders may have shifted past the pages read.
@@ -1358,10 +1378,12 @@ struct OrdersView: View {
                     }.padding(8)
                 }
             }
-            .frame(minWidth: 360, idealWidth: 540, maxWidth: .infinity, maxHeight: .infinity)
+            // Ideal 640 pt: every column at its minimum fits (see the Recipient column), with the detail pane at its
+            // minimum beside it in the default window's content area (1,360 pt less the sidebar, about 1,140).
+            .frame(minWidth: 360, idealWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
             detailPane
                 // Wide enough for Cancel, Duplicate and Review & Place Order side by side (they never truncate).
-                .frame(minWidth: 500, idealWidth: 600, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 500, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
         }
         // Fills the window even with no order selected; otherwise the split shrinks to its content and centres.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1391,7 +1413,9 @@ struct OrdersView: View {
             }
             // Why Import Orders… is unavailable, when the New Order Draft… caption beside it doesn't already say so.
             if let caption = orderImportToolbarCaption(importReason: store.orderImportBlockedReason,
-                                                       draftReason: store.orderDraftBlockedReason) {
+                                                       draftReason: store.orderDraftBlockedReason,
+                                                       connecting: orderAccountIsConnecting(hasKey: store.hasKey, connected: store.connected,
+                                                                                            accountLoaded: store.accountLoaded)) {
                 ToolbarItem(placement: .automatic) {
                     Text(caption).font(.caption).foregroundStyle(.secondary)
                 }
@@ -1730,7 +1754,7 @@ struct OrdersView: View {
 
     var filtersPopover: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Dates & Sort").font(.headline)
+            Text("Dates and sort").font(.headline)
             Picker("Sort", selection: $draftSortOrder) {
                 Text("Newest").tag("desc")
                 Text("Oldest").tag("asc")
@@ -2876,20 +2900,11 @@ func orderStatusHelp(_ status: String) -> String? {
     default: nil
     }
 }
-/// A typed or dictated quantity for a Slant composer line: digits, optionally grouped in threes by commas or spaces
-/// ("1,000", "10 000"), with spaces around ignored; 1 to 10,000 like the stepper. Nil for anything else (0, a
-/// fraction, text, a misplaced comma), so the line keeps its last valid quantity and Create Draft waits.
+/// A typed or dictated quantity for a Slant composer line: exactly `printQuantity` (ModelsView.swift), so every quantity
+/// field in Plinth reads the same text the same way, 1 to 10,000 like the stepper. Nil for anything it refuses, so the
+/// line keeps its last valid quantity and Create Draft waits.
 func orderQuantityFromText(_ text: String) -> Int? {
-    let separators: Set<Character> = [",", " ", "\u{00A0}", "\u{202F}"]
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, trimmed.count <= 12 else { return nil }
-    if trimmed.contains(where: { separators.contains($0) }) {
-        let groups = trimmed.split(omittingEmptySubsequences: false, whereSeparator: { separators.contains($0) })
-        guard groups.count > 1, let first = groups.first, (1...3).contains(first.count),
-              groups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }
-        return printQuantity(groups.joined())
-    }
-    return printQuantity(trimmed)
+    printQuantity(text)
 }
 /// A line whose typed quantity isn't usable blocks Create Draft (entries for removed lines don't count).
 func orderQuantityTextsHaveProblem(_ texts: [UUID: String], lineIDs: [UUID]) -> Bool {
@@ -3369,9 +3384,16 @@ func orderDisabledActionCaption(_ action: String, reason: String?) -> String? {
     return "\(action) isn’t available: \(reason)"
 }
 let orderTransientBlockedReasons: Set<String> = ["Working…", "Wait for the current task to finish."]
+/// A key is saved but the account hasn't loaded yet: the first refresh is running or about to (StudioView starts it), or
+/// it failed, which the sidebar's account footer reports (“Couldn’t reach Slant 3D”). “Connect your account first.”
+/// would be untrue for a saved key, so the toolbar shows no caption meanwhile.
+func orderAccountIsConnecting(hasKey: Bool, connected: Bool, accountLoaded: Bool) -> Bool {
+    hasKey && !connected && !accountLoaded
+}
 /// The Orders toolbar's caption for Import Orders…: only a lasting reason the New Order Draft… caption doesn't give.
-func orderImportToolbarCaption(importReason: String?, draftReason: String?) -> String? {
-    guard let importReason, importReason != draftReason else { return nil }
+/// Nothing while the account is connecting (`orderAccountIsConnecting`), so the toolbar doesn't flash and shift at launch.
+func orderImportToolbarCaption(importReason: String?, draftReason: String?, connecting: Bool = false) -> String? {
+    guard !connecting, let importReason, importReason != draftReason else { return nil }
     return orderDisabledActionCaption("Import Orders…", reason: importReason)
 }
 func orderDuplicateBlockedReason(draftBlockedReason: String?, composerOpen: Bool, outcomeUnknown: Bool, busy: Bool) -> String? {
@@ -3604,7 +3626,7 @@ struct OrderSummary: View {
                             // Opens the carrier's page in the browser only on this click; Plinth itself sends nothing.
                             if let url = row.trackURL, let carrier = row.trackCarrier {
                                 Button("Track Parcel") { NSWorkspace.shared.open(url) }
-                                    .accessibilityLabel("Track parcel \(row.value) on \(carrier)’s website")
+                                    .accessibilityLabel("Track Parcel \(row.value) on \(carrier)’s website")
                                     .help("Open \(carrier)’s tracking page for this number in your browser")
                             }
                         case .fact:

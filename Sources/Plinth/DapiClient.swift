@@ -483,7 +483,7 @@ func dapiOrderRequestProblem(_ request: DapiOrderRequest) -> String? {
                 return "Each colour slot (1 to 16) can have only one material."
             }
             guard slots.allSatisfy({ dapiMaterialIDIsSafe($0.materialID) }) else {
-                return "A chosen material isn’t one 3DAPI lists. Reload the materials and choose again."
+                return "A chosen material isn’t one 3DAPI lists. Choose the material again."
             }
         }
     }
@@ -585,7 +585,7 @@ func dapiOrderListQueryItems(_ query: DapiOrderListQuery) throws -> [(String, St
     if let before = query.createdBefore { items.append(("created_before", dapiDatePlain.format(before))) }
     items.append(("limit", String(min(max(query.limit, 1), 100))))
     if let cursor = query.cursor {
-        guard !cursor.isEmpty, cursor.utf8.count <= 2048 else { throw DapiError.notSent("The list position isn’t usable. Reload the list.") }
+        guard !cursor.isEmpty, cursor.utf8.count <= 2048 else { throw DapiError.notSent("The list position isn’t usable. Start again from the first page: Refresh in Orders, or Load the Whole Period in a report.") }
         items.append(("cursor", cursor))
     }
     // Sent percent-encoded (`expand%5B%5D=items`, the standard form). 3DAPI's spec names the parameter `expand[]`;
@@ -972,7 +972,7 @@ enum DapiOperation: Sendable {
         case .placeOrder:
             return "Plinth can’t tell whether 3DAPI placed the order and charged you, and didn’t send it again. Look for it in your 3DAPI orders before ordering again."
         case .cancelOrder:
-            return "Plinth can’t tell whether 3DAPI cancelled the order, and didn’t send it again. Reload the order to see its status before cancelling again."
+            return "Plinth can’t tell whether 3DAPI cancelled the order, and didn’t send it again. Press Refresh Order to see its status before cancelling again."
         default:
             return "Plinth didn’t send it again."
         }
@@ -1548,7 +1548,7 @@ private func dapiRefusalReason(status: Int, code: String?, message: String?) -> 
     case "extra_not_found", "extra_not_approved":
         return "3DAPI refused an extra part on this order. Plinth doesn’t add extras, so check the order in 3DAPI’s dashboard. \(dapiNothingChargedSentence)"
     case "material_not_allowed":
-        return "3DAPI doesn’t offer one of the chosen materials. Reload the materials and choose again. \(dapiNothingChargedSentence)"
+        return "3DAPI doesn’t offer one of the chosen materials. Choose another material for that slot. \(dapiNothingChargedSentence)"
     case "material_slots_mismatch":
         // `dapiErrorBody` appends `dapiExpectedSlotsSentence` to the message when 3DAPI names the expected slots.
         let slots = quoted.flatMap { text -> String? in
@@ -1567,7 +1567,7 @@ private func dapiRefusalReason(status: Int, code: String?, message: String?) -> 
     case "vat_number_invalid":
         return "3DAPI couldn’t confirm the VAT number. \(dapiNothingChargedSentence)"
     case "invalid_cursor":
-        return "3DAPI didn’t accept the list position. Reload the list."
+        return "3DAPI didn’t accept the list position. Start again from the first page: Refresh in Orders, or Load the Whole Period in a report."
     case "shipping_destination_not_served":
         return "3DAPI doesn’t deliver to that country. It delivers worldwide except Russia, Belarus, Iran and Syria."
     case "shipping_zone_not_found":

@@ -76,7 +76,7 @@ struct PlatformsSettingsSections: View {
                     .modifier(ProminentCreate(isProminent: createProminent))
                     .disabled(createBlocked != nil)
                     .help(createBlocked ?? "Create a platform")
-                Button(platformsLoaded ? "Reload Platforms" : "Load Platforms") {
+                Button(platformsLoaded ? "Refresh Platforms" : "Load Platforms") {
                     Task {
                         state.error = nil
                         await store.loadCatalog(.platforms)
@@ -250,7 +250,7 @@ func platformEnableCandidateBlockedReason(_ candidate: Record, listed: [Record])
         return "This platform is already enabled. It’s listed under Platforms."
     }
     if let flag = candidate.values["enabled"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID(), flag.boolValue {
-        return "This platform is already enabled. Use Reload Platforms to list it."
+        return "This platform is already enabled. Use Refresh Platforms to list it."
     }
     return nil
 }
@@ -435,7 +435,7 @@ struct PlatformDetailSheet: View {
                 }
                 if secretUncertain {
                     // One read-only GET; the rotate is never sent again by itself.
-                    Button("Reload Platform") {
+                    Button("Refresh Platform") {
                         Task { _ = await perform { await store.reloadPlatform(id: record.id) ? true : nil } }
                     }
                     .disabled(store.busy)
@@ -458,7 +458,7 @@ struct PlatformDetailSheet: View {
             HStack {
                 Text("Recent deliveries").font(.headline)
                 Spacer()
-                Button(deadLoaded || store.deadWebhooks[record.id] != nil ? "Reload" : "Load") {
+                Button(deadLoaded || store.deadWebhooks[record.id] != nil ? "Refresh" : "Load") {
                     Task {
                         if await perform({ await store.loadDeadWebhooks(platformID: record.id) }) != nil { deadLoaded = true }
                     }
@@ -742,7 +742,7 @@ func displayedWebhookSecret(rotatedSecret: String?, currentSecret: String, uncer
 }
 
 /// The details sheet's line while a platform's secret may have changed without Studio seeing the new one.
-let webhookSecretUncertainNote = "Slant may already have changed this secret, so Plinth doesn’t show the one it had. Reload the platform to see the current secret."
+let webhookSecretUncertainNote = "Slant may already have changed this secret, so Plinth doesn’t show the one it had. Press Refresh Platform to see the current secret."
 
 /// The in-app recipe, as Slant's docs verify a delivery: `timestamp` is the `X-Webhook-Timestamp` header in Unix
 /// milliseconds, and the body is the exact bytes received.

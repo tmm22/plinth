@@ -84,7 +84,7 @@ struct DapiQuoteSheet: View {
     /// Why Get Quote is off, for the footer. An invalid quantity is explained beside the field instead.
     private var getQuoteBlockedReason: String? {
         if !modelInLibrary { return "This model is no longer in the library." }
-        if !connection.isConfigured { return "Add a 3DAPI key in Settings to get a quote." }
+        if !connection.isConfigured { return dapiAddKeySentence("get a quote") }
         if let fileHash, connection.quoteWriteIsInFlight(forFileHash: fileHash), !runner.isWorking { return dapiWriteInFlightText }
         if countryCode.isEmpty { return "Choose where it would be delivered." }
         return nil

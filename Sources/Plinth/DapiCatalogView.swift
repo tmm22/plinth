@@ -92,7 +92,7 @@ struct DapiCatalogView: View {
     private var materialsContent: some View {
         if !connection.isConfigured {
             EmptyState(icon: "key", title: dapiAddKeyTitle,
-                       detail: "Save a 3DAPI integrator key in Settings › Account to see 3DAPI’s materials.") {
+                       detail: dapiAddKeySentence("see 3DAPI’s materials")) {
                 Button(dapiAddKeyButtonTitle) { store.requestSettings(.account) }
                     .buttonStyle(.borderedProminent)
             }

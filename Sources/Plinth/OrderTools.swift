@@ -611,6 +611,9 @@ func orderOtherPlatformsHiddenLine(_ hidden: Int) -> String? {
 /// the loaded list stays, filtered by what was typed, and the note says so in one line.
 func orderSearchHint(typed: String, searchActive: Bool, notFound: String? = nil) -> String? {
     let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+    if orderSearchListMode(searchActive: searchActive, notFound: notFound, typed: typed) == .earlierResult {
+        return orderSearchNotFoundKeepingEarlierResultLine(trimmed)
+    }
     if let notFound, !trimmed.isEmpty, notFound == trimmed { return orderSearchNotFoundLine(trimmed) }
     if searchActive { return "Showing what Slant found. Clear the search to return to the list." }
     guard !trimmed.isEmpty else { return nil }
@@ -620,6 +623,11 @@ func orderSearchHint(typed: String, searchActive: Bool, notFound: String? = nil)
     return "Showing loaded orders that match. Press Return to look up an order number on Slant."
 }
 
+/// Return's lookup found nothing while the list held an earlier lookup's result, and reading the list again failed:
+/// the earlier result is still listed, said plainly (Clear Search sits beside it).
+func orderSearchNotFoundKeepingEarlierResultLine(_ typed: String) -> String {
+    "Slant found no order numbered “\(typed.trimmingCharacters(in: .whitespacesAndNewlines))”. The list still shows your earlier search’s result."
+}
 /// Return's lookup found no order with the typed number; the loaded orders that match stay listed.
 func orderSearchNotFoundLine(_ typed: String) -> String {
     "Slant found no order numbered “\(typed.trimmingCharacters(in: .whitespacesAndNewlines))”. Showing loaded orders that match."
@@ -1008,3 +1016,15 @@ extension StudioStore {
         }
     }
 }
+
+// MARK: - Composer line controls
+
+/// The Slant composer's caption for reference fields (Advanced): one sentence for what they are and the limit.
+let orderReferenceFieldsCaption = "Your own notes saved with the order on Slant, such as your shop’s order number. Each has a name and a value; up to 10."
+/// The hidden title of a composer line's quantity field and stepper (both composers). Inside a grouped Form VoiceOver
+/// reads the hidden title, so it carries the line's name itself and no accessibility label is added.
+func orderLineQuantityTitle(_ lineName: String) -> String { "Quantity for \(lineName)" }
+/// A composer line's remove button, drawn like Saved Products' (bordered, titled Remove); its spoken name starts with
+/// the visible title and names the line.
+let orderLineRemoveTitle = "Remove"
+func orderLineRemoveAccessibilityLabel(_ lineName: String) -> String { "\(orderLineRemoveTitle) \(lineName)" }

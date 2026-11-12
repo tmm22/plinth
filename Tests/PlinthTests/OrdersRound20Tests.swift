@@ -30,8 +30,10 @@ final class OrdersRound20Tests: XCTestCase {
     func testTheNotFoundLineShowsOnlyForTheTextLookedUp() {
         XCTAssertEqual(orderSearchHint(typed: " Ada ", searchActive: false, notFound: "Ada"),
                        "Slant found no order numbered “Ada”. Showing loaded orders that match.")
-        // It wins over an earlier search's "what Slant found" note: the list now shows loaded matches.
-        XCTAssertEqual(orderSearchHint(typed: "Ada", searchActive: true, notFound: "Ada"), orderSearchNotFoundLine("Ada"))
+        // With the search still active (the list couldn't be read again after an earlier lookup), it says the list
+        // still shows that earlier result.
+        XCTAssertEqual(orderSearchHint(typed: "Ada", searchActive: true, notFound: "Ada"),
+                       "Slant found no order numbered “Ada”. The list still shows your earlier search’s result.")
         // Other text, or an empty box, gets the usual note.
         XCTAssertEqual(orderSearchHint(typed: "Bob", searchActive: false, notFound: "Ada"),
                        "Showing loaded orders that match. Press Return to look up an order number on Slant.")

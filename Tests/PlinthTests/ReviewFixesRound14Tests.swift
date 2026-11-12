@@ -55,7 +55,7 @@ final class ReviewFixesRound14Tests: XCTestCase {
             XCTAssertTrue(upload.contains("Refresh"))
             let platform = platformCreateUnclearMessage(error) ?? ""
             XCTAssertTrue(platform.contains("may already exist"))
-            XCTAssertTrue(platform.contains("Reload Platforms"))
+            XCTAssertTrue(platform.contains("Refresh Platforms"))
         }
         let definite: [Error] = [
             APIError.http(status: 400, body: "", retryAfter: nil, rateLimitReset: nil),
@@ -63,7 +63,7 @@ final class ReviewFixesRound14Tests: XCTestCase {
             APIError.http(status: 429, body: "", retryAfter: nil, rateLimitReset: nil),
             APIError.invalidRequest("bad"),
             URLError(.cannotFindHost),
-            StudioError("Slant didn’t return the new platform’s ID. Reload platforms to check before creating another."),
+            StudioError("Slant didn’t return the new platform’s ID. Refresh Platforms in Settings › Account to check before creating another."),
         ]
         for error in definite {
             XCTAssertFalse(slantCreateOutcomeUnclear(error), "\(error)")

@@ -141,7 +141,7 @@ func dapiOrderCost(_ order: DapiOrder) -> DapiOrderCost {
         break
     }
     guard let charges = order.charges else {
-        return .unavailable("3DAPI hasn’t returned this order’s charges. Reload it to try again.")
+        return .unavailable("3DAPI hasn’t returned this order’s charges. Press Refresh Order to try again.")
     }
     let paidBy = charges.paidBy.trimmingCharacters(in: .whitespaces).lowercased()
     if paidBy == "dapi" {
@@ -190,7 +190,7 @@ func dapiProfitCheck(itemTotal: Decimal, shippingCharged: Decimal, preset: Profi
 func dapiProfitCostNote(_ order: DapiOrder) -> String? {
     switch order.status {
     case .rejected, .onHold, .returned:
-        return "3DAPI may still refund some or all of this order; reload it later for the final cost."
+        return "3DAPI may still refund some or all of this order; press Refresh Order later for the final cost."
     default:
         return order.refunds.isEmpty ? nil : "Refunds 3DAPI has completed are taken off the cost."
     }
