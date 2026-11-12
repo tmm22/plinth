@@ -1434,7 +1434,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         activities = Array(activities.prefix(100))
         return true
     }
-    /// Failed key-change attempt: drop loaded data and mark disconnected, but keep saved apiKey/platformID.
+    /// Forgets the loaded account data and marks disconnected, keeping the saved apiKey and platformID (through
+    /// `resetAccountDataPreservingKey`: a key change that passed its test, and Disconnect).
     private func clearLoadedAccountDataKeepingCredentials() {
         connected = false
         files = []; platforms = []; orders = []; filaments = []; filamentsLoadedAt = nil; components = []; stationery = []

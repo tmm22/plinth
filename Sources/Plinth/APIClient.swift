@@ -508,7 +508,8 @@ struct LibraryNotSavedBeforeUpload: LocalizedError, Equatable {
 let libraryNotSavedBeforeUploadMessage = "Plinth couldn’t save your library, so nothing was uploaded and your Slant file wasn’t replaced. Check that your Mac has free disk space, then upload again."
 
 /// Added to the failure copy when a Replace File stopped before any of the model's bytes were sent: the library models
-/// Plinth unlinked just before asking Slant (to replace `fileName`) stay unlinked. Nil when it unlinked none.
+/// Plinth unlinked just before asking Slant (to replace `fileName`) that weren't put back stay unlinked. Nil when there
+/// are none.
 func uploadReplacementUnlinkedNote(fileName: String, modelNames: [String]) -> String? {
     guard let first = modelNames.first else { return nil }
     let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
