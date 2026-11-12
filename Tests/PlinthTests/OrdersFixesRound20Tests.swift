@@ -28,12 +28,13 @@ final class OrdersFixesRound20Tests: XCTestCase {
                 notFound = after.notFound
             }
         }
-        /// Clearing the box: `clearedOrderSearchState`, then the reload.
-        mutating func clear() {
-            let cleared = clearedOrderSearchState()
-            searchActive = cleared.orderSearchActive
+        /// Clearing the box (`searchOrders("")`): skipped while another request runs; otherwise the note goes and the
+        /// list is read again, and only a read that succeeds ends the search (`applyOrderFilter`). A skipped or failed
+        /// clear leaves the lookup's result listed and the search active, never an empty list.
+        mutating func clear(busy: Bool = false, reloads: Bool = true) {
+            guard !busy else { return }
             notFound = nil
-            list = "loaded"
+            if reloads { searchActive = false; list = "loaded" }
         }
         func mode(_ typed: String) -> OrderSearchListMode {
             orderSearchListMode(searchActive: searchActive, notFound: notFound, typed: typed)
@@ -82,6 +83,25 @@ final class OrdersFixesRound20Tests: XCTestCase {
         XCTAssertFalse(after.searchActive)
         XCTAssertEqual(after.notFound, "Ada")
         XCTAssertEqual(orderSearchListMode(searchActive: false, notFound: "Ada", typed: "Ada"), .typedFilter)
+    }
+
+    func testAClearThatCantReloadKeepsTheResultListed() {
+        var state = SearchState()
+        state.lookUp("SLANT_1000000000001", found: 1)
+        // Another request is running: nothing changes, and Clear Search stays offered.
+        state.clear(busy: true)
+        XCTAssertEqual(state, SearchState(searchActive: true, notFound: nil, list: "result"))
+        XCTAssertEqual(state.mode(""), .foundOrder)
+        XCTAssertEqual(orderSearchHint(typed: "", searchActive: state.searchActive, notFound: state.notFound),
+                       "Showing what Slant found. Clear the search to return to the list.")
+        // The reload fails: the result stays, so Import Orders' duplicate check still sees a partial list.
+        state.lookUp("Ada", found: 0, reloads: false)
+        state.clear(reloads: false)
+        XCTAssertEqual(state, SearchState(searchActive: true, notFound: nil, list: "result"))
+        XCTAssertNotNil(orderImportDuplicateCoverageNotice(ordersLoaded: true, ordersHasMore: false, listIsPartial: state.searchActive))
+        // Then it succeeds.
+        state.clear()
+        XCTAssertEqual(state, SearchState())
     }
 
     func testNotFoundThenFoundAndLookupsWithoutAnEarlierResult() {

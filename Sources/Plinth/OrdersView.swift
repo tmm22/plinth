@@ -1102,6 +1102,9 @@ struct OrdersView: View {
     @State private var tableSortSynced = false
     /// Orders the "Since you last looked" banner's Show focused the list on (OrderWatch.swift); nil shows every order.
     @State private var watchFocus: Set<String>?
+    /// The filter Show's reload applied when it set `watchFocus`: that reload's own filter change, which the list sees
+    /// only once its read has succeeded, must not end the focus it just set.
+    @State private var watchFocusFilter: OrderFilter?
     // Order detail extras (OrderDetailExtras.swift): Report a Problem…, and the next sheet to open once the current
     // one has closed (Reprint as New Draft…, Review Next Draft).
     @State private var problemReport: OrderProblemReportRequest?
@@ -1355,7 +1358,11 @@ struct OrdersView: View {
                         // While the list shows a lookup's result (found, or an earlier one kept after a lookup found
                         // nothing and the list couldn't be read again): the way back to the list, as clearing the box.
                         if store.orderSearchActive {
-                            Button("Clear Search") { search = "" }
+                            // With the box already empty (a clear that couldn't reload), clearing it again would
+                            // change nothing, so the reload is asked for directly.
+                            Button("Clear Search") {
+                                if search.isEmpty { Task { await store.searchOrders("") } } else { search = "" }
+                            }
                                 .disabled(store.busy)
                                 .help("Clear the search and show the list again")
                         }
@@ -1523,7 +1530,7 @@ struct OrdersView: View {
         .onChange(of: search) { _, new in
             if !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { watchFocus = nil }
         }
-        .onChange(of: store.orderFilter) { _, _ in watchFocus = nil }
+        .onChange(of: store.orderFilter) { _, new in if new != watchFocusFilter { watchFocus = nil } }
         .onChange(of: store.orderSearchActive) { _, active in if active { watchFocus = nil } }
         // A clicked order notification (OrderWatch.swift). Taken after the publisher's change has landed.
         .onReceive(OrderWatch.shared.$selectionRequest) { request in
@@ -1611,6 +1618,7 @@ struct OrdersView: View {
             // Only the changes now listed count as seen; one that couldn't be read stays in the banner.
             OrderWatch.shared.acknowledge(ids: present)
             watchFocus = present.isEmpty ? nil : present
+            watchFocusFilter = store.orderFilter
             if present.count == 1, let id = present.first, selection != id {
                 selection = id
             } else if let current = selection, present.contains(current) {
@@ -1966,7 +1974,9 @@ struct OrdersView: View {
                     }
                     // Actions sit under the header so placing a draft never needs scrolling; both open a review first.
                     // The destructive Cancel & Refund… comes last.
-                    let duplicateBlocked = store.duplicateOrderBlockedReason(orderID: selected.id)
+                    // Worded by the order as shown: a lock a refresh can't lift doesn't say to refresh.
+                    let duplicateBlocked = store.duplicateOrderBlockedReason(orderID: selected.id,
+                                                                             currentStatus: displayed["status"] as? String)
                     HStack {
                         Spacer()
                         Button("Duplicate as New Draft…") { Task { await store.duplicateOrderAsDraft(orderID: selected.id) } }
@@ -2087,6 +2097,9 @@ struct OrdersView: View {
                 let response = try await store.client.request("GET", path: "/orders/\(encodedSegment(id))")
                 let order = mergeOrderDraftEnvelope(responseObject(response))
                 guard orderBelongs(order, to: id) else { throw StudioError(orderReviewDifferentOrderMessage) }
+                // Refresh Order (and selecting the order) lifts a pay/cancel lock by the review's own rule, so a lock
+                // whose order no longer offers a review (cancelled, placed) can still be lifted here.
+                store.liftOutcomeLocksResolvedByReload(requested: id, order: order)
                 if selection == id { detail = order }
                 let record = Record(values: order)
                 if !record.id.isEmpty, let index = store.orders.firstIndex(where: { $0.id == id }) { store.orders[index] = record }
@@ -2278,7 +2291,9 @@ struct OrderActionConfirmSheet: View {
                     EmptyView()
                 } else if writeAttempted || sharedOutcomeLock {
                     VStack(alignment: .trailing, spacing: 6) {
-                        if let reason = writeAttempted ? mutationLock.1 : unknownOutcomeLockMessage(
+                        // "The result is unknown" only while the lock holds: a reload that lifted it says what Slant
+                        // shows instead (`orderReviewNoteAfterReload`). Pay and Cancel stay unavailable either way.
+                        if let reason = writeAttempted ? (sharedOutcomeLock ? mutationLock.1 : nil) : unknownOutcomeLockMessage(
                             context: store.unknownOutcomeContext(orderID: orderID), currentStatus: fresh?["status"] as? String) {
                             Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
@@ -2383,6 +2398,8 @@ struct OrderActionConfirmSheet: View {
         Task {
             var succeeded = false
             var failure: String?
+            var reloaded: [String: Any]?
+            var lifted = false
             // A failure is explained in this sheet (`loadFailure`), not in a window alert behind it.
             let ran = await store.run("Load order for review", handlesError: { error in
                 failure = friendlyAPIMessage(error)
@@ -2393,21 +2410,26 @@ struct OrderActionConfirmSheet: View {
                 // Only this order may be reviewed, paid or used to lift its lock.
                 guard orderBelongs(loaded, to: orderID) else { throw StudioError(orderReviewDifferentOrderMessage) }
                 fresh = loaded
+                reloaded = loaded
                 succeeded = true
-                if store.isOutcomeUnknown(orderID: orderID),
-                   unknownOutcomeResolvedByReload(
-                       context: store.unknownOutcomeContext(orderID: orderID),
-                       reloadedStatus: (loaded["status"] as? String) ?? ""
-                   ) {
-                    store.clearOutcomeUnknown(orderID: orderID)
-                }
+                lifted = store.liftOutcomeLocksResolvedByReload(requested: orderID, order: loaded)
             }
             loadState = orderConfirmLoadStateAfterRun(succeeded: succeeded, skippedBusy: !ran)
             loadFailure = failure
             if !ran { awaitingBusy = true }
-            if keepUnknownMessage, writeAttempted, !writeSucceeded {
-                // Keeps the specific note (such as the cause of an unknown outcome) from before the reload.
-                actionMessage = actionMessage ?? orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
+            if let reloaded, lifted || (writeAttempted && !writeSucceeded) {
+                // The list and the detail show what Slant now shows (Pay and Cancel stay unavailable in this sheet).
+                onCompleted(orderID, reloaded)
+            }
+            if writeAttempted, !writeSucceeded {
+                // Once the reload has shown the outcome, say what Slant shows; otherwise keep the specific note (such
+                // as the cause of an unknown outcome) from before the reload.
+                if succeeded, let note = orderReviewNoteAfterReload(writeAttempted: writeAttempted, lockHeld: sharedOutcomeLock,
+                                                                    rawStatus: reloaded?["status"] as? String) {
+                    actionMessage = note
+                } else if keepUnknownMessage {
+                    actionMessage = actionMessage ?? orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
+                }
             }
         }
     }
@@ -2465,10 +2487,12 @@ struct OrderActionConfirmSheet: View {
                         writeAttempted = false
                         rejected = true
                         refusal = orderConfirmRefusalMessage(isPay: isPay, error: error)
-                    } else {
-                        unknownWriteError = error
+                        throw error
                     }
-                    throw error
+                    unknownWriteError = error
+                    // Activity records the cause without the error's own "try again" advice: the lock stops a
+                    // second send, and the sheet's note comes from `unknownWriteError`.
+                    throw StudioError(slantUnclearReplyCause(error) + ", so the result is unknown.")
                 }
                 mutateOrder = mergeOrderDraftEnvelope(responseObject(mutateResponse))
                 var refreshedOrder: [String: Any]?
@@ -2664,6 +2688,15 @@ func orderConfirmMutationSendAllowed(attempted: Bool, succeeded: Bool) -> (Bool,
         return (false, "The result is unknown. Press Refresh Order before trying again.")
     }
     return (true, nil)
+}
+/// The review's note after its own Refresh Order, once a Pay or Cancel it sent had an unknown result: what Slant now
+/// shows (Slant's own status, as the Workbench says it, `workbenchReloadResolvedNote`) once the reload lifted the lock;
+/// nil keeps the earlier note (the lock still holds, nothing was sent, or the reload shows no status).
+func orderReviewNoteAfterReload(writeAttempted: Bool, lockHeld: Bool, rawStatus: String?) -> String? {
+    guard writeAttempted, !lockHeld else { return nil }
+    let status = (rawStatus ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !status.isEmpty else { return nil }
+    return workbenchReloadResolvedNote(status: status)
 }
 func orderConfirmFinalActionEnabled(
     writeSucceeded: Bool,
@@ -3402,9 +3435,12 @@ func orderImportToolbarCaption(importReason: String?, draftReason: String?, conn
     guard !connecting, let importReason, importReason != draftReason else { return nil }
     return orderDisabledActionCaption("Import Orders…", reason: importReason)
 }
-func orderDuplicateBlockedReason(draftBlockedReason: String?, composerOpen: Bool, outcomeUnknown: Bool, busy: Bool) -> String? {
+/// `lockContext` and `currentStatus` (Slant's own status) only word the lock (`unknownOutcomeLockMessage`): the
+/// shipped-since note where a refresh can't lift it, else `unknownOutcomeBlockMessage`.
+func orderDuplicateBlockedReason(draftBlockedReason: String?, composerOpen: Bool, outcomeUnknown: Bool, busy: Bool,
+                                 lockContext: UnknownOutcomeContext? = nil, currentStatus: String? = nil) -> String? {
     if let draftBlockedReason { return draftBlockedReason }
-    if outcomeUnknown { return unknownOutcomeBlockMessage }
+    if outcomeUnknown { return unknownOutcomeLockMessage(context: lockContext, currentStatus: currentStatus) }
     if composerOpen { return "Finish or close the open order draft first." }
     if busy { return "Working…" }
     return nil

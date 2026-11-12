@@ -442,6 +442,19 @@ func unknownOutcomeResolvedByReload(context: UnknownOutcomeContext?, reloadedSta
     if context.action == .cancel, context.reviewedStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
     return outcomeResolved(action: context.action, reviewedStatus: context.reviewedStatus, reloadedStatus: reloaded)
 }
+/// The locked IDs a fresh read of one order lifts: each of the order's IDs (`orderOutcomeLockIDs`: the ID it was read
+/// by, its `publicId` and `id`) that is locked and whose recorded attempt the reload shows the outcome of
+/// (`unknownOutcomeResolvedByReload`, on Slant's own `status`, never the display status). The one rule for every
+/// by-ID reload: the review's Refresh Order, the order detail's Refresh Order and selection, Pay Several Drafts and the
+/// Workbench. Callers pass only a reply already checked to be this order (`orderBelongs`).
+func orderOutcomeLockIDsResolvedByReload(requested: String, order: [String: Any],
+                                         isLocked: (String) -> Bool,
+                                         context: (String) -> UnknownOutcomeContext?) -> [String] {
+    let reloadedStatus = (order["status"] as? String) ?? ""
+    return orderOutcomeLockIDs(requested: requested, order: order).filter { id in
+        isLocked(id) && unknownOutcomeResolvedByReload(context: context(id), reloadedStatus: reloadedStatus)
+    }
+}
 /// A pay/cancel error that shows Slant did not act: the request failed before it was sent, or Slant refused it with a
 /// definite client error. Timeouts, transport failures, 5xx, 408 and 409 leave the outcome unknown. `method` matters
 /// only for URL errors: URLSession may resend an idempotent DELETE on a fresh connection after a reused one drops, so a
@@ -1269,10 +1282,16 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         pendingOrderPrefill = prefill
         showOrderComposer = true
     }
-    func duplicateOrderBlockedReason(orderID: String) -> String? {
-        orderDuplicateBlockedReason(
+    /// `currentStatus`: Slant's own status of the order as shown (the detail's copy); nil takes the loaded row's. It only
+    /// picks the lock's wording (`unknownOutcomeLockMessage`): a refresh can't lift a cancel sent while the order was
+    /// being made once it has shipped, so that caption doesn't tell the seller to refresh.
+    func duplicateOrderBlockedReason(orderID: String, currentStatus: String? = nil) -> String? {
+        let locked = isOutcomeUnknown(orderID: orderID)
+        let status = locked ? (currentStatus ?? orders.first { $0.id == orderID }.flatMap { orderObject($0.values)["status"] as? String }) : nil
+        return orderDuplicateBlockedReason(
             draftBlockedReason: orderDraftBlockedReason, composerOpen: showOrderComposer,
-            outcomeUnknown: isOutcomeUnknown(orderID: orderID), busy: busy
+            outcomeUnknown: locked, busy: busy,
+            lockContext: locked ? unknownOutcomeContext(orderID: orderID) : nil, currentStatus: status
         )
     }
     /// Reads the order fresh (a GET only) and opens the composer prefilled for review. Nothing is created or charged
@@ -1400,6 +1419,17 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     func unknownOutcomeContext(orderID: String) -> UnknownOutcomeContext? {
         outcomeLocks.contexts[orderID]
     }
+    /// After a by-ID read of one order (a reply already checked with `orderBelongs`): lifts its pay/cancel lock when the
+    /// reload shows the recorded attempt's outcome (`orderOutcomeLockIDsResolvedByReload`), under every ID it is kept
+    /// under. True when a lock was lifted.
+    @discardableResult
+    func liftOutcomeLocksResolvedByReload(requested: String, order: [String: Any]) -> Bool {
+        let ids = orderOutcomeLockIDsResolvedByReload(
+            requested: requested, order: order,
+            isLocked: { isOutcomeUnknown(orderID: $0) }, context: { unknownOutcomeContext(orderID: $0) })
+        for id in ids { clearOutcomeUnknown(orderID: id) }
+        return !ids.isEmpty
+    }
     /// The lock's distinct orders: each group of aliases counts once.
     var unknownOutcomeOrderGroups: [Set<String>] { outcomeLocks.groups }
     func isOutcomeUnknown(orderID: String) -> Bool {
@@ -1407,7 +1437,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     /// Display only: the loaded orders the Orders list shows for the default platform (`ordersShownOnPlatform`;
     /// Slant's `GET /orders` may list other platforms' orders), keeping any order under the pay/cancel lock so its
-    /// Reload Order stays reachable. Duplicate, draft-marker, lock and charge checks read the raw `orders`, never this.
+    /// Refresh Order stays reachable. Duplicate, draft-marker, lock and charge checks read the raw `orders`, never this.
     var ordersOnDefaultPlatform: [Record] {
         ordersShownOnPlatform(orders, platformID: platformID, keeping: unknownOutcomeOrderIDs)
     }
@@ -1566,12 +1596,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     func searchOrders(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
+            // The lookup's result stays listed (and the search active) until the list is read again: a reload that
+            // can't run now (another request) or fails never leaves an empty list that looks complete, here or to
+            // Import Orders' duplicate check. Both reloads end the search once their read succeeds.
+            guard !busy else { return }
             orderSearchNotFound = nil
-            let cleared = clearedOrderSearchState()
-            orderSearchActive = cleared.orderSearchActive
-            orders = cleared.orders
-            orderPage = cleared.orderPage
-            ordersHasMore = false
             // Only the orders, with the current filter: a full refresh would also re-read platforms, materials and
             // files, dropping extra Models pages and an active Models file search. Before the account has loaded,
             // the full refresh still runs (it loads what the orders depend on).
@@ -1623,13 +1652,17 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             return false
         }
         var reloaded = false
-        _ = await run("Filter orders", retryable: true, retry: .applyOrderFilter) {
-            orderFilter = filter
+        // Try Again repeats `orderFilter`, which changes only once a read succeeds: it is offered for a reload of the
+        // filter shown, never for a change that failed (that would read the old filter again).
+        _ = await run("Filter orders", retryable: filter == orderFilter, retry: .applyOrderFilter) {
             let query = orderFilterQueryItems(filter, page: 1, limit: listPageSize, platformID: platformID)
             let response = try await client.request("GET", path: "/orders", query: query)
             noteRateLimit(from: response)
             SlantAPIWatch.shared.noteOrderList(response, firstPage: true)
-            // Only once the list is read again: a failed reload leaves a search result listed, so the search stays.
+            // Only once the list is read again, with its rows: a failed or skipped reload leaves the filter, the rows
+            // and any search result as they were, so the Status shown, Load More and Import Orders' duplicate check
+            // never take another filter's rows for this one's.
+            orderFilter = filter
             orderSearchActive = false
             orderSearchNotFound = nil
             let records = responseRecords(response)
