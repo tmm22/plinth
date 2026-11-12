@@ -76,6 +76,10 @@ struct DapiOrderComposerView: View {
         dapiComposerHasInput(lineSignature: dapiComposerLineSignature(state.lines), initialLineSignature: initialLineSignature,
                              address: address, initialAddress: initialAddress, reference: reference, notes: notes)
     }
+    /// One of this sheet's own Place Order attempts is still unconfirmed: it may have been placed and charged.
+    private var hasUnconfirmedOwnAttempt: Bool {
+        !state.sentReferences.isDisjoint(with: session.unconfirmedOrders.map(\.reference))
+    }
     private var availableModels: [LocalModel] {
         store.localModels
             .filter { FileManager.default.fileExists(atPath: $0.filePath) }
@@ -103,8 +107,8 @@ struct DapiOrderComposerView: View {
                 .keyboardShortcut(.defaultAction)
         } message: {
             // Names the button as this composer's notice titles it (every unconfirmed attempt).
-            Text(dapiNamingLookForButton(dapiComposerDiscardMessage(hasUnconfirmedAttempt: !state.sentReferences.isDisjoint(
-                with: session.unconfirmedOrders.map(\.reference))), count: session.unconfirmedOrders.count))
+            Text(dapiNamingLookForButton(dapiComposerDiscardMessage(hasUnconfirmedAttempt: hasUnconfirmedOwnAttempt),
+                                         count: session.unconfirmedOrders.count))
         }
         .confirmationDialog("Replace the delivery details?", isPresented: $confirmUseMyAddress, titleVisibility: .visible) {
             Button("Use My Address") { applyMyAddress() }
@@ -212,7 +216,7 @@ struct DapiOrderComposerView: View {
             }
             if let order = seed.duplicateOf {
                 Section("Copied from order \(order.number)") {
-                    Text("The same models, quantities and materials were copied. The address isn’t copied; enter it below.")
+                    Text(dapiDuplicateCopiedText(order))
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if (order.items ?? []).count > dapiOrderMaxLines {
@@ -606,7 +610,11 @@ struct DapiOrderComposerView: View {
     }
 
     private func requestClose() {
-        if hasInput { confirmDiscard = true } else { close() }
+        if dapiComposerAsksBeforeClosing(hasInput: hasInput, hasUnconfirmedOwnAttempt: hasUnconfirmedOwnAttempt) {
+            confirmDiscard = true
+        } else {
+            close()
+        }
     }
 
     private func close() {

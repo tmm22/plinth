@@ -327,6 +327,24 @@ func dapiComposerLines(duplicating order: DapiOrder) -> [DapiComposerLine] {
     }
 }
 
+/// The composer's note on a duplicated order (Duplicate as New Order… or Reprint as New Order…). A line keeps the
+/// materials 3DAPI's copy of the order lists for it; a line listed without materials (no usable `material_slots`)
+/// starts with 3DAPI's suggested materials instead (`dapiComposerLines(duplicating:)`), so the note says so rather than
+/// claiming every material was copied. Counts only the lines the composer takes (`dapiOrderMaxLines`).
+func dapiDuplicateCopiedText(_ order: DapiOrder) -> String {
+    let items = (order.items ?? []).prefix(dapiOrderMaxLines)
+    let withoutMaterials = items.filter { $0.materials.isEmpty }.count
+    let address = "The address isn’t copied; enter it below."
+    guard withoutMaterials > 0 else { return "The same models, quantities and materials were copied. \(address)" }
+    if withoutMaterials == items.count {
+        return "The same models and quantities were copied. 3DAPI’s copy of this order didn’t say which materials it used, so the lines start with 3DAPI’s suggested materials: check them. \(address)"
+    }
+    let which = withoutMaterials == 1
+        ? "1 line whose materials 3DAPI’s copy of this order didn’t list: it starts with 3DAPI’s suggested materials, so check it."
+        : "\(withoutMaterials) lines whose materials 3DAPI’s copy of this order didn’t list: those start with 3DAPI’s suggested materials, so check them."
+    return "The same models, quantities and materials were copied, except for \(which) \(address)"
+}
+
 /// Whether the composer holds anything typed or chosen, so closing it asks first.
 /// The lines as the seller shaped them (which lines, and their quantities), for the discard check.
 func dapiComposerLineSignature(_ lines: [DapiComposerLine]) -> [String] {
@@ -350,6 +368,13 @@ func dapiComposerDiscardMessage(hasUnconfirmedAttempt: Bool) -> String {
         return "An order from this sheet may have been placed and charged. Plinth keeps the warning; use Look for Order on 3DAPI. The lines and details you entered are discarded."
     }
     return "Nothing was sent to 3DAPI. The lines and details you entered are discarded."
+}
+
+/// Whether closing the composer asks Discard Order first: while it holds input, and while one of its own Place Order
+/// attempts is unconfirmed (it may have been placed and charged, even from an unedited sheet such as Order a Sample to
+/// Me's), so the seller always sees that warning.
+func dapiComposerAsksBeforeClosing(hasInput: Bool, hasUnconfirmedOwnAttempt: Bool) -> Bool {
+    hasInput || hasUnconfirmedOwnAttempt
 }
 
 func dapiComposerHasInput(lineSignature: [String], initialLineSignature: [String], address: DapiComposerAddress,
@@ -486,13 +511,26 @@ func dapiWalletShortfallText(_ shortfall: DapiMoney) -> String {
 let dapiSampleCreditToggleTitle = "Use My Sample Credit"
 let dapiSampleCreditCaption = "3DAPI uses it only for orders to your own country (your billing or sign-up country); otherwise the order is charged in full."
 
-/// Why the sample-credit choice stops a Place Order at the pre-send check, or nil: the seller changed it after pressing
-/// Place Order, or ticked it and the fresh wallet no longer shows sample credit.
+/// Why the sample-credit choice stops a Place Order at the pre-send check, or nil. `pressed` is what the review on
+/// screen showed ticked at the press (`useSampleCredit` while the wallet showed sample credit), `current` the toggle
+/// now and `available` whether the fresh wallet shows sample credit. The toggle can't be changed while Plinth checks,
+/// so `pressed != current` means a tick the review didn't show: the wallet read before the press had no sample
+/// credit, so the toggle was hidden. The seller didn't change anything, so the text doesn't say they did.
+/// (A fresh wallet that couldn't be read while the press used sample credit is stopped earlier, in `placeOrder`.)
 func dapiSampleCreditChange(pressed: Bool, current: Bool, available: Bool) -> String? {
-    if pressed != current { return "You changed Use My Sample Credit while Plinth was checking. Press Place Order again." }
+    if current, !pressed {
+        return available
+            ? "Your 3DAPI wallet now shows sample credit, which wasn’t shown when you pressed Place Order. Choose whether to use it, then press Place Order again."
+            : "Sample credit wasn’t shown when you pressed Place Order, so it won’t be used. Press Place Order again to order without it."
+    }
+    if pressed, !current { return "Use My Sample Credit changed while Plinth was checking. Press Place Order again." }
     if pressed, !available { return "Your 3DAPI wallet no longer shows sample credit, so it can’t be used." }
     return nil
 }
+
+/// The pre-send check's stop when the press used sample credit but the fresh wallet couldn't be read: Plinth can't
+/// tell whether the credit is still there, so nothing is sent and the tick is left as it was.
+let dapiSampleCreditWalletUnreadable = "Plinth couldn’t read your 3DAPI wallet to check your sample credit, so nothing was sent. Press Check Again to read it again."
 
 /// Whether the wallet read shows sample credit (the review shows Use My Sample Credit only then).
 func dapiWalletShowsSampleCredit(_ wallet: DapiWallet?) -> Bool {
@@ -923,6 +961,8 @@ enum DapiPlacePhase: Equatable {
         askPlaceAnyway = false
         // Only what the review on screen showed: a tick hidden because the last read had no wallet is never sent.
         pressedSampleCredit = useSampleCredit && dapiWalletShowsSampleCredit(reviewed.wallet)
+        // An earlier press's "nothing was sent" list belongs to that press: this one may send.
+        changes = []
         phase = .rechecking
         startRead { [weak self] result in
             guard let self else { return }
@@ -931,6 +971,13 @@ enum DapiPlacePhase: Equatable {
                 self.figures = nil
                 self.phase = .blocked(message)
             case .success(let fresh):
+                // Sample credit was used at the press, but the wallet couldn't be read now: never send (with or without
+                // the credit) and never untick. Check Again reads everything again.
+                if self.pressedSampleCredit, fresh.wallet == nil {
+                    self.figures = nil
+                    self.phase = .blocked(dapiSampleCreditWalletUnreadable)
+                    return
+                }
                 var changed = dapiReviewChanges(reviewed: reviewed.snapshot, current: fresh.snapshot, names: self.draft.quoteNames)
                 let creditAvailable = (fresh.wallet?.sampleCredit?.amountMinor ?? 0) > 0
                 if let credit = dapiSampleCreditChange(pressed: self.pressedSampleCredit, current: self.useSampleCredit,
@@ -1360,6 +1407,14 @@ enum DapiCancelPhase: Equatable {
         readTask?.cancel()
         readTask = nil
         readToken = nil
+    }
+
+    /// Check Again, after a read failed or the order couldn't be cancelled: the opening read and its check once more
+    /// (the status must still be the one shown and cancellable). Read-only: it never sends the cancel, which needs
+    /// another press of Cancel Order once the review is ready.
+    func checkAgain() {
+        guard case .blocked = phase, readTask == nil, !closed else { return }
+        readOnOpening()
     }
 
     private func readOnOpening() {

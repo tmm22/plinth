@@ -409,8 +409,17 @@ struct DapiOrderListEnvironment {
         }
     }
 
-    /// A re-read or returned order (refresh, cancel, lookup) in place of its older copy.
+    /// A re-read or returned order (Refresh Order, the cancel review's reply) in place of its older copy. When the newer
+    /// copy no longer matches the filter shown (a Paid filter and a cancelled order, say), it is shown on its own
+    /// instead (`showOnItsOwn`: Status and search cleared, page 1 read again, the order kept and selected), so the list
+    /// and the tools never hold a row that doesn't match the filter shown.
     func apply(_ order: DapiOrder) {
+        guard dapiOrderMatchesFilter(order, shownFilter) else {
+            // The listed copy's lines are kept when the newer copy has none (a cancel reply), before the rows go.
+            let listed = orders.first { $0.id == order.id }
+            showOnItsOwn(listed.map { dapiOrderKeepingItems(order, from: $0) } ?? order, first: false)
+            return
+        }
         orders = dapiReplacingOrder(order, in: orders)
         refreshPinned(from: [order])
         settle([order])

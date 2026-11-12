@@ -477,6 +477,8 @@ struct DapiQuoteEnvironment {
     var now: @MainActor () -> Date
     var newIdempotencyKey: @MainActor () -> String
     var fileSize: @Sendable (URL) -> Int64?
+    /// Hashes the file afresh (never the session's path-keyed cache, which could quote stale bytes). Run in a detached
+    /// task that Stop and Close cancel, so it should stop with `CancellationError` once its task is cancelled.
     var hashFile: @Sendable (URL) throws -> String
 
     @MainActor static func live() -> DapiQuoteEnvironment {
@@ -498,7 +500,7 @@ struct DapiQuoteEnvironment {
             now: { Date() },
             newIdempotencyKey: { UUID().uuidString },
             fileSize: { dapiRegularFileSize(at: $0) },
-            hashFile: { try dapiFileSHA256(at: $0) }
+            hashFile: { try dapiFileSHA256Cancellable(at: $0) }
         )
     }
 }
@@ -657,9 +659,11 @@ func dapiUnusableQuoteMessage(_ quote: DapiQuote) -> String? {
         let hashFile = environment.hashFile
         let hash: String
         do {
-            hash = try await Task.detached(priority: .userInitiated) { try hashFile(fileURL) }.value
+            // Stop and Close cancel the run, and with it the read of the file.
+            let work = Task.detached(priority: .userInitiated) { try hashFile(fileURL) }
+            hash = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
         } catch {
-            phase = .problem("The model’s file couldn’t be read.")
+            phase = .problem(stopped || dapiIsCancellation(error) ? "Stopped. Nothing was sent." : "The model’s file couldn’t be read.")
             return
         }
         if stopped { phase = .problem("Stopped. Nothing was sent."); return }

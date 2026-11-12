@@ -13,7 +13,9 @@ import UserNotifications
 let dapiOrderWatchInterval: TimeInterval = 4 * 60
 /// The first check after the watch starts waits a little, so it never races the Orders screen's own first load.
 let dapiOrderWatchFirstCheckDelay: TimeInterval = 20
-/// How soon a skipped check (busy, modal, no key) is looked at again; no request is made.
+/// How soon a skipped check (busy, modal, no key) is looked at again; no request is made. After a refused Keychain
+/// read the watch doesn't read the Keychain again (`currentOrderingClient(background: true)`): it waits for the
+/// seller's next 3DAPI action to read the key.
 let dapiOrderWatchRecheckDelay: TimeInterval = 30
 /// At most this many by-ID reads per check, for orders that left the open-orders list.
 let dapiOrderWatchFetchLimit = 10
@@ -120,7 +122,7 @@ func dapiOrderWatchDropped(_ state: DapiOrderWatchState, listedIDs: Set<String>,
     .prefix(max(0, limit)).map(\.key)
 }
 
-/// Keeps the memory bounded: final orders go first (oldest-read first, then by ID), then the rest by ID.
+/// Keeps the memory bounded: final orders go first (by ID), then the rest by ID.
 func dapiOrderWatchPruned(_ state: DapiOrderWatchState, limit: Int = dapiOrderWatchMaxEntries) -> DapiOrderWatchState {
     guard state.orders.count > limit else { return state }
     var result = state
@@ -177,7 +179,7 @@ struct DapiOrderWatchEnvironment {
 
     @MainActor static var live: DapiOrderWatchEnvironment {
         DapiOrderWatchEnvironment(
-            makeClient: { try DapiConnection.shared.currentOrderingClient() },
+            makeClient: { try DapiConnection.shared.currentOrderingClient(background: true) },
             canCheck: {
                 let session = DapiOrderSession.shared
                 let enabled = UserDefaults.standard.object(forKey: orderWatchEnabledDefaultsKey) as? Bool ?? true

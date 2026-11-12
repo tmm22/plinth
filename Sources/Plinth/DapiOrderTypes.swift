@@ -294,9 +294,11 @@ protocol DapiOrdering: Sendable {
     /// `GET /v2/integrator/orders/{id}` with its lines. Read-only.
     func order(id: String) async throws -> DapiOrder
     /// `POST /v2/integrator/orders`, wallet mode: CHARGES AT ONCE. Sent once with `idempotencyKey`, never retried and
-    /// never cancelled by Plinth once sent. A failure after sending is `.outcomeUnknown` (408, 5xx, transport,
-    /// unreadable) or a definite refusal (`.refused`: 400/402/403/404/409/422 with 3DAPI's error body; nothing charged;
-    /// `.rateLimited`: refused, nothing charged).
+    /// never cancelled by Plinth once sent. A failure after sending is `.outcomeUnknown` (408, 3xx, 5xx, transport,
+    /// unreadable, a 4xx without 3DAPI's error `code`, or a reply naming another reference) or a definite refusal
+    /// (`.refused`: any 4xx but 408 and 429 whose error body carries 3DAPI's `code`, such as 400, 401, 402, 403, 404,
+    /// 409 or 422, or a 503 `card_payments_unavailable`; nothing charged; `.rateLimited`: refused, nothing charged).
+    /// `dapiClassifyReply` (DapiClient.swift) is the single source.
     func placeOrder(_ request: DapiOrderRequest, idempotencyKey: String) async throws -> DapiOrder
     /// `POST /v2/integrator/orders/{id}/cancel`. Sent once, never retried. 409 `order_not_cancellable` is `.refused`.
     func cancelOrder(id: String, idempotencyKey: String) async throws -> DapiOrder

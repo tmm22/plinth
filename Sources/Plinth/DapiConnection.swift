@@ -135,6 +135,11 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
     @Published private(set) var quoteWritesUnknown: Set<String> = []
 
     private var client: (any DapiQuoting)?
+    /// Set when a Keychain read of the key failed for a reason other than a missing item (locked, or the seller denied
+    /// macOS's access prompt). While set, background callers (the order watch, `currentClient(background: true)`) don't
+    /// read the Keychain again, so a denied prompt can't come back every few seconds; the seller's own actions still
+    /// try, and a successful read, a save or a removal clears it. Memory only, and it never clears the saved flag.
+    private var keychainReadRefused = false
     /// File SHA-256 (hex, lower-case) → ready quote ID. Memory only, and for the saved key's account only. Published so
     /// the Models bar's next step follows a quote becoming ready.
     @Published private var readyQuotes: [String: String] = [:]
@@ -188,15 +193,23 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
     /// The client for the saved key, reading the Keychain the first time. Throws `DapiError.missingKey` without a
     /// saved key, and clears the saved flag when the Keychain item has gone; a Keychain read that fails for another
     /// reason (locked, refused) throws `DapiError.notSent` and leaves the flag alone, so a later read tries again.
-    func currentClient() throws -> any DapiQuoting {
+    /// `background` is for checks the seller didn't start (the order watch): after a refused read they throw
+    /// `.notSent` without reading the Keychain again, until the seller's next 3DAPI action reads it (or a save or
+    /// removal), so macOS's access prompt isn't shown over and over.
+    func currentClient(background: Bool = false) throws -> any DapiQuoting {
         if let client { return client }
         guard isConfigured else { throw DapiError.missingKey }
+        if background, keychainReadRefused {
+            throw DapiError.notSent("Plinth couldn’t read the 3DAPI key from the Keychain.")
+        }
         let key: String?
         do {
             key = try keychain.load()
         } catch {
+            keychainReadRefused = true
             throw DapiError.notSent("Plinth couldn’t read the 3DAPI key from the Keychain: \(dapiRedacted(error.localizedDescription))")
         }
+        keychainReadRefused = false
         guard let key, dapiKeyProblem(key) == nil else {
             forgetSavedKey()
             throw DapiError.missingKey
@@ -206,10 +219,10 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         return client
     }
 
-    /// The ordering client for the saved key (the same `DapiClient`). Throws like `currentClient()`, and `.notSent`
-    /// when the client can't order (a test stub that only quotes).
-    func currentOrderingClient() throws -> any DapiOrdering {
-        guard let ordering = try currentClient() as? any DapiOrdering else {
+    /// The ordering client for the saved key (the same `DapiClient`). Throws like `currentClient(background:)`, and
+    /// `.notSent` when the client can't order (a test stub that only quotes).
+    func currentOrderingClient(background: Bool = false) throws -> any DapiOrdering {
+        guard let ordering = try currentClient(background: background) as? any DapiOrdering else {
             throw DapiError.notSent("This 3DAPI connection can’t place orders.")
         }
         return ordering
@@ -300,6 +313,7 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         defaults.set(true, forKey: Self.keySavedDefaultsKey)
         keyGeneration += 1
         client = candidate
+        keychainReadRefused = false
         readyQuotes = [:]
         account = checked
         onboarding = nil
@@ -347,6 +361,7 @@ func dapiFailureMessage(_ error: Error, key: String? = nil) -> String {
         defaults.set(false, forKey: Self.keySavedDefaultsKey)
         keyGeneration += 1
         client = nil
+        keychainReadRefused = false
         readyQuotes = [:]
         account = nil
         onboarding = nil

@@ -58,8 +58,11 @@ func dapiReprintBlockedReason(_ order: DapiOrder, duplicateBlockedReason: String
     return nil
 }
 
+/// Duplicate as New Order…'s help. "The materials 3DAPI lists for it": a line listed without materials starts with
+/// 3DAPI's suggestions instead, and the composer says so (`dapiDuplicateCopiedText`).
+let dapiDuplicateButtonHelp = "Start a new order with this order’s models and quantities, and the materials 3DAPI lists for it. The address isn’t copied."
 /// Reprint as New Order…'s help: it only opens the composer, like Duplicate as New Order….
-let dapiReprintButtonHelp = "Close this and start a new 3DAPI order with this order’s models, quantities and materials. The address isn’t copied, and nothing is charged until you review the order and press Place Order."
+let dapiReprintButtonHelp = "Close this and start a new 3DAPI order with this order’s models and quantities, and the materials 3DAPI lists for it. The address isn’t copied, and nothing is charged until you review the order and press Place Order."
 
 /// Collapsed-by-default profit check for one 3DAPI order: Margin.swift's parsing, fee presets and maths with 3DAPI's
 /// cost (`dapiOrderCost`). Only the preset and rates are saved (as Margin.swift already saves them); what the buyer

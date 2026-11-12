@@ -606,7 +606,7 @@ struct DapiOrderDetailView: View {
                 .disabled(duplicateBlockedReason != nil || (order.items ?? []).isEmpty)
                 .help(duplicateBlockedReason ?? ((order.items ?? []).isEmpty
                       ? "This order’s lines weren’t read, so they can’t be copied."
-                      : "Start a new order with the same models, quantities and materials. The address isn’t copied."))
+                      : dapiDuplicateButtonHelp))
             Button("Copy Order Number") { copyToPasteboard(order.number) }
             if dapiOffersProblemReport(status: order.status) {
                 DapiReportProblemButton(order: order, reprintBlockedReason: duplicateBlockedReason, onReprint: onDuplicate)

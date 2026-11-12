@@ -92,6 +92,21 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
     }
 }
 
+/// What a stubbed file read saw: whether it started and whether its task was cancelled.
+final class DapiHashProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _started = false
+    private var _cancelled = false
+    var started: Bool { lock.withLock { _started } }
+    var cancelled: Bool { lock.withLock { _cancelled } }
+    func mark(started: Bool = false, cancelled: Bool = false) {
+        lock.withLock {
+            if started { _started = true }
+            if cancelled { _cancelled = true }
+        }
+    }
+}
+
 @MainActor final class DapiTestHarness {
     var now = Date(timeIntervalSince1970: 1_793_000_000)
     var sleeps: [TimeInterval] = []
@@ -702,6 +717,81 @@ final class ScriptedDapi: DapiQuoting, @unchecked Sendable {
         XCTAssertEqual(harness.activity.last?.detail, "Stopped")
         XCTAssertEqual(harness.begun, harness.ended)
         XCTAssertTrue(harness.unknown.isEmpty)
+    }
+
+    /// A file read that only ends when its task is cancelled (or after 20 s, failing the test).
+    private func blockingHash(_ probe: DapiHashProbe) -> @Sendable (URL) throws -> String {
+        { _ in
+            probe.mark(started: true)
+            let deadline = Date().addingTimeInterval(20)
+            while !Task.isCancelled {
+                if Date() > deadline { throw CocoaError(.fileReadUnknown) }
+                usleep(1_000)
+            }
+            probe.mark(cancelled: true)
+            throw CancellationError()
+        }
+    }
+
+    private func waitUntilHashing(_ probe: DapiHashProbe) async {
+        for _ in 0..<5_000 where !probe.started { try? await Task.sleep(nanoseconds: 1_000_000) }
+    }
+
+    func testStopOrCloseWhileHashingStopsTheReadAndSendsNothing() async {
+        for closes in [false, true] {
+            let stub = ScriptedDapi(), harness = DapiTestHarness(), probe = DapiHashProbe()
+            var environment = harness.environment(stub)
+            environment.hashFile = blockingHash(probe)
+            let runner = DapiQuoteRunner(environment: environment)
+            runner.getQuote(fileURL: fileURL, format: .stl)
+            await waitUntilHashing(probe)
+            XCTAssertTrue(probe.started)
+            XCTAssertEqual(runner.phase, .checkingFile)
+            let pressed = Date()
+            if closes { runner.close() } else { runner.stop() }
+            await runner.runTask?.value
+            XCTAssertLessThan(Date().timeIntervalSince(pressed), 10, "the read stopped at once")
+            XCTAssertTrue(probe.cancelled, "the file read itself was cancelled")
+            XCTAssertEqual(runner.phase, .problem("Stopped. Nothing was sent."), "never “couldn’t be read”")
+            XCTAssertTrue(stub.calls.isEmpty)
+            XCTAssertEqual(harness.begun, 0)
+            XCTAssertTrue(harness.inFlight.isEmpty)
+            XCTAssertTrue(harness.unknown.isEmpty)
+        }
+    }
+
+    func testAReadFailureAfterStopStillSaysStopped() async {
+        let stub = ScriptedDapi(), harness = DapiTestHarness(), probe = DapiHashProbe()
+        var environment = harness.environment(stub)
+        environment.hashFile = { _ in
+            probe.mark(started: true)
+            let deadline = Date().addingTimeInterval(20)
+            while !Task.isCancelled, Date() < deadline { usleep(1_000) }
+            // The read fails in its own way rather than with CancellationError.
+            throw CocoaError(.fileReadUnknown)
+        }
+        let runner = DapiQuoteRunner(environment: environment)
+        runner.getQuote(fileURL: fileURL, format: .stl)
+        await waitUntilHashing(probe)
+        runner.stop()
+        await runner.runTask?.value
+        XCTAssertEqual(runner.phase, .problem("Stopped. Nothing was sent."))
+        XCTAssertTrue(stub.calls.isEmpty)
+
+        // Without a Stop, a failed read says so.
+        var failing = harness.environment(stub)
+        failing.hashFile = { _ in throw CocoaError(.fileReadUnknown) }
+        let second = DapiQuoteRunner(environment: failing)
+        second.getQuote(fileURL: fileURL, format: .stl)
+        await second.runTask?.value
+        XCTAssertEqual(second.phase, .problem("The model’s file couldn’t be read."))
+        XCTAssertTrue(stub.calls.isEmpty)
+    }
+
+    func testTheCancellableHashMatchesTheWholeFileHash() throws {
+        let big = tempDirectory.appendingPathComponent("big.stl")
+        try Data((0..<(3 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31) }).write(to: big)
+        XCTAssertEqual(try dapiFileSHA256Cancellable(at: big), try dapiFileSHA256(at: big))
     }
 
     func testAllowanceInReviewOrUsedUpUploadsNothing() async {
