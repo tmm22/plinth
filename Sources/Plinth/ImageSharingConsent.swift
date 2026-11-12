@@ -159,6 +159,19 @@ private struct ImageSharingConsentModifier: ViewModifier {
 
 // MARK: Settings
 
+/// Reset's help. A design that is already open has its photos in its conversation with Claude and sends them again
+/// with each message, without asking, so for Anthropic Reset applies from the next new design, review or ideas
+/// request. Meshy and Tripo are asked before every generation.
+func imageSharingResetHelp(_ service: ImageSharingService) -> String {
+    switch service {
+    case .anthropic: return "Ask again before the next new design, review or ideas request sends photos to \(service.displayName)"
+    case .meshy, .tripo: return "Ask again before the next photo goes to \(service.displayName)"
+    }
+}
+
+/// The Photo sharing section's footer.
+let imageSharingSettingsFooter = "Plinth asks once per service before sending it a photo. Only your answer and its date are kept on this Mac; Plinth doesn’t keep the photos or details you send. A design that is already open keeps sending its photos to Claude with each message until you close it."
+
 /// Settings › Design Tools › Photo sharing: each service's answer, with Reset.
 struct ImageSharingConsentSettingsSection: View {
     @ObservedObject private var consents = ImageSharingConsentStore.shared
@@ -172,7 +185,7 @@ struct ImageSharingConsentSettingsSection: View {
                             .foregroundStyle(.secondary)
                         if consents.hasConsented(service) {
                             Button("Reset") { consents.reset(service) }
-                                .help("Ask again before the next photo goes to \(service.displayName)")
+                                .help(imageSharingResetHelp(service))
                         }
                     }
                 }
@@ -182,7 +195,7 @@ struct ImageSharingConsentSettingsSection: View {
         } header: {
             Text("Photo sharing")
         } footer: {
-            Text("Plinth asks once per service before sending it a photo. Only your answer and its date are kept on this Mac; Plinth doesn’t keep the photos or details you send.")
+            Text(imageSharingSettingsFooter)
                 .settingsFooterLayout()
         }
     }

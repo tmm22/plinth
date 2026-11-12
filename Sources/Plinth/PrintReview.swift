@@ -602,7 +602,7 @@ func decodePrintReviewPlan(_ input: AnthropicJSON, context: PrintReviewPlanConte
     for raw in rawRisks.prefix(printReviewMaximumRisks) {
         let part = printReviewText(raw["part"], limit: 120), issue = printReviewText(raw["issue"], limit: 400)
         guard !part.isEmpty || !issue.isEmpty else { continue }
-        let severity = raw["severity"]?.stringValue.flatMap(PrintReviewSeverity.init(rawValue:)) ?? .medium
+        let severity = anthropicEnumValue(raw["severity"], as: PrintReviewSeverity.self) ?? .medium
         risks.append(PrintReviewRisk(part: part, issue: issue, severity: severity))
     }
     if rawRisks.count > printReviewMaximumRisks {
@@ -616,7 +616,8 @@ func decodePrintReviewPlan(_ input: AnthropicJSON, context: PrintReviewPlanConte
     var current = context
     let rawSteps = input["steps"]?.arrayValue ?? []
     for raw in rawSteps {
-        let tool = raw["tool"]?.stringValue ?? ""
+        // Enum strings may come back in another case (`anthropicJSONEqualForSchema`); Plinth's are all lower case.
+        let tool = (raw["tool"]?.stringValue ?? "").lowercased()
         guard printReviewToolNames.contains(tool) else {
             let name = aiServiceRedacted(tool, limit: 40)
             notes.append(name.isEmpty
@@ -670,7 +671,7 @@ private func printReviewStepAction(tool: String, raw: AnthropicJSON, context: Pr
     case "repair":
         return (.repair, nil)
     case "orient":
-        guard let name = raw["turn"]?.stringValue, let turn = printReviewTurns.first(where: { $0.name == name }) else {
+        guard let name = raw["turn"]?.stringValue?.lowercased(), let turn = printReviewTurns.first(where: { $0.name == name }) else {
             return (nil, "Claude didn’t say which way to turn it.")
         }
         let action = PrintReviewAction.orient(turn.orientation)
@@ -697,7 +698,7 @@ private func printReviewStepAction(tool: String, raw: AnthropicJSON, context: Pr
         return (action, nil)
     case "scale_to_size":
         let axes: [String: MeshFitAxis] = ["longest": .longest, "x": .x, "y": .y, "z": .z]
-        guard let name = raw["axis"]?.stringValue, let axis = axes[name] else { return (nil, "Claude didn’t say which side to measure.") }
+        guard let name = raw["axis"]?.stringValue?.lowercased(), let axis = axes[name] else { return (nil, "Claude didn’t say which side to measure.") }
         guard let value = number("mm") else { return (nil, "Claude didn’t give a size.") }
         guard value >= 0.1, value <= 10_000 else { return (nil, "The size must be from 0.1 to 10,000 mm.") }
         let action = PrintReviewAction.scaleToSize(axis: axis, mm: value)
@@ -722,7 +723,7 @@ private func printReviewStepAction(tool: String, raw: AnthropicJSON, context: Pr
         return (action, nil)
     case "plinth":
         let shapes: [String: PlinthShape] = ["round": .round, "rectangular": .rectangular]
-        guard let name = raw["shape"]?.stringValue, let shape = shapes[name] else { return (nil, "Claude didn’t choose a plinth shape.") }
+        guard let name = raw["shape"]?.stringValue?.lowercased(), let shape = shapes[name] else { return (nil, "Claude didn’t choose a plinth shape.") }
         guard let margin = number("margin_mm"), let thickness = number("thickness_mm") else {
             return (nil, "Claude didn’t give the plinth’s margin and thickness.")
         }

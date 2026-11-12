@@ -208,6 +208,30 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertEqual(plan.notes, [])
     }
 
+    func testEnumValuesAreReadInAnyCase() throws {
+        // Structured outputs don't guarantee an enum string's case: "High" or "Repair" must not cost the one follow-up.
+        let mesh = try ball()
+        let input = planInput([step("Repair"), step("Orient", turn: "Y_DOWN"), step("scale_to_size", axis: "Z", mm: 60),
+                               step("plinth", shape: "Round", margin: 3, thickness: 3)],
+                              risks: [["part": "Tail", "issue": "Thin.", "severity": "High"]])
+        XCTAssertNil(anthropicSchemaProblem(input, schema: printReviewPlanTool.inputSchema))
+        let plan = decodePrintReviewPlan(input, context: context(mesh))
+        XCTAssertEqual(plan.steps.map(\.tool), ["repair", "orient", "scale_to_size", "plinth"])
+        XCTAssertEqual(plan.steps[1].action, .orient(.yDown))
+        XCTAssertEqual(plan.steps[2].action, .scaleToSize(axis: .z, mm: 60))
+        XCTAssertEqual(plan.risks.map(\.severity), [.high])
+        XCTAssertEqual(plan.notes, [])
+        // Another value is still refused.
+        XCTAssertNotNil(anthropicSchemaProblem(planInput([], risks: [["part": "Tail", "issue": "Thin.", "severity": "Severe"]]),
+                                               schema: printReviewPlanTool.inputSchema))
+        XCTAssertTrue(anthropicJSONEqualForSchema("Snug", "snug"))
+        XCTAssertFalse(anthropicJSONEqualForSchema("snug", "snugger"))
+        XCTAssertTrue(anthropicJSONEqualForSchema(1, 1.0))
+        XCTAssertEqual(anthropicEnumValue(.string("Snug"), as: AccessoryIdeaFit.self), .snug)
+        XCTAssertNil(anthropicEnumValue(.string("Snugger"), as: AccessoryIdeaFit.self))
+        XCTAssertNil(anthropicEnumValue(nil, as: AccessoryIdeaFit.self))
+    }
+
     func testBadAndOutOfRangeSettingsAreShownButNeverRunnable() throws {
         let mesh = try ball()
         let plan = decodePrintReviewPlan(planInput([

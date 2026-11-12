@@ -533,6 +533,16 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertEqual(set.leftOut, 1, "The strong description is left out and counted")
     }
 
+    func testEnumValuesAreReadInAnyCase() {
+        let input = suggestionInput([ideaJSON("Cable Clip", fit: "Tight", measurements: [measurementJSON("Gap width", method: "Ruler")])],
+                                    confidence: "CLEAR")
+        XCTAssertNil(anthropicSchemaProblem(input, schema: accessorySuggestTool.inputSchema))
+        let set = accessorySuggestionsParse(input)
+        XCTAssertEqual(set.ideas.first?.fit, .tight)
+        XCTAssertEqual(set.ideas.first?.measurements.first?.method, .ruler)
+        XCTAssertEqual(set.identification?.confidence, .clear)
+    }
+
     func testClaimsInEveryIdeaStringAreDroppedOrBlanked() {
         // ("Food-safe" is on the deny list too, which leaves the whole idea out, so the hardware claim here is another.)
         let idea = ideaJSON("Clip Holder", hardware: ["Certified rubber feet", "Two M3 screws", "Strong magnets"],

@@ -579,7 +579,7 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
     let identification = AccessoryObjectIdentification(
         name: name, seenText: seenText,
         alternatives: Array(alternatives.prefix(accessorySuggestionMaximumAlternatives)),
-        confidence: object?["confidence"]?.stringValue.flatMap(AccessoryIdentificationConfidence.init(rawValue:)) ?? .likely,
+        confidence: anthropicEnumValue(object?["confidence"], as: AccessoryIdentificationConfidence.self) ?? .likely,
         evidence: accessoryClaimFree(evidence),
         wouldConfirm: accessoryClaimFree(accessorySuggestionLine(object?["would_confirm"]?.stringValue, limit: 300)),
         features: Array(features.prefix(accessorySuggestionMaximumFeatures)))
@@ -601,7 +601,7 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
             allMeasurements.append(AccessoryIdeaMeasurement(
                 label: label,
                 how: accessorySuggestionLine(item["how"]?.stringValue, limit: 300),
-                method: item["method"]?.stringValue.flatMap(AccessoryMeasurementMethod.init(rawValue:)) ?? .calipers))
+                method: anthropicEnumValue(item["method"], as: AccessoryMeasurementMethod.self) ?? .calipers))
         }
         // The deny list reads every string as Claude wrote it; the claim check then drops or blanks the parts.
         let labelTexts = [title, description] + hardware + allMeasurements.map(\.label)
@@ -619,7 +619,7 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
         }
         ideas.append(AccessoryIdea(
             title: title, description: description, whoWantsIt: accessoryClaimFree(whoWantsIt),
-            fit: raw["fit"]?.stringValue.flatMap(AccessoryIdeaFit.init(rawValue:)) ?? .snug,
+            fit: anthropicEnumValue(raw["fit"], as: AccessoryIdeaFit.self) ?? .snug,
             hardware: Array(hardware.filter { !accessorySuggestionHasClaim($0) }.prefix(accessorySuggestionMaximumHardware)),
             measurements: Array(measurements.prefix(accessorySuggestionMaximumMeasurements)),
             caution: accessoryClaimFree(caution)))

@@ -434,8 +434,18 @@ private func anthropicJSONMatchesType(_ value: AnthropicJSON, _ type: String) ->
     }
 }
 
-/// Numbers compare by value (1 and 1.0 match); everything else structurally.
-private func anthropicJSONEqualForSchema(_ a: AnthropicJSON, _ b: AnthropicJSON) -> Bool {
+/// Numbers compare by value (1 and 1.0 match), strings in any case (structured outputs don't guarantee the case of
+/// an `enum` or `const` string, so Anthropic says to compare them case-insensitively; the decoders lower-case before
+/// reading them), everything else structurally.
+func anthropicJSONEqualForSchema(_ a: AnthropicJSON, _ b: AnthropicJSON) -> Bool {
     if let x = a.doubleValue, let y = b.doubleValue { return x == y }
+    if case .string(let x) = a, case .string(let y) = b { return x.caseInsensitiveCompare(y) == .orderedSame }
     return a == b
+}
+
+/// A strict tool's `enum` string read in any case (see `anthropicJSONEqualForSchema`): lower-cased first, which every
+/// enum value Plinth declares is.
+func anthropicEnumValue<Value: RawRepresentable>(_ json: AnthropicJSON?, as type: Value.Type = Value.self) -> Value?
+    where Value.RawValue == String {
+    json?.stringValue.flatMap { Value(rawValue: $0.lowercased()) }
 }
