@@ -89,16 +89,19 @@ final class TransportRound14Tests: XCTestCase {
         for odd in [nil, "", "abc", "-1", "1e3", "Wed, 21 Oct 2026 07:28:00 GMT", "inf", "nan", "100000", "１２", "12s"] {
             XCTAssertNil(retryAfterSeconds(odd), String(describing: odd))
         }
-        XCTAssertEqual(rateLimitUserMessage(retryAfter: "12", rateLimitReset: nil), "Too many requests. Try again in about 12 seconds.")
-        XCTAssertEqual(rateLimitUserMessage(retryAfter: "0", rateLimitReset: nil), "Too many requests. Try again in about 1 second.")
+        // Round 22: the copy names the batches' wait, never under 60 s (`comparisonRateLimitedUntil`).
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: "12", rateLimitReset: nil), "Too many requests. Try again in about 60 seconds.")
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: "0", rateLimitReset: nil), "Too many requests. Try again in about 60 seconds.")
         XCTAssertEqual(rateLimitUserMessage(retryAfter: "300", rateLimitReset: nil), "Too many requests. Try again in about 5 minutes.")
-        // Not a number: the reset header, else the generic copy.
+        // Not a number: the reset header, else the 60 s floor.
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertEqual(rateLimitUserMessage(retryAfter: "Wed, 21 Oct 2026 07:28:00 GMT", rateLimitReset: "1800000040000", now: now),
-                       "Too many requests. Try again in about 40 seconds.")
+                       "Too many requests. Try again in about 60 seconds.")
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: "Wed, 21 Oct 2026 07:28:00 GMT", rateLimitReset: "1800000080000", now: now),
+                       "Too many requests. Try again in about 80 seconds.")
         XCTAssertEqual(rateLimitUserMessage(retryAfter: "soon", rateLimitReset: nil, now: now),
-                       "Too many requests. Wait a moment, then try again.")
-        XCTAssertEqual(http(429, retryAfter: "soon").userMessage, "Too many requests. Wait a moment, then try again.")
+                       "Too many requests. Try again in about 60 seconds.")
+        XCTAssertEqual(http(429, retryAfter: "soon").userMessage, "Too many requests. Try again in about 60 seconds.")
     }
 
     // MARK: Query encoding

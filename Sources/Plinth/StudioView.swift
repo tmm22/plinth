@@ -75,7 +75,9 @@ struct StudioView: View {
                 }
             }
         }
-        .alert("Couldn’t complete the request", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
+        // The binding only closes the alert: SwiftUI may write it before Try Again's queued retry runs, so the retry's
+        // action survives it (`errorAlertClosed`); OK forgets the action (`dismissError`).
+        .alert("Couldn’t complete the request", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.errorAlertClosed() } })) {
             if store.canRetry {
                 Button("Try Again") { Task { await store.retryLast() } }.keyboardShortcut(.defaultAction)
             }

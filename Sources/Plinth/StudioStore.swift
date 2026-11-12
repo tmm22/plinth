@@ -990,9 +990,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         if busy { return "Working…" }
         return nil
     }
-    private var pendingRetry: RetryAction?
+    private var pendingRetry = ErrorRetrySlot()
     private struct ConnectSuperseded: Error {}
-    enum RetryAction {
+    enum RetryAction: Equatable {
         case connect(String)
         case refresh
         case loadMoreFiles
@@ -1249,12 +1249,20 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     func showError(_ message: String) {
         error = message
         canRetry = false
-        pendingRetry = nil
+        pendingRetry.clear()
     }
+    /// The alert's OK, and every caller that takes the error away: also forgets Try Again's action.
     func dismissError() {
         error = nil
         canRetry = false
-        pendingRetry = nil
+        pendingRetry.clear()
+    }
+    /// The main window's error alert closing (its presentation binding). SwiftUI may report that before or after Try
+    /// Again's queued `retryLast()` runs, so this keeps the action for it; OK still calls `dismissError()`. A kept
+    /// action can't be reached later: Try Again shows only while `canRetry`, which only `run` sets, with a fresh action.
+    func errorAlertClosed() {
+        error = nil
+        canRetry = false
     }
     func openOrderComposer(line: OrderLine? = nil) {
         openOrderComposer(prefill: line.map { OrderComposerPrefill(lines: [$0]) })
@@ -1307,8 +1315,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         }
         await refresh()
     }
+    /// Try Again: takes the failed run's action (so it runs at most once) and runs it. Only `RetryAction`'s reads, the
+    /// estimate and connect are ever retried.
     func retryLast() async {
-        guard let action = pendingRetry else { return }
+        guard let action = pendingRetry.take() else { return }
         switch action {
         case .connect(let key): await connect(key: key)
         case .refresh: await refresh()
@@ -1343,18 +1353,24 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             try await operation()
             activities.insert(Activity(title: title, detail: "Completed", success: true), at: 0)
             canRetry = false
-            pendingRetry = nil
+            pendingRetry.clear()
         } catch is ConnectSuperseded {
             canRetry = false
-            pendingRetry = nil
+            pendingRetry.clear()
+        } catch where runFailureIsQuietCancellation(error, taskCancelled: Task.isCancelled, retryable: retryable) {
+            // A read whose view cancelled it (a `.task` restarted, or its sheet or window closed): nothing failed, so
+            // no alert, no failed Activity line and no Try Again. Writes (`retryable: false`) never come here, so a
+            // cancelled write keeps its own outcome handling. (No retryable run passes `handlesError`.)
+            canRetry = false
+            pendingRetry.clear()
         } catch {
             if !handlesError(error) { self.error = friendlyAPIMessage(error) }
             activities.insert(Activity(title: title, detail: activityDetail(for: error), success: false), at: 0)
             if retryable, let retry {
-                pendingRetry = retry
+                pendingRetry.set(retry)
                 canRetry = true
             } else {
-                pendingRetry = nil
+                pendingRetry.clear()
                 canRetry = false
             }
         }
@@ -1430,6 +1446,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                                                            marker: marker, platformID: platformID)
     }
     func connect(key: String) async {
+        // Before anything is cleared: `run` would refuse while busy, after the loaded data had already gone (Try Again
+        // can reach this while another task holds `busy`; Settings' Save & Test is disabled then).
+        guard !busy else { return }
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let keyChanged = apiKey != trimmed
         if keyChanged {
@@ -1444,7 +1463,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let response = try await probe.request("GET", path: "/filaments")
             guard generation == connectGeneration else { throw ConnectSuperseded() }
             noteRateLimit(from: response)
-            try KeychainStore.save(trimmed)
+            do { try KeychainStore.save(trimmed) } catch { throw StudioError(slantKeySaveFailedMessage) }
             if keyChanged {
                 platformID = ""
                 fileID = ""; filamentID = ""
@@ -2314,6 +2333,17 @@ func friendlyAPIMessage(_ error: Error) -> String {
     let line = text.split(separator: "\n").first.map(String.init) ?? text
     return line.count > 180 ? slantRequestFailedSeeActivityMessage : line
 }
+/// Save & Test's Keychain save failed (locked, or access denied): `APIError.keychain`'s own copy is about reading the
+/// saved key. Keep it within `friendlyAPIMessage`'s 180 characters.
+let slantKeySaveFailedMessage =
+    "Plinth couldn’t save the key in the Keychain. Unlock your login keychain or allow access when asked, then press Save & Test again."
+/// True for a read-only run (`retryable`) that failed only because its task was cancelled (SwiftUI cancels a `.task`
+/// when its ID changes or its view goes): URLSession reports that as `URLError(.cancelled)`. `invalidate()` cancels
+/// requests without cancelling the task, so a key change is still reported.
+func runFailureIsQuietCancellation(_ error: Error, taskCancelled: Bool, retryable: Bool) -> Bool {
+    guard retryable, taskCancelled else { return false }
+    return error is CancellationError || (error as? URLError)?.code == .cancelled
+}
 /// Activity is hidden unless developer tools are on, so the alert says how to reach it.
 let slantRequestFailedSeeActivityMessage =
     "Slant couldn’t complete that request. To see the details, turn on Settings › Advanced › Show developer tools, then open Activity."
@@ -2638,4 +2668,16 @@ func connectionFooterStatus(hasKey: Bool, connected: Bool, accountLoaded: Bool, 
     return "Connecting…"
 }
 struct StudioError: LocalizedError { let message: String; init(_ message: String) { self.message = message }; var errorDescription: String? { message } }
+/// Try Again's action for the main window's error alert. `run` sets it after a failed retryable run and clears it on
+/// every other outcome, OK clears it, and `retryLast()` takes it, so it runs at most once. The alert's closing doesn't
+/// clear it (`errorAlertClosed`), because SwiftUI may report that before the button's queued retry runs.
+struct ErrorRetrySlot {
+    private(set) var action: StudioStore.RetryAction?
+    mutating func set(_ action: StudioStore.RetryAction) { self.action = action }
+    mutating func clear() { action = nil }
+    mutating func take() -> StudioStore.RetryAction? {
+        defer { action = nil }
+        return action
+    }
+}
 func encodedSegment(_ string: String) -> String { string.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_"))) ?? "" }

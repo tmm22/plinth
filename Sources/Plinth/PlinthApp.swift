@@ -361,19 +361,51 @@ enum SlantWriteKind: String, CaseIterable {
 /// or the Workbench), a model upload (Slant may keep a file whose confirm went unanswered), or an Import Orders or Pay Several Drafts batch from start to finish. The unknown-outcome lock
 /// and the unconfirmed-draft guard last only for the session, so quitting mid-request would lose the record of a write
 /// that may have reached Slant: Quit asks first (`slantWritesQuitQuestion`). Memory only; nothing else reads it.
+/// While any is in flight it also holds a user-initiated `ProcessInfo` activity, so the Mac doesn't idle-sleep (and
+/// macOS doesn't end Plinth on its own) before the reply arrives; a lid close still sleeps.
 @MainActor final class SlantWritesInFlight {
     static let shared = SlantWritesInFlight()
     private var active: [UUID: SlantWriteKind] = [:]
+    private var activity: NSObjectProtocol?
 
     func begin(_ kind: SlantWriteKind) -> UUID {
         let token = UUID()
         active[token] = kind
+        updateActivity()
         return token
     }
 
-    func end(_ token: UUID) { active[token] = nil }
+    func end(_ token: UUID) {
+        active[token] = nil
+        updateActivity()
+    }
 
     var kinds: [SlantWriteKind] { Array(active.values) }
+
+    private func updateActivity() {
+        switch slantWritesActivityChange(holding: activity != nil, writesInFlight: !active.isEmpty) {
+        case .begin:
+            activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated,
+                                                             reason: "Waiting for Slant or 3DAPI to answer")
+        case .end:
+            if let activity { ProcessInfo.processInfo.endActivity(activity) }
+            activity = nil
+        case .none:
+            break
+        }
+    }
+}
+
+enum SlantWritesActivityChange: Equatable { case begin, end, none }
+
+/// Whether `SlantWritesInFlight` starts or ends its activity: one activity from the first write in flight until the
+/// last has answered, never two, and never left running.
+func slantWritesActivityChange(holding: Bool, writesInFlight: Bool) -> SlantWritesActivityChange {
+    switch (holding, writesInFlight) {
+    case (false, true): .begin
+    case (true, false): .end
+    default: .none
+    }
 }
 
 /// The quit question's title and message while writes are in flight, or nil (quit at once) when none are.

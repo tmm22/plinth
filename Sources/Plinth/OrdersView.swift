@@ -926,6 +926,12 @@ struct OrderComposerView: View {
         guard store.hasKey else { return }
         catalogsLoading = true
         defer { catalogsLoading = false }
+        // A load this task started before it restarted may still hold `busy` while it unwinds, and every load below
+        // skips while busy: wait for it instead. The sheet closing cancels this task, so the wait ends with it.
+        while store.busy {
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
         let types = Set(lines.map(\.type))
         if force { catalogLoadError = nil }
         if types.contains("PRINT") {
