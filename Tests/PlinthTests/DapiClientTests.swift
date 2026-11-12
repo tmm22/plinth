@@ -407,6 +407,14 @@ final class DapiClientTests: XCTestCase {
         let error = await dapiError { _ = try await uploadBoth(client, file: file, name: "a.stl", type: "model/stl", key: "k") }
         guard case .outcomeUnknown? = error else { return XCTFail("\(String(describing: error))") }
         XCTAssertEqual(transport.count, 1)
+
+        let tooLong = "upl_" + String(repeating: "a", count: dapiMaxUploadIDLength)
+        let longReply = #"{"id":"\#(tooLong)","upload_url":"https://files.example.com/a","method":"PUT","headers":{}}"#
+        let (second, secondTransport) = makeClient([.reply(201, longReply, [:])])
+        let longError = await dapiError { _ = try await uploadBoth(second, file: file, name: "a.stl", type: "model/stl", key: "k") }
+        guard case .outcomeUnknown? = longError else { return XCTFail("\(String(describing: longError))") }
+        XCTAssertEqual(secondTransport.count, 1)
+        XCTAssertTrue(secondTransport.uploadedFiles.isEmpty)
     }
 
     func testUploadRequestChecksHappenBeforeAnythingIsSent() async throws {
@@ -503,7 +511,7 @@ final class DapiClientTests: XCTestCase {
 
     func testCreateQuoteChecksIDAndNameBeforeSending() async throws {
         for (id, name) in [("upl_a/b", "x"), ("qte_abc", "x"), ("upl_", "x"), ("upl_abc", ""), ("upl_abc", String(repeating: "n", count: 201)),
-                           ("upl_abc", "a\u{0}b")] {
+                           ("upl_abc", "a\u{0}b"), ("upl_" + String(repeating: "a", count: dapiMaxUploadIDLength), "x"), ("upl_ab_c", "x")] {
             let (client, transport) = makeClient([.reply(201, "{}", [:])])
             let error = await dapiError { _ = try await client.createQuote(uploadID: id, name: name, idempotencyKey: "k") }
             guard case .notSent? = error else { XCTFail("\(id): \(String(describing: error))"); continue }
@@ -566,6 +574,52 @@ final class DapiClientTests: XCTestCase {
         XCTAssertTrue(dapiQuoteIDIsSafe("qte_bfP0GSqKoZFrD72H5Os0rc7HV9XP6eQJu"))
         XCTAssertTrue(dapiUploadIDIsSafe("upl_bfP0GSqKoZFrD72H5Os0rc7HV9XP6eQJu"))
         XCTAssertFalse(dapiUploadIDIsSafe("qte_bfP0"))
+    }
+
+    /// 3DAPI's upload IDs are signed: about 330 characters, never more than 2,600 (openapi.json, Conventions › Id
+    /// lengths). Path IDs keep the 128-character limit.
+    func testSignedUploadIDsHaveTheirOwnLongerLimit() {
+        func uploadID(length: Int) -> String {
+            let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+            return "upl_" + String((0..<(length - 4)).map { alphabet[$0 % alphabet.count] })
+        }
+        XCTAssertTrue(dapiUploadIDIsSafe(uploadID(length: 330)))
+        XCTAssertTrue(dapiUploadIDIsSafe(uploadID(length: 840)))
+        XCTAssertTrue(dapiUploadIDIsSafe(uploadID(length: 2_600)))
+        XCTAssertTrue(dapiUploadIDIsSafe(uploadID(length: dapiMaxUploadIDLength)))
+        XCTAssertFalse(dapiUploadIDIsSafe(uploadID(length: dapiMaxUploadIDLength + 1)))
+        for bad in ["upl_", "upl_abc-def", "upl_abc_def", "upl_abc/def", "upl_abc.def", "upl_abc=", "upl_abc def", "UPL_abc", "upl_é"] {
+            XCTAssertFalse(dapiUploadIDIsSafe(bad), bad)
+        }
+        XCTAssertFalse(dapiUploadIDIsSafe(uploadID(length: 330) + "-"))
+        // The longer limit is for upload IDs only: IDs that go into paths stay at 128.
+        XCTAssertFalse(dapiQuoteIDIsSafe("qte_" + String(repeating: "a", count: 200)))
+        XCTAssertFalse(dapiOrderIDIsSafe("ord_" + String(repeating: "a", count: 200)))
+        XCTAssertFalse(dapiMaterialIDIsSafe("mat_" + String(repeating: "a", count: 200)))
+        XCTAssertTrue(dapiQuoteIDIsSafe("qte_" + String(repeating: "a", count: dapiMaxIDLength - 4)))
+        XCTAssertFalse(dapiQuoteIDIsSafe("qte_" + String(repeating: "a", count: dapiMaxIDLength - 3)))
+    }
+
+    func testASignedUploadIDGoesFromTheUploadReplyToTheQuoteByteForByte() async throws {
+        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+        let signed = "upl_" + String((0..<326).map { alphabet[($0 * 7) % alphabet.count] })
+        XCTAssertEqual(signed.count, 330)
+        let file = try modelFile(bytes: 84)
+        let reply = #"{"id":"\#(signed)","object":"upload","purpose":"quote_file","upload_url":"https://files.example.com/temp/7f3a.stl?X-Amz-Signature=abc","method":"PUT","headers":{"Content-Type":"model/stl"},"expires_at":"2026-10-15T10:00:00Z"}"#
+        let (client, transport) = makeClient([.reply(201, reply, [:]), .reply(200, "", [:]),
+                                              .reply(201, quoteJSON(id: "qte_new1", name: "Plinth 0123456789abcdef", status: "processing"), [:])])
+        let uploadID = try await uploadBoth(client, file: file, name: "plinth-0123456789abcdef.stl", type: "model/stl", key: "idem-1")
+        XCTAssertEqual(uploadID, signed)
+        let quote = try await client.createQuote(uploadID: uploadID, name: "Plinth 0123456789abcdef", idempotencyKey: "idem-2")
+        XCTAssertEqual(quote.id, "qte_new1")
+        XCTAssertEqual(transport.count, 3)
+        let create = transport.requests[2]
+        XCTAssertEqual(create.url?.absoluteString, "https://public-api.dapi.digital/v2/quotes")
+        XCTAssertEqual((bodyJSON(create)?["file"] as? [String: Any])?["upload"] as? String, signed)
+        // Byte for byte in the body as sent, and never in the URL.
+        let sentBody = String(decoding: try XCTUnwrap(create.httpBody), as: UTF8.self)
+        XCTAssertTrue(sentBody.contains("\"upload\":\"\(signed)\""))
+        XCTAssertFalse(create.url?.absoluteString.contains(signed) ?? true)
     }
 
     func testAPIURLRefusesUnsafePaths() {

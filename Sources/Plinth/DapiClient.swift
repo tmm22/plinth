@@ -26,8 +26,13 @@ let dapiAPIResourceTimeout: TimeInterval = 60
 let dapiUploadIdleTimeout: TimeInterval = 60
 /// The longest Plinth waits after a 429, whatever 3DAPI says.
 let dapiMaxRetryWait: TimeInterval = 3600
-/// Longest 3DAPI ID Plinth puts in a path (real ones are about 36 characters).
+/// Longest 3DAPI ID Plinth puts in a path or an order body. 3DAPI's IDs are exactly 37 characters (a 3-letter prefix,
+/// `_` and 33 letters or digits); upload IDs are the exception (`dapiMaxUploadIDLength`).
 let dapiMaxIDLength = 128
+/// Longest upload ID (`upl_…`) Plinth accepts. 3DAPI signs them, so they grow with the file name: about 330 characters
+/// for a short name, up to 840 for a 255-character name and never more than 2,600 (openapi.json's Conventions › Id
+/// lengths, checked 12 Nov 2026). An upload ID only ever travels in a JSON body (`file.upload`), never a path or query.
+let dapiMaxUploadIDLength = 4_096
 /// Longest 3DAPI message Plinth shows.
 let dapiMaxMessageLength = 300
 /// Longest failure reason Plinth shows for a failed quote (3DAPI's explanations can run to a few sentences).
@@ -65,13 +70,15 @@ func dapiUploadResourceTimeout(bytes: Int64) -> TimeInterval {
 
 // MARK: IDs, URLs and headers
 
-/// A 3DAPI ID safe to put in a path: `prefix` then ASCII letters and digits only (`^qte_[0-9A-Za-z]+$`), bounded.
-func dapiIDIsSafe(_ id: String, prefix: String) -> Bool {
-    guard id.hasPrefix(prefix), id.utf8.count > prefix.utf8.count, id.utf8.count <= dapiMaxIDLength else { return false }
+/// A 3DAPI ID safe to put in a path: `prefix` then ASCII letters and digits only (`^qte_[0-9A-Za-z]+$`), at most
+/// `maxLength` characters.
+func dapiIDIsSafe(_ id: String, prefix: String, maxLength: Int = dapiMaxIDLength) -> Bool {
+    guard id.hasPrefix(prefix), id.utf8.count > prefix.utf8.count, id.utf8.count <= maxLength else { return false }
     return id.utf8.dropFirst(prefix.utf8.count).allSatisfy { (0x30...0x39).contains($0) || (0x41...0x5A).contains($0) || (0x61...0x7A).contains($0) }
 }
 func dapiQuoteIDIsSafe(_ id: String) -> Bool { dapiIDIsSafe(id, prefix: "qte_") }
-func dapiUploadIDIsSafe(_ id: String) -> Bool { dapiIDIsSafe(id, prefix: "upl_") }
+/// Upload IDs have the same characters as the others but their own, longer limit; they are only ever sent in a JSON body.
+func dapiUploadIDIsSafe(_ id: String) -> Bool { dapiIDIsSafe(id, prefix: "upl_", maxLength: dapiMaxUploadIDLength) }
 func dapiOrderIDIsSafe(_ id: String) -> Bool { dapiIDIsSafe(id, prefix: "ord_") }
 func dapiMaterialIDIsSafe(_ id: String) -> Bool { dapiIDIsSafe(id, prefix: "mat_") }
 
@@ -754,10 +761,18 @@ final class URLSessionDapiTransport: DapiTransport, @unchecked Sendable {
     static let shared = URLSessionDapiTransport()
 
     private let session: URLSession
+    /// Stub `URLProtocol`s for tests, added to the API session and every PUT's session; nil in the app.
+    private let protocolClasses: [AnyClass]?
 
-    init() {
-        session = URLSession(configuration: dapiSessionConfiguration(requestTimeout: dapiAPIRequestTimeout, resourceTimeout: dapiAPIResourceTimeout),
-                             delegate: DapiNoRedirectDelegate(), delegateQueue: nil)
+    convenience init() { self.init(protocolClasses: nil) }
+
+    /// The app's transport, with `protocolClasses` (tests only) answering instead of the network. Every other setting
+    /// is the app's.
+    init(protocolClasses: [AnyClass]?) {
+        self.protocolClasses = protocolClasses
+        let configuration = dapiSessionConfiguration(requestTimeout: dapiAPIRequestTimeout, resourceTimeout: dapiAPIResourceTimeout)
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
+        session = URLSession(configuration: configuration, delegate: DapiNoRedirectDelegate(), delegateQueue: nil)
     }
 
     deinit { session.invalidateAndCancel() }
@@ -769,6 +784,7 @@ final class URLSessionDapiTransport: DapiTransport, @unchecked Sendable {
     func upload(_ request: URLRequest, fromFile fileURL: URL) async throws -> DapiHTTPReply {
         let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? dapiMaxQuoteFileBytes
         let configuration = dapiSessionConfiguration(requestTimeout: dapiUploadIdleTimeout, resourceTimeout: dapiUploadResourceTimeout(bytes: size))
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
         let uploadSession = URLSession(configuration: configuration, delegate: DapiNoRedirectDelegate(), delegateQueue: nil)
         defer { uploadSession.finishTasksAndInvalidate() }
         return try await DapiCappedTask(maxBytes: dapiMaxStorageResponseBytes).run { uploadSession.uploadTask(with: request, fromFile: fileURL) }
