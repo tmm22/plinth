@@ -363,9 +363,11 @@ private struct AnthropicJSONParser {
 // MARK: Schema checks
 
 /// The first way `value` breaks `schema`, or nil when it fits. Covers the JSON Schema subset Studio's tools use:
-/// `type` (a name or a list), `properties`, `required`, `additionalProperties: false`, `items`, `enum`, `const`,
-/// `minimum`/`maximum`, `minItems`/`maxItems` and `minLength`/`maxLength`. Unknown keywords are ignored. Claude's
-/// `strict` tools normally guarantee a fit, but streamed (`eager_input_streaming`) inputs aren't checked by the API.
+/// `type` (a name or a list), `properties`, `required`, `additionalProperties: false`, `items`, `enum` and `const`
+/// (strings in any case), `minimum`/`maximum`, `minItems`/`maxItems` and `minLength`/`maxLength`. Unknown keywords
+/// are ignored, `anyOf` among them: a value under it passes unchecked. Claude's `strict` tools normally guarantee a fit, but streamed
+/// (`eager_input_streaming`) inputs aren't checked by the API. propose_plan, the only tool using `anyOf`, isn't
+/// streamed that way, so Anthropic's strict check covers it.
 func anthropicSchemaProblem(_ value: AnthropicJSON, schema: AnthropicJSON, path: String = "input") -> String? {
     guard case .object = schema else { return nil }
     if let allowed = schema["enum"]?.arrayValue, !allowed.contains(where: { anthropicJSONEqualForSchema($0, value) }) {
@@ -434,8 +436,18 @@ private func anthropicJSONMatchesType(_ value: AnthropicJSON, _ type: String) ->
     }
 }
 
-/// Numbers compare by value (1 and 1.0 match); everything else structurally.
-private func anthropicJSONEqualForSchema(_ a: AnthropicJSON, _ b: AnthropicJSON) -> Bool {
+/// Numbers compare by value (1 and 1.0 match), strings in any case (structured outputs don't guarantee the case of
+/// an `enum` or `const` string, so Anthropic says to compare them case-insensitively; the decoders lower-case before
+/// reading them), everything else structurally.
+func anthropicJSONEqualForSchema(_ a: AnthropicJSON, _ b: AnthropicJSON) -> Bool {
     if let x = a.doubleValue, let y = b.doubleValue { return x == y }
+    if case .string(let x) = a, case .string(let y) = b { return x.caseInsensitiveCompare(y) == .orderedSame }
     return a == b
+}
+
+/// A strict tool's `enum` string read in any case (see `anthropicJSONEqualForSchema`): lower-cased first, which every
+/// enum value Plinth declares is.
+func anthropicEnumValue<Value: RawRepresentable>(_ json: AnthropicJSON?, as type: Value.Type = Value.self) -> Value?
+    where Value.RawValue == String {
+    json?.stringValue.flatMap { Value(rawValue: $0.lowercased()) }
 }

@@ -533,6 +533,42 @@ final class AccessorySuggestionsTests: XCTestCase {
         XCTAssertEqual(set.leftOut, 1, "The strong description is left out and counted")
     }
 
+    func testEnumValuesAreReadInAnyCase() {
+        let input = suggestionInput([ideaJSON("Cable Clip", fit: "Tight", measurements: [measurementJSON("Gap width", method: "Ruler")])],
+                                    confidence: "CLEAR")
+        XCTAssertNil(anthropicSchemaProblem(input, schema: accessorySuggestTool.inputSchema))
+        let set = accessorySuggestionsParse(input)
+        XCTAssertEqual(set.ideas.first?.fit, .tight)
+        XCTAssertEqual(set.ideas.first?.measurements.first?.method, .ruler)
+        XCTAssertEqual(set.identification?.confidence, .clear)
+    }
+
+    func testClaimsInEveryIdeaStringAreDroppedOrBlanked() {
+        // ("Food-safe" is on the deny list too, which leaves the whole idea out, so the hardware claim here is another.)
+        let idea = ideaJSON("Clip Holder", hardware: ["Certified rubber feet", "Two M3 screws", "Strong magnets"],
+                            measurements: [measurementJSON("Gap width", how: "Measure the gap so the clip fits perfectly"),
+                                           measurementJSON("Perfect fit depth"),
+                                           measurementJSON("Lid depth", how: "This isn't guaranteed to fit, so measure twice"),
+                                           measurementJSON("Hinge width", how: "Ruler across the hinge")])
+        let input = suggestionInput([idea])
+            .setting("object", to: (suggestionInput([])["object"] ?? .null)
+                .setting("would_confirm", to: "It's guaranteed to fit once you check the label.")
+                .setting("seen_text", to: "Certified Pro")
+                .setting("features", to: ["Approved charger port"]))
+        let set = accessorySuggestionsParse(input)
+        XCTAssertEqual(set.ideas.map(\.title), ["Clip Holder"], "the idea itself is kept")
+        XCTAssertEqual(set.leftOut, 0, "and not counted as left out")
+        let kept = set.ideas[0]
+        XCTAssertEqual(kept.hardware, ["Two M3 screws", "Strong magnets"], "a hardware item making a claim is dropped")
+        XCTAssertEqual(kept.measurements.map(\.label), ["Gap width", "Lid depth", "Hinge width"], "a label making a claim drops its row")
+        XCTAssertEqual(kept.measurements.map(\.how), ["", "This isn't guaranteed to fit, so measure twice", "Ruler across the hinge"],
+                       "a how with a claim is blanked; a negated one stays")
+        XCTAssertEqual(set.identification?.wouldConfirm, "")
+        // The object's own words aren't claims Claude makes.
+        XCTAssertEqual(set.identification?.seenText, "Certified Pro")
+        XCTAssertEqual(set.identification?.features, ["Approved charger port"])
+    }
+
     // MARK: Using an idea
 
     private let idea = AccessoryIdea(title: "Headphone Stand", description: "A desk stand that holds the headphones by the headband.",

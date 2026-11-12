@@ -602,7 +602,7 @@ func decodePrintReviewPlan(_ input: AnthropicJSON, context: PrintReviewPlanConte
     for raw in rawRisks.prefix(printReviewMaximumRisks) {
         let part = printReviewText(raw["part"], limit: 120), issue = printReviewText(raw["issue"], limit: 400)
         guard !part.isEmpty || !issue.isEmpty else { continue }
-        let severity = raw["severity"]?.stringValue.flatMap(PrintReviewSeverity.init(rawValue:)) ?? .medium
+        let severity = anthropicEnumValue(raw["severity"], as: PrintReviewSeverity.self) ?? .medium
         risks.append(PrintReviewRisk(part: part, issue: issue, severity: severity))
     }
     if rawRisks.count > printReviewMaximumRisks {
@@ -616,7 +616,8 @@ func decodePrintReviewPlan(_ input: AnthropicJSON, context: PrintReviewPlanConte
     var current = context
     let rawSteps = input["steps"]?.arrayValue ?? []
     for raw in rawSteps {
-        let tool = raw["tool"]?.stringValue ?? ""
+        // Enum strings may come back in another case (`anthropicJSONEqualForSchema`); Plinth's are all lower case.
+        let tool = (raw["tool"]?.stringValue ?? "").lowercased()
         guard printReviewToolNames.contains(tool) else {
             let name = aiServiceRedacted(tool, limit: 40)
             notes.append(name.isEmpty
@@ -670,7 +671,7 @@ private func printReviewStepAction(tool: String, raw: AnthropicJSON, context: Pr
     case "repair":
         return (.repair, nil)
     case "orient":
-        guard let name = raw["turn"]?.stringValue, let turn = printReviewTurns.first(where: { $0.name == name }) else {
+        guard let name = raw["turn"]?.stringValue?.lowercased(), let turn = printReviewTurns.first(where: { $0.name == name }) else {
             return (nil, "Claude didn’t say which way to turn it.")
         }
         let action = PrintReviewAction.orient(turn.orientation)
@@ -697,7 +698,7 @@ private func printReviewStepAction(tool: String, raw: AnthropicJSON, context: Pr
         return (action, nil)
     case "scale_to_size":
         let axes: [String: MeshFitAxis] = ["longest": .longest, "x": .x, "y": .y, "z": .z]
-        guard let name = raw["axis"]?.stringValue, let axis = axes[name] else { return (nil, "Claude didn’t say which side to measure.") }
+        guard let name = raw["axis"]?.stringValue?.lowercased(), let axis = axes[name] else { return (nil, "Claude didn’t say which side to measure.") }
         guard let value = number("mm") else { return (nil, "Claude didn’t give a size.") }
         guard value >= 0.1, value <= 10_000 else { return (nil, "The size must be from 0.1 to 10,000 mm.") }
         let action = PrintReviewAction.scaleToSize(axis: axis, mm: value)
@@ -722,7 +723,7 @@ private func printReviewStepAction(tool: String, raw: AnthropicJSON, context: Pr
         return (action, nil)
     case "plinth":
         let shapes: [String: PlinthShape] = ["round": .round, "rectangular": .rectangular]
-        guard let name = raw["shape"]?.stringValue, let shape = shapes[name] else { return (nil, "Claude didn’t choose a plinth shape.") }
+        guard let name = raw["shape"]?.stringValue?.lowercased(), let shape = shapes[name] else { return (nil, "Claude didn’t choose a plinth shape.") }
         guard let margin = number("margin_mm"), let thickness = number("thickness_mm") else {
             return (nil, "Claude didn’t give the plinth’s margin and thickness.")
         }
@@ -1221,7 +1222,7 @@ func printReviewUserText(viewTitles: [String], factLines: [String], contextLines
 }
 
 /// The first request: images before the text, effort high, the system prompt and tool cached (one breakpoint, on the
-/// tool).
+/// system block: the tools come first in the cached prefix, so it caches both).
 func printReviewAnthropicRequest(views: [PrintReviewRender], factLines: [String], contextLines: [String]) -> AnthropicRequest {
     var content: [AnthropicInputBlock] = views.map { .image($0.image.anthropicImage) }
     content.append(.text(printReviewUserText(viewTitles: views.map(\.title), factLines: factLines, contextLines: contextLines)))
@@ -1233,7 +1234,7 @@ func printReviewAnthropicRequest(views: [PrintReviewRender], factLines: [String]
 /// unusable call, or a reminder when there was no call. Effort medium. Nil after a refusal, or a reply that can't join
 /// the conversation (`canJoinHistory`: cut off at max_tokens, the context window or any other early stop).
 func printReviewFollowUpRequest(_ previous: AnthropicRequest, reply: AnthropicMessage) -> AnthropicRequest? {
-    guard !reply.isRefusal, reply.canJoinHistory, !reply.historyContent.isEmpty else { return nil }
+    guard !reply.isRefusal, reply.canJoinHistory, reply.historyHasContent else { return nil }
     var request = previous
     request.messages.append(.assistant(reply))
     let uses = reply.toolUses
@@ -1283,7 +1284,7 @@ func printReviewReplyOutcome(_ reply: AnthropicMessage, context: PrintReviewPlan
 
 // MARK: Cost
 
-/// Image tokens at roughly one per 28 × 28 pixel patch.
+/// Image tokens: Anthropic's ⌈width / 28⌉ × ⌈height / 28⌉ visual tokens, one per 28 × 28 pixel patch.
 func printReviewImageTokens(width: Int, height: Int) -> Int {
     guard width > 0, height > 0 else { return 0 }
     return ((width + 27) / 28) * ((height + 27) / 28)
@@ -1357,10 +1358,20 @@ func printReviewSendSummary(pictures: Int, hasContext: Bool) -> String {
 }
 
 /// Activity's detail: counts, cost and status only.
-func printReviewActivityDetail(steps: Int?, cost: AnthropicCostEstimate, status: String? = nil) -> String {
+func printReviewActivityDetail(steps: Int?, cost: AnthropicCostEstimate, status: String? = nil,
+                               costMayBeHigher: Bool = false) -> String {
     var parts: [String] = []
     if let steps { parts.append(steps == 1 ? "Plan with 1 step" : "Plan with \(steps) steps") }
     if let status { parts.append(status) }
-    parts.append(anthropicCostText(cost))
+    parts.append(anthropicCostText(cost) + (costMayBeHigher ? " or a little more" : ""))
     return parts.joined(separator: " · ")
+}
+
+/// What Review for Printing shows when asking Claude fails, and whether Anthropic may bill part of the reply that
+/// failed (`accessoryErrorMayHaveBeenBilled`: a reply cut off part-way, not a refusal before it began), as Design an
+/// Accessory and Suggest Accessories say.
+func printReviewFailureText(_ error: Error) -> (text: String, mayHaveBeenBilled: Bool) {
+    let text = error.localizedDescription
+    guard let failure = error as? AnthropicError, accessoryErrorMayHaveBeenBilled(failure) else { return (text, false) }
+    return (text + " Anthropic may bill the part Claude had already written.", true)
 }

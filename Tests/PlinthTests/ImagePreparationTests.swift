@@ -211,4 +211,11 @@ final class ImagePreparationTests: XCTestCase {
         XCTAssertEqual(imageSharingConsentStatusLine(granted: false, date: date), "Not allowed yet")
         XCTAssertEqual(imageSharingConsentStatusLine(granted: true, date: nil), "Allowed")
     }
+
+    func testResetPromisesOnlyWhatItDoes() {
+        // An open design keeps sending its photos with each message, so Reset applies to the next new request.
+        XCTAssertEqual(imageSharingResetHelp(.anthropic), "Ask again before the next new design, review or ideas request sends photos to Claude (Anthropic)")
+        XCTAssertEqual(imageSharingResetHelp(.meshy), "Ask again before the next photo goes to Meshy")
+        XCTAssertTrue(imageSharingSettingsFooter.contains("A design that is already open keeps sending its photos to Claude with each message until you close it."))
+    }
 }

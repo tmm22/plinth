@@ -230,6 +230,8 @@ func batchPersonaliseEligibility(_ order: OrderImportOrder, check: OrderImportCh
         case .failed(let reason)?: problem(reason); continue
         case nil: problem("Plinth hasn’t read the template \(link.templateName) yet."); continue
         }
+        // A template designed with Claude runs only once it passes Claude's code check (`scadClaudeTemplateRunProblem`).
+        if let refusal = file.claudeRunProblem { problem(refusal); continue }
         guard let parameter = file.template.parameters.first(where: { $0.name == link.valueName }) else {
             problem("\(file.url.lastPathComponent) has no value named “\(link.valueName)”. Edit “\(name)” in Saved Products.")
             continue
@@ -557,10 +559,15 @@ func batchPersonaliseMakeAndUpload(_ job: BatchPersonaliseJob, client: APIClient
         guard (try? loadPersonalisationTemplate(model.templateURL))?.source == model.templateSource else {
             return .notMade("The template \(model.templateURL.lastPathComponent) changed or moved since the file was checked. Choose the file again to review it.")
         }
+        // A template designed with Claude runs only once it passes Claude's code check, and under the memory cap.
+        if let refusal = scadClaudeTemplateRunProblem(model.templateSource, fileName: model.templateURL.lastPathComponent) {
+            return .notMade(refusal)
+        }
+        let memoryLimit = scadTemplateMemoryLimit(claudeWritten: scadTemplateIsClaudeWritten(model.templateSource))
         let assignments = [ScadAssignment(name: model.parameter.name, literal: scadLiteral(model.value, kind: .string))]
         let url = model.templateURL
         let generation = Task.detached(priority: .userInitiated) {
-            try await runOpenSCADProcess(executable: executable, templateURL: url, assignments: assignments)
+            try await runOpenSCADProcess(executable: executable, templateURL: url, assignments: assignments, maxMemoryBytes: memoryLimit)
         }
         let watcher = Task { @MainActor in
             while !Task.isCancelled {

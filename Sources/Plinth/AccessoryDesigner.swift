@@ -202,7 +202,7 @@ until the seller prints it.
 How you work
 - The photos show the object the accessory is for (or a sketch or an example). Photos have no reliable scale: take \
 sizes only from the typed measurements. If a size you need isn't measured, ask with ask_seller rather than guess, \
-unless a sensible default is clearly fine; then say what you assumed.
+unless a sensible default is clearly fine; then say what you assumed in render_scad's note.
 - Call render_scad with the complete OpenSCAD file. The app renders it with OpenSCAD on the seller's Mac and replies \
 with facts it measured itself (size, mesh check, wall thickness, overhangs and their heights, flat contact with the \
 bed, build-volume fit, the fit sizes your code echoed, OpenSCAD messages) and pictures from the three-quarter, front, \
@@ -211,9 +211,11 @@ side and top views. Look at them critically and fix what is wrong.
 sketch or an example of it, compare from the matching angles and look for differences in shape, features, positions \
 and proportions that matter (a missing notch, a cut-out on the wrong side, a curve that doesn't follow the object). \
 When they show only the object, check where the design meets it: cut-outs for ports and buttons, contact faces and \
-their positions. Fix what matters before you finish. If you keep a difference on purpose, say which and why.
+their positions. Fix what matters before you finish. If you keep a difference on purpose, say which and why in \
+render_scad's note.
 - If a size that must fit was only estimated, ask the seller with ask_seller to measure it with calipers rather than \
-adding the estimate's ±3 mm on each side. If they skip, use the estimate with generous clearance and say so.
+adding the estimate's ±3 mm on each side. If they skip, use the estimate with generous clearance and say so in \
+render_scad's note.
 - If the part carries weight (a hook, bracket, shelf or mount) and the seller hasn't said how much, ask about the load.
 - You have at most 4 renders and 10 replies, so plan the design before the first render and make each render count.
 - When the latest render is right, call finish_design. The app accepts finish_design only right after a render that is \
@@ -221,7 +223,9 @@ one closed solid within the 220 mm build volume. In photo_check, say in one or t
 the photos and any difference you kept on purpose; if the photos show the object rather than the accessory, say so \
 ("The photos show the object, not the accessory") and say how the design lines up with the object's features. Say it \
 "matches the photos"; never say it fits exactly or perfectly, because only a test print shows that.
-- Use exactly one tool in each reply. Keep any text outside tools short and plain: the seller reads it.
+- Use exactly one tool in each reply. Write what the seller should know about a render (an assumption, a difference \
+you keep on purpose) in render_scad's note, in one or two plain sentences: text outside tools may not reach the \
+seller. Keep any text outside tools short and plain.
 
 OpenSCAD conventions
 - Millimetres. Z is up. The part sits flat on the bed in the orientation it should print, with its lowest face on Z = 0.
@@ -235,8 +239,10 @@ hull() chains and deep recursion.
 - Report every size that has to fit with echo and its name, such as `echo("slot_width", slot_width);`: slot and gap \
 widths, hole diameters, inner lengths and depths. The app shows them to the seller beside the typed measurements and \
 sends them back with the facts.
-- No include, use, import(), surface(), dxf_ modules or file = arguments; everything in one file. The app refuses \
-those, and any text that looks like a file path.
+- No include, use, import(), import_stl/off/dxf, surface(), dxf_ modules or file = arguments; everything in one \
+file. Name every argument of linear_extrude and rotate_extrude (height =, angle =, center =); a plain number is fine \
+as linear_extrude's height. Plain ASCII outside strings and comments. The app refuses code that breaks these rules, \
+and any text that looks like a file path.
 
 Designing for FDM printing (Slant's settings above, no supports)
 - With 1 mm walls and 25% infill, a region much thicker than 2 mm is mostly sparse infill inside a 1 mm skin. Make \
@@ -302,6 +308,9 @@ point" or "below the 2 mm guideline"; say "checks found no problems" only when t
 - The app's measured facts outrank your intent: if they disagree, fix the code.
 """
 
+/// The longest render_scad note shown in the transcript.
+let accessoryRenderNoteMaximumLength = 600
+
 /// Tool names, as Claude calls them.
 enum AccessoryToolName {
     static let render = "render_scad"
@@ -313,16 +322,19 @@ enum AccessoryToolName {
 let accessoryTools: [AnthropicTool] = [
     AnthropicTool(
         name: AccessoryToolName.render,
-        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. The app replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures; when the code declares fit_test, also the facts of the fit-test piece the app renders from it. Code using include, use, import(), surface(), dxf_ modules or a file = argument, or text that looks like a file path, is refused without rendering.",
+        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. The app replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures; when the code declares fit_test, also the facts of the fit-test piece the app renders from it. Code using include, use, import(), import_stl/off/dxf, surface(), dxf_ modules or a file = argument, an unnamed argument to linear_extrude or rotate_extrude (other than a plain number as linear_extrude's height), a character other than plain ASCII outside strings and comments, or text that looks like a file path, is refused without rendering.",
         inputSchema: [
             "type": "object",
-            "properties": ["code": ["type": "string", "description": "The complete OpenSCAD file, at most 64 KB."]],
-            "required": ["code"],
+            "properties": [
+                "code": ["type": "string", "description": "The complete OpenSCAD file, at most 64 KB."],
+                "note": ["type": "string", "description": "For the seller, one or two plain sentences: what you assumed (a skipped question, an unmeasured size) or a difference from the photos you kept on purpose, and why. An empty string when there is nothing to say."]
+            ],
+            "required": ["code", "note"],
             "additionalProperties": false
         ]),
     AnthropicTool(
         name: AccessoryToolName.ask,
-        description: "Ask the seller one short question, such as a measurement you need or a choice between two designs. The seller's answer comes back as the result; they may skip it, in which case use your best judgement and say what you assumed.",
+        description: "Ask the seller one short question, such as a measurement you need or a choice between two designs. The seller's answer comes back as the result; they may skip it, in which case use your best judgement and say what you assumed in render_scad's note (or finish_design's summary if you don't render again).",
         inputSchema: [
             "type": "object",
             "properties": ["question": ["type": "string", "description": "One short, plain question."]],
@@ -371,11 +383,19 @@ struct AccessoryCostForecast: Equatable, Sendable {
 }
 
 /// Tokens Claude is assumed to write per reply (adaptive thinking at high effort plus code), and to keep per reply in
-/// the conversation, for the forecast only.
+/// the conversation, for the forecast only. Opus 5.5 keeps every earlier reply's thinking in the conversation, billed as
+/// input, so a reply adds to the history as much as it wrote. A reply may write up to `accessoryMaxTokens`, so neither
+/// figure is a ceiling (`accessoryForecastCaveat`).
 let accessoryForecastOutputTokensPerReply = 8_000
-let accessoryForecastHistoryTokensPerReply = 4_000
+let accessoryForecastHistoryTokensPerReply = accessoryForecastOutputTokensPerReply
 
-/// Image tokens, roughly one per 750 pixels (Anthropic's vision guidance).
+/// Follows the "all N replies" figure in both forecasts: it isn't a ceiling. Replies can be far longer than the
+/// forecast assumes, and the conversation is cached for 5 minutes, so a reply after a longer wait (the seller
+/// measuring for ask_seller, say) writes the whole conversation to the cache again.
+let accessoryForecastCaveat = "long replies, or a wait of more than 5 minutes before you answer Claude, cost more"
+
+/// Image tokens for the forecasts, one per 750 pixels: about 4% more than Anthropic's ⌈width / 28⌉ × ⌈height / 28⌉
+/// visual tokens (`printReviewImageTokens` uses that rule), which errs on the high side.
 func accessoryImageTokens(pixelWidth: Int, pixelHeight: Int) -> Int {
     max(1, (pixelWidth * pixelHeight + 749) / 750)
 }
@@ -463,24 +483,25 @@ func accessoryNextSendForecast(messages: [AnthropicMessageParam], repliesLeft: I
                                   typicalReplies: typicalReplies)
 }
 
-/// "Estimated cost of sending: about $0.40 if Claude needs 5 replies, at most about $1.10 if it uses all 10. …", shown
-/// beside the buttons that send again once a design has started.
+/// "Estimated cost of sending: about $0.40 if Claude needs 5 replies, about $1.20 if it uses all 10; long replies, …
+/// cost more. …", shown beside the buttons that send again once a design has started.
 func accessoryNextSendForecastText(_ forecast: AccessoryCostForecast, newRound: Bool) -> String {
     let limit = newRound ? "all \(forecast.maximumReplies)" : "the \(forecast.maximumReplies) left in this round"
     let estimate = forecast.typicalReplies < forecast.maximumReplies
-        ? "\(anthropicCostText(forecast.typical)) if Claude needs \(forecast.typicalReplies) replies, at most \(anthropicCostText(forecast.maximum)) if it uses \(limit)"
-        : "at most \(anthropicCostText(forecast.maximum)) if Claude uses \(limit)"
-    return "Estimated cost of sending: \(estimate). Anthropic bills your account."
+        ? "\(anthropicCostText(forecast.typical)) if Claude needs \(forecast.typicalReplies) replies, \(anthropicCostText(forecast.maximum)) if it uses \(limit)"
+        : "\(anthropicCostText(forecast.maximum)) if Claude uses \(limit)"
+    return "Estimated cost of sending: \(estimate); \(accessoryForecastCaveat). Anthropic bills your account."
 }
 
 /// Said once in Design an Accessory (and its Ideas) when no Claude key is saved.
 let accessoryMissingClaudeKeyText = "Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic)."
 
-/// "Estimated cost: about $0.90 for a typical design (5 replies), at most about $1.90 if Claude uses all 10. …"
+/// "Estimated cost: about $1.10 for a typical design (5 replies), about $2.20 if Claude uses all 10; long replies, …
+/// cost more. …"
 func accessoryCostForecastText(_ forecast: AccessoryCostForecast) -> String {
-    "Estimated cost: \(anthropicCostText(forecast.typical)) for a typical design (\(forecast.typicalReplies) replies), at most "
-        + "\(anthropicCostText(forecast.maximum)) if Claude uses all \(forecast.maximumReplies). Anthropic bills your account; "
-        + "the real cost is shown as Claude works."
+    "Estimated cost: \(anthropicCostText(forecast.typical)) for a typical design (\(forecast.typicalReplies) replies), "
+        + "\(anthropicCostText(forecast.maximum)) if Claude uses all \(forecast.maximumReplies); \(accessoryForecastCaveat). "
+        + "Anthropic bills your account; the real cost is shown as Claude works."
 }
 
 /// Adds two estimates; the total is complete only when both are.
@@ -1344,7 +1365,9 @@ func accessoryLibraryName(suggested: String, description: String) -> String {
 /// then Claude's code unchanged, so `fit_test` stays an adjustable value.
 func accessoryTemplateFileText(code: String, name: String) -> String {
     let title = name.split(whereSeparator: \.isNewline).joined(separator: " ")
-    var header = "// \(title)\n// Designed with Claude in the Plinth app. Check every measurement on a test print before selling.\n"
+    // The “Designed with Claude” line also marks the file as Claude-written for Personalise from Template
+    // (`scadTemplateIsClaudeWritten`), which then checks it, caps its memory and keeps it off Slant.
+    var header = "// \(title)\n// \(scadClaudeTemplateLine) Check every measurement on a test print before selling.\n"
     if accessoryFitTestDeclaration(code) == .ready {
         let parameters = scadTemplateParameters(code).parameters
         func named(_ name: String) -> String {
@@ -1415,14 +1438,20 @@ func accessoryFitTestTranscriptLine(_ outcome: AccessoryFitTestOutcome) -> Strin
     }
 }
 
-/// Anthropic's limit on pictures in one request.
+/// Plinth's own stop on pictures in one request, which keeps a design's requests and cost bounded. Anthropic accepts
+/// up to 600 on Opus 5.5 (100 on models with a 200K-token context window); above 20 a stricter per-image size limit
+/// applies, which Plinth's photos (≤ 1,568 px) and renders (512 px) already meet.
 let accessoryMaximumImagesPerRequest = 100
 
-let accessoryImageLimitText = "This conversation has too many pictures for Claude, so Plinth didn’t send it. Start Over, or save what you have."
+/// Shown when the loop stops before sending: no design is finished then, so no Save buttons show, only Start Over.
+let accessoryImageLimitText = "This conversation has too many pictures for Claude, so Plinth didn’t send it. Start Over to begin a new design."
 
 /// When the seller's answer or note would take the conversation over the picture limit: nothing changes, and a
 /// finished design keeps its Save buttons.
 let accessoryNoteImageLimitText = "Plinth didn’t send this to Claude: the conversation has too many pictures for Claude. Save what you have, or close this window and start a new design."
+
+/// The same refusal before the design is finished, when no Save buttons show: the round stops and Start Over shows.
+let accessoryNoteImageLimitUnfinishedText = "Plinth didn’t send this to Claude: the conversation has too many pictures for Claude. Start Over to begin a new design."
 
 /// Pictures in the messages: image blocks, and images inside tool results.
 func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
@@ -1506,7 +1535,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
         let trimmed = accessoryClipped(text, 1_000)
         transcript.append(AccessoryTranscriptEntry(kind: .answer(trimmed.isEmpty ? "Skipped" : trimmed)))
         let reply = trimmed.isEmpty
-            ? "The seller skipped this question. Use your best judgement and say what you assumed."
+            ? "The seller skipped this question. Use your best judgement and say what you assumed in render_scad's note (or finish_design's summary if you don't render again)."
             : "The seller answered: \(trimmed)"
         addResult(.toolResult(toolUseID: id, content: [.text(reply)]), for: id)
         questionToolUseID = nil
@@ -1544,8 +1573,10 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
     /// Refuses the seller's answer or note without changing the history, the phase of a finished design or `finish`.
     private func refuseForImageLimit() {
         imageLimitReached = true
-        transcript.append(AccessoryTranscriptEntry(kind: .notice(accessoryNoteImageLimitText)))
-        if phase != .finished { phase = .stopped(accessoryNoteImageLimitText) }
+        // Save buttons show only for a finished design, so only then does the notice suggest saving.
+        let text = phase == .finished ? accessoryNoteImageLimitText : accessoryNoteImageLimitUnfinishedText
+        transcript.append(AccessoryTranscriptEntry(kind: .notice(text)))
+        if phase != .finished { phase = .stopped(text) }
     }
 
     /// Resends the unanswered turn as it is, in a new round.
@@ -1653,7 +1684,7 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
                 halt(accessorySetAsideText(reply.stopReason))
                 return
             }
-            guard !reply.historyContent.isEmpty else {
+            guard reply.historyHasContent else {
                 halt("Claude sent an empty reply. Send Again sends the same request.")
                 return
             }
@@ -1702,6 +1733,10 @@ func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {
         switch use.name {
         case AccessoryToolName.render:
             let code = use.input["code"]?.stringValue ?? ""
+            // Claude's note for the seller travels in the tool input: on Opus 5.5, text written just before a tool
+            // call comes back as an empty progress-update thinking block, so the seller would never see it.
+            let note = accessoryClipped(use.input["note"]?.stringValue, accessoryRenderNoteMaximumLength)
+            if !note.isEmpty { transcript.append(AccessoryTranscriptEntry(kind: .claude(note))) }
             guard rendersThisRound < limits.maxRenders else {
                 addResult(.toolResult(toolUseID: use.id, content: [.text("No renders left in this round (\(limits.maxRenders) used). If the latest render is right, call finish_design; otherwise ask_seller or explain what you would change.")], isError: true), for: use.id)
                 return .next

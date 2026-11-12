@@ -109,7 +109,8 @@ extension AccessoryDesignerTests {
         XCTAssertEqual(answering.maximumReplies, 3)
         XCTAssertEqual(answering.typical, answering.maximum)
         let answerText = accessoryNextSendForecastText(answering, newRound: false)
-        XCTAssertTrue(answerText.contains("at most about $"), answerText)
+        XCTAssertTrue(answerText.contains(": about $"), answerText)
+        XCTAssertFalse(answerText.contains("at most"), answerText)
         XCTAssertTrue(answerText.contains("the 3 left in this round"), answerText)
         XCTAssertFalse(answerText.contains("needs"), answerText)
     }

@@ -208,6 +208,30 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertEqual(plan.notes, [])
     }
 
+    func testEnumValuesAreReadInAnyCase() throws {
+        // Structured outputs don't guarantee an enum string's case: "High" or "Repair" must not cost the one follow-up.
+        let mesh = try ball()
+        let input = planInput([step("Repair"), step("Orient", turn: "Y_DOWN"), step("scale_to_size", axis: "Z", mm: 60),
+                               step("plinth", shape: "Round", margin: 3, thickness: 3)],
+                              risks: [["part": "Tail", "issue": "Thin.", "severity": "High"]])
+        XCTAssertNil(anthropicSchemaProblem(input, schema: printReviewPlanTool.inputSchema))
+        let plan = decodePrintReviewPlan(input, context: context(mesh))
+        XCTAssertEqual(plan.steps.map(\.tool), ["repair", "orient", "scale_to_size", "plinth"])
+        XCTAssertEqual(plan.steps[1].action, .orient(.yDown))
+        XCTAssertEqual(plan.steps[2].action, .scaleToSize(axis: .z, mm: 60))
+        XCTAssertEqual(plan.risks.map(\.severity), [.high])
+        XCTAssertEqual(plan.notes, [])
+        // Another value is still refused.
+        XCTAssertNotNil(anthropicSchemaProblem(planInput([], risks: [["part": "Tail", "issue": "Thin.", "severity": "Severe"]]),
+                                               schema: printReviewPlanTool.inputSchema))
+        XCTAssertTrue(anthropicJSONEqualForSchema("Snug", "snug"))
+        XCTAssertFalse(anthropicJSONEqualForSchema("snug", "snugger"))
+        XCTAssertTrue(anthropicJSONEqualForSchema(1, 1.0))
+        XCTAssertEqual(anthropicEnumValue(.string("Snug"), as: AccessoryIdeaFit.self), .snug)
+        XCTAssertNil(anthropicEnumValue(.string("Snugger"), as: AccessoryIdeaFit.self))
+        XCTAssertNil(anthropicEnumValue(nil, as: AccessoryIdeaFit.self))
+    }
+
     func testBadAndOutOfRangeSettingsAreShownButNeverRunnable() throws {
         let mesh = try ball()
         let plan = decodePrintReviewPlan(planInput([
@@ -371,6 +395,23 @@ final class PrintReviewTests: XCTestCase {
         XCTAssertEqual(printReviewActivityDetail(steps: 3, cost: printReviewCostSoFar(replies)), "Plan with 3 steps · about $4.00")
         XCTAssertEqual(printReviewActivityDetail(steps: nil, cost: AnthropicCostEstimate(usd: 0, complete: true), status: "Stopped"),
                        "Stopped · under $0.01")
+    }
+
+    func testAFailedReplySaysItMayBeBilled() {
+        // An error part-way through the reply: Anthropic may bill what Claude had written.
+        let partWay = printReviewFailureText(AnthropicError.stream(type: "overloaded_error", message: ""))
+        XCTAssertTrue(partWay.mayHaveBeenBilled)
+        XCTAssertTrue(partWay.text.hasSuffix(" Anthropic may bill the part Claude had already written."), partWay.text)
+        XCTAssertTrue(printReviewFailureText(AnthropicError.incomplete).mayHaveBeenBilled)
+        XCTAssertEqual(printReviewActivityDetail(steps: nil, cost: AnthropicCostEstimate(usd: 0, complete: true), status: "Didn’t finish",
+                                                 costMayBeHigher: partWay.mayHaveBeenBilled),
+                       "Didn’t finish · under $0.01 or a little more")
+        // A refusal before the reply began isn't billed.
+        let refused = printReviewFailureText(AnthropicError.http(status: 529, type: "overloaded_error", message: "", retryAfter: nil))
+        XCTAssertFalse(refused.mayHaveBeenBilled)
+        XCTAssertFalse(refused.text.contains("may bill"))
+        XCTAssertFalse(printReviewFailureText(AnthropicError.missingKey).mayHaveBeenBilled)
+        XCTAssertFalse(printReviewFailureText(StudioError("Other")).mayHaveBeenBilled)
     }
 
     // MARK: Running steps

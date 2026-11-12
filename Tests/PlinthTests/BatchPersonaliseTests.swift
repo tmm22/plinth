@@ -227,6 +227,23 @@ final class BatchPersonaliseTests: XCTestCase {
         XCTAssertFalse(reasons(order([("KEY", "1", "Sam"), ("TIDY", "1", "Alex")]), inputs(for: mixed), products: mixed).isEmpty)
     }
 
+    func testClaudeDesignedTemplatesMustPassClaudesCodeCheck() throws {
+        let products = [linkedProduct()]
+        let order = order([("KEY", "1", "Sam")])
+        let check = orderImportCheck(order, context: context(products))
+        let claude = "// Keychain\n// \(scadClaudeTemplateLine) Check every measurement on a test print before selling.\n\n" + templateSource
+        XCTAssertNotNil(plan(batchPersonaliseEligibility(order, check: check, products: products, inputs: inputs(for: products, source: claude))))
+        let refused = claude + "\nimport_off(str(chr(47), \"x\"));\n"
+        guard case .unavailable(let problems) = batchPersonaliseEligibility(order, check: check, products: products,
+                                                                            inputs: inputs(for: products, source: refused)) else {
+            return XCTFail("a Claude-designed template that fails the check can't be used")
+        }
+        XCTAssertTrue(problems.contains { $0.contains("designed with Claude") && $0.contains("keychain.scad") }, "\(problems)")
+        // The same code without the line is the seller's own template.
+        let own = templateSource + "\nimport_off(str(chr(47), \"x\"));\n"
+        XCTAssertNotNil(plan(batchPersonaliseEligibility(order, check: check, products: products, inputs: inputs(for: products, source: own))))
+    }
+
     func testItemsShareModelsOnlyForTheSameText() throws {
         let products = [linkedProduct(quantity: 2)]
         let order = order([("KEY", "1", "Sam"), ("KEY", "3", "Alex"), ("KEY", "1", "Sam"), ("KEY", "1", "")])
@@ -476,6 +493,21 @@ final class BatchPersonaliseTests: XCTestCase {
                                 openSCAD: try fakeOpenSCAD(in: folder, stl: closedSTL), calls: calls)
         guard case .notMade = changed else { return XCTFail("\(changed)") }
         XCTAssertEqual(calls.uploads, 0)
+    }
+
+    @MainActor
+    func testClaudeDesignedTemplatesThatFailTheCheckNeverRun() async throws {
+        let folder = try folder()
+        let template = folder.appendingPathComponent("keychain.scad")
+        let refused = "// \(scadClaudeTemplateLine)\n" + templateSource + "\nlinear_extrude(name) square(1);\n"
+        try refused.write(to: template, atomically: true, encoding: .utf8)
+        let calls = Calls()
+        let outcome = await run(job(templateURL: template, source: refused, values: ["Sam"]),
+                                openSCAD: try fakeOpenSCAD(in: folder, stl: closedSTL), calls: calls)
+        guard case .notMade(let reason) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertTrue(reason.contains("designed with Claude"), reason)
+        XCTAssertEqual(calls.paces + calls.uploads, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("args.txt").path), "OpenSCAD never ran")
     }
 
     @MainActor
