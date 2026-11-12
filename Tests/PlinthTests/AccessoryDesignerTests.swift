@@ -194,6 +194,19 @@ final class AccessoryDesignerTests: XCTestCase {
         XCTAssertEqual(accessoryImageTokens(pixelWidth: 750, pixelHeight: 1), 1)
     }
 
+    func testCostForecastIsNoCeiling() throws {
+        // Opus 5.5 keeps every earlier reply's thinking in the conversation, billed as input.
+        XCTAssertGreaterThanOrEqual(accessoryForecastHistoryTokensPerReply, accessoryForecastOutputTokensPerReply)
+        let forecast = accessoryCostForecast(photoSizes: [(1568, 1176)], textCharacters: 600)
+        let next = try XCTUnwrap(accessoryNextSendForecast(messages: [.user(text: "Make a stand.")], repliesLeft: 10))
+        let left = try XCTUnwrap(accessoryNextSendForecast(messages: [.user(text: "Make a stand.")], repliesLeft: 2))
+        for text in [accessoryCostForecastText(forecast), accessoryNextSendForecastText(next, newRound: true),
+                     accessoryNextSendForecastText(left, newRound: false)] {
+            XCTAssertFalse(text.contains("at most"), text)
+            XCTAssertTrue(text.contains("long replies, or a wait of more than 5 minutes before you answer Claude, cost more"), text)
+        }
+    }
+
     // MARK: Render facts
 
     func testAnalysisOfOneBoxIsAcceptable() throws {
@@ -452,6 +465,32 @@ final class AccessoryDesignerTests: XCTestCase {
         XCTAssertEqual(content.count, 10)
         XCTAssertEqual(stub.requests[1].messages.map(\.role), [.user, .assistant, .user])
         if case .claude(let text) = run.transcript.first?.kind { XCTAssertEqual(text, "Here’s a first version.") } else { XCTFail("Claude's text wasn't shown") }
+    }
+
+    func testRenderNoteReachesTheSeller() async throws {
+        // render_scad requires a note, so Claude's assumptions reach the seller even when Opus 5.5 turns the text
+        // before a tool call into an empty progress-update thinking block.
+        let renderTool = try XCTUnwrap(accessoryTools.first { $0.name == AccessoryToolName.render })
+        XCTAssertEqual(renderTool.inputSchema["required"], ["code", "note"])
+        XCTAssertEqual(renderTool.inputSchema["properties"]?["note"]?["type"], "string")
+        XCTAssertNil(anthropicSchemaProblem(["code": .string(goodCode), "note": ""], schema: renderTool.inputSchema))
+        XCTAssertNotNil(anthropicSchemaProblem(["code": .string(goodCode)], schema: renderTool.inputSchema), "the note is required")
+        XCTAssertTrue(accessorySystemPrompt.contains("say what you assumed in render_scad's note"))
+
+        let rendered = try render(try boxSTL())
+        let note = "I assumed the phone is 9.5 mm thick, because you skipped that question."
+        let stub = StubClaude([.success(toolCall("t1", "render_scad", ["code": .string(goodCode), "note": .string(note)])),
+                               .success(toolCall("t2", "render_scad", ["code": .string(goodCode), "note": "  "])),
+                               .success(toolCall("t3", "finish_design", finishInput))])
+        let run = makeRun(stub) { .rendered(rendered) }
+        run.start(firstTurn: .user(text: "brief"))
+        await settle(run)
+        XCTAssertEqual(run.phase, .finished)
+        let notes = run.transcript.compactMap { entry -> String? in if case .claude(let text) = entry.kind { return text }; return nil }
+        XCTAssertEqual(notes, [note], "a blank note shows nothing")
+        guard case .claude = run.transcript.first?.kind, case .render = run.transcript.dropFirst().first?.kind else {
+            return XCTFail("the note comes before its render")
+        }
     }
 
     func testFinishBeforeAnAcceptableRenderIsRefused() async throws {
@@ -1081,7 +1120,8 @@ extension AccessoryDesignerTests {
 
         // None of it promises a fit.
         for text in [accessoryFitTestPrintAdvice(code: fitTestCode), accessoryFitTestPrintAdvice(code: goodCode), accessoryPhotoCheckCaption,
-                     accessoryFitTestChecksCaption, accessoryFitTestSavedText, accessoryNoteImageLimitText] + lines {
+                     accessoryFitTestChecksCaption, accessoryFitTestSavedText, accessoryNoteImageLimitText,
+                     accessoryNoteImageLimitUnfinishedText] + lines {
             for word in ["guarantee", "perfect", "will fit", "safe", "strong"] { XCTAssertFalse(text.lowercased().contains(word), "\(text): \(word)") }
         }
     }
@@ -1397,9 +1437,14 @@ extension AccessoryDesignerTests {
         run.answer("9.5 mm")
         XCTAssertEqual(stub.requests.count, 1, "Nothing was sent")
         XCTAssertEqual(run.messages, history)
-        XCTAssertEqual(run.phase, .stopped(accessoryNoteImageLimitText))
+        XCTAssertEqual(run.phase, .stopped(accessoryNoteImageLimitUnfinishedText), "No Save buttons show, so the text doesn't offer them")
         XCTAssertFalse(run.canTryAgain)
         XCTAssertFalse(run.canSendNote)
+        for text in [accessoryNoteImageLimitUnfinishedText, accessoryImageLimitText] {
+            XCTAssertFalse(text.contains("Save"), text)
+            XCTAssertFalse(text.contains("save"), text)
+            XCTAssertTrue(text.contains("Start Over"), text)
+        }
     }
 
     func testTooManyPicturesStopsBeforeSending() async throws {
