@@ -1046,7 +1046,8 @@ func scadClaudeTemplateRunProblem(_ source: String, fileName: String) -> String?
 func scadClaudeTemplateRefusalReason(_ source: String) -> String {
     if source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "the file is empty" }
     if source.utf8.count > scadSafetyMaximumBytes { return "it’s larger than \(scadSafetyMaximumBytes / 1024) KB" }
-    if source.unicodeScalars.contains(where: { $0.value < 0x20 && $0 != "\n" && $0 != "\r" && $0 != "\t" }) {
+    if source.unicodeScalars.contains(where: { $0.value < 0x20 && $0 != "\n" && $0 != "\r" && $0 != "\t" })
+        || scadSafetyHasLoneCarriageReturn(source) {
         return "it contains hidden control characters"
     }
     let scan = scadSafetyScan(source)

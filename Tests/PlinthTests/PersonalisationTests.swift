@@ -417,6 +417,7 @@ final class PersonalisationTests: XCTestCase {
             ("/* never closed\ncube(1);", "it ends inside a comment or text, or has an unusual character, such as a no-break space, outside its text and comments"),
             ("cube(1);\u{00A0}", "it ends inside a comment or text, or has an unusual character, such as a no-break space, outside its text and comments"),
             ("cube(1);\u{0007}", "it contains hidden control characters"),
+            ("// note\rimport(\"a\");\ncube(1);", "it contains hidden control characters"),
             (String(repeating: "cube(1);\n", count: scadSafetyMaximumBytes / 8), "it’s larger than 64 KB"),
         ]
         for (code, reason) in cases {

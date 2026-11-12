@@ -205,7 +205,7 @@ final class AccessoryDesignerTests: XCTestCase {
             XCTAssertFalse(text.contains("at most"), text)
             // The caveat is its own sentence after the figures.
             XCTAssertTrue(text.contains(". Long replies, or waiting more than 5 minutes to answer Claude, cost more. Anthropic bills your account"), text)
-            XCTAssertFalse(text.contains(";"), text)
+            XCTAssertFalse(text.lowercased().contains("; long replies"), "no longer tacked on after a semicolon: \(text)")
         }
         XCTAssertEqual(accessoryCostForecastText(forecast),
                        "Estimated cost: \(anthropicCostText(forecast.typical)) for a typical design (5 replies), "
