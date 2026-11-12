@@ -273,7 +273,8 @@ func replicaPhotoPickerMessage(_ view: ImageTo3DPhotoView) -> String {
 func replicaHigherDetailNote(service: ImageTo3DService) -> String {
     let what: String
     switch service {
-    case .meshy: what = "Meshy generates the shape at Ultra 2K for finer surface detail, for \(meshyHigherDetailCredits) more credits each time."
+    // Meshy doesn't document how large a 2K model is, and it isn't remeshed, so it may pass the download limit.
+    case .meshy: what = "Meshy generates the shape at Ultra 2K for finer surface detail, for \(meshyHigherDetailCredits) more credits each time. Such a model can be very large: if it is over 128 MB, Plinth can’t download it, and the credits are spent."
     case .tripo: what = "Tripo generates detailed geometry for \(tripoHigherDetailCredits) more credits each time."
     }
     return "\(what) Plinth keeps up to \(replicaDisplayTriangleCeiling.formatted()) triangles of it. Fine detail can print differently, so check the result."
@@ -392,7 +393,8 @@ enum ReplicaResumeAction: Equatable, Sendable {
     case keepWaiting
     /// Download the finished model again (nothing is created).
     case tryDownloadAgain
-    /// The conversion was definitely refused (nothing created), so sending it now is a first send. Spends credits.
+    /// The conversion was definitely refused (nothing created), or its task ended without a file (not charged), so
+    /// sending a new one now is a first send. Spends credits.
     case tryConversionAgain
 
     var title: String {
@@ -437,7 +439,11 @@ func replicaCreditsNote(_ stop: ImageTo3DStop) -> String? {
     guard stop.creditsMayHaveBeenSpent else { return "No credits were spent." }
     switch stop.reason {
     case .modelTooLarge: return nil
-    case .taskEnded(.failed): return "\(stop.service.title) usually refunds a task that failed; check your balance."
+    // The generation itself ended (failed, refused by content rules, expired or cancelled): Meshy refunds a failed
+    // task, and Tripo charges nothing for one (it reports banned and expired tasks as failed).
+    case .taskEnded: return "\(stop.service.title) usually refunds a task it ended; check your balance."
+    case .conversionRefused:
+        return "\(stop.service.title) charged for the model itself; a conversion that was refused or failed usually isn’t charged. Check your balance."
     default: return "\(stop.service.title) may have charged for this."
     }
 }
@@ -497,7 +503,18 @@ func replicaCloseWarning(hasUnsavedModel: Bool, lastStop: ImageTo3DStop?, servic
                                    confirmTitle: "Close Without Saving")
     }
     guard let lastStop, lastStop.creditsMayHaveBeenSpent else { return nil }
+    // The service ended the task: nothing is running, nothing is recorded, and it usually refunds the task, so closing
+    // loses nothing (and quitting doesn't ask either).
+    if case .taskEnded = lastStop.reason { return nil }
     let name = lastStop.service.title
+    if lastStop.reason == .conversionRefused {
+        // The model is finished and paid for; only its conversion didn't go through. The stop is recorded.
+        let task = lastStop.taskID.map { " (task \($0))" } ?? ""
+        let resume = replicaResumeAction(for: lastStop).map { " Once this closes, Plinth can’t \($0.title) for it." } ?? ""
+        return ReplicaCloseWarning(title: "Close without the model \(name) made?",
+                                   message: "\(name) made the model and charged for it, but its conversion to a printable file didn’t go through.\(resume) The model stays on \(name)’s dashboard\(task). Plinth remembers this request until you quit, and asks before generating again.",
+                                   confirmTitle: "Close")
+    }
     if lastStop.reason == .modelTooLarge {
         // Finished and paid for; nothing is running, and nothing more can be done with it here.
         let kept = lastStop.service == .meshy ? " (Meshy keeps it for 3 days)" : ""

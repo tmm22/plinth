@@ -2,7 +2,8 @@ import Foundation
 
 // MARK: - Meshy
 //
-// Meshy's Open API (docs.meshy.ai, read 24–25 Oct 2026; not tested live). Base `https://api.meshy.ai/openapi`, header
+// Meshy's Open API (docs.meshy.ai, read 24–25 Oct 2026 and checked again 12 Nov 2026; not tested live). Base
+// `https://api.meshy.ai/openapi`, header
 // `Authorization: Bearer msy_…`. Every create answers 202 `{"result": "<task id>"}` and is then read with
 // `GET …/<id>`; Meshy has no idempotency key and says a 4xx means no task was created, so creates are sent once.
 //   - Image to 3D: `POST /openapi/v1/image-to-3d` (`image_url`, a data URI, JPEG/PNG/WebP ≤ 20 MB), read
@@ -20,10 +21,13 @@ import Foundation
 //   - Analyze Printability (free): `POST /openapi/v1/print/analyze` from a finished task (the docs list Image to 3D and
 //     Multi-Image to 3D), read `GET /openapi/v1/print/analyze/{id}`; `printability` holds the verdict and counts.
 //   - Repair Printability (10 credits): `POST /openapi/v1/print/repair`, read `GET /openapi/v1/print/repair/{id}`.
-//     From a task ID Meshy always repairs the task's GLB and returns GLB only, so Studio converts the result.
+//     From a task ID Meshy always repairs the task's GLB and returns GLB only, so Studio converts the result. The
+//     input task must have a GLB ("Missing GLB" is a documented error), which Plinth's STL-only generations don't
+//     have; no screen uses the repair.
 //   - Convert (1 credit): `POST /openapi/v1/convert` (`input_task_id` or `model_url`, `target_formats`), read
-//     `GET /openapi/v1/convert/{id}`. Whether Convert takes a repair task's ID isn't documented; after a definite
-//     refusal (400/422, so nothing was created) Studio sends the repair's own GLB link as `model_url` instead.
+//     `GET /openapi/v1/convert/{id}`. Sent only after a repair, never after a generation (`needsConversion`).
+//     Whether Convert takes a repair task's ID isn't documented; after a definite refusal (400/422, so nothing was
+//     created) Studio sends the repair's own GLB link as `model_url` instead.
 //   - Running tasks answer with `Retry-After` (seconds), used as the poll interval.
 //   - Balance: `GET /openapi/v1/balance` → `{"balance": …}`.
 //   - Errors: `{"message": "…"}`; 402 = not enough credits or the Free plan (which has no API keys); 429 = rate or
@@ -331,9 +335,11 @@ struct MeshyClient: ImageTo3DProvider {
         }
     }
 
-    /// Image to 3D makes STL and 3MF directly; a repair gives GLB only, so it needs Convert.
+    /// Only a repair needs Convert: from a task ID Meshy repairs the GLB and returns GLB only. A generation is asked for
+    /// STL and Meshy returns the formats asked for, so one without a printable link stops as `downloadFailed` (Try
+    /// Download Again reads it again and creates nothing) instead of spending a credit the seller wasn't shown.
     func needsConversion(after status: ImageTo3DTaskStatus, kind: ImageTo3DTaskKind, to format: ImageTo3DOutputFormat) -> Bool {
-        kind != .conversion && modelLink(in: status, kind: kind, preferred: format) == nil
+        kind == .repair && modelLink(in: status, kind: kind, preferred: format) == nil
     }
 
     /// Convert (1 credit), sent once by task ID. Only if Meshy definitely refuses that (400/422: nothing created) and

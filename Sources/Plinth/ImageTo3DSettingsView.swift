@@ -24,7 +24,7 @@ extension ImageTo3DService {
         case .meshy:
             return "Meshy’s API needs a paid plan: free accounts can’t make API keys. A model costs about \(meshyImageTo3DMeshOnlyCredits) credits (mesh only) from one photo or up to four, plus \(meshyHigherDetailCredits) if you choose Higher detail, and Check Printability with Meshy is free. Meshy deletes models made through the API after 3 days."
         case .tripo:
-            return "Tripo’s API is paid for with credits (1 credit = US$0.01); there’s no free API plan. A replica costs about \(tripoImageToModelCredits + tripoConvertBasicCredits) credits from one photo or up to four, including its conversion to STL, plus \(tripoHigherDetailCredits) if you choose Higher detail. Keys work only on the Tripo site they were made on."
+            return "Tripo’s API is paid for with credits (1 credit = US$0.01 on tripo3d.ai, or ¥0.07 on tripo3d.com); there’s no free API plan. A replica costs about \(tripoImageToModelCredits + tripoConvertBasicCredits) credits from one photo or up to four, including its conversion to STL, plus \(tripoHigherDetailCredits) if you choose Higher detail. Keys work only on the Tripo site they were made on."
         }
     }
 
@@ -40,6 +40,13 @@ extension ImageTo3DService {
 }
 
 let imageTo3DSettingsResponsibilityNote = "Generate only objects you have the right to copy. Trademarks, designs and other people’s work stay theirs, and checking a generated model’s licence and intellectual property is your responsibility. Keys are kept in the macOS Keychain on this Mac and sent only to the service’s own API."
+
+/// Why the Tripo site can't change now, or nil. A Tripo key works only on the site it was made on, and a saved key
+/// passed Save & Test on the site chosen then: changing the site would send that key, and the first photo, to the
+/// other site's API untested.
+func imageTo3DTripoSiteChangeBlockedReason(hasKey: Bool) -> String? {
+    hasKey ? "Remove the Tripo key to change the site: a key works only on the site it was made on." : nil
+}
 
 /// The status line after a successful Save & Test or Test Saved Key.
 func imageTo3DKeyTestStatus(_ balance: ImageTo3DBalance, saved: Bool) -> String {
@@ -67,16 +74,20 @@ struct ImageTo3DSettingsSection: View {
             }
             .disabled(testing)
             if service == .tripo {
+                let siteLocked = imageTo3DTripoSiteChangeBlockedReason(hasKey: connection.hasKey(.tripo))
                 Picker("Tripo site", selection: $connection.tripoRegion) {
                     ForEach(TripoRegion.allCases) { Text($0.title).tag($0) }
                 }
-                .disabled(testing)
+                .disabled(testing || siteLocked != nil)
+                if let siteLocked {
+                    Text(siteLocked).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
             if connection.hasKey(service) {
                 LabeledContent("API key", value: "Saved in the Keychain")
             }
+            // No onSubmit: Return never sends the key anywhere.
             SecureField(connection.hasKey(service) ? "Replace key" : "API key", text: $keyField, prompt: Text(service.keyPrompt))
-                .onSubmit { saveAndTest() }
             if let advice = imageTo3DKeyPrefixAdvice(keyField, service: service) {
                 Text(advice).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }

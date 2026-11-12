@@ -143,9 +143,10 @@ func accessoryDesignQuitItems(designStarted: Bool, ideasHeld: Bool, suggesting: 
 }
 
 /// What the replica sheet would lose on quitting. A generation in flight is counted by its own token, and a stop whose
-/// outcome is unknown by `ImageTo3DConnection.unconfirmedRequests` (`imageTo3DStopIsUnconfirmed`). Close also asks
-/// after a stop whose outcome is known (a task the service ended, or a model too large to read, which stays on its
-/// dashboard); quitting loses nothing there that closing doesn't, so it doesn't ask.
+/// outcome is unknown by `ImageTo3DConnection.unconfirmedRequests` (`imageTo3DStopIsUnconfirmed`; a conversion that
+/// was refused or ended is one, since the paid model waits for Try Conversion Again). Close also asks after a model too
+/// large to read, which stays on its dashboard; quitting loses nothing there that closing doesn't, so it doesn't ask. A
+/// task the service ended asks neither: nothing runs, nothing is recorded, and it is usually refunded.
 func replicaDesignQuitItems(hasUnsavedModel: Bool) -> [DesignQuitItem] {
     hasUnsavedModel ? [.unsavedReplica] : []
 }

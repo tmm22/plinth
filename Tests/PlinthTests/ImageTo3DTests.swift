@@ -235,9 +235,26 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertEqual(tripoError(status: 429, body: Data(#"{"code":2000,"message":"You have exceeded the limit of generation"}"#.utf8), retryAfter: "30", secrets: []),
                        .rateLimited(service: .tripo, retryAfter: 30))
         XCTAssertEqual(tripoError(status: 429, body: Data(#"{"code":1007}"#.utf8), retryAfter: nil, secrets: []), .rateLimited(service: .tripo, retryAfter: nil))
-        if case .http(_, let status, let code, _) = tripoError(status: 401, body: Data(#"{"code":1000,"message":"Invalid API Key"}"#.utf8), retryAfter: nil, secrets: []) {
-            XCTAssertEqual(status, 401); XCTAssertEqual(code, 1000)
+        // Live, keyless: 401 {"code":2,"message":"Authentication required"}.
+        if case .http(_, let status, let code, _) = tripoError(status: 401, body: Data(#"{"code":2,"message":"Authentication required"}"#.utf8), retryAfter: nil, secrets: []) {
+            XCTAssertEqual(status, 401); XCTAssertEqual(code, 2)
         } else { XCTFail() }
+        for code in [2, 1002] {
+            let error = tripoError(status: 200, body: Data(#"{"code":\#(code),"message":"Authentication failed"}"#.utf8), retryAfter: nil, secrets: [])
+            XCTAssertEqual(error, .http(service: .tripo, status: 401, code: code, message: "Authentication failed"))
+            XCTAssertFalse(imageTo3DCreateOutcomeUnknown(error), "an authentication failure is a refusal")
+        }
+        // 1000 and 1001 are Tripo's server errors (HTTP 500 in its docs): a create that got one, even on a 200 or a
+        // plain 4xx, may have been made.
+        for status in [200, 400] {
+            for code in [1000, 1001] {
+                let error = tripoError(status: status, body: Data(#"{"code":\#(code),"message":"Unknown server error"}"#.utf8), retryAfter: nil, secrets: [])
+                XCTAssertEqual(error, .http(service: .tripo, status: 500, code: code, message: "Unknown server error"), "\(status) \(code)")
+                XCTAssertTrue(imageTo3DCreateOutcomeUnknown(error), "\(status) \(code)")
+                XCTAssertTrue(imageTo3DReadIsTransient(error), "a read is tried again")
+                guard case .unknown = imageTo3DCreateResult(.failure(error), knownTaskID: nil) else { return XCTFail("\(status) \(code)") }
+            }
+        }
         // A 200 carrying an error code is a definite refusal, never an unknown outcome.
         let refusal = tripoError(status: 200, body: Data(#"{"code":2008,"message":"Content policy violation"}"#.utf8), retryAfter: nil, secrets: [])
         XCTAssertEqual(refusal, .http(service: .tripo, status: 400, code: 2008, message: "Content policy violation"))
@@ -264,6 +281,17 @@ final class ImageTo3DTests: XCTestCase {
         let result = await TripoClient(apiKey: "tsk_secretkey1", transport: transport)
             .createGeneration(image: jpeg, options: ImageTo3DOptions())
         guard case .unknown(nil, .http(_, 503, 2010, _)) = result else { return XCTFail("\(result)") }
+
+        // A 200 or 400 carrying Tripo's server-error code 1000 or 1001 is unknown too, never a refusal.
+        for (status, code) in [(200, 1000), (400, 1001)] {
+            let server = ScriptedTransport([
+                .reply(200, #"{"code":0,"data":{"file_token":"file_1"}}"#, [:]),
+                .reply(status, #"{"code":\#(code),"message":"Fatal server error"}"#, [:])
+            ])
+            let created = await TripoClient(apiKey: "tsk_secretkey1", transport: server).createGeneration(image: jpeg, options: ImageTo3DOptions())
+            guard case .unknown(nil, .http(_, 500, code, _)) = created else { return XCTFail("\(status) \(code): \(created)") }
+            XCTAssertEqual(server.posts.count, 2, "sent once")
+        }
     }
 
     func testTripoRequestBodies() {
@@ -306,13 +334,25 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertNil(imageTo3DDownloadURLProblem(URL(string: "https://assets.meshy.ai/a/model.stl?Expires=1")!))
         for bad in ["http://assets.meshy.ai/model.stl", "https://user:pw@assets.meshy.ai/m.stl", "https://assets.meshy.ai/m.stl#x",
                     "https://127.0.0.1/m.stl", "https://[::1]/m.stl", "https://localhost/m.stl", "https://printer.local/m.stl",
-                    "file:///tmp/m.stl", "ftp://example.com/m.stl"] {
-            XCTAssertNotNil(imageTo3DDownloadURLProblem(URL(string: bad)!), bad)
+                    "file:///tmp/m.stl", "ftp://example.com/m.stl",
+                    // Other spellings of local names and loopback that URLSession resolves.
+                    "https://LOCALHOST/m.stl", "https://localhost./m.stl", "https://printer.local./m.stl", "https://PRINTER.LOCAL/m.stl",
+                    "https://127.1/m.stl", "https://2130706433/m.stl", "https://017700000001/m.stl", "https://0x7f000001/m.stl",
+                    "https://0x7f.0.0.1/m.stl", "https://127.0x1/m.stl", "https://127.0.0.1./m.stl", "https://router/m.stl",
+                    "https://[fe80::1%25en0]/m.stl"] {
+            guard let url = URL(string: bad) else { continue }
+            XCTAssertNotNil(imageTo3DDownloadURLProblem(url), bad)
+        }
+        for good in ["https://cdn.tripo3d.ai/output/converted-model", "https://CDN.Tripo3D.ai./m.stl", "https://cdn.meshy.ai/m.stl",
+                     "https://b.s3.us-east-1.amazonaws.com/a.stl?X-Amz-Signature=1"] {
+            XCTAssertNil(imageTo3DDownloadURLProblem(URL(string: good)!), good)
         }
         let source = URL(string: "https://cdn.tripo3d.ai/a.stl")
         XCTAssertTrue(imageTo3DRedirectAllowed(from: source, to: URL(string: "https://d1.cloudfront.net/a.stl?sig=1")))
         XCTAssertFalse(imageTo3DRedirectAllowed(from: source, to: URL(string: "http://d1.cloudfront.net/a.stl")))
         XCTAssertFalse(imageTo3DRedirectAllowed(from: source, to: URL(string: "https://10.0.0.1/a.stl")))
+        XCTAssertFalse(imageTo3DRedirectAllowed(from: source, to: URL(string: "https://LOCALHOST/a.stl")))
+        XCTAssertFalse(imageTo3DRedirectAllowed(from: source, to: URL(string: "https://2130706433/a.stl")))
         XCTAssertFalse(imageTo3DRedirectAllowed(from: URL(string: "http://cdn.example.com/a"), to: URL(string: "https://cdn.example.com/b")))
         XCTAssertFalse(imageTo3DRedirectAllowed(from: source, to: nil))
 
@@ -372,7 +412,10 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertNil(imageTo3DKeyPrefixAdvice("msy_abcdefgh", service: .meshy))
         XCTAssertNotNil(imageTo3DKeyPrefixAdvice("abcdefgh", service: .meshy))
         XCTAssertNil(imageTo3DKeyPrefixAdvice("tsk_abcdefgh", service: .tripo))
-        XCTAssertNil(imageTo3DKeyPrefixAdvice("sk-abcdefgh", service: .tripo), "Tripo's docs show both prefixes")
+        // Tripo's docs now use tsk_ throughout: another prefix gets advice, never a refusal.
+        XCTAssertEqual(imageTo3DKeyPrefixAdvice("sk-abcdefgh", service: .tripo), "Tripo keys usually begin with tsk_.")
+        XCTAssertNil(imageTo3DKeyProblem("sk-abcdefgh", service: .tripo))
+        XCTAssertEqual(imageTo3DKeyPrefixAdvice("tsk_abcdefgh", service: .meshy), "This looks like a Tripo key. Choose Tripo above, or paste a Meshy key.")
         XCTAssertEqual(imageTo3DKeyPrefixAdvice("msy_abcdefgh", service: .tripo), "This looks like a Meshy key. Choose Meshy above, or paste a Tripo key.")
         XCTAssertNotNil(imageTo3DKeyPrefixAdvice("sk-ant-api03-x", service: .meshy))
         XCTAssertEqual(ImageTo3DService.meshy.keychainAccount, "meshy-api-key")
@@ -466,6 +509,21 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertFalse(imageTo3DReadIsTransient(ImageTo3DError.http(service: .meshy, status: 404, code: nil, message: "")))
     }
 
+    func testSessionTimeoutsLetALargeUploadFinish() {
+        // The idle limit catches a stall; the whole-request limit leaves room for a 32 MB multi-photo body on a slow uplink.
+        let configuration = imageTo3DSessionConfiguration(timeout: imageTo3DRequestTimeout)
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 60)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, imageTo3DResourceTimeout)
+        XCTAssertEqual(imageTo3DResourceTimeout, 15 * 60)
+        let largestBodyBits: Double = 32 * 1_048_576 * 8
+        let slowUplinkBitsPerSecond: Double = 300_000
+        XCTAssertGreaterThanOrEqual(imageTo3DResourceTimeout, largestBodyBits / slowUplinkBitsPerSecond, "32 MB at 300 kbit/s")
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertEqual(imageTo3DSessionConfiguration(timeout: 30).timeoutIntervalForRequest, 30)
+    }
+
     func testStopMessages() {
         let unknown = ImageTo3DStop(reason: .outcomeUnknown, stage: .sending, service: .meshy, taskID: nil, detail: "")
         XCTAssertTrue(unknown.creditsMayHaveBeenSpent)
@@ -475,7 +533,29 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertFalse(refused.creditsMayHaveBeenSpent)
         XCTAssertFalse(ImageTo3DStop(reason: .cancelled, stage: .sending, service: .tripo, taskID: nil, detail: "").creditsMayHaveBeenSpent)
         let timedOut = ImageTo3DStop(reason: .timedOut, stage: .generating, service: .tripo, taskID: "task_1", detail: "")
-        XCTAssertEqual(timedOut.activityDetail, "Tripo: generating, timed out, task task_1")
+        XCTAssertEqual(timedOut.activityDetail, "Tripo: generating, timed out")
+        XCTAssertFalse(timedOut.activityDetail.contains("task_1"), "Activity gets status only, never the task ID")
+        XCTAssertTrue(timedOut.userMessage.contains("Tripo"))
+
+        // A task the service ended (failed, refused by content rules, expired or cancelled) is usually refunded.
+        for state: ImageTo3DTaskState in [.failed, .banned, .expired, .cancelled] {
+            let ended = ImageTo3DStop(reason: .taskEnded(state), stage: .generating, service: .meshy, taskID: "t1", detail: "")
+            XCTAssertEqual(replicaCreditsNote(ended), "Meshy usually refunds a task it ended; check your balance.", "\(state)")
+            XCTAssertNil(replicaCloseWarning(hasUnsavedModel: false, lastStop: ended, service: .meshy),
+                         "\(state): nothing runs or is recorded, so Close doesn't claim it may still finish")
+            XCTAssertFalse(imageTo3DStopIsUnconfirmed(ended))
+            XCTAssertEqual(ended.activityDetail, "Meshy: generating, ended (\(state.title.lowercased()))")
+        }
+        // An unsaved model still asks, whatever the last stop was.
+        let ended = ImageTo3DStop(reason: .taskEnded(.failed), stage: .generating, service: .meshy, taskID: "t1", detail: "")
+        XCTAssertNotNil(replicaCloseWarning(hasUnsavedModel: true, lastStop: ended, service: .meshy))
+    }
+
+    func testTripoSiteLocksWhileAKeyIsSaved() {
+        XCTAssertNil(imageTo3DTripoSiteChangeBlockedReason(hasKey: false))
+        XCTAssertEqual(imageTo3DTripoSiteChangeBlockedReason(hasKey: true),
+                       "Remove the Tripo key to change the site: a key works only on the site it was made on.")
+        XCTAssertTrue(ImageTo3DService.tripo.settingsPlanNote.contains("US$0.01 on tripo3d.ai, or ¥0.07 on tripo3d.com"))
     }
 
     // MARK: State machine
@@ -662,6 +742,113 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertEqual(later.posts.count, 1)
     }
 
+    @MainActor func testFailedConversionKeepsTheModelAndOffersTryConversionAgain() async {
+        let generation = ImageTo3DResumePoint(sourceTaskID: "task_gen", sourceKind: .generation, conversionTaskID: nil)
+        for ended in ["failed", "cancelled", "banned", "expired"] {
+            let transport = ScriptedTransport([
+                .reply(200, #"{"code":0,"data":{"file_token":"file_1"}}"#, [:]),
+                .reply(200, #"{"code":0,"data":{"task_id":"task_gen"}}"#, [:]),
+                .reply(200, #"{"code":0,"data":{"task_id":"task_gen","status":"success","output":{"model_url":"https://cdn.tripo3d.ai/m.glb"}}}"#, [:]),
+                .reply(200, #"{"code":0,"data":{"task_id":"task_conv"}}"#, [:]),
+                .reply(200, #"{"code":0,"data":{"task_id":"task_conv","status":"\#(ended)","error_message":"Conversion error"}}"#, [:])
+            ])
+            let result = await run(TripoClient(apiKey: "tsk_secretkey1", transport: transport))
+            guard case .failure(let stop) = result else { return XCTFail(ended) }
+            XCTAssertEqual(stop.reason, .conversionRefused, ended)
+            XCTAssertEqual(stop.stage, .converting, ended)
+            XCTAssertEqual(stop.taskID, "task_gen", "the model lives under the generation")
+            XCTAssertEqual(stop.resumePoint, generation, "a new conversion, not a re-read of the ended one")
+            XCTAssertEqual(transport.posts.count, 3, "nothing is sent again by itself")
+            XCTAssertEqual(replicaResumeAction(for: stop), .tryConversionAgain)
+            XCTAssertTrue(stop.userMessage.contains("made the model, but its conversion to a printable file didn’t go through"), stop.userMessage)
+            XCTAssertTrue(stop.userMessage.contains("Conversion error"))
+            XCTAssertEqual(replicaCreditsNote(stop),
+                           "Tripo charged for the model itself; a conversion that was refused or failed usually isn’t charged. Check your balance.")
+            XCTAssertTrue(imageTo3DStopIsUnconfirmed(stop))
+            let suite = testDefaultsSuiteName("ImageTo3DFailedConversion")
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { removeTestDefaultsSuite(defaults, named: suite) }
+            let connection = ImageTo3DConnection(defaults: defaults)
+            XCTAssertNotNil(connection.rememberUnconfirmed(stop))
+            XCTAssertEqual(connection.unconfirmedRequests.first?.sourceTaskID, "task_gen")
+            XCTAssertTrue(replicaGenerateNeedsConfirmation(lastStop: nil, modelAlreadyMade: false,
+                                                           earlierUnconfirmed: connection.hasUnconfirmedRequests),
+                          "a new sheet's Generate asks first")
+            XCTAssertNotNil(designWorkQuitQuestion(items: [], unconfirmedGenerations: connection.unconfirmedRequests.count))
+            let close = replicaCloseWarning(hasUnsavedModel: false, lastStop: stop, service: .tripo)
+            XCTAssertEqual(close?.title, "Close without the model Tripo made?")
+            XCTAssertTrue(close?.message.contains("can’t Try Conversion Again") == true, close?.message ?? "")
+            XCTAssertFalse(close?.message.contains("may still finish") == true)
+        }
+
+        // Carrying on from a known conversion that then ended: the same stop, with the ended conversion left out.
+        let known = ScriptedTransport([
+            .reply(200, #"{"code":0,"data":{"task_id":"task_conv","status":"failed"}}"#, [:])
+        ])
+        let resumed = await resumeImageTo3DGeneration(provider: TripoClient(apiKey: "tsk_secretkey1", transport: known),
+                                                      from: ImageTo3DResumePoint(sourceTaskID: "task_gen", sourceKind: .generation,
+                                                                                 conversionTaskID: "task_conv"),
+                                                      options: ImageTo3DOptions(), sleep: { _ in }, makeFolder: { try self.makeFolder() })
+        guard case .failure(let stop) = resumed else { return XCTFail("\(resumed)") }
+        XCTAssertEqual(stop.reason, .conversionRefused)
+        XCTAssertEqual(stop.resumePoint, generation)
+        XCTAssertNil(stop.resumePoint?.conversionTaskID)
+        XCTAssertTrue(known.posts.isEmpty)
+
+        // Try Conversion Again from there sends one new conversion and delivers the model.
+        let again = ScriptedTransport([
+            .reply(200, #"{"code":0,"data":{"task_id":"task_gen","status":"success","output":{"model_url":"https://cdn.tripo3d.ai/m.glb"}}}"#, [:]),
+            .reply(200, #"{"code":0,"data":{"task_id":"task_conv2"}}"#, [:]),
+            .reply(200, #"{"code":0,"data":{"task_id":"task_conv2","status":"success","output":{"model_url":"https://cdn.tripo3d.ai/m.stl"}}}"#, [:])
+        ])
+        let delivered = await resumeImageTo3DGeneration(provider: TripoClient(apiKey: "tsk_secretkey1", transport: again), from: generation,
+                                                        options: ImageTo3DOptions(), sleep: { _ in }, makeFolder: { try self.makeFolder() })
+        guard case .success(let model) = delivered else { return XCTFail("\(delivered)") }
+        XCTAssertEqual(model.conversionTaskID, "task_conv2")
+        XCTAssertEqual(again.posts.count, 1)
+        XCTAssertEqual(body(again.posts[0])["input"] as? String, "task_gen")
+    }
+
+    func testStopJustBeforeTheConversionSendsNothing() async {
+        // Keep Waiting found the generation finished, but Stop was pressed after its last report: no conversion is sent.
+        let point = ImageTo3DResumePoint(sourceTaskID: "task_gen", sourceKind: .generation, conversionTaskID: nil)
+        let transport = ScriptedTransport([
+            .reply(200, #"{"code":0,"data":{"task_id":"task_gen","status":"success","output":{"model_url":"https://cdn.tripo3d.ai/m.glb"}}}"#, [:])
+        ])
+        let result = await resumeImageTo3DGeneration(provider: TripoClient(apiKey: "tsk_secretkey1", transport: transport), from: point,
+                                                     options: ImageTo3DOptions(), sleep: { _ in }, makeFolder: { try self.makeFolder() },
+                                                     proceed: { false })
+        guard case .failure(let stop) = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(stop.reason, .cancelled)
+        XCTAssertEqual(stop.stage, .converting)
+        XCTAssertEqual(stop.resumePoint, point)
+        XCTAssertEqual(replicaResumeAction(for: stop), .keepWaiting)
+        XCTAssertTrue(transport.posts.isEmpty)
+
+        // The first run passes its own gate through: the uploads and the create go, then Stop holds back the conversion.
+        final class Gate: @unchecked Sendable {
+            private let lock = NSLock()
+            private var asked = 0
+            let openFor: Int
+            init(openFor: Int) { self.openFor = openFor }
+            func proceed() -> Bool { lock.withLock { asked += 1; return asked <= openFor } }
+        }
+        let gate = Gate(openFor: 3)  // the run's own check, then Tripo's before the upload and before the create
+        let first = ScriptedTransport([
+            .reply(200, #"{"code":0,"data":{"file_token":"file_1"}}"#, [:]),
+            .reply(200, #"{"code":0,"data":{"task_id":"task_gen"}}"#, [:]),
+            .reply(200, #"{"code":0,"data":{"task_id":"task_gen","status":"success","output":{"model_url":"https://cdn.tripo3d.ai/m.glb"}}}"#, [:])
+        ])
+        let run = await runImageTo3DGeneration(provider: TripoClient(apiKey: "tsk_secretkey1", transport: first),
+                                               views: [ImageTo3DViewImage(view: .front, image: jpeg)], options: ImageTo3DOptions(),
+                                               sleep: { _ in }, makeFolder: { try self.makeFolder() }, proceed: { gate.proceed() })
+        guard case .failure(let stopped) = run else { return XCTFail("\(run)") }
+        XCTAssertEqual(stopped.reason, .cancelled)
+        XCTAssertEqual(stopped.stage, .converting)
+        XCTAssertEqual(stopped.resumePoint, point)
+        XCTAssertEqual(first.paths, ["POST /v3/files", "POST /v3/generation/image-to-model", "GET /v3/tasks/task_gen"])
+    }
+
     func testResumingAKnownConversionSendsNoCreate() async {
         let transport = ScriptedTransport([
             .reply(200, #"{"code":0,"data":{"task_id":"task_conv","status":"running","progress":80}}"#, [:]),
@@ -708,20 +895,62 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: made?.path ?? "/"))
     }
 
-    func testMeshyGLBOnlyResultIsConvertedAndARefusalFallsBackToItsLinkOnce() async {
+    func testMeshyGenerationWithoutAPrintableLinkNeverConverts() async {
+        // A generation is asked for STL. One that finishes without a printable link stops as a download failure,
+        // with Try Download Again, rather than spending a Convert credit nobody pressed for (also on Keep Waiting).
+        for links in [#"{"glb":"https://assets.meshy.ai/m.glb"}"#, #"{"stl":"http://assets.meshy.ai/m.stl"}"#,
+                      #"{"stl":"https://2130706433/m.stl","glb":"https://assets.meshy.ai/m.glb"}"#] {
+            let transport = ScriptedTransport([
+                .reply(202, #"{"result":"t1"}"#, [:]),
+                .reply(200, #"{"id":"t1","status":"SUCCEEDED","model_urls":\#(links)}"#, [:])
+            ])
+            let result = await run(MeshyClient(apiKey: "msy_secretkey1", transport: transport))
+            guard case .failure(let stop) = result else { return XCTFail(links) }
+            XCTAssertEqual(stop.reason, .downloadFailed, links)
+            XCTAssertEqual(stop.resumePoint, ImageTo3DResumePoint(sourceTaskID: "t1", sourceKind: .generation, conversionTaskID: nil), links)
+            XCTAssertEqual(replicaResumeAction(for: stop), .tryDownloadAgain, links)
+            XCTAssertEqual(transport.posts.count, 1, links)
+            XCTAssertFalse(transport.paths.contains { $0.contains("/convert") }, links)
+            XCTAssertTrue(transport.downloads.isEmpty, links)
+
+            // Try Download Again reads the task again and still creates nothing.
+            let again = ScriptedTransport([.reply(200, #"{"id":"t1","status":"SUCCEEDED","model_urls":\#(links)}"#, [:])])
+            let resumed = await resumeImageTo3DGeneration(provider: MeshyClient(apiKey: "msy_secretkey1", transport: again),
+                                                          from: stop.resumePoint!, options: ImageTo3DOptions(), sleep: { _ in },
+                                                          makeFolder: { try self.makeFolder() })
+            guard case .failure(let second) = resumed else { return XCTFail(links) }
+            XCTAssertEqual(second.reason, .downloadFailed, links)
+            XCTAssertTrue(again.posts.isEmpty, links)
+        }
+        let multi = MeshyClient(apiKey: "msy_secretkey1", transport: ScriptedTransport([]))
+        let glbOnly = ImageTo3DTaskStatus(taskID: "t1", state: .succeeded, modelURLs: ["glb": URL(string: "https://assets.meshy.ai/m.glb")!])
+        XCTAssertFalse(multi.needsConversion(after: glbOnly, kind: .multiImageGeneration, to: .stl))
+        XCTAssertFalse(multi.needsConversion(after: glbOnly, kind: .generation, to: .stl))
+        XCTAssertTrue(multi.needsConversion(after: glbOnly, kind: .repair, to: .stl))
+        XCTAssertFalse(multi.needsConversion(after: glbOnly, kind: .conversion, to: .stl))
+    }
+
+    func testMeshyRepairConversionFallsBackToItsGLBLinkOnce() async {
+        // Only a repair converts. Convert by the repair's ID refused (nothing created), then once by its GLB link.
+        let time = FakeTime()
         let transport = ScriptedTransport([
-            .reply(202, #"{"result":"t1"}"#, [:]),
-            .reply(200, #"{"id":"t1","status":"SUCCEEDED","model_urls":{"glb":"https://assets.meshy.ai/m.glb"}}"#, [:]),
+            .reply(202, #"{"result":"rep1"}"#, [:]),
+            .reply(200, #"{"id":"rep1","status":"SUCCEEDED","model_urls":{"glb":"https://assets.meshy.ai/r.glb"}}"#, [:]),
             .reply(400, #"{"message":"Invalid input task"}"#, [:]),
             .reply(400, #"{"message":"still no"}"#, [:])
         ])
-        // Meshy converts a GLB-only result (as after a repair); a refused conversion stops without an unknown outcome.
-        let result = await run(MeshyClient(apiKey: "msy_secretkey1", transport: transport))
-        guard case .failure(let stop) = result else { return XCTFail() }
+        let result = await runMeshyRepair(client: MeshyClient(apiKey: "msy_secretkey1", transport: transport), ofTask: "gen1",
+                                          longestSideMM: nil, options: ImageTo3DOptions(),
+                                          sleep: { time.sleep($0) }, now: { time.now }, makeFolder: { try self.makeFolder() })
+        guard case .failure(let stop) = result else { return XCTFail("\(result)") }
         XCTAssertEqual(stop.reason, .conversionRefused)
-        XCTAssertEqual(transport.paths.suffix(2), ["POST /openapi/v1/convert", "POST /openapi/v1/convert"])
-        XCTAssertEqual(body(transport.requests[2])["input_task_id"] as? String, "t1")
-        XCTAssertEqual(body(transport.requests[3])["model_url"] as? String, "https://assets.meshy.ai/m.glb")
+        XCTAssertEqual(stop.resumePoint, ImageTo3DResumePoint(sourceTaskID: "rep1", sourceKind: .repair, conversionTaskID: nil))
+        XCTAssertEqual(transport.paths.filter { $0 == "POST /openapi/v1/convert" }.count, 2)
+        XCTAssertEqual(transport.posts.count, 3)
+        XCTAssertEqual(body(transport.requests[2])["input_task_id"] as? String, "rep1")
+        XCTAssertNil(body(transport.requests[2])["model_url"])
+        XCTAssertEqual(body(transport.requests[3])["model_url"] as? String, "https://assets.meshy.ai/r.glb")
+        XCTAssertNil(body(transport.requests[3])["input_task_id"])
     }
 
     func testMeshyRepairConvertsItsGLB() async {
@@ -783,7 +1012,7 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertEqual(tripoBalance.summary, "12.5 Tripo credits available.")
         XCTAssertEqual(tripo.requests.first?.url?.absoluteString, "https://openapi.tripo3d.com/v3/account/balance")
 
-        let refused = ScriptedTransport([.reply(401, #"{"code":1000,"message":"Invalid API Key tsk_secretkey1"}"#, [:])])
+        let refused = ScriptedTransport([.reply(401, #"{"code":2,"message":"Invalid API Key tsk_secretkey1"}"#, [:])])
         do {
             _ = try await TripoClient(apiKey: "tsk_secretkey1", transport: refused).readBalance()
             XCTFail("expected a failure")

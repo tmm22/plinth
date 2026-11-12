@@ -2,7 +2,8 @@ import Foundation
 
 // MARK: - Tripo
 //
-// Tripo's v3 API (developers.tripo3d.ai/en/docs, read 24–25 Oct 2026; not tested live). Two regional sites with
+// Tripo's v3 API (developers.tripo3d.ai/en/docs, read 24–25 Oct 2026 and checked again 12 Nov 2026; not tested
+// live). Two regional sites with
 // separate keys: international `https://openapi.tripo3d.ai/v3` and China mainland `https://openapi.tripo3d.com/v3`.
 // Header `Authorization: Bearer <key>`. Replies are `{"code": 0, "data": {…}}`; any other code is an error
 // (`{"code", "message", "suggestion"}`).
@@ -14,15 +15,18 @@ import Foundation
 //   - Multiview to model: `POST /v3/generation/multiview-to-model` with `inputs` = an array of one-key objects, each
 //     `front`, `left`, `back` or `right` → a file token. Front is required, 2–4 photos, order doesn't matter; same
 //     options and price as image to model. Every photo is uploaded first; any upload failure stops before the create.
-//     Tripo doesn't define `left`; Studio takes it as the object's own left side (as ComfyUI's Tripo node describes it).
-//   - Tasks: `GET /v3/tasks/{id}` → `status` (queued, running, success, failed, banned, expired, cancelled),
-//     `progress` 0–100, `output.model_url` on success (links expire after about 5 minutes), `error_message` on failure.
+//     Tripo doesn't define `left` or `right` (its docs and its ComfyUI node say only "left view"); Studio takes them as
+//     the object's own sides, a convention no Tripo source confirms.
+//   - Tasks: `GET /v3/tasks/{id}` → `status` (queued, running, success, failed, cancelled; the legacy banned and
+//     expired are now reported as failed, but are still read as ended), `progress` 0–100, `output.model_url` on
+//     success (the docs don't say how long the link lasts), `error_message` on failure.
 //   - Convert: `POST /v3/models/convert` with `input` = the generation task and `format` STL or 3MF → a task whose
 //     `output.model_url` is the file. 5 credits, or 10 with any non-default option (`pivot_to_center_bottom`,
 //     `face_limit`, …). Without `face_limit` the conversion keeps the generation's face count, so none is sent.
 //   - Balance: `GET /v3/account/balance` → `data.balance`, `data.frozen` (decimals).
-//   - Errors: 401 bad key; 403 no permission or not enough credits (code 2010); 429 code 1007 (rate) or 2000
-//     (concurrency, with Retry-After); 2008 content policy. Credits are frozen at create and released on failure.
+//   - Errors (docs/error-handling): 401 bad or missing key (codes 2 and 1002); 403 no permission or not enough credits
+//     (code 2010); 429 code 1007 (rate) or 2000 (concurrency, with Retry-After); 2008 content policy; 1000 and 1001
+//     server errors (HTTP 500). Credits are frozen at create and released when a task fails or is cancelled.
 
 enum TripoRegion: String, CaseIterable, Identifiable, Sendable {
     case international, chinaMainland
@@ -55,8 +59,9 @@ enum TripoRegion: String, CaseIterable, Identifiable, Sendable {
     var termsURL: URL { URL(string: "\(site)/terms")! }
 }
 
-/// Tripo's published credit prices (developers.tripo3d.ai/en/pricing, 25 Oct 2026; 1 credit = US$0.01). Approximate.
-/// Image to model and multiview to model cost the same without texture.
+/// Tripo's published credit prices (developers.tripo3d.ai/en/pricing, 25 Oct 2026; the same counts on both sites, with
+/// 1 credit = US$0.01 on tripo3d.ai and ¥0.07 on tripo3d.com, checked 12 Nov 2026). Approximate. Image to model and
+/// multiview to model cost the same without texture.
 let tripoImageToModelCredits = 20
 /// The HD geometry add-on (`geometry_quality: "detailed"`, v3.0 or later).
 let tripoHigherDetailCredits = 20
@@ -172,7 +177,11 @@ func tripoError(status: Int, body: Data, retryAfter: String?, secrets: [String])
     if status == 429 || code == 1007 || code == 2000 {
         return .rateLimited(service: .tripo, retryAfter: imageTo3DRetryAfterSeconds(retryAfter))
     }
-    if code == 1000 || code == 1001 { return .http(service: .tripo, status: 401, code: code, message: message) }
+    // 1000 and 1001 are Tripo's server errors (documented with HTTP 500): a create that got one may still have been
+    // made, so they never count as a refusal.
+    if code == 1000 || code == 1001 { return .http(service: .tripo, status: 500, code: code, message: message) }
+    // 2 and 1002 are its authentication failures (HTTP 401).
+    if code == 2 || code == 1002 { return .http(service: .tripo, status: 401, code: code, message: message) }
     // A readable 2xx refusal is definite: report it as a 400 so it is never taken for an unknown outcome.
     let effective = (200..<300).contains(status) ? 400 : status
     return .http(service: .tripo, status: effective, code: code, message: message)
