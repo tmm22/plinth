@@ -233,7 +233,7 @@ final class DapiConnectionTests: XCTestCase {
 
     // MARK: Quote write records
 
-    func testQuoteWriteRecordsAreSessionOnlyAndClearedByAKeyChange() async throws {
+    func testQuoteWriteRecordsAreSessionOnlyAndNotClearedByAKeyChange() async throws {
         registry.set(StubDapi(account: .success(integrator())), for: integratorKey)
         registry.set(StubDapi(account: .success(integrator())), for: otherIntegratorKey)
         let connection = makeConnection()
@@ -531,6 +531,67 @@ final class DapiConnectionTests: XCTestCase {
         keys.value = integratorKey
         XCTAssertNoThrow(try connection.currentClient())
         XCTAssertEqual(registry.keysMade, [integratorKey])
+    }
+
+    /// A refused Keychain read (a locked keychain, or a denied access prompt) isn't repeated by background checks such as
+    /// the order watch, so macOS's prompt can't come back every 30 seconds; the seller's own actions still read it, and
+    /// the saved flag is never cleared by the failure.
+    func testBackgroundReadsWaitForTheSellerAfterARefusedKeychainRead() async throws {
+        defaults.set(true, forKey: DapiConnection.keySavedDefaultsKey)
+        keys.loadError = APIError.keychain(-128) // errSecUserCanceled: the seller denied the prompt
+        let connection = makeConnection()
+
+        // A background check before any refusal does read the Keychain.
+        XCTAssertThrowsError(try connection.currentClient(background: true)) { error in
+            guard case .notSent = error as? DapiError else { return XCTFail("\(error)") }
+        }
+        XCTAssertEqual(keys.loads, 1)
+        // After the refusal, background checks don't read it again.
+        for _ in 0..<3 {
+            XCTAssertThrowsError(try connection.currentOrderingClient(background: true)) { error in
+                guard case .notSent = error as? DapiError else { return XCTFail("\(error)") }
+            }
+            XCTAssertThrowsError(try connection.currentClient(background: true))
+        }
+        XCTAssertEqual(keys.loads, 1)
+        XCTAssertTrue(connection.isConfigured)
+        XCTAssertTrue(defaults.bool(forKey: DapiConnection.keySavedDefaultsKey))
+
+        // The seller's own action reads it again, refused or not.
+        XCTAssertThrowsError(try connection.currentClient())
+        XCTAssertEqual(keys.loads, 2)
+        XCTAssertThrowsError(try connection.currentClient(background: true))
+        XCTAssertEqual(keys.loads, 2)
+
+        // Once a read succeeds, the client is cached and background checks use it without reading.
+        keys.loadError = nil
+        keys.value = integratorKey
+        XCTAssertNoThrow(try connection.currentClient())
+        XCTAssertEqual(keys.loads, 3)
+        XCTAssertNoThrow(try connection.currentClient(background: true))
+        XCTAssertEqual(keys.loads, 3)
+        XCTAssertEqual(registry.keysMade, [integratorKey])
+    }
+
+    func testSavingTheKeyAfterARefusedKeychainReadLetsBackgroundChecksRun() async throws {
+        registry.set(StubDapi(account: .success(integrator())), for: integratorKey)
+        defaults.set(true, forKey: DapiConnection.keySavedDefaultsKey)
+        keys.loadError = APIError.keychain(-128)
+        let connection = makeConnection()
+        XCTAssertThrowsError(try connection.currentClient())
+        XCTAssertEqual(keys.loads, 1)
+
+        // Save & Test stores the key and uses the tested client: no read, and background checks may go on.
+        keys.loadError = nil
+        let saved = await connection.saveAndTest(key: integratorKey)
+        XCTAssertNil(saved)
+        XCTAssertNoThrow(try connection.currentClient(background: true))
+        XCTAssertEqual(keys.loads, 1)
+
+        // After a removal there is no key to read, in the background or not.
+        try connection.remove()
+        XCTAssertThrowsError(try connection.currentClient(background: true)) { XCTAssertEqual($0 as? DapiError, .missingKey) }
+        XCTAssertEqual(keys.loads, 1)
     }
 
     func testSavedKeyIsReadLazilyOnce() throws {
