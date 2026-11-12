@@ -674,7 +674,7 @@ struct DapiTrackingSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Tracking for your shop").font(.title2.weight(.bold))
-                Text("Orders 3DAPI has shipped, with their carrier and tracking number, to copy into Etsy or Shopify. 3DAPI gives no tracking link. Mark an order as done once you’ve added its tracking in your shop; marks last until you quit Plinth. Only loaded orders are listed.")
+                Text("Orders 3DAPI has shipped, with their carrier and tracking number, to copy into Etsy or Shopify. 3DAPI gives no tracking link. Tick Added to Shop once you’ve added an order’s tracking in your shop; ticks last until you quit Plinth. Only loaded orders are listed.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 // Only when Shopify is connected: otherwise there's nothing it could have offered.
                 if shopify.isConfigured {

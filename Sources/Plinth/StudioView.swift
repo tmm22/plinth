@@ -309,11 +309,13 @@ struct ConnectionStatusFooter: View {
                     .truncationMode(.tail)
                 Spacer(minLength: 0)
             }
+            // The whole strip is the target (at least 28 pt tall), not just the caption line.
+            .frame(minHeight: 28)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 4)
         .help(printChoice.service == .dapi ? "Open Settings to manage your print service and 3DAPI key"
                                            : "Open Settings to manage your Slant account")
         .accessibilityLabel("\(status). Open Settings")

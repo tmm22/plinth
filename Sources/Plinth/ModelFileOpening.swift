@@ -95,6 +95,15 @@ func queuedImportNote(count: Int) -> String? {
         }
     }
 
+    /// The window numbers of every main window that is open (shown or minimised).
+    func openMainWindowNumbers() -> [Int] {
+        NSApp.windows.filter { window in
+            isMainStudioWindowCandidate(identifier: window.identifier?.rawValue, isPanel: window is NSPanel,
+                                        canBecomeMain: window.canBecomeMain)
+                && (window.isVisible || window.isMiniaturized)
+        }.map(\.windowNumber)
+    }
+
     /// True while the main window is on screen and not minimised.
     var mainWindowIsShown: Bool {
         guard !NSApp.isHidden, let window = existingMainWindow() else { return false }
@@ -185,8 +194,11 @@ let mainWindowID = "main"
 /// model opened from Finder goes to the window that is already open instead of SwiftUI opening a second one.
 let mainWindowExternalEvents: Set<String> = ["*"]
 
-/// How long a Finder open waits before raising the main window: at once while it is open; after it was closed, long
-/// enough for the window SwiftUI opens for the event to appear, so Plinth doesn't ask for a second one.
+/// The external events for which SwiftUI opens a new main window: none. Plinth's queue opens the window itself.
+let mainWindowSceneCreatesForEvents: Set<String> = []
+
+/// How long a Finder open waits before raising the main window: at once while it is open; after it was closed, a
+/// moment, so that if SwiftUI ever opens one for the event after all, Plinth raises that one rather than a second.
 func externalOpenRevealDelay(mainWindowOpen: Bool) -> TimeInterval {
     mainWindowOpen ? 0 : 1
 }
@@ -195,6 +207,30 @@ func externalOpenRevealDelay(mainWindowOpen: Bool) -> TimeInterval {
 /// for the window SwiftUI opens for the event (that reveal asks for one itself if none has appeared).
 func externalOpenShouldRevealAfterImport(mainWindowOpen: Bool, revealPending: Bool) -> Bool {
     !mainWindowOpen && !revealPending
+}
+
+/// Whether a main window that has just appeared is a duplicate to close: another main window opened earlier (a lower
+/// window number) is still open. The oldest one always stays, so two windows appearing together never both close.
+func mainWindowIsDuplicate(ownNumber: Int, openMainWindowNumbers: [Int]) -> Bool {
+    openMainWindowNumbers.contains { $0 < ownNumber }
+}
+
+/// Closes the window it sits in when that window is a second main window (`mainWindowIsDuplicate`).
+struct DuplicateMainWindowGuard: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { GuardView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class GuardView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window != nil else { return }
+            Task { @MainActor [weak self] in
+                guard let window = self?.window, window.isVisible else { return }
+                let open = ExternalModelOpenQueue.shared.openMainWindowNumbers()
+                if mainWindowIsDuplicate(ownNumber: window.windowNumber, openMainWindowNumbers: open) { window.close() }
+            }
+        }
+    }
 }
 
 /// Whether a window could be the main window: not a panel (open and save panels, the About panel), the Settings

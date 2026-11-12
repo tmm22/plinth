@@ -176,7 +176,7 @@ final class PrintPreparationRound11Tests: XCTestCase {
         XCTAssertNil(result.blocked)
         let overhangs = try XCTUnwrap(record.overhangs)
         XCTAssertEqual(overhangs.share45, 0, accuracy: 1e-9)
-        XCTAssertEqual(printPreparationOverhangLine(overhangs), "Overhangs: none steeper than 45° as placed.")
+        XCTAssertEqual(printPreparationOverhangLine(overhangs), "Overhangs: none steeper than 45° as placed (\(plinthOverhangMarginNote)).")
         let kinds = record.advisories.map(\.kind)
         XCTAssertTrue(kinds.contains(PrintAdvisoryKind.thinPin.rawValue), "\(record.advisories)")
         XCTAssertTrue(kinds.contains(PrintAdvisoryKind.slenderUpright.rawValue), "\(record.advisories)")
@@ -240,12 +240,12 @@ final class PrintPreparationRound11Tests: XCTestCase {
         XCTAssertEqual(printPreparationPercentText(0.004), "under 1%")
         XCTAssertEqual(printPreparationPercentText(0.637), "about 64%")
         XCTAssertEqual(printPreparationOverhangLine(PrintPreparationOverhangs(share45: 0.031, share50: 0)),
-                       "Overhangs: about 3% of the surface steeper than 45° as placed; none past Slant’s 50° limit.")
+                       "Overhangs: about 3% of the surface steeper than 45° as placed (\(plinthOverhangMarginNote)); none past Slant’s 50° limit.")
         XCTAssertEqual(printPreparationOverhangLine(PrintPreparationOverhangs(share45: 0.05, share50: 0.01)),
-                       "Overhangs: about 5% of the surface steeper than 45° as placed; about 1% past Slant’s 50° limit.")
+                       "Overhangs: about 5% of the surface steeper than 45° as placed (\(plinthOverhangMarginNote)); about 1% past Slant’s 50° limit.")
         // From 2% past 50°, the line says what helps (the copy has no separate overhang advisory).
         XCTAssertEqual(printPreparationOverhangLine(PrintPreparationOverhangs(share45: 0.05, share50: 0.02)),
-                       "Overhangs: about 5% of the surface steeper than 45° as placed; about 2% past Slant’s 50° limit. Those areas may sag or print rough; Reinforce’s overhang chamfer under them helps.")
+                       "Overhangs: about 5% of the surface steeper than 45° as placed (\(plinthOverhangMarginNote)); about 2% past Slant’s 50° limit. Those areas may sag or print rough; Reinforce’s overhang chamfer under them helps.")
         XCTAssertEqual(hiddenPocketsSummaryText(count: 2, shellsInside: 0, addedVolumeMM3: 2000),
                        "2 hidden pockets cost about $0.78 extra in total (Slant bills each as a separate body; test on 25 Oct 2026). Filling uses about 2.0 cm³ more material. Get an estimate for both.")
         XCTAssertEqual(hiddenPocketsSummaryText(count: 1, shellsInside: 1, addedVolumeMM3: 10),

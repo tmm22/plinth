@@ -52,6 +52,10 @@ enum StudioPalette {
     /// Apple's own dark-mode blue gives. One orange can't reach 4.5:1 both as text on a dark window and under white
     /// text, so filled buttons get the lower figure in dark mode, as system buttons do.
     static let accentDark = StudioRGB(220, 98, 22)
+    /// Text on an accent-tinted badge ("Default", catalogue prices): the accent itself reaches only about 3.5–4.3:1 on
+    /// its own tint, so the badge's text is a deeper orange (light) or a lighter one (dark), its tint unchanged.
+    static let accentBadgeTextLight = StudioRGB(150, 50, 4)
+    static let accentBadgeTextDark = StudioRGB(250, 150, 90)
     /// Warnings (amber/orange), successes (green) and errors (red) as text, icons and badge text.
     static let warningLight = StudioRGB(146, 64, 4)
     static let warningDark = StudioRGB(245, 158, 11)
@@ -79,6 +83,8 @@ private func studioDynamicColor(_ name: String, light: StudioRGB, dark: StudioRG
 private let studioWarningColor = studioDynamicColor("studioWarning", light: StudioPalette.warningLight, dark: StudioPalette.warningDark)
 private let studioSuccessColor = studioDynamicColor("studioSuccess", light: StudioPalette.successLight, dark: StudioPalette.successDark)
 private let studioErrorColor = studioDynamicColor("studioError", light: StudioPalette.errorLight, dark: StudioPalette.errorDark)
+private let studioAccentBadgeTextColor = studioDynamicColor("studioAccentBadgeText", light: StudioPalette.accentBadgeTextLight,
+                                                            dark: StudioPalette.accentBadgeTextDark)
 
 extension Color {
     /// Slant 3D orange, deeper in light mode so text and glyphs, and white text on filled buttons, keep contrast.
@@ -144,11 +150,14 @@ struct StudioBadge: View {
         }
     }
 
+    /// The text colour: the tone's colour, except the accent, whose own tint needs a deeper text colour.
+    private var textColor: Color { tone == .accent ? studioAccentBadgeTextColor : color }
+
     var body: some View {
         let onSelection = studioBadgeUsesSelectedStyle(backgroundProminence)
         Text(text)
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(onSelection ? Color.white : color)
+            .foregroundStyle(onSelection ? Color.white : textColor)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(onSelection ? Color.white.opacity(0.22) : color.opacity(0.14), in: Capsule())

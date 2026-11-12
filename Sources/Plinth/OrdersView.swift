@@ -656,7 +656,7 @@ struct OrderComposerView: View {
                 let lineName = orderLineAccessibilityName(item.wrappedValue)
                 let lineID = item.wrappedValue.id
                 HStack(spacing: 4) {
-                    Text("Quantity:")
+                    Text("Quantity")
                     TextField(orderLineQuantityTitle(lineName), text: Binding(
                         get: { quantityTexts[lineID] ?? String(item.wrappedValue.quantity) },
                         set: { text in
@@ -732,7 +732,8 @@ struct OrderComposerView: View {
                         .help("Send this item without the copied options")
                 }
             }
-            DisclosureGroup("Advanced") {
+            // Not "Advanced", which the order's own options use: two controls with one name confuse Voice Control.
+            DisclosureGroup("Item options") {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("Item name", text: item.name, prompt: Text("Optional"))
                     TextField("SKU", text: item.sku, prompt: Text("Optional"))
@@ -1212,7 +1213,11 @@ struct OrdersView: View {
     var draftFilterValidation: String? { orderFilterValidationError(draftFilterPreview) }
     var showsArriveByColumn: Bool { store.ordersOnDefaultPlatform.contains { orderArriveByDate(orderObject($0.values)) != nil } }
     func syncArriveByColumn() {
-        columnCustomization[visibility: orderArriveByColumnID] = showsArriveByColumn ? .visible : .hidden
+        // Only on a real change: a customization write can lay the columns out again at their ideal widths.
+        let wanted: Visibility = showsArriveByColumn ? .visible : .hidden
+        if columnCustomization[visibility: orderArriveByColumnID] != wanted {
+            columnCustomization[visibility: orderArriveByColumnID] = wanted
+        }
     }
 
     var body: some View {
@@ -1243,39 +1248,41 @@ struct OrdersView: View {
                     // Status, Created, Total and the order number have minimums that fit their content at the
                     // table's 13 pt font (measured: "Submitted" 62 pt plus the attention marker, "30 Sept 2026" 84,
                     // "$12,345.67" 72, a 19-character order number such as SLANT_1000000000001 154), so they are
-                    // never cut off; the recipient (free text, with a tooltip) gives way first. The minimums add up
-                    // to 470 pt (530 with Arrive by), about 555 (632) with the 17 pt column spacing: inside the list
-                    // pane's 640 pt ideal width, so the default window (1,360 pt) shows every column without
-                    // scrolling sideways; only windows narrowed below that do.
-                    .width(min: 64, ideal: 160)
+                    // never cut off; the recipient (free text, with a tooltip) gives way first. Ideal widths are the
+                    // minimums (the recipient's a little more), because the table can lay columns out at their ideal
+                    // widths without shrinking them (live test, 12 Nov 2026: a 571 pt list pane at the default
+                    // 1,360 pt window scrolled sideways with ideals of about 704 pt). They add up to 478 pt, about
+                    // 563 with the 17 pt column spacing, inside that pane; a wider window grows them. With Arrive by
+                    // shown, about 640: the pane's divider can be dragged to about 642 at the default size.
+                    .width(min: 64, ideal: 72)
                     TableColumn("Status", value: \.status) { (row: OrderTableRow) in
                         // With the Needs Attention marker when the order is late or stuck (OrderFollowUp.swift), and
                         // a hover hint when the status shown comes from Slant's shipping record.
                         OrderStatusCell(status: row.status, attention: row.attention, note: row.statusNote)
                     }
-                    .width(min: 88, ideal: 112, max: 160)
+                    .width(min: 88, ideal: 88, max: 160)
                     TableColumn("Created", value: \.createdSortKey) { (row: OrderTableRow) in
                         Text(row.created.isEmpty ? "—" : row.created).lineLimit(1)
                     }
-                    .width(min: 84, ideal: 96, max: 130)
+                    .width(min: 84, ideal: 84, max: 130)
                     // Shown only while a loaded order has an arrive-by date (`syncArriveByColumn`), so a column Slant
                     // leaves blank doesn't take room from the others. Ascending puts the soonest due first, blanks last.
                     // While shown, the minimums pass the 360 pt pane, so the narrowest window scrolls sideways.
                     TableColumn("Arrive by", value: \.arriveBySortKey) { (row: OrderTableRow) in
                         Text(row.arriveBy.isEmpty ? "—" : row.arriveBy).lineLimit(1).help(row.arriveBy)
                     }
-                    .width(min: 60, ideal: 96, max: 130)
+                    .width(min: 60, ideal: 60, max: 130)
                     .customizationID(orderArriveByColumnID)
                     .defaultVisibility(.hidden)
                     TableColumn("Total", value: \.totalSortKey) { (row: OrderTableRow) in
                         Text(row.total).monospacedDigit().lineLimit(1)
                     }
-                    .width(min: 76, ideal: 88, max: 120)
+                    .width(min: 76, ideal: 76, max: 120)
                     TableColumn("Order number", value: \.number) { (row: OrderTableRow) in
                         Text(row.number).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
                             .truncationMode(.middle).help(row.number)
                     }
-                    .width(min: 158, ideal: 168)
+                    .width(min: 158, ideal: 158)
                 }
                 .contextMenu(forSelectionType: String.self) { ids in
                     if ids.count == 1, let id = ids.first, let record = store.orders.first(where: { $0.id == id }) {
@@ -1378,8 +1385,7 @@ struct OrdersView: View {
                     }.padding(8)
                 }
             }
-            // Ideal 640 pt: every column at its minimum fits (see the Recipient column), with the detail pane at its
-            // minimum beside it in the default window's content area (1,360 pt less the sidebar, about 1,140).
+            // Every column at its ideal width fits the pane the default window gives it (see the Recipient column).
             .frame(minWidth: 360, idealWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
             detailPane
                 // Wide enough for Cancel, Duplicate and Review & Place Order side by side (they never truncate).
@@ -3458,7 +3464,7 @@ func orderItemHasLargeQuantity(_ item: [String: Any], threshold: Int = orderLarg
 /// Neutral notice shown under a quantity at or above the threshold (order composer and Models print configuration).
 func largeQuantityNotice(_ quantity: Int, threshold: Int = orderLargeQuantityThreshold) -> String? {
     guard isLargeOrderQuantity(quantity, threshold: threshold) else { return nil }
-    return "Large quantity (\(quantity)) — check for an extra zero."
+    return "Large quantity (\(quantity.formatted())) — check for an extra zero."
 }
 
 // MARK: - Complete country list

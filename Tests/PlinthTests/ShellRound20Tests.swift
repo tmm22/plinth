@@ -67,6 +67,18 @@ final class ThemeContrastTests: XCTestCase {
         }
     }
 
+    /// An accent-tone badge ("Default", catalogue prices) puts its text on the accent's own 14% tint.
+    func testAccentBadgeTextReachesTextContrastOnItsTint() {
+        for background in StudioPalette.lightBackgrounds {
+            let tint = wcagComposite(StudioPalette.accentLight, opacity: StudioPalette.badgeTintOpacity, over: background)
+            XCTAssertGreaterThanOrEqual(wcagContrastRatio(StudioPalette.accentBadgeTextLight, tint), 4.5, "light accent badge on \(background)")
+        }
+        for background in StudioPalette.darkBackgrounds {
+            let tint = wcagComposite(StudioPalette.accentDark, opacity: StudioPalette.badgeTintOpacity, over: background)
+            XCTAssertGreaterThanOrEqual(wcagContrastRatio(StudioPalette.accentBadgeTextDark, tint), 4.5, "dark accent badge on \(background)")
+        }
+    }
+
     func testStatusColoursStillReadAsTheirHue() {
         func hue(_ c: StudioRGB) -> Double {
             let r = c.red / 255, g = c.green / 255, b = c.blue / 255
@@ -77,7 +89,8 @@ final class ThemeContrastTests: XCTestCase {
             h *= 60
             return h < 0 ? h + 360 : h
         }
-        for c in [StudioPalette.warningLight, StudioPalette.warningDark, StudioPalette.accentLight, StudioPalette.accentDark] {
+        for c in [StudioPalette.warningLight, StudioPalette.warningDark, StudioPalette.accentLight, StudioPalette.accentDark,
+                  StudioPalette.accentBadgeTextLight, StudioPalette.accentBadgeTextDark] {
             XCTAssertTrue((15...45).contains(hue(c)), "orange/amber: \(c)")
         }
         for c in [StudioPalette.successLight, StudioPalette.successDark] { XCTAssertTrue((100...160).contains(hue(c)), "green: \(c)") }
@@ -107,6 +120,13 @@ extension ShellUXTests {
         XCTAssertFalse(externalOpenShouldRevealAfterImport(mainWindowOpen: false, revealPending: true))
         XCTAssertTrue(externalOpenShouldRevealAfterImport(mainWindowOpen: false, revealPending: false))
         XCTAssertFalse(externalOpenShouldRevealAfterImport(mainWindowOpen: true, revealPending: false))
+        // SwiftUI opens no window for an external event; the queue does, and a second main window closes itself,
+        // leaving the oldest.
+        XCTAssertEqual(mainWindowSceneCreatesForEvents, [])
+        XCTAssertFalse(mainWindowIsDuplicate(ownNumber: 10, openMainWindowNumbers: [10]))
+        XCTAssertTrue(mainWindowIsDuplicate(ownNumber: 12, openMainWindowNumbers: [10, 12]))
+        XCTAssertFalse(mainWindowIsDuplicate(ownNumber: 10, openMainWindowNumbers: [10, 12]), "the oldest stays")
+        XCTAssertFalse(mainWindowIsDuplicate(ownNumber: 10, openMainWindowNumbers: []))
     }
 
     // MARK: File menu order tools (Slant)

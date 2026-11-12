@@ -650,7 +650,7 @@ struct ShopFollowUpSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Tracking for your shop").font(.title2.weight(.bold))
-                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Mark an order as done once you’ve added its tracking in your shop. Plinth remembers your marks on this Mac.")
+                Text("Orders Slant has shipped, with their tracking, to copy into Etsy or Shopify. Tick Added to Shop once you’ve added an order’s tracking in your shop. Plinth remembers your ticks on this Mac.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(shopFollowUpSourceText(reading: recentReading, recent: recentRead, ordersHasMore: store.ordersHasMore))
@@ -696,6 +696,11 @@ struct ShopFollowUpSheet: View {
                 .help(shopifyCount == 0
                       ? "No imported Shopify orders with tracking are listed"
                       : "Order name, tracking number and company for a Shopify bulk-fulfilment app")
+                if shopifyCount == 0 {
+                    // The reason shows, not only in a tooltip (house rule: a lasting reason is a visible caption).
+                    Text("No imported Shopify orders with tracking are listed.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 if shopify.isConfigured {
                     let candidates = shopifyTrackingCandidates(listed, done: store.shopFollowUpDoneIDs)
                     Button("Send Tracking to Shopify…") {

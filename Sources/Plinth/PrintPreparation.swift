@@ -570,9 +570,9 @@ let printPreparationOverhangReportDegrees = 45.1
 /// past 50°, it also says what helps (the copy has no separate overhang advisory). Reinforce's overhang chamfer works on
 /// the copy itself.
 func printPreparationOverhangLine(_ overhangs: PrintPreparationOverhangs) -> String {
-    if overhangs.share45 <= 0 { return "Overhangs: none steeper than 45° as placed." }
+    if overhangs.share45 <= 0 { return "Overhangs: none steeper than 45° as placed (\(plinthOverhangMarginNote))." }
     let past50 = overhangs.share50 <= 0 ? "none past Slant’s 50° limit" : "\(printPreparationPercentText(overhangs.share50)) past Slant’s 50° limit"
-    var line = "Overhangs: \(printPreparationPercentText(overhangs.share45)) of the surface steeper than 45° as placed; \(past50)."
+    var line = "Overhangs: \(printPreparationPercentText(overhangs.share45)) of the surface steeper than 45° as placed (\(plinthOverhangMarginNote)); \(past50)."
     if overhangs.share50 >= printAdvisorySteepOverhangShare {
         line += " Those areas may sag or print rough; Reinforce’s overhang chamfer under them helps."
     }

@@ -1044,9 +1044,9 @@ struct ModelsView: View {
                             .onSubmit { commitQuantityText() }
                             .onChange(of: quantityText) { _, _ in commitQuantityText() }
                             .accessibilityLabel("Quantity")
+                        // The hidden title is the spoken name here; an added label read "Quantity, Quantity".
                         Stepper("Quantity", value: $store.quantity, in: 1...10000)
                             .labelsHidden()
-                            .accessibilityLabel("Quantity")
                     }
                 }
                 if printQuantity(quantityText) == nil {

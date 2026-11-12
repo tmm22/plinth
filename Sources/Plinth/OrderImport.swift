@@ -1823,7 +1823,9 @@ struct OrderImportSheet: View {
                                 .lineLimit(1).truncationMode(.middle)
                             Text(key.orderCount == 1 ? "1 order" : "\(key.orderCount) orders").font(.caption).foregroundStyle(.secondary)
                             Spacer()
-                            Picker("Product for \(key.display)", selection: Binding<OrderImportProductChoice?>(
+                            // The hidden title is the spoken name: VoiceOver reads it here, and an added label doubled it.
+                            Picker(key.kind == .sku ? "Product for SKU \(key.display)" : "Product for “\(key.display)”",
+                                   selection: Binding<OrderImportProductChoice?>(
                                 get: { productChoices[key.id] },
                                 set: { choose($0, for: key, parse: parse) })) {
                                 Text("Choose a product…").tag(OrderImportProductChoice?.none)
@@ -1838,8 +1840,6 @@ struct OrderImportSheet: View {
                                 Text("Leave out of drafts").tag(OrderImportProductChoice?.some(.leaveOut))
                             }
                             .labelsHidden()
-                            // VoiceOver doesn't read a hidden label.
-                            .accessibilityLabel(key.kind == .sku ? "Product for SKU \(key.display)" : "Product for “\(key.display)”")
                             .frame(width: 260)
                             .disabled(runner.running)
                         }

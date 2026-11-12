@@ -23,11 +23,14 @@ struct PlinthApp: App {
                 .frame(minWidth: 1080, minHeight: 720)
                 .tint(.studioAccent)
                 .modifier(ExternalModelOpenAttachment(store: store))
-                // While the main window is open it takes every external event (a model opened from Finder), so SwiftUI
-                // never opens a second main window for one. With the window closed, SwiftUI opens it for the event and
-                // `ExternalModelOpenQueue` waits for it rather than asking for another (ModelFileOpening.swift).
+                // While the main window is open it takes every external event (a model opened from Finder).
                 .handlesExternalEvents(preferring: mainWindowExternalEvents, allowing: mainWindowExternalEvents)
         }
+        // SwiftUI never opens a window for an external event: in a live test (12 Nov 2026) a Finder open while a sheet
+        // was showing opened a second main window. The app delegate still receives the files, and
+        // `ExternalModelOpenQueue` opens the main window itself when none is open (ModelFileOpening.swift), so a
+        // double-click that launches Plinth, or an open after the window was closed, still shows exactly one.
+        .handlesExternalEvents(matching: mainWindowSceneCreatesForEvents)
         .defaultSize(width: 1360, height: 900)
         .windowToolbarStyle(.unified)
         .commands {
@@ -195,11 +198,14 @@ private struct ExternalModelOpenAttachment: ViewModifier {
     @Environment(\.openWindow) private var openWindow
 
     func body(content: Content) -> some View {
-        content.onAppear {
-            let queue = ExternalModelOpenQueue.shared
-            queue.openMainWindow = { openWindow(id: mainWindowID) }
-            queue.attach(store)
-        }
+        content
+            .onAppear {
+                let queue = ExternalModelOpenQueue.shared
+                queue.openMainWindow = { openWindow(id: mainWindowID) }
+                queue.attach(store)
+            }
+            // One main window only, whatever opened another (the store and its sheets are shared).
+            .background(DuplicateMainWindowGuard())
     }
 }
 
