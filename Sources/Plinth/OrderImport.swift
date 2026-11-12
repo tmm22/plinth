@@ -512,9 +512,11 @@ func orderImportAlreadyHandledReason(format: OrderImportFormat, dateShipped: Str
             // quantities are the whole order's.
             return fetched
                 ? "Shopify shows part of this order as fulfilled. Only the items still to fulfil are listed."
-                : "Shopify shows part of this order as fulfilled, and the export lists every item."
+                : "Shopify shows part of this order as fulfilled, but the export lists every item, including any already sent."
         case "in_progress", "pending_fulfillment":
-            return "Shopify shows this order as sent to a fulfilment service."
+            // IN_PROGRESS also covers an order the merchant marked as in progress, not only one with a fulfilment
+            // service.
+            return "Shopify shows this order as in progress or with a fulfilment service."
         case "fulfillment_not_required":
             return "Shopify shows nothing in this order to fulfil."
         default:

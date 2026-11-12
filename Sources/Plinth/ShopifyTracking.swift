@@ -210,8 +210,9 @@ enum ShopifyFulfilmentCheck: Equatable {
         case .alreadyHasTracking: return "Shopify already has this tracking number. Not sent."
         case .alreadyFulfilled: return "Shopify shows this order as fulfilled. Not sent."
         case .cancelled: return "Shopify shows this order as cancelled. Not sent."
-        case .notFound: return "No Shopify order has this exact name, or it’s more than 60 days old, which Plinth can’t read. Not sent."
-        case .severalShipments: return "Shopify splits this order into several shipments, so Plinth can’t tell which one Slant’s parcel is. Add its tracking in Shopify."
+        case .notFound: return "No Shopify order has this exact name in the last 60 days, the most Plinth can read. Not sent: add its tracking in Shopify."
+        // Shopify splits by location, shipping rate, delivery promise or method, so the text names no single cause.
+        case .severalShipments: return "Shopify splits this order into more than one unfulfilled part (by where or how it ships), so Plinth can’t tell which part Slant’s parcel is for. Add its tracking in Shopify."
         case .otherShop(let shop): return "Imported from \(shop), not the connected store. Not sent."
         case .unavailable(let reason): return reason
         }
@@ -245,7 +246,7 @@ func shopifyFulfilmentCheck(_ data: [String: Any], trackingNumbers: [String], so
     }
     let connection = order["fulfillmentOrders"] as? [String: Any]
     if ((connection?["pageInfo"] as? [String: Any])?["hasNextPage"] as? Bool) == true {
-        return .unavailable("This order has more fulfilment orders in Shopify than Plinth reads. Add its tracking in Shopify.")
+        return .unavailable("Shopify splits this order into more parts than Plinth can check. Add its tracking in Shopify.")
     }
     let fulfillable = ((connection?["nodes"] as? [[String: Any]]) ?? []).filter { node in
         let actions = (node["supportedActions"] as? [[String: Any]]) ?? []
@@ -589,7 +590,7 @@ enum ShopifyTrackingRowState: Equatable {
         } else if shopChanged {
             message = ShopifyError.shopChanged.errorDescription
         } else if checkFailed {
-            message = "Stopped: Shopify couldn’t be read. Orders not sent are unchanged in Shopify; Check Again tries the rest."
+            message = "Stopped: Plinth couldn’t read an order from Shopify. Orders not sent are unchanged in Shopify; Check Again reads them again before you send."
         } else if refusedInRow >= shopifyTrackingMaxConsecutiveRefusals {
             message = "Stopped after \(shopifyTrackingMaxConsecutiveRefusals) refusals in a row."
         } else if stopRequested {

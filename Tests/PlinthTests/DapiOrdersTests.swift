@@ -499,15 +499,16 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertTrue(dapiComposerLines(duplicating: none).allSatisfy(\.useSuggested))
         let noneText = dapiDuplicateCopiedText(none)
         XCTAssertFalse(noneText.contains("materials were copied"), noneText)
-        XCTAssertTrue(noneText.contains("3DAPI’s suggested materials"), noneText)
-        XCTAssertTrue(noneText.contains("The address isn’t copied"), noneText)
+        XCTAssertEqual(noneText, "The same models and quantities were copied. 3DAPI didn’t list this order’s materials, so the line starts with 3DAPI’s suggested materials: check them. The address isn’t copied; enter it below.")
+        XCTAssertEqual(dapiDuplicateCopiedText(DapiOrdersTests.order("ord_6", status: .shipped, items: [unlisted, unlisted])),
+                       "The same models and quantities were copied. 3DAPI didn’t list this order’s materials, so each line starts with 3DAPI’s suggested materials: check them. The address isn’t copied; enter it below.")
 
         let some = DapiOrdersTests.order("ord_3", status: .shipped, items: [listed, unlisted, unlisted])
         XCTAssertEqual(dapiComposerLines(duplicating: some).map(\.useSuggested), [false, true, true])
         XCTAssertEqual(dapiDuplicateCopiedText(some),
-                       "The same models, quantities and materials were copied, except for 2 lines whose materials 3DAPI’s copy of this order didn’t list: those start with 3DAPI’s suggested materials, so check them. The address isn’t copied; enter it below.")
-        XCTAssertTrue(dapiDuplicateCopiedText(DapiOrdersTests.order("ord_4", status: .shipped, items: [listed, unlisted]))
-            .contains("except for 1 line whose"))
+                       "The same models, quantities and materials were copied, except for 2 lines 3DAPI listed without materials: they start with 3DAPI’s suggested materials, so check them. The address isn’t copied; enter it below.")
+        XCTAssertEqual(dapiDuplicateCopiedText(DapiOrdersTests.order("ord_4", status: .shipped, items: [listed, unlisted])),
+                       "The same models, quantities and materials were copied, except for 1 line 3DAPI listed without materials: it starts with 3DAPI’s suggested materials, so check it. The address isn’t copied; enter it below.")
 
         // Only the lines the composer takes are counted.
         let long = DapiOrdersTests.order("ord_5", status: .shipped, items: Array(repeating: listed, count: dapiOrderMaxLines) + [unlisted])
@@ -1180,6 +1181,8 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertFalse(sent.contains("Nothing was sent"))
         XCTAssertTrue(sent.contains("may have been placed and charged"))
         XCTAssertTrue(sent.contains("Look for Order on 3DAPI"))
+        XCTAssertTrue(sent.contains("Discard Order doesn’t cancel it"), "Says plainly that closing doesn't cancel the order")
+        XCTAssertTrue(sent.contains("Plinth keeps the warning"))
     }
 
     /// An unedited composer (Order a Sample to Me, say) whose own Place Order ended unknown still asks before closing, so
@@ -1312,6 +1315,14 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertNotNil(dapiCancelBlockedReason(order: DapiOrdersTests.order("o", status: .assigned), shownStatus: .paid, outcomeUnknown: false))
         XCTAssertNotNil(dapiCancelBlockedReason(order: DapiOrdersTests.order("o", status: .inProduction), shownStatus: .inProduction, outcomeUnknown: false))
         XCTAssertNotNil(dapiCancelBlockedReason(order: DapiOrdersTests.order("o", status: .unknown("weird")), shownStatus: .unknown("weird"), outcomeUnknown: false))
+        // A moved status names both, by their labels, whatever the spelling 3DAPI sent; nothing was sent.
+        XCTAssertEqual(dapiCancelBlockedReason(order: DapiOrdersTests.order("o", status: DapiOrderStatus(raw: " ASSIGNED ")), shownStatus: .paid, outcomeUnknown: false),
+                       "The order is now “Assigned”, not “Paid” as shown, so nothing was sent. Go Back to see it as it is now.")
+        let unrecognised = dapiCancelBlockedReason(order: DapiOrdersTests.order("o", status: DapiOrderStatus(raw: "Weird")), shownStatus: .paid, outcomeUnknown: false) ?? ""
+        XCTAssertTrue(unrecognised.hasPrefix("The order now has a status Plinth doesn’t recognise, not “Paid” as shown"), unrecognised)
+        XCTAssertFalse(unrecognised.contains("Check"), "No Check Again is offered for a moved status")
+        let unknownOutcome = dapiCancelBlockedReason(order: paid, shownStatus: .paid, outcomeUnknown: true) ?? ""
+        XCTAssertTrue(unknownOutcome.contains("Go Back and press Refresh Order"), unknownOutcome)
     }
 
     func testCancelOutcomeRules() {
@@ -1378,6 +1389,10 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         runner.cancelOrder()
         await waitUntil { if case .blocked = runner.phase { true } else { false } }
         XCTAssertEqual(stub.count("cancel"), 0)
+        XCTAssertEqual(runner.phase, .blocked("The order is now “Assigned”, not “Paid” as shown, so nothing was sent. Go Back to see it as it is now."))
+        XCTAssertFalse(runner.canCheckAgain, "Reading it again can't undo a moved status")
+        runner.checkAgain()
+        XCTAssertEqual(stub.count("order"), 2, "Check Again does nothing for a blocked order")
     }
 
     /// After a failed read the cancel review offers Check Again: the opening read and check once more, never a cancel.
@@ -1388,8 +1403,9 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         let runner = cancelRunner(stub, harness)
         runner.start()
         await waitUntil { runner.phase != .loading }
-        guard case .blocked(let message) = runner.phase else { return XCTFail("\(runner.phase)") }
+        guard case .readFailed(let message) = runner.phase else { return XCTFail("\(runner.phase)") }
         XCTAssertTrue(message.contains("Nothing was sent"), message)
+        XCTAssertTrue(runner.canCheckAgain)
         XCTAssertFalse(runner.canCancel)
         runner.cancelOrder()
         XCTAssertEqual(stub.count("order"), 1, "Cancel Order does nothing while blocked")
@@ -1402,8 +1418,9 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(stub.count("cancel"), 0, "Check Again never cancels")
         XCTAssertEqual(harness.begun, 0)
         XCTAssertTrue(harness.unknown.isEmpty)
+        XCTAssertFalse(runner.canCheckAgain)
         runner.checkAgain()
-        XCTAssertEqual(stub.count("order"), 2, "Only after a blocked read")
+        XCTAssertEqual(stub.count("order"), 2, "Only after a failed read")
 
         // A status that moved since the review opened stays blocked: Check Again never widens what can be cancelled.
         let moved = ScriptedDapiOrders()
@@ -1415,6 +1432,9 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         await waitUntil { blocked.phase != .loading }
         guard case .blocked = blocked.phase else { return XCTFail("\(blocked.phase)") }
         XCTAssertEqual(moved.count("cancel"), 0)
+        XCTAssertFalse(blocked.canCheckAgain, "Once the order is read and blocked, Check Again goes")
+        blocked.checkAgain()
+        XCTAssertEqual(moved.count("order"), 2)
 
         // Closed: nothing more is read.
         let closing = ScriptedDapiOrders()
@@ -1425,6 +1445,57 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         closed.close()
         closed.checkAgain()
         XCTAssertEqual(closing.count("order"), 1)
+    }
+
+    /// Every blocked state of the cancel review: only a failed read offers Check Again. A changed, uncancellable or
+    /// unrecognised status and an earlier cancel with an unknown outcome stay blocked however often the order is read,
+    /// so Check Again isn't offered and does nothing; nothing is ever sent.
+    func testCancelReviewOffersCheckAgainOnlyAfterAFailedRead() async {
+        struct Case { let name: String; let read: DapiOrder; let shown: DapiOrderStatus; let unknown: Bool }
+        let cases = [
+            Case(name: "moved", read: DapiOrdersTests.order("ord_1", status: .assigned), shown: .paid, unknown: false),
+            Case(name: "moved, odd case", read: DapiOrdersTests.order("ord_1", status: DapiOrderStatus(raw: "In_Production")), shown: .paid, unknown: false),
+            Case(name: "unrecognised", read: DapiOrdersTests.order("ord_1", status: DapiOrderStatus(raw: "WEIRD")), shown: .paid, unknown: false),
+            Case(name: "not cancellable", read: DapiOrdersTests.order("ord_1", status: .inProduction), shown: .inProduction, unknown: false),
+            Case(name: "unknown outcome", read: DapiOrdersTests.order("ord_1", status: .paid), shown: .paid, unknown: true),
+        ]
+        for c in cases {
+            let stub = ScriptedDapiOrders()
+            stub.scriptOrderReads([.success(c.read)])
+            let harness = CancelHarness()
+            if c.unknown { harness.unknown = ["ord_1"]; harness.sentFrom = ["ord_1": .paid] }
+            let runner = cancelRunner(stub, harness, shown: c.shown)
+            runner.start()
+            await waitUntil { runner.phase != .loading }
+            guard case .blocked(let message) = runner.phase else { XCTFail("\(c.name): \(runner.phase)"); continue }
+            XCTAssertFalse(message.contains("Check Again"), "\(c.name): \(message)")
+            XCTAssertFalse(runner.canCheckAgain, c.name)
+            XCTAssertFalse(runner.canCancel, c.name)
+            runner.checkAgain()
+            runner.cancelOrder()
+            XCTAssertEqual(stub.count("order"), 1, "\(c.name): nothing more is read")
+            XCTAssertEqual(stub.count("cancel"), 0, c.name)
+            XCTAssertEqual(harness.begun, 0, c.name)
+        }
+
+        // A pre-send re-read that fails offers Check Again, which reads only and leaves another press to cancel.
+        let stub = ScriptedDapiOrders()
+        stub.scriptOrderReads([.success(DapiOrdersTests.order("ord_1", status: .paid)), .failure(.readFailed("offline")),
+                               .success(DapiOrdersTests.order("ord_1", status: .paid))])
+        let harness = CancelHarness()
+        let runner = cancelRunner(stub, harness)
+        runner.start()
+        await waitUntil { runner.phase != .loading }
+        runner.cancelOrder()
+        await waitUntil { runner.phase != .loading }
+        guard case .readFailed = runner.phase else { return XCTFail("\(runner.phase)") }
+        XCTAssertTrue(runner.canCheckAgain)
+        runner.checkAgain()
+        await waitUntil { runner.phase != .loading }
+        XCTAssertTrue(runner.canCancel)
+        XCTAssertEqual(stub.count("order"), 3)
+        XCTAssertEqual(stub.count("cancel"), 0, "Check Again never cancels")
+        XCTAssertEqual(harness.begun, 0)
     }
 
     func testCancelRunnerRecordsAnUnknownOutcome() async {

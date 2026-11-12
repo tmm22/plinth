@@ -95,7 +95,7 @@ final class OrdersRound20Tests: XCTestCase {
         XCTAssertEqual(dapiLookForOrdersButtonTitle(count: 0), "Look for Order on 3DAPI")
         XCTAssertEqual(dapiLookForOrdersButtonTitle(count: 2), "Look for Orders on 3DAPI")
         let discard = dapiComposerDiscardMessage(hasUnconfirmedAttempt: true)
-        XCTAssertTrue(dapiNamingLookForButton(discard, count: 3).contains("use Look for Orders on 3DAPI."))
+        XCTAssertTrue(dapiNamingLookForButton(discard, count: 3).contains("use Look for Orders on 3DAPI to check."))
         XCTAssertEqual(dapiNamingLookForButton(discard, count: 1), discard)
         XCTAssertTrue(dapiNamingLookForButton(dapiPlaceUnknownText, count: 2).contains("Press Look for Orders on 3DAPI"))
     }

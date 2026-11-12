@@ -346,11 +346,13 @@ struct DapiCancelOrderSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .disabled(runner.isWriting)
                 Spacer()
-                if isBlocked {
-                    // Reads only, like the place review's Check Again; no shortcut and never the default.
+                if runner.canCheckAgain {
+                    // Only after a failed read: reads only, like the place review's Check Again; no shortcut and never
+                    // the default. A blocked order (its status changed or can't be cancelled, or an earlier cancel's
+                    // outcome is unknown) stays blocked however often it is read, so it gets no trailing button.
                     Button("Check Again") { runner.checkAgain() }
                         .help("Read the order again. Nothing is sent.")
-                } else if !isDone {
+                } else if !isDone, !isBlocked {
                     // Never the default button and no shortcut.
                     Button("Cancel Order", role: .destructive) { runner.cancelOrder() }
                         .disabled(!runner.canCancel)
@@ -392,7 +394,7 @@ struct DapiCancelOrderSheet: View {
             }
         case .ready:
             Text("3DAPI still lets this order be cancelled.").font(.callout).foregroundStyle(.secondary)
-        case .blocked(let message):
+        case .blocked(let message), .readFailed(let message):
             Label(message, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
         case .cancelling:

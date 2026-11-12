@@ -74,7 +74,7 @@ final class ShopifyRound21Tests: XCTestCase {
 
         for status in ["IN_PROGRESS", "PENDING_FULFILLMENT"] {
             let sent = try shopifyImportParse([fetchedNode(fulfilment: status)], shop: "p.myshopify.com", truncated: false).orders[0]
-            XCTAssertEqual(sent.alreadyHandled, "Shopify shows this order as sent to a fulfilment service.", status)
+            XCTAssertEqual(sent.alreadyHandled, "Shopify shows this order as in progress or with a fulfilment service.", status)
             XCTAssertFalse(orderImportCheck(sent, context: context).tickedByDefault, status)
         }
         let nothing = try shopifyImportParse([fetchedNode(fulfilment: "FULFILLMENT_NOT_REQUIRED")], shop: "p.myshopify.com", truncated: false).orders[0]
@@ -89,14 +89,14 @@ final class ShopifyRound21Tests: XCTestCase {
         for status in ["partial", "Partially Fulfilled", "PARTIALLY_FULFILLED", "partially-fulfilled"] {
             XCTAssertEqual(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: status,
                                                            cancelledAt: "", financialStatus: "paid"),
-                           "Shopify shows part of this order as fulfilled, and the export lists every item.", status)
+                           "Shopify shows part of this order as fulfilled, but the export lists every item, including any already sent.", status)
             XCTAssertEqual(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: status,
                                                            cancelledAt: "", financialStatus: "paid", fetched: true),
                            "Shopify shows part of this order as fulfilled. Only the items still to fulfil are listed.", status)
         }
         XCTAssertEqual(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: "In Progress",
                                                        cancelledAt: "", financialStatus: "paid"),
-                       "Shopify shows this order as sent to a fulfilment service.")
+                       "Shopify shows this order as in progress or with a fulfilment service.")
     }
 
     func testAPartialCSVExportSaysItListsEveryItem() throws {
@@ -106,7 +106,7 @@ final class ShopifyRound21Tests: XCTestCase {
         #1002,bo@example.com,paid,unfulfilled,1,Vase,VASE,Bo Chen,2 High St,Boston,02134,MA,US\r
         """
         let parse = try orderImportParse(data: Data(csv.utf8))
-        XCTAssertEqual(parse.orders[0].alreadyHandled, "Shopify shows part of this order as fulfilled, and the export lists every item.")
+        XCTAssertEqual(parse.orders[0].alreadyHandled, "Shopify shows part of this order as fulfilled, but the export lists every item, including any already sent.")
         XCTAssertNil(parse.orders[1].alreadyHandled)
         let context = OrderImportContext(products: [product("Vase", sku: "VASE")], platformID: "p1")
         XCTAssertFalse(orderImportCheck(parse.orders[0], context: context).tickedByDefault)
@@ -230,7 +230,7 @@ final class ShopifyRound21Tests: XCTestCase {
         let vase = [ShopifySourceItem(key: .lineItem("111"), quantity: 1)]
         let more = check(orderData([fulfilmentOrder(5, lines: [line(51, remaining: 1, lineItem: 111, sku: "VASE", name: "Vase")])],
                                    moreOrders: true), items: vase)
-        XCTAssertEqual(more, .unavailable("This order has more fulfilment orders in Shopify than Plinth reads. Add its tracking in Shopify."))
+        XCTAssertEqual(more, .unavailable("Shopify splits this order into more parts than Plinth can check. Add its tracking in Shopify."))
     }
 
     func testExactlyOneFulfilmentOrderHoldingTheDraftIsSent() {
@@ -256,8 +256,11 @@ final class ShopifyRound21Tests: XCTestCase {
         // Both could hold one vase: Plinth can't tell which is Slant's parcel.
         XCTAssertEqual(check(orderData([first, second]), items: [ShopifySourceItem(key: .sku("VASE"), quantity: 1)]), .severalShipments)
         XCTAssertEqual(ShopifyFulfilmentCheck.severalShipments.summary,
-                       "Shopify splits this order into several shipments, so Plinth can’t tell which one Slant’s parcel is. Add its tracking in Shopify.")
+                       "Shopify splits this order into more than one unfulfilled part (by where or how it ships), so Plinth can’t tell which part Slant’s parcel is for. Add its tracking in Shopify.")
+        // Shopify splits by location, shipping rate, delivery promise or method: no single cause is named, and no
+        // Shopify term ("fulfilment order", "shipments") the seller doesn't see in Shopify's own screens.
         XCTAssertFalse(ShopifyFulfilmentCheck.severalShipments.summary.contains("location"))
+        XCTAssertFalse(ShopifyFulfilmentCheck.severalShipments.summary.contains("fulfilment order"))
         // Any fulfillment order Plinth can't read in full stops the check.
         let cut = fulfilmentOrder(6, lines: [line(61, remaining: 1, lineItem: 222, sku: "MUG", name: "Mug")], more: true)
         XCTAssertFalse(check(orderData([first, cut]), items: [ShopifySourceItem(key: .lineItem("111"), quantity: 1)]).isReady)
@@ -278,7 +281,8 @@ final class ShopifyRound21Tests: XCTestCase {
                          items: [ShopifySourceItem(key: .lineItem("111"), quantity: 1)])
         XCTAssertEqual(none, .unavailable("Shopify shows nothing left to fulfil in this order (removed or refunded). Not sent."))
         XCTAssertEqual(check(orderData([], status: "FULFILLED"), items: [ShopifySourceItem(key: .lineItem("1"), quantity: 1)]), .alreadyFulfilled)
-        XCTAssertTrue(ShopifyFulfilmentCheck.notFound.summary.contains("60 days"))
+        XCTAssertEqual(ShopifyFulfilmentCheck.notFound.summary,
+                       "No Shopify order has this exact name in the last 60 days, the most Plinth can read. Not sent: add its tracking in Shopify.")
     }
 
     // MARK: A2-5, A2-6 · Carrier names

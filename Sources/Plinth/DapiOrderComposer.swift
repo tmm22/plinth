@@ -337,11 +337,12 @@ func dapiDuplicateCopiedText(_ order: DapiOrder) -> String {
     let address = "The address isn’t copied; enter it below."
     guard withoutMaterials > 0 else { return "The same models, quantities and materials were copied. \(address)" }
     if withoutMaterials == items.count {
-        return "The same models and quantities were copied. 3DAPI’s copy of this order didn’t say which materials it used, so the lines start with 3DAPI’s suggested materials: check them. \(address)"
+        let lines = items.count == 1 ? "the line starts" : "each line starts"
+        return "The same models and quantities were copied. 3DAPI didn’t list this order’s materials, so \(lines) with 3DAPI’s suggested materials: check them. \(address)"
     }
     let which = withoutMaterials == 1
-        ? "1 line whose materials 3DAPI’s copy of this order didn’t list: it starts with 3DAPI’s suggested materials, so check it."
-        : "\(withoutMaterials) lines whose materials 3DAPI’s copy of this order didn’t list: those start with 3DAPI’s suggested materials, so check them."
+        ? "1 line 3DAPI listed without materials: it starts with 3DAPI’s suggested materials, so check it."
+        : "\(withoutMaterials) lines 3DAPI listed without materials: they start with 3DAPI’s suggested materials, so check them."
     return "The same models, quantities and materials were copied, except for \(which) \(address)"
 }
 
@@ -362,10 +363,11 @@ func dapiNamingLookForButton(_ text: String, count: Int) -> String {
 }
 
 /// The composer's Discard Order question: "Nothing was sent" only while no Place Order from this sheet is still
-/// unconfirmed (`DapiComposerState.sentReferences`); otherwise that order may have been placed and charged.
+/// unconfirmed (`DapiComposerState.sentReferences`); otherwise that order may have been placed and charged, and the
+/// question says plainly that discarding the sheet doesn't cancel it and the warning stays.
 func dapiComposerDiscardMessage(hasUnconfirmedAttempt: Bool) -> String {
     if hasUnconfirmedAttempt {
-        return "An order from this sheet may have been placed and charged. Plinth keeps the warning; use Look for Order on 3DAPI. The lines and details you entered are discarded."
+        return "An order from this sheet may have been placed and charged. Discard Order doesn’t cancel it, and Plinth keeps the warning: use Look for Order on 3DAPI to check. The lines and details here are discarded."
     }
     return "Nothing was sent to 3DAPI. The lines and details you entered are discarded."
 }
@@ -529,8 +531,10 @@ func dapiSampleCreditChange(pressed: Bool, current: Bool, available: Bool) -> St
 }
 
 /// The pre-send check's stop when the press used sample credit but the fresh wallet couldn't be read: Plinth can't
-/// tell whether the credit is still there, so nothing is sent and the tick is left as it was.
-let dapiSampleCreditWalletUnreadable = "Plinth couldn’t read your 3DAPI wallet to check your sample credit, so nothing was sent. Press Check Again to read it again."
+/// tell whether the credit is still there, so nothing is sent and the tick is left as it was. Check Again reads
+/// everything again; if the wallet still can't be read, the review hides Use My Sample Credit, and the next Place Order
+/// says the credit won't be used (`dapiSampleCreditChange`), so the order can then go without it.
+let dapiSampleCreditWalletUnreadable = "Plinth couldn’t read your 3DAPI wallet to check your sample credit, so nothing was sent. Press Check Again to read it again. If it still can’t be read, the review won’t offer the credit, and the order can go without it."
 
 /// Whether the wallet read shows sample credit (the review shows Use My Sample Credit only then).
 func dapiWalletShowsSampleCredit(_ wallet: DapiWallet?) -> Bool {
@@ -1192,10 +1196,17 @@ func dapiOrderLookupSummary(_ results: [DapiOrderLookupResult]) -> String {
 
 /// Why Cancel Order can't be offered or sent for this order now, or nil. Only an order 3DAPI still lets you cancel,
 /// still in the status the seller saw, and without an earlier cancel whose outcome is unknown.
+/// None of these is cleared by reading the order again in the review, so the review offers no Check Again for them
+/// (`DapiCancelPhase.blocked`); Go Back is the way out.
 func dapiCancelBlockedReason(order: DapiOrder, shownStatus: DapiOrderStatus, outcomeUnknown: Bool) -> String? {
-    if outcomeUnknown { return "An earlier cancellation of this order didn’t get a clear answer. Refresh the order to see whether it was cancelled." }
+    if outcomeUnknown {
+        return "An earlier cancellation of this order didn’t get a clear answer. Go Back and press Refresh Order to see whether it was cancelled."
+    }
     if order.status != shownStatus {
-        return "The order is now “\(order.status.label)”, not “\(shownStatus.label)” as shown. Check it again before cancelling."
+        let now = order.status.isUnknown
+            ? "The order now has a status Plinth doesn’t recognise"
+            : "The order is now “\(order.status.label)”"
+        return "\(now), not “\(shownStatus.label)” as shown, so nothing was sent. Go Back to see it as it is now."
     }
     if order.status.isUnknown { return "3DAPI sent a status Plinth doesn’t recognise, so Plinth won’t cancel this order." }
     guard order.status.canRequestCancellation else {
@@ -1358,7 +1369,12 @@ struct DapiCancelEnvironment {
 enum DapiCancelPhase: Equatable {
     case loading
     case ready(DapiOrder)
+    /// The order was read, but can't be cancelled from here (`dapiCancelBlockedReason`: its status changed since the
+    /// review opened, isn't cancellable or isn't recognised, or an earlier cancel's outcome is unknown). Reading it
+    /// again can't change that, so the review offers no Check Again; Go Back is the way out.
     case blocked(String)
+    /// The order couldn't be read: Check Again reads it once more (read-only).
+    case readFailed(String)
     case cancelling
     case done(DapiCancelOutcome)
 }
@@ -1409,11 +1425,15 @@ enum DapiCancelPhase: Equatable {
         readToken = nil
     }
 
-    /// Check Again, after a read failed or the order couldn't be cancelled: the opening read and its check once more
-    /// (the status must still be the one shown and cancellable). Read-only: it never sends the cancel, which needs
-    /// another press of Cancel Order once the review is ready.
+    /// Check Again is offered only after a read failed (`readFailed`): a blocked order (`blocked`) stays blocked
+    /// however often it is read.
+    var canCheckAgain: Bool { if case .readFailed = phase { true } else { false } }
+
+    /// Check Again, after a read failed: the opening read and its check once more (the status must still be the one
+    /// shown and cancellable). Read-only: it never sends the cancel, which needs another press of Cancel Order once the
+    /// review is ready.
     func checkAgain() {
-        guard case .blocked = phase, readTask == nil, !closed else { return }
+        guard canCheckAgain, readTask == nil, !closed else { return }
         readOnOpening()
     }
 
@@ -1423,7 +1443,8 @@ enum DapiCancelPhase: Equatable {
             guard let self else { return }
             switch result {
             case .success(let order): self.phase = .ready(order)
-            case .failure(let message): self.phase = .blocked(message)
+            case .blocked(let message): self.phase = .blocked(message)
+            case .readFailed(let message): self.phase = .readFailed(message)
             }
         }
     }
@@ -1446,7 +1467,9 @@ enum DapiCancelPhase: Equatable {
         lastReadTask = task
     }
 
-    enum Gate { case success(DapiOrder), failure(String) }
+    /// `blocked`: the order was read and can't be cancelled (`dapiCancelBlockedReason`). `readFailed`: it couldn't be
+    /// read (or the read was stopped).
+    enum Gate { case success(DapiOrder), blocked(String), readFailed(String) }
 
     private func fetchAndGate() async -> Gate {
         do {
@@ -1458,12 +1481,12 @@ enum DapiCancelPhase: Equatable {
             }
             if let reason = dapiCancelBlockedReason(order: order, shownStatus: shownStatus,
                                                     outcomeUnknown: environment.outcomeUnknown(order.id)) {
-                return .failure(reason)
+                return .blocked(reason)
             }
             return .success(order)
         } catch {
-            if dapiIsCancellation(error) { return .failure("Stopped.") }
-            return .failure("Couldn’t read the order from 3DAPI: \(dapiFailureMessage(error)) Nothing was sent.")
+            if dapiIsCancellation(error) { return .readFailed("Stopped.") }
+            return .readFailed("Couldn’t read the order from 3DAPI: \(dapiFailureMessage(error)) Nothing was sent.")
         }
     }
 
@@ -1474,7 +1497,8 @@ enum DapiCancelPhase: Equatable {
         startRead { [weak self] gate in
             guard let self else { return }
             switch gate {
-            case .failure(let message): self.phase = .blocked(message)
+            case .blocked(let message): self.phase = .blocked(message)
+            case .readFailed(let message): self.phase = .readFailed(message)
             case .success(let order): self.send(order)
             }
         }
