@@ -1169,7 +1169,7 @@
           },
           "provider": {
             "type": "string",
-            "description": "Slant's docs: who is carrying the shipment. Live (29 Oct and 1 Nov 2026): SHIPPO, the label service, not the carrier.",
+            "description": "Live (29 Oct and 1 Nov 2026): SHIPPO, the label service, not the carrier.",
             "x-plinth-source": "live"
           },
           "deliveryMethod": {
