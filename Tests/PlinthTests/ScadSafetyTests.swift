@@ -192,6 +192,27 @@ final class ScadSafetyTests: XCTestCase {
         XCTAssertFalse(scadSafetyLooksLikePath("1/2\ninch"))
     }
 
+    func testALoneCarriageReturnCantEndACommentEarly() {
+        // OpenSCAD keeps a lone CR inside a `//` comment, so this would run `surface(…)` while looking commented out.
+        let hidden = "cube(1); // x\r/*\nsurface(file = \"/Users/someone/Desktop/photo.png\");\n// */\n"
+        XCTAssertNotNil(scadSafetyProblem(hidden))
+        XCTAssertNotNil(scadSafetyProblem("cube(1); // note\rinclude <x.scad>\n"))
+        XCTAssertNotNil(scadSafetyProblem("cube(1);\r"))
+        XCTAssertTrue(scadSafetyHasLoneCarriageReturn("a\rb"))
+        XCTAssertFalse(scadSafetyHasLoneCarriageReturn("a\r\nb\r\n"))
+        // Windows line endings still pass.
+        XCTAssertNil(scadSafetyProblem("// A stand\r\nwidth = 40;\r\ncube([width, 10, 2]);\r\n"))
+    }
+
+    func testWorkbenchRefusesATemplateDesignedWithClaude() {
+        let claude = "// \(scadClaudeTemplateLinePrefix) the Plinth app.\nwidth = 40;\ncube([width, 10, 2]);\n"
+        XCTAssertTrue(scadTemplateIsClaudeWritten(claude))
+        XCTAssertEqual(workbenchOpenSCADBodyRefusal(["scadCode": claude]), scadClaudeTemplateSlantRefusal)
+        XCTAssertNil(workbenchOpenSCADBodyRefusal(["scadCode": "width = 40;\ncube([width, 10, 2]);"]))
+        XCTAssertNil(workbenchOpenSCADBodyRefusal(nil))
+        XCTAssertNil(workbenchOpenSCADBodyRefusal(["other": claude]))
+    }
+
     func testTokensSkipCommentsAndJoinOperators() {
         let tokens: [ScadSafetyToken] = [.identifier("a"), .symbol("=="), .number, .symbol("&&"), .identifier("b"),
                                          .symbol("<="), .number, .symbol(";")]

@@ -635,7 +635,9 @@ enum KeychainRead: Equatable {
 /// The Keychain calls the stores make, injectable so tests never touch the real Keychain.
 protocol KeychainBackend: Sendable {
     func read(service: String, account: String) -> KeychainRead
-    /// Adds a generic password readable only on this Mac while it is unlocked.
+    /// Adds a generic password to the login keychain. `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` is set, but it has
+    /// no effect outside the data protection keychain (Apple TN3137): the keychain's lock and the item's access list
+    /// protect it, and Migration Assistant can carry it to a new Mac.
     func add(service: String, account: String, data: Data) -> OSStatus
     func update(service: String, account: String, data: Data) -> OSStatus
     func delete(service: String, account: String) -> OSStatus

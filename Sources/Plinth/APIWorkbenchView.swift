@@ -364,6 +364,10 @@ struct EndpointView: View {
                     }
                 }
             }
+            if endpoint.path == "/files/openScad", let refusal = workbenchOpenSCADBodyRefusal(object) {
+                validation = refusal
+                return
+            }
             let phrase = workbenchBakedConfirmPhrase(method: endpoint.method, templatePath: endpoint.path, resolvedPath: path)
             let request = PreparedRequest(endpoint: endpoint, path: path, query: query, body: object, confirmPhrase: phrase,
                                           draftMarker: draftMarker)
@@ -1002,4 +1006,11 @@ func validateOrderMetadata(_ value: Any, path: String = "body.metadata", depth: 
             }
         }
     }
+}
+
+/// The Workbench sends `POST /files/openScad` bodies as typed, so it refuses one whose `scadCode` is a template designed
+/// with Claude: Plinth never sends Claude-written OpenSCAD to Slant (`scadTemplateIsClaudeWritten`).
+func workbenchOpenSCADBodyRefusal(_ body: Any?) -> String? {
+    guard let code = (body as? [String: Any])?["scadCode"] as? String, scadTemplateIsClaudeWritten(code) else { return nil }
+    return scadClaudeTemplateSlantRefusal
 }

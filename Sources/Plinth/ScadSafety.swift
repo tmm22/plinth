@@ -43,6 +43,12 @@ func scadSafetyProblem(_ code: String) -> String? {
     if code.unicodeScalars.contains(where: { $0.value < 0x20 && $0 != "\n" && $0 != "\r" && $0 != "\t" }) {
         return "The code contains control characters. Use plain text only."
     }
+    // OpenSCAD's lexer ends a `//` comment only at a line feed, so a carriage return on its own would let text that
+    // OpenSCAD runs look like part of a comment here (or the reverse, in a build that ends comments at either). Windows
+    // line endings, a carriage return straight before a line feed, read the same both ways and stay allowed.
+    if scadSafetyHasLoneCarriageReturn(code) {
+        return "The code contains a carriage return that isn’t part of a line break. Use plain line breaks only."
+    }
     let scan = scadSafetyScan(code)
     if let problem = scan.problem { return problem }
     for word in scadSafetyFileReadingWords where scan.identifiers.contains(word) {
@@ -66,6 +72,15 @@ func scadSafetyProblem(_ code: String) -> String? {
         return "Plinth doesn’t run code with text that looks like a file path (\"\(shown)\"). Remove it."
     }
     return nil
+}
+
+/// True when the code has a carriage return that isn't straight before a line feed.
+func scadSafetyHasLoneCarriageReturn(_ code: String) -> Bool {
+    let scalars = Array(code.unicodeScalars)
+    for (index, scalar) in scalars.enumerated() where scalar == "\r" {
+        if index + 1 >= scalars.count || scalars[index + 1] != "\n" { return true }
+    }
+    return false
 }
 
 /// True for text that names a file or folder: an absolute, home or relative path, a Windows drive or backslash path,
