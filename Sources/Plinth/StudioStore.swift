@@ -1085,7 +1085,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         else if let reset = rateLimit?.reset, reset <= Date() { rateLimit = nil }
     }
     // MARK: Order watch hook (OrderWatch.swift)
-    /// Background order checks report the allowance they used, so the next check and Settings see it.
+    /// Background order checks and the Workbench report the allowance they used, so the next check and Settings see it.
     func noteBackgroundRateLimit(from response: APIResponse) { noteRateLimit(from: response) }
     // MARK: -
     /// Writes the library file. False when saving is refused this session or the write failed (the reason is in
@@ -2119,7 +2119,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         webhookSecretUncertainPlatformIDs.subtract(records.map(\.id))
     }
     /// After a secret change whose outcome is unclear: drops the cached secret (Show and Copy go with it) until a read
-    /// from Slant shows the current one (`reloadPlatform`, Reload Platforms).
+    /// from Slant shows the current one (`reloadPlatform`: Refresh Platform; or Refresh Platforms).
     func markWebhookSecretUncertain(platformID id: String) {
         guard !id.isEmpty else { return }
         platforms = platforms.map { $0.id == id ? platformRecordClearingWebhookSecret($0) : $0 }
@@ -2488,9 +2488,6 @@ func activityDetail(for error: Error) -> String {
 }
 func canLoadMoreListPages(searchActive: Bool) -> Bool { !searchActive }
 func nextListPage(lastLoadedPage: Int) -> Int { lastLoadedPage + 1 }
-func clearedOrderSearchState() -> (orderSearchActive: Bool, orders: [Record], orderPage: Int) {
-    (false, [], 0)
-}
 /// Clearing the Orders search reloads only the orders (`applyOrderFilter`) once the account has loaded; before that
 /// (or without a key, which opens Settings) it keeps the full refresh.
 func orderSearchClearReloadsOnlyOrders(connected: Bool, hasKey: Bool) -> Bool {

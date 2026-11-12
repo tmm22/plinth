@@ -284,7 +284,7 @@ func comparisonPacing(rateLimit: RateLimitInfo?, observedAt: Date?, now: Date, r
 /// After a 429, when requests may resume: the latest of Slant's reset time, a numeric Retry-After and a minute from
 /// now, at most an hour away. The minute is a floor because `X-RateLimit-Reset` can be only seconds ahead (it may
 /// mark when one counted request leaves a sliding window), and `GET /usage` reports a 60 s block after the limit is
-/// hit (unverified). Shared by Compare estimates, Check Cost, Import Orders, Pay Several Drafts and the Spending Report.
+/// hit (unverified). Shared by Compare estimates, Check Cost, Import Orders, Pay Several Drafts, the Spending Report and the single-action 429 copy (`rateLimitUserMessage`).
 func comparisonRateLimitedUntil(retryAfter: String?, rateLimitReset: String?, now: Date) -> Date {
     var until = now.addingTimeInterval(comparisonRateLimitMinimumWait)
     if let reset = rateLimitResetDate(rateLimitReset, now: now), reset > until {

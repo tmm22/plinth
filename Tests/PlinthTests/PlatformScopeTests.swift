@@ -48,7 +48,7 @@ final class PlatformScopeTests: XCTestCase {
         XCTAssertEqual(ordersShownOnPlatform(rows, platformID: own).map(\.id), ["SLANT_A", "SLANT_C"])
         // No default platform: nothing is left out.
         XCTAssertEqual(ordersShownOnPlatform(rows, platformID: "").map(\.id), ["SLANT_A", "SLANT_B", "SLANT_C", "SLANT_D"])
-        // An order under the pay/cancel lock stays listed, so its Reload Order can lift the lock.
+        // An order under the pay/cancel lock stays listed, so its Refresh Order can lift the lock.
         XCTAssertEqual(ordersShownOnPlatform(rows, platformID: own, keeping: ["SLANT_B"]).map(\.id), ["SLANT_A", "SLANT_B", "SLANT_C"])
         // Matched by any of its IDs (the lock keeps every alias).
         let aliased = Record(values: ["publicId": "SLANT_E", "id": "internal-e", "customer": ["platformId": other]])

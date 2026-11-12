@@ -16,7 +16,7 @@ let orderWatchFileName = "order-watch.json"
 /// Time between checks. Each check makes at most two reads (newest created, then most recently updated), so 30 reads
 /// an hour: well inside Slant's 100 a minute, and each read first leaves `orderWatchRateLimitReserve` to the seller.
 let orderWatchInterval: TimeInterval = 4 * 60
-/// The first check after launch, a key change or turning the watch on waits a little, so it never races the launch refresh.
+/// The first check after launch or turning the watch on waits a little, so it never races the launch refresh.
 let orderWatchFirstCheckDelay: TimeInterval = 20
 /// How soon a check skipped for a running request, open sheet or missing setup is looked at again (no request is made).
 let orderWatchRecheckDelay: TimeInterval = 30

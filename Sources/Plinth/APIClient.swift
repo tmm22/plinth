@@ -40,9 +40,9 @@ struct APIResponse {
     }
 }
 
-/// False for `/files/openScad`: Slant's docs show its replies carrying OpenSCAD's own limiter (`X-RateLimit-Limit: 5`,
-/// an hour), and "4 of 5 left" in the shared figure would stop every paced read for up to an hour. OpenSCAD keeps its
-/// own allowance (`OpenSCADQuota`). Compared ignoring case and trailing slashes, as a hand-typed Workbench path may be.
+/// False for `/files/openScad`: Slant's docs show its replies carrying `X-RateLimit-Limit`/`-Remaining` (100 and 99 in
+/// the example since 9 Nov 2026; 5 and 4 before), which may be OpenSCAD's own hourly limiter, and a low hourly Remaining
+/// in the shared figure would stop every paced read for up to an hour. OpenSCAD keeps its own allowance (`OpenSCADQuota`). Compared ignoring case and trailing slashes, as a hand-typed Workbench path may be.
 func slantReplyRateLimitIsShared(path: String?) -> Bool {
     guard var normalized = path?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return true }
     while normalized.count > 1, normalized.hasSuffix("/") { normalized.removeLast() }
@@ -372,7 +372,7 @@ func uploadOutcomeUnknown(stage: UploadStage?, error: Error) -> Bool {
 /// storage PUT may have started, that file's contents may have changed whatever happened next: a failed PUT, a confirm
 /// whose outcome is unknown, and even a definite refusal at confirm (the PUT had already succeeded and the bytes may be
 /// stored under the file's key). A failure while asking for the link (`.preparing`, including the pre-PUT guard,
-/// `UploadWouldOverwriteExistingFile`) sent no bytes. `replacingFileID` is the file the seller chose to replace (blank
+/// `UploadWouldOverwriteExistingFile`, `UploadReplaceWouldCreateNewFile`) sent no bytes. `replacingFileID` is the file the seller chose to replace (blank
 /// when neither the listed record nor Slant's placeholder named its ID); nil for an upload that isn't a Replace File.
 func uploadReplacementMayBePartial(stage: UploadStage?, replacingFileID: String?) -> Bool {
     guard replacingFileID != nil else { return false }
@@ -733,7 +733,8 @@ struct APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = method.uppercased()
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
-        // Only Slant API requests name the app; presigned storage PUTs and downloads keep URLSession's default.
+        // Only Slant API requests carry Plinth's own User-Agent; presigned storage PUTs and downloads carry URLSession's
+        // default one, which also names the app and the macOS build.
         request.setValue(plinthUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(path == "/files/openScad" ? "application/sla, application/json" : "application/json", forHTTPHeaderField: "Accept")
         if let body {

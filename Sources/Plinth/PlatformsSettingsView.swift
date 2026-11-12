@@ -612,7 +612,7 @@ struct PlatformDetailSheet: View {
                             rotatePrompt = false
                         } else if secretUncertain {
                             // Slant may have rotated: drop any secret this sheet showed, and explain in the details
-                            // (with Reload Platform) rather than leave Rotate Secret one click from a second rotate.
+                            // (with Refresh Platform) rather than leave Rotate Secret one click from a second rotate.
                             rotatedSecret = nil
                             showSecret = false
                             rotatePrompt = false

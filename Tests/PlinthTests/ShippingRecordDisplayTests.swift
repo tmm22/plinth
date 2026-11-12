@@ -327,7 +327,8 @@ private enum DisplayStatusLeakScan {
         "spendReportCountedStatuses", "unknownOutcomeResolvedByReload", "orderCancelConfirmAllowed",
         "workbenchCancelAllowed", "orderConfirmFinalActionEnabled", "workbenchChargeAllowed", "canCancelSelected",
         "batchPayIsDraft", "batchPayExclusionReason", "orderConfirmReviewGate", "reviewGate", "finalActionEnabled",
-        "workbenchCancelShippingDetailsMessage", "orderShippingDetails"
+        "workbenchCancelShippingDetailsMessage", "orderShippingDetails", "orderOutcomeLockIDsResolvedByReload",
+        "liftOutcomeLocksResolvedByReload"
     ]
     /// Too general to carry taint from a `var` (a SwiftUI view's `body` shows the display word legitimately).
     static let neverTainted: Set<String> = ["body"]

@@ -208,14 +208,6 @@ final class ShellUXTests: XCTestCase {
         XCTAssertTrue(canLoadMoreListPages(searchActive: false))
     }
 
-    func testClearedOrderSearchStateDropsHitsBeforeRefresh() {
-        let cleared = clearedOrderSearchState()
-        XCTAssertFalse(cleared.orderSearchActive)
-        XCTAssertTrue(cleared.orders.isEmpty)
-        XCTAssertEqual(cleared.orderPage, 0)
-        XCTAssertTrue(canLoadMoreListPages(searchActive: cleared.orderSearchActive))
-    }
-
     func testConnectShouldRefreshWorkspaceWhenConnected() {
         XCTAssertTrue(shouldRefreshWorkspaceAfterConnect(connected: true, accountLoaded: false))
         XCTAssertFalse(shouldRefreshWorkspaceAfterConnect(connected: false, accountLoaded: false))
