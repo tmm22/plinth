@@ -9,7 +9,7 @@ func anthropicKeyTestStatusLine(_ message: AnthropicMessage) -> String {
     return "The key works with Claude Opus 5.5. Test cost \(cost)."
 }
 
-let anthropicConsoleKeysURL = URL(string: "https://console.anthropic.com/settings/keys")!
+let anthropicConsoleKeysURL = URL(string: "https://platform.claude.com/settings/keys")!
 
 /// Optional: the seller's own Anthropic API key, for the Claude design and review tools. The key goes to its own
 /// Keychain item and is sent only to api.anthropic.com.
