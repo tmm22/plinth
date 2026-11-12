@@ -333,6 +333,69 @@ final class PersonalisationTests: XCTestCase {
         XCTAssertNotNil(personalisationEngineBlockedReason(.slant, localAvailable: true, hasKey: true, template: clean, sourceBytes: scadMaximumTemplateBytes + 1, quota: OpenSCADQuota(), now: now))
     }
 
+    // MARK: Round 21: templates designed with Claude
+
+    func testClaudeDesignedTemplatesAreRecognisedByTheirLine() {
+        let saved = accessoryTemplateFileText(code: "width = 20; // [10:1:40] Width\ncube([width, 30, 10]);", name: "Phone stand")
+        XCTAssertTrue(scadTemplateIsClaudeWritten(saved))
+        XCTAssertTrue(saved.contains("// \(scadClaudeTemplateLine) "))
+        // Slant Studio's line before the rename, any case or spacing, and Windows line endings.
+        XCTAssertTrue(scadTemplateIsClaudeWritten("// Stand\n// Designed with Claude in Slant Studio. Check every measurement.\ncube(1);"))
+        XCTAssertTrue(scadTemplateIsClaudeWritten("cube(1);\r\n  //designed with claude in the plinth app.\r\n"))
+        // The seller's own templates, and the words anywhere but a comment line of their own.
+        XCTAssertFalse(scadTemplateIsClaudeWritten("// Name on the keychain\nname = \"Name\";\ncube(1);"))
+        XCTAssertFalse(scadTemplateIsClaudeWritten("x = 1; // Designed with Claude in the Plinth app.\ncube(x);"))
+        XCTAssertFalse(scadTemplateIsClaudeWritten("/* Designed with Claude in the Plinth app. */ cube(1);"))
+        XCTAssertFalse(scadTemplateIsClaudeWritten("text(\"Designed with Claude in the Plinth app.\"); cube(1);"))
+        // Deleting the line makes it the seller's own.
+        let own = saved.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.contains("Designed with Claude") }.joined(separator: "\n")
+        XCTAssertFalse(scadTemplateIsClaudeWritten(own))
+    }
+
+    func testClaudeDesignedTemplatesPassClaudesCodeCheckAndGetTheMemoryCap() {
+        let url = URL(fileURLWithPath: "/tmp/stand.scad")
+        let clean = accessoryTemplateFileText(code: "width = 20; // [10:1:40] Width\ncube([width, 30, 10]);", name: "Phone stand")
+        let cleanFile = PersonalisationTemplateFile(url: url, source: clean, template: scadTemplateParameters(clean))
+        XCTAssertTrue(cleanFile.claudeWritten)
+        XCTAssertNil(cleanFile.claudeRunProblem)
+        XCTAssertEqual(cleanFile.memoryLimit, openSCADMemoryLimitBytes)
+
+        // A seller's edit (or anything else) that the check refuses stops the run, naming the file.
+        let edited = clean + "import_stl(str(chr(47), \"x\"));\n"
+        let editedFile = PersonalisationTemplateFile(url: url, source: edited, template: scadTemplateParameters(edited))
+        let problem = editedFile.claudeRunProblem
+        XCTAssertTrue(problem?.contains("stand.scad") == true)
+        XCTAssertTrue(problem?.contains("import_stl") == true)
+        XCTAssertNil(scadClaudeTemplateRunProblem("include <BOSL2/std.scad>\ncube(1);", fileName: "own.scad"), "the seller's own template isn't checked")
+
+        let own = "include <BOSL2/std.scad>\nname = \"A\";\ncube(1);"
+        let ownFile = PersonalisationTemplateFile(url: url, source: own, template: scadTemplateParameters(own))
+        XCTAssertFalse(ownFile.claudeWritten)
+        XCTAssertNil(ownFile.claudeRunProblem)
+        XCTAssertEqual(ownFile.memoryLimit, .max, "the seller's own templates keep no memory limit")
+    }
+
+    func testClaudeDesignedTemplatesNeverGoToSlant() {
+        let clean = scadTemplateParameters("name = \"A\";")
+        let now = Date()
+        XCTAssertEqual(personalisationDefaultEngine(localAvailable: false, claudeWritten: true), .local)
+        XCTAssertEqual(personalisationDefaultEngine(localAvailable: true, claudeWritten: true), .local)
+        XCTAssertEqual(personalisationEngineBlockedReason(.slant, localAvailable: true, hasKey: true, template: clean, sourceBytes: 10,
+                                                          quota: OpenSCADQuota(), now: now, claudeWritten: true),
+                       scadClaudeTemplateSlantRefusal)
+        XCTAssertNil(personalisationEngineBlockedReason(.local, localAvailable: true, hasKey: false, template: clean, sourceBytes: 10,
+                                                        quota: OpenSCADQuota(), now: now, claudeWritten: true))
+        XCTAssertEqual(personalisationEngineBlockedReason(.local, localAvailable: true, hasKey: true, template: clean, sourceBytes: 10,
+                                                          quota: OpenSCADQuota(), now: now, claudeWritten: true, claudeRunProblem: "refused"),
+                       "refused")
+        let missing = personalisationEngineBlockedReason(.local, localAvailable: false, hasKey: true, template: clean, sourceBytes: 10,
+                                                         quota: OpenSCADQuota(), now: now, claudeWritten: true)
+        XCTAssertTrue(missing?.contains("only on this Mac") == true)
+        XCTAssertFalse(missing?.contains("Slant") == true, "doesn't suggest Slant instead")
+        XCTAssertTrue(scadClaudeTemplateHelp.contains("delete the “Designed with Claude” line"))
+    }
+
     func testOpenSCADAppCandidates() {
         let home = URL(fileURLWithPath: "/Users/someone")
         let paths = openSCADAppCandidates(homeDirectory: home).map(\.path)

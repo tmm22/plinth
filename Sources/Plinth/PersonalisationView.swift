@@ -118,7 +118,7 @@ private struct PersonalisationForm: View {
     private func lookForOpenSCAD() {
         localExecutable = installedOpenSCADExecutable()
         if !lookedForOpenSCAD {
-            engine = personalisationDefaultEngine(localAvailable: localExecutable != nil)
+            engine = personalisationDefaultEngine(localAvailable: localExecutable != nil, claudeWritten: file.claudeWritten)
             lookedForOpenSCAD = true
         }
     }
@@ -128,7 +128,8 @@ private struct PersonalisationForm: View {
     private func blockedReason(now: Date) -> String? {
         personalisationEngineBlockedReason(engine, localAvailable: localExecutable != nil, hasKey: store.hasKey,
                                            template: file.template, sourceBytes: file.source.utf8.count,
-                                           quota: session.quota, now: now)
+                                           quota: session.quota, now: now,
+                                           claudeWritten: file.claudeWritten, claudeRunProblem: file.claudeRunProblem)
     }
 
     var body: some View {
@@ -178,7 +179,12 @@ private struct PersonalisationForm: View {
                       systemImage: "info.circle")
                     .foregroundStyle(.secondary)
             }
-            if file.template.usesOtherFiles {
+            if file.claudeWritten {
+                Label(scadClaudeTemplateNote, systemImage: "sparkles")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(scadClaudeTemplateHelp)
+            } else if file.template.usesOtherFiles {
                 Label("This template uses other files (include or use). OpenSCAD on this Mac reads them from the template’s folder; Slant can’t.",
                       systemImage: "doc.on.doc")
                     .foregroundStyle(.secondary)
@@ -304,7 +310,10 @@ private struct PersonalisationForm: View {
                         problem = "The template changed or moved since you opened it. Use Choose Another Template… to open it again."
                         return
                     }
-                    data = try await runOpenSCADProcess(executable: executable, templateURL: file.url, assignments: assignments)
+                    // A template designed with Claude runs only once it passes Claude's code check, under the memory cap.
+                    if file.claudeWritten, let refusal = file.claudeRunProblem { problem = refusal; return }
+                    data = try await runOpenSCADProcess(executable: executable, templateURL: file.url, assignments: assignments,
+                                                        maxMemoryBytes: file.memoryLimit)
                 case .slant:
                     data = try await store.generateOpenSCADOnSlant(source: scadSourceWithAssignments(file.source, assignments: assignments))
                 }

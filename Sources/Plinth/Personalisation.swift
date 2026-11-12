@@ -618,15 +618,27 @@ func installedOpenSCADExecutable(homeDirectory: URL = FileManager.default.homeDi
     return nil
 }
 
-func personalisationDefaultEngine(localAvailable: Bool) -> PersonalisationEngine { localAvailable ? .local : .slant }
+/// The engine Personalise from Template starts with: OpenSCAD on this Mac when it is installed, else Slant; a template
+/// designed with Claude always starts on this Mac, the only place it runs.
+func personalisationDefaultEngine(localAvailable: Bool, claudeWritten: Bool = false) -> PersonalisationEngine {
+    localAvailable || claudeWritten ? .local : .slant
+}
 
-/// Why the chosen engine can't generate now, or nil.
+/// Why the chosen engine can't generate now, or nil. A template designed with Claude (`claudeWritten`) never goes to
+/// Slant, and runs on this Mac only when `claudeRunProblem` (`scadClaudeTemplateRunProblem`) is nil.
 func personalisationEngineBlockedReason(_ engine: PersonalisationEngine, localAvailable: Bool, hasKey: Bool,
-                                        template: ScadTemplate, sourceBytes: Int, quota: OpenSCADQuota, now: Date) -> String? {
+                                        template: ScadTemplate, sourceBytes: Int, quota: OpenSCADQuota, now: Date,
+                                        claudeWritten: Bool = false, claudeRunProblem: String? = nil) -> String? {
     switch engine {
     case .local:
-        return localAvailable ? nil : "OpenSCAD isn’t installed in Applications. Install it from openscad.org, or generate with Slant."
+        if !localAvailable {
+            return claudeWritten
+                ? "OpenSCAD isn’t installed in Applications. Install it from openscad.org: Plinth runs templates designed with Claude only on this Mac."
+                : "OpenSCAD isn’t installed in Applications. Install it from openscad.org, or generate with Slant."
+        }
+        return claudeWritten ? claudeRunProblem : nil
     case .slant:
+        if claudeWritten { return scadClaudeTemplateSlantRefusal }
         if !hasKey { return "Connect your Slant account in Settings to generate with Slant." }
         if template.usesOtherFiles {
             return "This template uses other files (include or use), which Slant can’t read. Generate it with OpenSCAD on this Mac."
@@ -836,8 +848,10 @@ final class OpenSCADLogCapture: @unchecked Sendable {
 }
 
 /// The most memory a local OpenSCAD run of Claude-written code may use: 2 GB, or a quarter of this Mac's memory when
-/// that is less. CGAL renders of complex code can otherwise grow until the whole Mac swaps. The seller's own templates
-/// (Personalise from Template, batch personalisation) have no limit: a heavy `minkowski()` name plate can need more.
+/// that is less. CGAL renders of complex code can otherwise grow until the whole Mac swaps. It applies to Design an
+/// Accessory's renders and to templates designed with Claude (`scadTemplateIsClaudeWritten`) wherever they run; the
+/// seller's own templates (Personalise from Template, batch personalisation) have no limit: a heavy `minkowski()` name
+/// plate can need more.
 let openSCADMemoryLimitBytes: UInt64 = min(2 * 1024 * 1024 * 1024, ProcessInfo.processInfo.physicalMemory / 4)
 
 /// How much memory a running process uses now (the larger of its resident size and its footprint, which also counts
@@ -978,8 +992,62 @@ struct PersonalisationTemplateFile: Identifiable, Equatable {
     let url: URL
     let source: String
     let template: ScadTemplate
+    /// The template carries Plinth's “Designed with Claude” line (`scadTemplateIsClaudeWritten`).
+    let claudeWritten: Bool
+    /// Why Plinth won't run it, when it was designed with Claude and fails `scadSafetyProblem`; else nil.
+    let claudeRunProblem: String?
     var name: String { url.deletingPathExtension().lastPathComponent }
+
+    init(url: URL, source: String, template: ScadTemplate) {
+        self.url = url
+        self.source = source
+        self.template = template
+        claudeWritten = scadTemplateIsClaudeWritten(source)
+        claudeRunProblem = scadClaudeTemplateRunProblem(source, fileName: url.lastPathComponent)
+    }
+
+    /// The memory cap for a local run: `openSCADMemoryLimitBytes` for a template designed with Claude, else none.
+    var memoryLimit: UInt64 { scadTemplateMemoryLimit(claudeWritten: claudeWritten) }
 }
+
+// MARK: Templates designed with Claude
+
+/// The line Save Template… (Design an Accessory) writes near the top of every template Claude designed, after the
+/// `// ` that makes it a comment, and the start it shares with Slant Studio's line before the rename
+/// (“Designed with Claude in Slant Studio.”).
+let scadClaudeTemplateLine = "Designed with Claude in the Plinth app."
+let scadClaudeTemplateLinePrefix = "Designed with Claude in"
+
+/// True when a template carries the “Designed with Claude” comment line Save Template… writes (in any case, on a line
+/// of its own). Such a template is Claude-written code, so Plinth runs it only after `scadSafetyProblem`, only with
+/// OpenSCAD on this Mac under `openSCADMemoryLimitBytes`, and never sends it to Slant's `POST /files/openScad`. A
+/// seller who deletes the line makes the file their own template.
+func scadTemplateIsClaudeWritten(_ source: String) -> Bool {
+    let prefix = scadClaudeTemplateLinePrefix.lowercased()
+    for line in source.split(whereSeparator: \.isNewline) {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("//") else { continue }
+        if trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces).lowercased().hasPrefix(prefix) { return true }
+    }
+    return false
+}
+
+/// Why Plinth won't run a template designed with Claude (it fails `scadSafetyProblem`, like any of Claude's code), or
+/// nil: always nil for the seller's own templates.
+func scadClaudeTemplateRunProblem(_ source: String, fileName: String) -> String? {
+    guard scadTemplateIsClaudeWritten(source), let problem = scadSafetyProblem(source) else { return nil }
+    return "\(fileName) was designed with Claude, so Plinth checks it like Claude’s own code before running it, and it doesn’t pass: \(problem)"
+}
+
+/// The memory cap for a local template run: `openSCADMemoryLimitBytes` for a template designed with Claude, else none.
+func scadTemplateMemoryLimit(claudeWritten: Bool) -> UInt64 { claudeWritten ? openSCADMemoryLimitBytes : .max }
+
+/// Why a template designed with Claude can't go to Slant.
+let scadClaudeTemplateSlantRefusal = "Plinth doesn’t send templates designed with Claude to Slant. It runs them only with OpenSCAD on this Mac, with a memory limit."
+
+/// Shown in Personalise from Template for a template designed with Claude, with `scadClaudeTemplateHelp` as its help.
+let scadClaudeTemplateNote = "Designed with Claude. Plinth checks this template like Claude’s own code, runs it only with OpenSCAD on this Mac with a memory limit, and never sends it to Slant."
+let scadClaudeTemplateHelp = "To make it your own template, without these limits, delete the “Designed with Claude” line near the top of the file, then open it again."
 
 /// Reads a .scad file (UTF-8, at most 1 MB) and finds its values.
 func loadPersonalisationTemplate(_ url: URL) throws -> PersonalisationTemplateFile {
@@ -1031,6 +1099,8 @@ extension StudioStore {
     /// rate-limit headers are OpenSCAD's own hourly limiter, so they never reach `rateLimit`: don't add `noteRateLimit`
     /// here (`APIResponse.rateLimit` is empty for this path anyway, `slantReplyRateLimitIsShared`).
     func generateOpenSCADOnSlant(source: String) async throws -> Data {
+        // Claude-written code never goes to Slant (the sheet blocks it first; this is the last check before sending).
+        if scadTemplateIsClaudeWritten(source) { throw StudioError(scadClaudeTemplateSlantRefusal) }
         let session = PersonalisationSession.shared
         if let reason = session.quota.blockedReason(now: Date()) { throw StudioError(reason) }
         guard !busy else { throw StudioError("Another request is running. Try again when it finishes.") }

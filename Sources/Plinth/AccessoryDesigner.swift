@@ -1346,7 +1346,9 @@ func accessoryLibraryName(suggested: String, description: String) -> String {
 /// then Claude's code unchanged, so `fit_test` stays an adjustable value.
 func accessoryTemplateFileText(code: String, name: String) -> String {
     let title = name.split(whereSeparator: \.isNewline).joined(separator: " ")
-    var header = "// \(title)\n// Designed with Claude in the Plinth app. Check every measurement on a test print before selling.\n"
+    // The “Designed with Claude” line also marks the file as Claude-written for Personalise from Template
+    // (`scadTemplateIsClaudeWritten`), which then checks it, caps its memory and keeps it off Slant.
+    var header = "// \(title)\n// \(scadClaudeTemplateLine) Check every measurement on a test print before selling.\n"
     if accessoryFitTestDeclaration(code) == .ready {
         let parameters = scadTemplateParameters(code).parameters
         func named(_ name: String) -> String {
