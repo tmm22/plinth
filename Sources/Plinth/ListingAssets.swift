@@ -82,6 +82,26 @@ func listingColour(hex: String) -> SIMD3<Float>? {
     return SIMD3(Float((number >> 16) & 255) / 255, Float((number >> 8) & 255) / 255, Float(number & 255) / 255)
 }
 
+/// Whether a material's `hexValue` is `#a1a1a1`, the grey Slant sends when it has no colour on file for a material
+/// (Slant's spec and docs: "Falls back to #a1a1a1 when the source value is missing or malformed"). Trimmed, any case.
+func slantFallbackSwatch(_ hex: String) -> Bool {
+    hex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "#a1a1a1"
+}
+
+/// The line under the listing images' colour swatch. `materialChosen` is false while no material is picked;
+/// `hexValue` is the chosen material's. Slant's stand-in grey (`slantFallbackSwatch`) is still rendered as given, since
+/// a material may really be that grey, but the line then says the print may be a different colour.
+func listingColourFooter(materialChosen: Bool, hexValue: String?, filamentsLoaded: Bool) -> String {
+    if materialChosen, listingColour(hex: hexValue ?? "") == nil {
+        return "Slant gave no colour for this material, so neutral grey is used."
+    }
+    if !filamentsLoaded { return "Materials load from your Slant account; until then the model is shown in neutral grey." }
+    if materialChosen, slantFallbackSwatch(hexValue ?? "") {
+        return "Slant shows this grey when it has no colour on file for a material, so the print may be a different colour."
+    }
+    return "The colour is Slant’s swatch for the material, so it may differ a little from the printed filament."
+}
+
 /// Lighting for a listing render in this colour. Very dark colours are lifted a little and get a stronger sheen so
 /// black filament still shows its shape; very light ones are capped so a white model doesn't vanish into the background.
 func listingRenderStyle(colour: SIMD3<Float>, camera: MeshRenderCamera) -> MeshRenderStyle {
@@ -572,9 +592,8 @@ struct ListingImagesSheet: View {
     }
 
     private var colourFooter: String {
-        if chosenMaterial != nil, chosenColour == nil { return "Slant gave no colour for this material, so neutral grey is used." }
-        if store.filaments.isEmpty { return "Materials load from your Slant account; until then the model is shown in neutral grey." }
-        return "The colour is Slant’s swatch for the material, so it may differ a little from the printed filament."
+        listingColourFooter(materialChosen: chosenMaterial != nil, hexValue: chosenMaterial?.string("hexValue"),
+                            filamentsLoaded: !store.filaments.isEmpty)
     }
 
     @ViewBuilder

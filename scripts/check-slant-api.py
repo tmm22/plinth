@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Check Slant's live OpenAPI description against Plinth's snapshot of it.
+"""Check Slant's live OpenAPI description against Plinth's snapshot of it, and Slant's docs site against the record.
 
 Run before every release and whenever the app's API change check fires:
 
-    python3 -I scripts/check-slant-api.py [--update-snapshot] [--offline PATH]
+    python3 -I scripts/check-slant-api.py [--update-snapshot] [--record-docs] [--offline PATH]
     python3 -I scripts/check-slant-api.py --self-test
 
 1. Fetches https://slant3dapi.com/v2/api/openapi.json (public, no key, https
@@ -27,23 +27,39 @@ Run before every release and whenever the app's API change check fires:
    description (a description where Slant has none needs a tag). A
    tag at the document root or directly inside a name map (where it would
    read as a path or property name) is itself reported and exempts nothing.
+4. Once the spec was read, fetches the docs page,
+   https://slant3dapi.com/documentation/introduction (public, no key, https
+   only, no redirects, at most 256 KB), reads the name of the docs site's
+   one script bundle (`<script type="module" src="/assets/index-….js">`) and
+   compares it with scripts/slant-docs-bundle.json. The docs are a single-page
+   app whose bundle name changes with every deploy of Slant's site (docs,
+   dashboard or landing page), so a new name means "read the docs again", not
+   that the docs Plinth relies on changed. Skipped with --offline.
 
-Exit codes: 0 identical, 1 contract change, 3 wording-only change, 2 untagged
-patches in openapi.json (reported only when the live comparison is clean),
-4 could not check (network failure, redirect, too large, unreadable JSON, bad
-arguments). --update-snapshot writes the live bytes over the snapshot after
-printing the diff and still exits with the diff's code. --self-test runs the
-comparison on built-in fixtures in a temporary folder, sends no request, and
-exits 0 if every case passes, else 1.
+Exit codes: 0 identical, 1 contract change, 3 wording-only change, 5 Slant's
+docs site changed (a new bundle name, or no record) while the spec didn't,
+2 untagged patches in openapi.json (reported only when the live comparison is
+clean), 4 could not check (network failure, redirect, too large, unreadable
+JSON or docs page, bad arguments). When several apply, 1 and 3 win, then 4 or
+5 for the docs page, then 2; a spec that couldn't be read is 4 and the docs
+page isn't fetched. --update-snapshot writes the live bytes over the snapshot
+after printing the diff and still exits with the diff's code; --record-docs
+writes the live bundle name to the record (after you have read the docs) and
+likewise still exits with the code it found. --self-test runs the comparison
+on built-in fixtures in a temporary folder, sends no request, and exits 0 if
+every case passes, else 1.
 Python 3.9+ standard library only; never sends credentials.
 """
 
 import argparse
 import contextlib
+import datetime
 import hashlib
+import html.parser
 import http.client
 import io
 import json
+import re
 import sys
 import tempfile
 import urllib.error
@@ -56,6 +72,12 @@ TIMEOUT_SECONDS = 30
 RESOURCES = Path(__file__).resolve().parent.parent / "Sources" / "Plinth" / "Resources"
 SNAPSHOT = RESOURCES / "slant-openapi-upstream.json"
 STUDIO_SPEC = RESOURCES / "openapi.json"
+# Slant's docs page and the record of its bundle name, kept beside this script (never in Resources, which the app
+# bundles). Only `bundle` is compared; --record-docs writes the record.
+DOCS_URL = "https://slant3dapi.com/documentation/introduction"
+DOCS_MAX_BYTES = 256 * 1024
+DOCS_RECORD = Path(__file__).resolve().parent / "slant-docs-bundle.json"
+DOCS_BUNDLE_SRC = re.compile(r"/assets/(index-[A-Za-z0-9_-]+\.js)")
 TAG = "x-plinth-source"
 TAG_VALUES = ("docs", "live")
 # WORDING_KEYS, ORDERED_LIST_KEYS, NAME_MAPS, DATA_KEYS and METHODS mirror SlantAPIChanges.swift, and
@@ -73,7 +95,9 @@ DATA_KEYS = {"enum", "default", "const"}
 # `slantAPIMethods`.
 METHODS = {"get", "put", "post", "delete", "patch", "head", "options", "trace"}
 MISSING = object()
-EXIT_SAME, EXIT_CONTRACT, EXIT_UNTAGGED, EXIT_WORDING, EXIT_FAILED = 0, 1, 2, 3, 4
+EXIT_SAME, EXIT_CONTRACT, EXIT_UNTAGGED, EXIT_WORDING, EXIT_FAILED, EXIT_DOCS = 0, 1, 2, 3, 4, 5
+# What the docs page check found.
+DOCS_SAME, DOCS_CHANGED, DOCS_UNRECORDED, DOCS_FAILED, DOCS_SKIPPED = "same", "changed", "unrecorded", "failed", "skipped"
 
 
 class CheckFailed(Exception):
@@ -85,27 +109,157 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
         raise CheckFailed(f"refused a redirect ({code}) to {newurl}")
 
 
-def fetch_live():
-    if not SPEC_URL.startswith("https://"):
-        raise CheckFailed("the spec URL must be https")
+def _fetch(url, accept, max_bytes, what):
+    """One keyless GET: https only, no redirects, no cookies or credentials, 200 only, at most `max_bytes`."""
+    if not url.startswith("https://"):
+        raise CheckFailed(f"the {what} URL must be https")
     opener = urllib.request.build_opener(NoRedirects)  # no cookie or auth handlers
-    request = urllib.request.Request(SPEC_URL, headers={"Accept": "application/json",
-                                                        "User-Agent": "Plinth-api-check"})
+    request = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "Plinth-api-check"})
     try:
         with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
             if response.status != 200:
                 raise CheckFailed(f"HTTP {response.status}")
             length = response.headers.get("Content-Length")
-            if length and length.isdigit() and int(length) > MAX_BYTES:
-                raise CheckFailed(f"the spec is {length} bytes, over the {MAX_BYTES}-byte cap")
-            body = response.read(MAX_BYTES + 1)
-            if len(body) > MAX_BYTES:
-                raise CheckFailed(f"the spec is over the {MAX_BYTES}-byte cap")
+            if length and length.isdigit() and int(length) > max_bytes:
+                raise CheckFailed(f"the {what} is {length} bytes, over the {max_bytes}-byte cap")
+            body = response.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise CheckFailed(f"the {what} is over the {max_bytes}-byte cap")
             return body, response.headers
     except urllib.error.HTTPError as error:
         raise CheckFailed(f"HTTP {error.code} {error.reason}") from None
     except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
-        raise CheckFailed(f"could not fetch {SPEC_URL}: {getattr(error, 'reason', error)}") from None
+        raise CheckFailed(f"could not fetch {url}: {getattr(error, 'reason', error)}") from None
+
+
+def fetch_live():
+    return _fetch(SPEC_URL, "application/json", MAX_BYTES, "spec")
+
+
+def fetch_docs():
+    return _fetch(DOCS_URL, "text/html", DOCS_MAX_BYTES, "docs page")
+
+
+# ---------------------------------------------------------------------------
+# Slant's docs site: the bundle name in its page, and the record of the one last reviewed.
+
+class _ModuleScripts(html.parser.HTMLParser):
+    """The `src` of every `<script type="module" src=…>` outside comments, in any attribute order."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.sources = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "script":
+            return
+        attributes = {}
+        for name, value in attrs:
+            attributes.setdefault(name, value)
+        if (attributes.get("type") or "").strip().lower() == "module" and attributes.get("src") is not None:
+            self.sources.append(attributes["src"].strip())
+
+
+def docs_bundle_name(page):
+    """The docs site's bundle, "assets/index-….js", from exactly one `<script type="module" src="/assets/index-….js">`
+    in the page (text or bytes). Zero or several such scripts is a page Plinth doesn't know: CheckFailed."""
+    text = page.decode("utf-8", errors="replace") if isinstance(page, bytes) else page
+    parser = _ModuleScripts()
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception as error:  # html.parser is lenient; anything it still refuses is an unreadable page
+        raise CheckFailed(f"the docs page couldn't be read: {error}") from None
+    names = []
+    for source in parser.sources:
+        match = DOCS_BUNDLE_SRC.fullmatch(source)
+        if match:
+            names.append("assets/" + match.group(1))
+    if len(names) != 1:
+        found = "no" if not names else str(len(names))
+        raise CheckFailed(f"the docs page has {found} script bundles named /assets/index-….js, not one")
+    return names[0]
+
+
+def read_docs_record(path):
+    """The recorded bundle name; None when there is no record. CheckFailed when the record can't be read."""
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise CheckFailed(f"{path} couldn't be read: {error}") from None
+    try:
+        record = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise CheckFailed(f"{path} is not valid JSON: {error}") from None
+    bundle = record.get("bundle") if isinstance(record, dict) else None
+    if not isinstance(bundle, str) or not bundle:
+        raise CheckFailed(f"{path} names no bundle")
+    return bundle
+
+
+def write_docs_record(path, bundle, last_modified, recorded):
+    record = {"bundle": bundle}
+    if last_modified:
+        record["lastModified"] = last_modified
+    record["recorded"] = recorded
+    path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+class DocsCheck:
+    def __init__(self, state, detail="", bundle=None):
+        self.state, self.detail, self.bundle = state, detail, bundle
+
+
+def check_docs(record_path, record_new):
+    """Fetches the docs page, compares its bundle name with the record and prints what it found. With `record_new`,
+    a name that differs from the record (or no readable record) is written to it. Never raises."""
+    print(f"\nDocs page: {DOCS_URL}")
+    try:
+        body, headers = fetch_docs()
+        bundle = docs_bundle_name(body)
+    except CheckFailed as error:
+        print(f"  Could not check: {error}")
+        return DocsCheck(DOCS_FAILED, str(error))
+    last_modified = headers.get("Last-Modified")
+    print(f"  ETag: {headers.get('ETag', '(none)')}")
+    print(f"  Last-Modified: {last_modified or '(none)'}")
+    try:
+        recorded = read_docs_record(record_path)
+        missing = None if recorded is not None else f"{record_path.name} is missing"
+    except CheckFailed as error:
+        recorded, missing = None, str(error)
+    if recorded == bundle:
+        print(f"  Bundle {bundle}: unchanged since the record.")
+        check = DocsCheck(DOCS_SAME, bundle=bundle)
+    elif recorded is None:
+        print(f"  Bundle {bundle}: no record to compare with ({missing}).")
+        check = DocsCheck(DOCS_UNRECORDED, missing, bundle)
+    else:
+        print(f"  Bundle {bundle}: changed; the record names {recorded}.")
+        check = DocsCheck(DOCS_CHANGED, f"was {recorded}", bundle)
+    if record_new and check.state != DOCS_SAME:
+        try:
+            write_docs_record(record_path, bundle, last_modified, datetime.date.today().isoformat())
+        except OSError as error:
+            print(f"Could not write the docs record: {error}", file=sys.stderr)
+            return DocsCheck(DOCS_FAILED, f"couldn't write {record_path.name}: {error}", bundle)
+        print(f"  Recorded {bundle} in {record_path}.")
+    return check
+
+
+def combined_exit(spec_code, docs_state):
+    """The exit code for the spec's code and the docs page's state: a contract or wording change (1, 3) and a spec
+    that couldn't be checked (4) stand; then a docs page that couldn't be checked (4) or a changed or unrecorded
+    bundle (5); then untagged patches (2) or no change (0)."""
+    if spec_code in (EXIT_CONTRACT, EXIT_WORDING, EXIT_FAILED):
+        return spec_code
+    if docs_state == DOCS_FAILED:
+        return EXIT_FAILED
+    if docs_state in (DOCS_CHANGED, DOCS_UNRECORDED):
+        return EXIT_DOCS
+    return spec_code
 
 
 def parse(data, label):
@@ -585,15 +739,48 @@ def _dump(document):
     return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+_DOCS_BUNDLE = "assets/index-C5Wnw4hq.js"
+_DOCS_SCRIPT = '<script type="module" crossorigin src="/assets/index-C5Wnw4hq.js"></script>'
+_DOCS_OTHER_SCRIPT = '<script type="module" crossorigin src="/assets/index-Other_12-x.js"></script>'
+
+
+def _docs_page(*scripts):
+    """A page shaped like Slant's docs page: plain scripts, then the module bundle, then its stylesheet."""
+    return ('<!DOCTYPE html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8">\n'
+            '    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>\n    '
+            + "\n    ".join(scripts)
+            + '\n    <link rel="stylesheet" crossorigin href="/assets/index-CuTgghcY.css">\n  </head>\n'
+              '  <body>\n    <div id="app"></div>\n  </body>\n</html>\n')
+
+
 def self_test():
-    global fetch_live
-    real_fetch, fetches = fetch_live, []
+    global fetch_live, fetch_docs, _fetch
+    real = (fetch_live, fetch_docs, _fetch)
+    fetches, network = [], []
 
     def refuse_fetch():
         fetches.append(True)
         raise CheckFailed("the self-test never fetches")
 
-    fetch_live = refuse_fetch
+    def refuse_network(*_):
+        network.append(True)
+        raise CheckFailed("the self-test never reaches the network")
+
+    # The offline cases must fetch nothing; the live cases get fixtures from `fake`; nothing ever reaches the network.
+    fake = {}
+
+    def fake_live():
+        if fake.get("live_error"):
+            raise CheckFailed(fake["live_error"])
+        return fake["live"], {"ETag": '"fixture"'}
+
+    def fake_docs():
+        fake["docs_fetches"] += 1
+        if fake.get("docs_error"):
+            raise CheckFailed(fake["docs_error"])
+        return fake["docs"], {"ETag": '"fixture"', "Last-Modified": "Mon, 09 Nov 2026 19:42:53 GMT"}
+
+    fetch_live, fetch_docs, _fetch = refuse_fetch, refuse_fetch, refuse_network
     base = _fixture_spec()
     base_bytes = _dump(base)
     order = ("components", "schemas", "Order")
@@ -610,6 +797,28 @@ def self_test():
             snapshot, live_path, studio_path = folder / "snapshot.json", folder / "live.json", folder / "studio.json"
             snapshot.write_bytes(base_bytes)
 
+            record = folder / "docs-record.json"
+
+            def invoke(argv):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                    try:
+                        code = main(argv)
+                    except SystemExit as exit_:
+                        code = exit_.code
+                    except Exception as error:  # a crash fails the case; it never ends the self-test
+                        code = f"a crash ({type(error).__name__}: {error})"
+                return code, output.getvalue()
+
+            def conclude(name, problems, text=""):
+                print(f"  {'FAIL' if problems else 'ok  '} {name}")
+                if problems:
+                    failures.append(name)
+                    for problem in problems:
+                        print(f"         {problem}")
+                    if text:
+                        print("         " + text.strip().replace("\n", "\n         "))
+
             def run(name, expected, live=None, studio=None, contains=(), excludes=(), live_bytes=None, argv=None,
                     old=None, old_bytes=None):
                 nonlocal count
@@ -620,29 +829,68 @@ def self_test():
                 studio_path.write_bytes(_dump(studio) if studio else snapshot_bytes)
                 if argv is None:
                     argv = ["--offline", str(live_path), "--snapshot", str(snapshot), "--studio-spec", str(studio_path)]
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-                    try:
-                        code = main(argv)
-                    except SystemExit as exit_:
-                        code = exit_.code
-                    except Exception as error:  # a crash fails the case; it never ends the self-test
-                        code = f"a crash ({type(error).__name__}: {error})"
-                text = output.getvalue()
+                code, text = invoke(argv)
                 problems = [f"exit {code}, expected {expected}"] if code != expected else []
                 if snapshot.read_bytes() != snapshot_bytes:
                     problems.append("the snapshot was written")
                 problems += [f"the output lacks {s!r}" for s in contains if s not in text]
                 problems += [f"the output has {s!r}" for s in excludes if s in text]
-                print(f"  {'FAIL' if problems else 'ok  '} {name}")
-                if problems:
-                    failures.append(name)
-                    for problem in problems:
-                        print(f"         {problem}")
-                    print("         " + text.strip().replace("\n", "\n         "))
+                conclude(name, problems, text)
+
+            def run_live(name, expected, live=None, studio=None, docs=_docs_page(_DOCS_SCRIPT), docs_error=None,
+                         live_error=None, recorded=_DOCS_BUNDLE, extra=(), contains=(), excludes=(),
+                         recorded_after=None, docs_fetched=True):
+                """A run without --offline, with the fetches answered by fixtures. `recorded` is the record's bundle
+                (None: no record; bytes: the record's raw content); the record must be unchanged unless
+                `recorded_after` names the bundle it should then hold."""
+                nonlocal count
+                count += 1
+                snapshot.write_bytes(base_bytes)
+                studio_path.write_bytes(_dump(studio) if studio else base_bytes)
+                if recorded is None:
+                    if record.exists():
+                        record.unlink()
+                elif isinstance(recorded, bytes):
+                    record.write_bytes(recorded)
+                else:
+                    write_docs_record(record, recorded, None, "2026-11-01")
+                before = record.read_bytes() if record.exists() else None
+                fake.clear()
+                fake.update(live=_dump(live) if live else base_bytes, live_error=live_error,
+                            docs=docs.encode("utf-8"), docs_error=docs_error, docs_fetches=0)
+                code, text = invoke(["--snapshot", str(snapshot), "--studio-spec", str(studio_path),
+                                     "--docs-record", str(record), *extra])
+                problems = [f"exit {code}, expected {expected}"] if code != expected else []
+                if snapshot.read_bytes() != base_bytes:
+                    problems.append("the snapshot was written")
+                if (fake["docs_fetches"] > 0) != docs_fetched:
+                    problems.append("the docs page was fetched" if fake["docs_fetches"] else "the docs page wasn't fetched")
+                if recorded_after is None:
+                    if (record.read_bytes() if record.exists() else None) != before:
+                        problems.append("the docs record was written")
+                else:
+                    try:
+                        now = read_docs_record(record)
+                    except CheckFailed as error:
+                        now = f"unreadable ({error})"
+                    if now != recorded_after:
+                        problems.append(f"the docs record holds {now}, expected {recorded_after}")
+                problems += [f"the output lacks {s!r}" for s in contains if s not in text]
+                problems += [f"the output has {s!r}" for s in excludes if s in text]
+                conclude(name, problems, text)
+
+            def parsed(name, page, expected):
+                nonlocal count
+                count += 1
+                try:
+                    got = docs_bundle_name(page)
+                except CheckFailed as error:
+                    got = f"refused ({error})"
+                conclude(name, [] if got == expected or (expected is None and got.startswith("refused"))
+                         else [f"read {got!r}, expected {expected or 'a refusal'}"])
 
             print("Live spec against the snapshot:")
-            run("identical bytes", EXIT_SAME, contains=["byte for byte", "all tagged"])
+            run("identical bytes", EXIT_SAME, contains=["byte for byte", "all tagged", "Docs page not checked (offline)"])
             run("1 and 1.0, and formatting, are the same", EXIT_SAME,
                 live_bytes=json.dumps(base, indent=4).replace('"maximum": 1', '"maximum": 1.0').encode("utf-8"),
                 contains=["only formatting differs"])
@@ -751,6 +999,71 @@ def self_test():
             run("--offline with --update-snapshot", EXIT_FAILED,
                 argv=["--offline", str(live_path), "--update-snapshot", "--snapshot", str(snapshot)])
             run("an unknown option", EXIT_FAILED, argv=["--no-such-option"])
+            run("--offline with --record-docs", EXIT_FAILED,
+                argv=["--offline", str(live_path), "--record-docs", "--snapshot", str(snapshot)])
+
+            print("The docs page's bundle name:")
+            parsed("Slant's docs page", _docs_page(_DOCS_SCRIPT), _DOCS_BUNDLE)
+            parsed("the page as fetched bytes", _docs_page(_DOCS_SCRIPT).encode("utf-8"), _DOCS_BUNDLE)
+            parsed("attributes in another order and case", _docs_page(
+                "<script src='/assets/index-Ab_9-x.js' crossorigin TYPE=\"Module\"></script>"), "assets/index-Ab_9-x.js")
+            parsed("no module script", _docs_page(), None)
+            parsed("two bundles", _docs_page(_DOCS_SCRIPT, _DOCS_OTHER_SCRIPT), None)
+            parsed("a plain script isn't the bundle", _docs_page('<script src="/assets/index-C5Wnw4hq.js"></script>'), None)
+            parsed("a bundle on another host isn't recognised",
+                   _docs_page('<script type="module" src="https://cdn.example/assets/index-C5Wnw4hq.js"></script>'), None)
+            parsed("a script inside a comment doesn't count",
+                   _docs_page(_DOCS_SCRIPT, "<!-- " + _DOCS_OTHER_SCRIPT + " -->"), _DOCS_BUNDLE)
+            parsed("another module script beside the bundle doesn't count",
+                   _docs_page('<script type="module" src="/assets/vendor-x1.js"></script>', _DOCS_SCRIPT), _DOCS_BUNDLE)
+            count += 1
+            table = {EXIT_SAME: (0, 5, 5, 4, 0), EXIT_UNTAGGED: (2, 5, 5, 4, 2), EXIT_CONTRACT: (1, 1, 1, 1, 1),
+                     EXIT_WORDING: (3, 3, 3, 3, 3), EXIT_FAILED: (4, 4, 4, 4, 4)}
+            states = (DOCS_SAME, DOCS_CHANGED, DOCS_UNRECORDED, DOCS_FAILED, DOCS_SKIPPED)
+            wrong = [f"spec {spec_code}, docs {state}: {combined_exit(spec_code, state)}, expected {expected}"
+                     for spec_code, row in table.items() for state, expected in zip(states, row)
+                     if combined_exit(spec_code, state) != expected]
+            conclude("the exit code for every spec code and docs state", wrong)
+
+            print("The docs page against the record (fixtures, no network):")
+            fetch_live, fetch_docs = fake_live, fake_docs
+            other = "assets/index-Other_12-x.js"
+            changed_page = _docs_page(_DOCS_OTHER_SCRIPT)
+            reworded = _edited(base, (order + ("description",), "An order, reworded."))
+            retyped = _edited(base, (properties + ("status", "type"), "number"))
+            untagged = _edited(base, (properties + ("status", "type"), "integer"))
+            run_live("an unchanged bundle", EXIT_SAME, contains=["unchanged since the record", "no change"])
+            run_live("a new bundle", EXIT_DOCS, docs=changed_page,
+                     contains=[f"changed; the record names {_DOCS_BUNDLE}", "docs site changed", "--record-docs"])
+            run_live("no record", EXIT_DOCS, recorded=None, contains=["no record to compare with", "--record-docs"])
+            run_live("an unreadable record", EXIT_DOCS, recorded=b"{oops", contains=["not valid JSON", "--record-docs"])
+            run_live("a record that names no bundle", EXIT_DOCS, recorded=b'{"bundle": ""}', contains=["names no bundle"])
+            run_live("a docs page that can't be fetched", EXIT_FAILED, docs_error="HTTP 503 Service Unavailable",
+                     contains=["couldn't be checked (HTTP 503"])
+            run_live("a docs page without its bundle", EXIT_FAILED, docs=_docs_page(), contains=["not one"])
+            run_live("a contract change outranks a docs page that can't be fetched", EXIT_CONTRACT, live=retyped,
+                     docs_error="HTTP 503 Service Unavailable", contains=["contract changed", "couldn't be checked either"])
+            run_live("a wording change outranks a new bundle", EXIT_WORDING, live=reworded, docs=changed_page,
+                     contains=["only wording", "docs site changed too"])
+            run_live("a new bundle outranks untagged patches", EXIT_DOCS, studio=untagged, docs=changed_page,
+                     contains=["without a tag", "also has untagged patches", "--record-docs"])
+            run_live("a docs page that can't be fetched outranks untagged patches", EXIT_FAILED, studio=untagged,
+                     docs_error="timed out", contains=["also has untagged patches"])
+            run_live("untagged patches with an unchanged bundle", EXIT_UNTAGGED, studio=untagged,
+                     contains=["untagged patches"], excludes=["docs site changed"])
+            run_live("--record-docs records a new bundle", EXIT_DOCS, docs=changed_page, extra=["--record-docs"],
+                     recorded_after=other, contains=[f"Recorded {other}", "now recorded"])
+            run_live("--record-docs records a first bundle", EXIT_DOCS, recorded=None, extra=["--record-docs"],
+                     recorded_after=_DOCS_BUNDLE)
+            run_live("--record-docs replaces an unreadable record", EXIT_DOCS, recorded=b"{oops", extra=["--record-docs"],
+                     recorded_after=_DOCS_BUNDLE)
+            run_live("--record-docs leaves an unchanged record alone", EXIT_SAME, extra=["--record-docs"],
+                     excludes=["Recorded"])
+            run_live("--record-docs writes nothing when the docs page can't be read", EXIT_FAILED, recorded=None,
+                     docs=_docs_page(_DOCS_SCRIPT, _DOCS_OTHER_SCRIPT), extra=["--record-docs"])
+            run_live("a spec that can't be fetched leaves the docs page alone", EXIT_FAILED, live_error="HTTP 502",
+                     docs=changed_page, docs_fetched=False, contains=["Could not check: HTTP 502"])
+            fetch_live, fetch_docs = refuse_fetch, refuse_fetch
             count += 1
             try:
                 NoRedirects().redirect_request(None, None, 302, "Found", {}, "https://elsewhere.invalid/")
@@ -759,13 +1072,13 @@ def self_test():
             except CheckFailed:
                 print("  ok   a redirect is refused")
             count += 1
-            if fetches:
+            if fetches or network:
                 failures.append("nothing fetched")
                 print("  FAIL nothing fetched")
             else:
                 print("  ok   nothing fetched")
     finally:
-        fetch_live = real_fetch
+        fetch_live, fetch_docs, _fetch = real
     if failures:
         print(f"\nSelf-test: {len(failures)} of {count} cases failed: {', '.join(failures)}.")
         return 1
@@ -781,14 +1094,21 @@ def main(argv=None):
                         help="compare this file instead of fetching the live spec")
     parser.add_argument("--snapshot", metavar="PATH", type=Path, default=SNAPSHOT, help=argparse.SUPPRESS)
     parser.add_argument("--studio-spec", metavar="PATH", type=Path, default=STUDIO_SPEC, help=argparse.SUPPRESS)
+    parser.add_argument("--record-docs", action="store_true",
+                        help="once you have read Slant's docs, write the live docs bundle name to "
+                             "scripts/slant-docs-bundle.json")
+    parser.add_argument("--docs-record", metavar="PATH", type=Path, default=DOCS_RECORD, help=argparse.SUPPRESS)
     parser.add_argument("--self-test", action="store_true",
                         help="check the comparison on built-in fixtures, offline, and exit 0 if all pass, else 1")
     parser.error = lambda message: (print(f"error: {message}", file=sys.stderr), sys.exit(EXIT_FAILED))
     args = parser.parse_args(argv)
     if args.offline and args.update_snapshot:
         parser.error("--update-snapshot writes only a live fetch; drop --offline")
+    if args.offline and args.record_docs:
+        parser.error("--record-docs writes only a live check of the docs page; drop --offline")
     if args.self_test:
-        if args.offline or args.update_snapshot or args.snapshot != SNAPSHOT or args.studio_spec != STUDIO_SPEC:
+        if (args.offline or args.update_snapshot or args.record_docs or args.snapshot != SNAPSHOT
+                or args.studio_spec != STUDIO_SPEC or args.docs_record != DOCS_RECORD):
             parser.error("--self-test takes no other options")
         return self_test()
 
@@ -814,15 +1134,21 @@ def main(argv=None):
 
     print(f"  {len(live_bytes)} bytes, sha256 {hashlib.sha256(live_bytes).hexdigest()[:16]}…; "
           f"snapshot sha256 {hashlib.sha256(snapshot_bytes).hexdigest()[:16]}…")
+    if args.offline:
+        print("\nDocs page not checked (offline).")
+        docs = DocsCheck(DOCS_SKIPPED)
+    else:
+        docs = check_docs(args.docs_record, args.record_docs)
+    print()
     try:
-        return report(args, snapshot_bytes, snapshot, studio, live_bytes, live)
+        return report(args, snapshot_bytes, snapshot, studio, live_bytes, live, docs)
     except RecursionError:
         sys.stdout.flush()
         print("Could not check: a spec is nested too deeply to compare", file=sys.stderr)
         return EXIT_FAILED
 
 
-def report(args, snapshot_bytes, snapshot, studio, live_bytes, live):
+def report(args, snapshot_bytes, snapshot, studio, live_bytes, live, docs):
     if live_bytes == snapshot_bytes:
         print("Identical to the snapshot, byte for byte.")
         code = EXIT_SAME
@@ -845,15 +1171,31 @@ def report(args, snapshot_bytes, snapshot, studio, live_bytes, live):
     patches_clean = check_patches(studio, snapshot)
     next_step = ("bring openapi.json, Plinth and docs/API_REFERENCE.md into line until this check exits 0"
                  if updated else "run again with --update-snapshot, then bring openapi.json and Plinth into line")
+    docs_changed = docs.state in (DOCS_CHANGED, DOCS_UNRECORDED)
+    docs_step = ("its new bundle is now recorded" if args.record_docs else
+                 "read the docs sections Plinth relies on against docs/API_REFERENCE.md and openapi.json's `docs` "
+                 "patches, then run again with --record-docs")
     if code == EXIT_CONTRACT:
         print(f"\nResult: Slant's contract changed. Read the diff; {next_step}.")
     elif code == EXIT_WORDING:
         print(f"\nResult: Slant changed only wording. Read it; {next_step}.")
-    elif not patches_clean:
-        print("\nResult: no change on Slant's side, but openapi.json has untagged patches.")
-        code = EXIT_UNTAGGED
     else:
-        print("\nResult: no change; openapi.json's patches are all tagged.")
+        spec_code = EXIT_SAME if patches_clean else EXIT_UNTAGGED
+        code = combined_exit(spec_code, docs.state)
+        untagged = " openapi.json also has untagged patches (listed above)." if spec_code == EXIT_UNTAGGED else ""
+        if code == EXIT_DOCS:
+            print(f"\nResult: the spec is unchanged, but Slant's docs site changed; {docs_step}.{untagged}")
+        elif code == EXIT_FAILED:
+            print(f"\nResult: the spec is unchanged, but Slant's docs page couldn't be checked ({docs.detail}).{untagged}")
+        elif spec_code == EXIT_UNTAGGED:
+            print("\nResult: no change on Slant's side, but openapi.json has untagged patches.")
+        else:
+            print("\nResult: no change; openapi.json's patches are all tagged.")
+        return code
+    if docs_changed:
+        print(f"Slant's docs site changed too; {docs_step}.")
+    elif docs.state == DOCS_FAILED:
+        print(f"Slant's docs page couldn't be checked either ({docs.detail}).")
     return code
 
 

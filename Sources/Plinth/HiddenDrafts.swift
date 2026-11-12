@@ -98,8 +98,9 @@ func orderListIDsExcludingHiddenDrafts(_ ids: [String], orders: [Record], hidden
 }
 
 /// Marketplace keys (`batchPayMarketplaceKey`) of loaded drafts that are hidden and not among `reviewedIDs`: Pay Several
-/// Drafts treats each as a draft left out of its review, so another draft for that sale isn't paid unchecked. Reads
-/// the raw loaded orders, every platform's.
+/// Drafts treats each as a draft left out of its review, so another draft for that sale (`batchPayMarketplaceKeysMatch`,
+/// which also matches a CSV draft and a fetched draft of one Shopify sale) isn't paid unchecked. Reads the raw loaded
+/// orders, every platform's.
 func batchPayHiddenDraftMarketplaceKeys(_ orders: [Record], hidden: Set<String>, keeping: Set<String> = [],
                                         reviewedIDs: Set<String>) -> Set<String> {
     guard !hidden.isEmpty else { return [] }
