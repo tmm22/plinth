@@ -6,7 +6,8 @@ import Foundation
 //
 // Rules this file keeps:
 // - Every API request goes to `https://` + `dapiAPIHost` under `/v2/`, and only those requests carry `x-api-key` and
-//   `User-Agent: Plinth/…`. The presigned storage PUT carries neither, nor cookies.
+//   Plinth's own `User-Agent: Plinth/<version>`. The presigned storage PUT carries no key, no cookies and no User-Agent
+//   of Plinth's own; URLSession's default User-Agent, which names the app and the macOS (Darwin) build, still goes.
 // - Redirects are never followed: a 3xx comes back as it is and counts as a failure.
 // - Nothing is retried. Each method sends each request at most once (the paged lists send one request per page).
 // - Placing and cancelling an order are checked locally first, sent once with the caller's Idempotency-Key, and never

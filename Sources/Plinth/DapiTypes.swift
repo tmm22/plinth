@@ -126,14 +126,20 @@ enum DapiError: Error, Equatable {
     /// Nothing was sent: a local check refused it (file too large or unreadable, unsafe URL, bad ID) or the
     /// connection failed before the request could leave the Mac.
     case notSent(String)
-    /// 3DAPI answered with a definite refusal (a 4xx with its error body, other than 408 and 429). `code` is 3DAPI's
-    /// stable error code, such as "invalid_file" or "upload_limit_reached"; `message` is its text, redacted.
+    /// 3DAPI answered with a definite refusal: a 4xx other than 408 and 429 with its JSON error body (for placing or
+    /// cancelling an order, only when that body carries 3DAPI's error `code`), any 4xx from the storage PUT, or a 503
+    /// `card_payments_unavailable` to placing an order. `dapiClassifyReply` (DapiClient.swift) is the single source.
+    /// `code` is 3DAPI's stable error code, such as "invalid_file" or "upload_limit_reached"; `message` is its text,
+    /// redacted.
     case refused(status: Int, code: String?, message: String?)
     /// HTTP 429. `code` tells "rate_limited" apart from "daily_quote_limit_reached" (which resets at midnight UTC);
     /// `retryAt` comes from Retry-After (seconds) or X-RateLimit-Reset (Unix SECONDS, unlike Slant's milliseconds).
     case rateLimited(code: String?, retryAt: Date?)
-    /// A write (`create_upload`, the storage PUT or `create_quote`) whose outcome is unknown: a timeout or transport
-    /// error after sending, 408, 5xx, or a reply Plinth couldn't read. 3DAPI may have created it.
+    /// A write (`create_upload`, the storage PUT, `create_quote`, placing or cancelling an order) whose outcome is
+    /// unknown: a timeout or transport error after sending, 408, a 3xx (redirects aren't followed), 5xx, a reply Plinth
+    /// couldn't read, a 4xx to placing or cancelling an order without 3DAPI's error `code`, or (for placing or
+    /// cancelling) a cancellation once sent. 3DAPI may have done it. See `dapiClassifyReply` and
+    /// `dapiClassifyTransportFailure` (DapiClient.swift).
     case outcomeUnknown(String)
     /// A read failed (transport error, timeout, 5xx or an unreadable reply). Nothing was created.
     case readFailed(String)
