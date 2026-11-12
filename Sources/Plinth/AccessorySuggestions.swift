@@ -555,8 +555,10 @@ private func accessorySuggestionStrings(_ value: AnthropicJSON?, limit: Int, cou
 ///   weapon, a drug item or a children's product. Its features and evidence are never checked; a denied alternative is
 ///   just dropped from the alternatives. A sim-racing wheel's ideas skip the vehicle-controls check.
 /// - Ideas without a title or description are dropped. An idea is left out (and counted) when any of its strings is on
-///   the deny list (prose read with negation), or its title or description makes a claim; a caption with a claim is
-///   blanked.
+///   the deny list (prose read with negation), or its title or description makes a claim. A hardware item or a
+///   measurement whose label makes a claim is dropped, and a caption, a measurement's how or the would-confirm line
+///   with one is blanked (prose read with negation). The object's own words (seen text, alternatives, features) aren't
+///   checked for claims: they may quote a label such as a brand's.
 /// - Duplicates (by title, ignoring case, and against `existingTitles`) are dropped, then at most
 ///   `accessorySuggestionMaximumIdeasPerReply` kept, each with at most 6 measurements (unnamed or repeated ones
 ///   dropped) and 8 hardware items.
@@ -579,7 +581,7 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
         alternatives: Array(alternatives.prefix(accessorySuggestionMaximumAlternatives)),
         confidence: object?["confidence"]?.stringValue.flatMap(AccessoryIdentificationConfidence.init(rawValue:)) ?? .likely,
         evidence: accessoryClaimFree(evidence),
-        wouldConfirm: accessorySuggestionLine(object?["would_confirm"]?.stringValue, limit: 300),
+        wouldConfirm: accessoryClaimFree(accessorySuggestionLine(object?["would_confirm"]?.stringValue, limit: 300)),
         features: Array(features.prefix(accessorySuggestionMaximumFeatures)))
     var seenTitles = Set(existingTitles.map { accessorySuggestionLine($0, limit: accessoryIdeaTitleMaximumLength).lowercased() })
     var ideas: [AccessoryIdea] = []
@@ -591,18 +593,19 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
         let whoWantsIt = accessorySuggestionLine(raw["who_wants_it"]?.stringValue, limit: 300)
         let caution = accessorySuggestionLine(raw["caution"]?.stringValue, limit: 300)
         let hardware = accessorySuggestionStrings(raw["hardware"], limit: 80, count: accessorySuggestionMaximumHardware)
-        var measurements: [AccessoryIdeaMeasurement] = []
+        var allMeasurements: [AccessoryIdeaMeasurement] = []
         var labels: Set<String> = []
         for item in (raw["measurements"]?.arrayValue ?? []).prefix(accessorySuggestionMaximumMeasurements * 4) {
             let label = accessorySuggestionLine(item["label"]?.stringValue, limit: accessoryLabelMaximumLength)
             guard !label.isEmpty, labels.insert(label.lowercased()).inserted else { continue }
-            measurements.append(AccessoryIdeaMeasurement(
+            allMeasurements.append(AccessoryIdeaMeasurement(
                 label: label,
                 how: accessorySuggestionLine(item["how"]?.stringValue, limit: 300),
                 method: item["method"]?.stringValue.flatMap(AccessoryMeasurementMethod.init(rawValue:)) ?? .calipers))
         }
-        let labelTexts = [title, description] + hardware + measurements.map(\.label)
-        let proseTexts = [whoWantsIt, caution] + measurements.map(\.how)
+        // The deny list reads every string as Claude wrote it; the claim check then drops or blanks the parts.
+        let labelTexts = [title, description] + hardware + allMeasurements.map(\.label)
+        let proseTexts = [whoWantsIt, caution] + allMeasurements.map(\.how)
         let denied = labelTexts.contains { accessorySuggestionDeniedCategory($0, kind: .label, skipping: skipping) != nil }
             || proseTexts.contains { accessorySuggestionDeniedCategory($0, kind: .prose, skipping: skipping) != nil }
         if denied || accessorySuggestionHasClaim(title) || accessorySuggestionHasClaim(description) {
@@ -611,10 +614,13 @@ func accessorySuggestionsParse(_ input: AnthropicJSON, existingTitles: [String] 
         }
         guard seenTitles.insert(title.lowercased()).inserted else { continue }
         guard ideas.count < accessorySuggestionMaximumIdeasPerReply else { continue }
+        let measurements = allMeasurements.filter { !accessorySuggestionHasClaim($0.label) }.map {
+            AccessoryIdeaMeasurement(label: $0.label, how: accessoryClaimFree($0.how), method: $0.method)
+        }
         ideas.append(AccessoryIdea(
             title: title, description: description, whoWantsIt: accessoryClaimFree(whoWantsIt),
             fit: raw["fit"]?.stringValue.flatMap(AccessoryIdeaFit.init(rawValue:)) ?? .snug,
-            hardware: Array(hardware.prefix(accessorySuggestionMaximumHardware)),
+            hardware: Array(hardware.filter { !accessorySuggestionHasClaim($0) }.prefix(accessorySuggestionMaximumHardware)),
             measurements: Array(measurements.prefix(accessorySuggestionMaximumMeasurements)),
             caution: accessoryClaimFree(caution)))
     }

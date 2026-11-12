@@ -171,9 +171,10 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
             var current = request
             var replies: [AnthropicMessage] = []
             var followedUp = false
-            @MainActor func finish(_ state: ClaudeState, steps: Int?, status: String?, success: Bool) {
+            @MainActor func finish(_ state: ClaudeState, steps: Int?, status: String?, success: Bool, costMayBeHigher: Bool = false) {
                 store.activities.insert(Activity(title: "Review for printing with Claude",
-                                                 detail: printReviewActivityDetail(steps: steps, cost: printReviewCostSoFar(replies), status: status),
+                                                 detail: printReviewActivityDetail(steps: steps, cost: printReviewCostSoFar(replies), status: status,
+                                                                                   costMayBeHigher: costMayBeHigher),
                                                  success: success), at: 0)
                 self?.claude = state
             }
@@ -208,9 +209,12 @@ private final class PrintReviewCancelFlag: @unchecked Sendable {
                     }
                 }
             } catch is CancellationError {
-                finish(.stopped, steps: nil, status: "Stopped", success: false)
+                // A reply stopped part-way may be billed for what Claude had written (the sheet says so too).
+                finish(.stopped, steps: nil, status: "Stopped", success: false, costMayBeHigher: true)
             } catch {
-                finish(.failed(error.localizedDescription), steps: nil, status: "Didn’t finish", success: false)
+                let failure = printReviewFailureText(error)
+                finish(.failed(failure.text), steps: nil, status: "Didn’t finish", success: false,
+                       costMayBeHigher: failure.mayHaveBeenBilled)
             }
         }
     }

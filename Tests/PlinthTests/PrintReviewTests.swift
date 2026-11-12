@@ -373,6 +373,23 @@ final class PrintReviewTests: XCTestCase {
                        "Stopped · under $0.01")
     }
 
+    func testAFailedReplySaysItMayBeBilled() {
+        // An error part-way through the reply: Anthropic may bill what Claude had written.
+        let partWay = printReviewFailureText(AnthropicError.stream(type: "overloaded_error", message: ""))
+        XCTAssertTrue(partWay.mayHaveBeenBilled)
+        XCTAssertTrue(partWay.text.hasSuffix(" Anthropic may bill the part Claude had already written."), partWay.text)
+        XCTAssertTrue(printReviewFailureText(AnthropicError.incomplete).mayHaveBeenBilled)
+        XCTAssertEqual(printReviewActivityDetail(steps: nil, cost: AnthropicCostEstimate(usd: 0, complete: true), status: "Didn’t finish",
+                                                 costMayBeHigher: partWay.mayHaveBeenBilled),
+                       "Didn’t finish · under $0.01 or a little more")
+        // A refusal before the reply began isn't billed.
+        let refused = printReviewFailureText(AnthropicError.http(status: 529, type: "overloaded_error", message: "", retryAfter: nil))
+        XCTAssertFalse(refused.mayHaveBeenBilled)
+        XCTAssertFalse(refused.text.contains("may bill"))
+        XCTAssertFalse(printReviewFailureText(AnthropicError.missingKey).mayHaveBeenBilled)
+        XCTAssertFalse(printReviewFailureText(StudioError("Other")).mayHaveBeenBilled)
+    }
+
     // MARK: Running steps
 
     func testTheRunnerAppliesStepsInOrderAndGivesTheSameBytesTwice() throws {

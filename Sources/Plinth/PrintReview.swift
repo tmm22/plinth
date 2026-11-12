@@ -1357,10 +1357,20 @@ func printReviewSendSummary(pictures: Int, hasContext: Bool) -> String {
 }
 
 /// Activity's detail: counts, cost and status only.
-func printReviewActivityDetail(steps: Int?, cost: AnthropicCostEstimate, status: String? = nil) -> String {
+func printReviewActivityDetail(steps: Int?, cost: AnthropicCostEstimate, status: String? = nil,
+                               costMayBeHigher: Bool = false) -> String {
     var parts: [String] = []
     if let steps { parts.append(steps == 1 ? "Plan with 1 step" : "Plan with \(steps) steps") }
     if let status { parts.append(status) }
-    parts.append(anthropicCostText(cost))
+    parts.append(anthropicCostText(cost) + (costMayBeHigher ? " or a little more" : ""))
     return parts.joined(separator: " · ")
+}
+
+/// What Review for Printing shows when asking Claude fails, and whether Anthropic may bill part of the reply that
+/// failed (`accessoryErrorMayHaveBeenBilled`: a reply cut off part-way, not a refusal before it began), as Design an
+/// Accessory and Suggest Accessories say.
+func printReviewFailureText(_ error: Error) -> (text: String, mayHaveBeenBilled: Bool) {
+    let text = error.localizedDescription
+    guard let failure = error as? AnthropicError, accessoryErrorMayHaveBeenBilled(failure) else { return (text, false) }
+    return (text + " Anthropic may bill the part Claude had already written.", true)
 }
