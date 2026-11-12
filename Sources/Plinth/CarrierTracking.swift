@@ -182,7 +182,9 @@ func carrierS10CheckDigitValid(_ number: String) -> Bool {
 }
 
 /// Postal operators by the S10 country code: name, tracking page prefix (nil where Plinth has no reliable page) and
-/// Shopify's exact company name (nil where Shopify doesn't list it). A country not listed isn't recognised.
+/// Shopify's exact company name from its 2026-10 tracking-company list (nil where Shopify doesn't list the operator
+/// itself: it has no plain La Poste, only La Poste Colissimo and Colissimo, and no Japan Post; checked 12 Nov 2026). A
+/// country not listed isn't recognised.
 private let carrierS10Operators: [String: (name: String, url: String?, shopify: String?)] = [
     "US": ("USPS", "https://tools.usps.com/go/TrackConfirmAction?tLabels=", "USPS"),
     "GB": ("Royal Mail", "https://www.royalmail.com/track-your-item#/tracking-results/", "Royal Mail"),
@@ -196,7 +198,7 @@ private let carrierS10Operators: [String: (name: String, url: String?, shopify: 
     "ES": ("Correos", nil, "Correos"),
     "FR": ("La Poste", nil, nil),
     "JP": ("Japan Post", nil, nil),
-    "CH": ("Swiss Post", nil, nil)
+    "CH": ("Swiss Post", nil, "Swiss Post")
 ]
 
 private func carrierFromS10(_ number: String) -> DetectedCarrier? {

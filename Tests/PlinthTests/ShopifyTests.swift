@@ -308,7 +308,9 @@ final class ShopifyTests: XCTestCase {
         XCTAssertEqual(shopifyTrackingCompanyName("fedex"), "FedEx")
         XCTAssertEqual(shopifyTrackingCompanyName("Royal Mail"), "Royal Mail")
         XCTAssertEqual(shopifyTrackingCompanyName("royal_mail"), "Royal Mail")
-        XCTAssertEqual(shopifyTrackingCompanyName("DHL"), "DHL Express")
+        // A bare "DHL" could be DHL Express, DHL eCommerce or (in Germany) DHL: sent as written, never guessed (round 21).
+        XCTAssertEqual(shopifyTrackingCompanyName("DHL"), "DHL")
+        XCTAssertEqual(shopifyTrackingCompanyName("DHL_EXPRESS"), "DHL Express")
         XCTAssertEqual(shopifyTrackingCompanyName(" Local Courier "), "Local Courier")
         XCTAssertEqual(shopifyTrackingCompanyName(""), "")
     }
@@ -364,7 +366,8 @@ final class ShopifyTests: XCTestCase {
         XCTAssertEqual(check(checkData(existing: ["1z9"], fulfillmentOrders: [fulfillmentOrder(5)])), .alreadyHasTracking)
         XCTAssertEqual(check(checkData(status: "FULFILLED", fulfillmentOrders: [fulfillmentOrder(5, fulfillable: false)])), .alreadyFulfilled)
         XCTAssertEqual(check(checkData(cancelled: "2026-10-01T00:00:00Z", fulfillmentOrders: [fulfillmentOrder(5)])), .cancelled)
-        XCTAssertEqual(check(checkData(fulfillmentOrders: [fulfillmentOrder(5), fulfillmentOrder(6)])), .severalLocations)
+        // Both fulfillment orders could take the draft's two vases, so Plinth can't tell which shipment is Slant's.
+        XCTAssertEqual(check(checkData(fulfillmentOrders: [fulfillmentOrder(5), fulfillmentOrder(6)])), .severalShipments)
         if case .unavailable = check(checkData(status: "ON_HOLD", fulfillmentOrders: [fulfillmentOrder(5, fulfillable: false)])) {} else {
             XCTFail("an order on hold isn't ready")
         }

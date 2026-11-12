@@ -486,10 +486,14 @@ private func orderImportComparable(_ value: String) -> String {
     value.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
 }
 
-/// Why the marketplace already shows this order as done: Etsy's Date Shipped, or Shopify's fulfillment, cancellation
-/// and refund columns. These orders aren't ticked by default.
+/// Why the marketplace already shows this order as done, or partly done: Etsy's Date Shipped, or Shopify's
+/// fulfillment, cancellation and refund columns. These orders aren't ticked by default. Shopify's fulfilment status
+/// comes as a GraphQL `displayFulfillmentStatus` (Fetch from Shopify, `fetched`: `PARTIALLY_FULFILLED`, `IN_PROGRESS`,
+/// …) or as a CSV export's Fulfillment Status (`fulfilled`, `partial`, `unfulfilled`; the export's exact words are
+/// unverified), compared in lower case with spaces and hyphens read as underscores. A partly fulfilled order's wording
+/// follows where it came from: Fetch from Shopify lists only the units still to fulfil, a CSV export every item.
 func orderImportAlreadyHandledReason(format: OrderImportFormat, dateShipped: String, fulfillmentStatus: String,
-                                     cancelledAt: String, financialStatus: String) -> String? {
+                                     cancelledAt: String, financialStatus: String, fetched: Bool = false) -> String? {
     switch format {
     case .etsy:
         return dateShipped.isEmpty ? nil : "Etsy shows this order as shipped."
@@ -498,8 +502,24 @@ func orderImportAlreadyHandledReason(format: OrderImportFormat, dateShipped: Str
         let financial = financialStatus.lowercased()
         if financial == "refunded" { return "Shopify shows this order as refunded." }
         if financial == "voided" { return "Shopify shows this order’s payment as voided." }
-        if fulfillmentStatus.lowercased() == "fulfilled" { return "Shopify shows this order as fulfilled." }
-        return nil
+        let fulfilment = fulfillmentStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            .replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "-", with: "_")
+        switch fulfilment {
+        case "fulfilled":
+            return "Shopify shows this order as fulfilled."
+        case "partial", "partially_fulfilled":
+            // Fetch from Shopify drafts only the units still to fulfil (`shopifyImportLineUnits`); a CSV export's
+            // quantities are the whole order's.
+            return fetched
+                ? "Shopify shows part of this order as fulfilled. Only the items still to fulfil are listed."
+                : "Shopify shows part of this order as fulfilled, and the export lists every item."
+        case "in_progress", "pending_fulfillment":
+            return "Shopify shows this order as sent to a fulfilment service."
+        case "fulfillment_not_required":
+            return "Shopify shows nothing in this order to fulfil."
+        default:
+            return nil
+        }
     case .template:
         return nil
     }

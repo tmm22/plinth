@@ -488,11 +488,12 @@ func shopifyOrderName(_ sourceOrderID: String) -> String {
 }
 
 /// One row per Shopify order with tracking; several tracking numbers share the row, comma-separated. Other
-/// marketplaces' orders and orders that weren't imported are left out: their numbers mean nothing to Shopify.
+/// marketplaces' orders and orders that weren't imported are left out: their numbers mean nothing to Shopify. The
+/// company goes through `shopifyTrackingCompanyName`, as Send Tracking's does, so the two always name it alike.
 func shopifyTrackingCSVRows(_ entries: [ShopFollowUpEntry]) -> [[String]] {
     entries.compactMap { entry in
         guard entry.isShopify, let id = entry.marketplaceID, !shopifyOrderName(id).isEmpty, !entry.trackingNumbers.isEmpty else { return nil }
-        return [shopifyOrderName(id), entry.trackingNumbers.joined(separator: ","), shopifyTrackingCompany(entry)]
+        return [shopifyOrderName(id), entry.trackingNumbers.joined(separator: ","), shopifyTrackingCompanyName(shopifyTrackingCompany(entry))]
     }
 }
 

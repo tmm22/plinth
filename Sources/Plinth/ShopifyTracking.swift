@@ -21,6 +21,8 @@ let shopifyTrackingMaxConsecutiveRefusals = 3
 let shopifyTrackingNotifyCustomerKey = "shopifyTrackingNotifyCustomer"
 /// Fulfillment order line items read per fulfillment order. More means the order can't be matched safely.
 let shopifyFulfilmentLineItemsRead = 30
+/// Fulfillment orders read per order. More means the order can't be matched safely.
+let shopifyFulfilmentOrdersRead = 5
 
 /// One order the review offers to send.
 struct ShopifyTrackingCandidate: Identifiable, Equatable {
@@ -59,11 +61,13 @@ struct ShopifyTrackingSession: Identifiable {
     let candidates: [ShopifyTrackingCandidate]
 }
 
-/// Imported Shopify orders with Slant tracking, not marked done in the shop, at most 50.
+/// Imported Shopify orders with Slant tracking, not marked done in the shop, at most 50. A cancelled Slant order (Slant's
+/// own status, any spelling) is never offered, even if it still carries tracking: Slant cancels its fulfilment too.
 func shopifyTrackingCandidates(_ entries: [ShopFollowUpEntry], done: Set<String>) -> [ShopifyTrackingCandidate] {
     var seen = Set<String>()
     return entries.compactMap { entry -> ShopifyTrackingCandidate? in
-        guard entry.isShopify, !done.contains(entry.id), let id = entry.marketplaceID, !entry.trackingNumbers.isEmpty else { return nil }
+        guard entry.isShopify, !done.contains(entry.id), !orderStatusIsCancelled(entry.status), let id = entry.marketplaceID,
+              !entry.trackingNumbers.isEmpty else { return nil }
         let name = shopifyOrderName(id)
         guard !name.isEmpty, seen.insert(entry.id).inserted else { return nil }
         let choice = shopifyTrackingCompanyChoice(entry)
@@ -76,14 +80,16 @@ func shopifyTrackingCandidates(_ entries: [ShopFollowUpEntry], done: Set<String>
     .prefix(shopifyTrackingMaxOrders).map { $0 }
 }
 
-/// Shopify's own spelling of common carriers (it matches company names exactly, and only builds tracking links for
-/// names it knows). Anything else is sent as written.
+/// Spelling fixes only: the same carrier under the exact name Shopify's 2026-10 tracking-company list uses (it matches
+/// names exactly, capitals included, and builds tracking links only for names it knows; checked 12 Nov 2026). A name
+/// that could mean more than one of Shopify's carriers (a bare "DHL": DHL Express, DHL eCommerce or, in Germany, DHL) is
+/// never mapped to one of them; it and anything else not listed are sent as Slant wrote them.
 private let shopifyCarrierNames: [String: String] = [
-    "USPS": "USPS", "UPS": "UPS", "FEDEX": "FedEx", "DHL": "DHL Express", "DHLEXPRESS": "DHL Express",
+    "USPS": "USPS", "UPS": "UPS", "FEDEX": "FedEx", "DHLEXPRESS": "DHL Express",
     "DHLECOMMERCE": "DHL eCommerce", "ROYALMAIL": "Royal Mail", "AUSTRALIAPOST": "Australia Post",
     "CANADAPOST": "Canada Post", "EVRI": "Evri", "DPD": "DPD", "DPDUK": "DPD UK", "NEWZEALANDPOST": "New Zealand Post",
-    "ONTRAC": "OnTrac", "PUROLATOR": "Purolator", "LASERSHIP": "LaserShip", "AMAZONLOGISTICS": "Amazon Logistics US",
-    "GLS": "GLS", "POSTNL": "PostNL", "DEUTSCHEPOST": "Deutsche Post", "LAPOSTE": "La Poste", "SENDLE": "Sendle"
+    "ONTRAC": "OnTrac", "PUROLATOR": "Purolator", "LASERSHIP": "Lasership",
+    "GLS": "GLS", "POSTNL": "PostNL", "DEUTSCHEPOST": "Deutsche Post", "SENDLE": "Sendle"
 ]
 
 /// The review's words for a candidate's company: just the carrier ("USPS", "UPS"), or nil when blank. Whether it was
@@ -137,14 +143,16 @@ func shopifyOrderID(named name: String, in data: [String: Any]) -> String? {
 }
 
 /// The order read before a send. The shipping name and postcode (protected customer data) are asked for only for an
-/// order imported without its store, which needs the same-order check.
+/// order imported without its store, which needs the same-order check. Only the fulfillment orders Shopify shows the
+/// merchant (`displayable`: those closed after being combined or moved are left out; they can't be fulfilled anyway).
 func shopifyFulfilmentCheckQuery(includeAddress: Bool) -> String {
     """
     query StudioFulfilmentCheck($id: ID!) {
       order(id: $id) {
         name cancelledAt displayFulfillmentStatus\(includeAddress ? "\n    shippingAddress { name zip }" : "")
         fulfillments(first: 10) { trackingInfo(first: 5) { number } }
-        fulfillmentOrders(first: 3) {
+        fulfillmentOrders(first: \(shopifyFulfilmentOrdersRead), displayable: true) {
+          pageInfo { hasNextPage }
           nodes {
             id status
             supportedActions { action }
@@ -180,7 +188,8 @@ enum ShopifyFulfilmentCheck: Equatable {
     case alreadyFulfilled
     case cancelled
     case notFound
-    case severalLocations
+    /// Shopify splits the order into several fulfillment orders and not exactly one holds every unit of the draft.
+    case severalShipments
     /// The draft was fetched from another store.
     case otherShop(String)
     case unavailable(String)
@@ -201,8 +210,8 @@ enum ShopifyFulfilmentCheck: Equatable {
         case .alreadyHasTracking: return "Shopify already has this tracking number. Not sent."
         case .alreadyFulfilled: return "Shopify shows this order as fulfilled. Not sent."
         case .cancelled: return "Shopify shows this order as cancelled. Not sent."
-        case .notFound: return "No Shopify order has this exact name. Not sent."
-        case .severalLocations: return "This order ships from more than one location. Add its tracking in Shopify."
+        case .notFound: return "No Shopify order has this exact name, or it’s more than 60 days old, which Plinth can’t read. Not sent."
+        case .severalShipments: return "Shopify splits this order into several shipments, so Plinth can’t tell which one Slant’s parcel is. Add its tracking in Shopify."
         case .otherShop(let shop): return "Imported from \(shop), not the connected store. Not sent."
         case .unavailable(let reason): return reason
         }
@@ -234,54 +243,83 @@ func shopifyFulfilmentCheck(_ data: [String: Any], trackingNumbers: [String], so
             return .unavailable(problem)
         }
     }
-    let fulfillmentOrders = ((order["fulfillmentOrders"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
-    let fulfillable = fulfillmentOrders.filter { node in
+    let connection = order["fulfillmentOrders"] as? [String: Any]
+    if ((connection?["pageInfo"] as? [String: Any])?["hasNextPage"] as? Bool) == true {
+        return .unavailable("This order has more fulfilment orders in Shopify than Plinth reads. Add its tracking in Shopify.")
+    }
+    let fulfillable = ((connection?["nodes"] as? [[String: Any]]) ?? []).filter { node in
         let actions = (node["supportedActions"] as? [[String: Any]]) ?? []
         return actions.contains { ($0["action"] as? String) == "CREATE_FULFILLMENT" }
     }
-    switch fulfillable.count {
-    case 0:
-        if (order["displayFulfillmentStatus"] as? String) == "FULFILLED" { return .alreadyFulfilled }
-        return .unavailable("Shopify has nothing to fulfil for this order here (it may be on hold, scheduled or with a fulfilment service). Not sent.")
-    case 1:
-        guard let id = fulfillable[0]["id"] as? String, id.hasPrefix("gid://shopify/FulfillmentOrder/") else {
-            return .unavailable("Shopify’s reply couldn’t be read. Not sent.")
+    guard !fulfillable.isEmpty else {
+        switch order["displayFulfillmentStatus"] as? String {
+        case "FULFILLED": return .alreadyFulfilled
+        case "FULFILLMENT_NOT_REQUIRED": return .unavailable("Shopify shows nothing left to fulfil in this order (removed or refunded). Not sent.")
+        default: return .unavailable("Shopify has nothing to fulfil for this order here (it may be on hold, scheduled or with a fulfilment service). Not sent.")
         }
-        guard let sourceItems, !sourceItems.isEmpty else { return .unavailable(shopifyItemsNotRecordedReason) }
-        let lineItems = fulfillable[0]["lineItems"] as? [String: Any]
-        if ((lineItems?["pageInfo"] as? [String: Any])?["hasNextPage"] as? Bool) == true {
-            return .unavailable("This order has more than \(shopifyFulfilmentLineItemsRead) items in Shopify. Add its tracking in Shopify.")
-        }
-        var lines: [ShopifyFulfilmentOrderLine] = []
-        var names: [String: String] = [:]
-        for node in (lineItems?["nodes"] as? [[String: Any]]) ?? [] {
-            guard let lineID = node["id"] as? String, lineID.hasPrefix("gid://shopify/FulfillmentOrderLineItem/"),
-                  let remaining = (node["remainingQuantity"] as? NSNumber)?.intValue else {
-                return .unavailable("Shopify’s reply couldn’t be read. Not sent.")
-            }
-            let item = node["lineItem"] as? [String: Any]
-            let name = ((item?["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            names[lineID] = name.isEmpty ? "Item" : name
-            lines.append(ShopifyFulfilmentOrderLine(
-                id: lineID, remaining: remaining, lineItemID: shopifyNumericID((item?["id"] as? String) ?? "", type: "LineItem"),
-                sku: (item?["sku"] as? String) ?? "", name: name))
-        }
-        switch shopifyAllocateFulfilment(sourceItems, lines: lines) {
-        case .failure(let error):
-            return .unavailable(error.message)
-        case .success(let chosen):
-            let taken = Dictionary(chosen.map { ($0.id, $0.quantity) }, uniquingKeysWith: +)
-            let items = chosen.map { "\($0.quantity) × \(names[$0.id] ?? "Item")" }
-            let remaining = lines.compactMap { line -> String? in
-                let left = line.remaining - (taken[line.id] ?? 0)
-                return left > 0 ? "\(left) × \(names[line.id] ?? "Item")" : nil
-            }
-            return .ready(ShopifyFulfilmentPlan(fulfillmentOrderID: id, lines: chosen, items: items, remaining: remaining,
-                                                matchedByAddress: identity != nil))
-        }
-    default:
-        return .severalLocations
     }
+    var read: [ShopifyFulfilmentOrderRead] = []
+    for node in fulfillable {
+        switch shopifyFulfilmentOrderRead(node) {
+        case .failure(let error): return .unavailable(error.message)
+        case .success(let fulfilmentOrder): read.append(fulfilmentOrder)
+        }
+    }
+    guard let sourceItems, !sourceItems.isEmpty else { return .unavailable(shopifyItemsNotRecordedReason) }
+    let allocations = read.map { shopifyAllocateFulfilment(sourceItems, lines: $0.lines) }
+    if allocations.count == 1, case .failure(let error) = allocations[0] { return .unavailable(error.message) }
+    // Each fulfillment order that could take every unit of the draft on its own. Sent only when exactly one can: two
+    // that could, or the units spread over several, leave Plinth unable to tell which shipment is Slant's parcel.
+    let fits = zip(read, allocations).compactMap { fulfilmentOrder, allocation -> (ShopifyFulfilmentOrderRead, [ShopifyFulfilmentLine])? in
+        guard case .success(let chosen) = allocation else { return nil }
+        return (fulfilmentOrder, chosen)
+    }
+    guard fits.count == 1, let fit = fits.first else { return .severalShipments }
+    let (chosenOrder, chosen) = fit
+    let taken = Dictionary(chosen.map { ($0.id, $0.quantity) }, uniquingKeysWith: +)
+    let names = read.reduce(into: [String: String]()) { $0.merge($1.names) { first, _ in first } }
+    let items = chosen.map { "\($0.quantity) × \(names[$0.id] ?? "Item")" }
+    // What stays unfulfilled in every fulfillment order read, not only the one sent.
+    let remaining = read.flatMap(\.lines).compactMap { line -> String? in
+        let left = line.remaining - (taken[line.id] ?? 0)
+        return left > 0 ? "\(left) × \(names[line.id] ?? "Item")" : nil
+    }
+    return .ready(ShopifyFulfilmentPlan(fulfillmentOrderID: chosenOrder.id, lines: chosen, items: items, remaining: remaining,
+                                        matchedByAddress: identity != nil))
+}
+
+/// One fulfillment order as the check reads it.
+struct ShopifyFulfilmentOrderRead: Equatable {
+    let id: String
+    let lines: [ShopifyFulfilmentOrderLine]
+    /// Each line's item name for the review ("Item" when Shopify gave none).
+    let names: [String: String]
+}
+
+/// A fulfillment order node read strictly: its ID, and every line with its remaining units, or why it can't be used.
+func shopifyFulfilmentOrderRead(_ node: [String: Any]) -> Result<ShopifyFulfilmentOrderRead, StudioError> {
+    guard let id = node["id"] as? String, id.hasPrefix("gid://shopify/FulfillmentOrder/") else {
+        return .failure(StudioError("Shopify’s reply couldn’t be read. Not sent."))
+    }
+    let lineItems = node["lineItems"] as? [String: Any]
+    if ((lineItems?["pageInfo"] as? [String: Any])?["hasNextPage"] as? Bool) == true {
+        return .failure(StudioError("This order has more than \(shopifyFulfilmentLineItemsRead) items in Shopify. Add its tracking in Shopify."))
+    }
+    var lines: [ShopifyFulfilmentOrderLine] = []
+    var names: [String: String] = [:]
+    for line in (lineItems?["nodes"] as? [[String: Any]]) ?? [] {
+        guard let lineID = line["id"] as? String, lineID.hasPrefix("gid://shopify/FulfillmentOrderLineItem/"),
+              let remaining = (line["remainingQuantity"] as? NSNumber)?.intValue else {
+            return .failure(StudioError("Shopify’s reply couldn’t be read. Not sent."))
+        }
+        let item = line["lineItem"] as? [String: Any]
+        let name = ((item?["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        names[lineID] = name.isEmpty ? "Item" : name
+        lines.append(ShopifyFulfilmentOrderLine(
+            id: lineID, remaining: remaining, lineItemID: shopifyNumericID((item?["id"] as? String) ?? "", type: "LineItem"),
+            sku: (item?["sku"] as? String) ?? "", name: name))
+    }
+    return .success(ShopifyFulfilmentOrderRead(id: id, lines: lines, names: names))
 }
 
 let shopifyFulfillmentCreateMutation = """
@@ -338,13 +376,26 @@ func shopifyTrackingOutcome(error: Error) -> ShopifyTrackingOutcome {
     return shopifyMutationOutcomeUnknown(error) ? .unknown(message) : .refused(message)
 }
 
-/// Activity's line for a run: counts only.
-func shopifyTrackingActivityDetail(sent: Int, refused: Int, unknown: Int, skipped: Int) -> String {
+/// Activity's line for a run: counts only. `checkFailed`: the run stopped because an order couldn't be read again.
+func shopifyTrackingActivityDetail(sent: Int, refused: Int, unknown: Int, skipped: Int, checkFailed: Bool = false) -> String {
     var parts = [sent == 1 ? "1 sent" : "\(sent) sent"]
     if refused > 0 { parts.append("\(refused) refused") }
     if unknown > 0 { parts.append("\(unknown) not confirmed") }
     if skipped > 0 { parts.append("\(skipped) not needed") }
+    if checkFailed { parts.append("stopped: Shopify couldn’t be read") }
     return parts.joined(separator: ", ")
+}
+
+/// Whether Activity records the run as a success: nothing refused, unconfirmed or left unchecked.
+func shopifyTrackingRunSucceeded(refused: Int, unknown: Int, checkFailed: Bool) -> Bool {
+    refused == 0 && unknown == 0 && !checkFailed
+}
+
+/// Whether a send run stops before its next request to Shopify: Stop was pressed or the sheet closed, the task was
+/// cancelled, the connected store isn't the sheet's, a send wasn't confirmed, or Shopify refused too many in a row.
+/// Checked before each order and again just before its `fulfillmentCreate`, so it can only ever skip a send.
+func shopifyTrackingShouldStop(stopRequested: Bool, cancelled: Bool, shopMatches: Bool, unknown: Int, refusedInRow: Int) -> Bool {
+    stopRequested || cancelled || !shopMatches || unknown > 0 || refusedInRow >= shopifyTrackingMaxConsecutiveRefusals
 }
 
 /// Ticked for the seller after a check: ready, matched by its store (not by address), and no unconfirmed earlier send.
@@ -397,14 +448,23 @@ enum ShopifyTrackingRowState: Equatable {
     func check(_ candidates: [ShopifyTrackingCandidate], shop: String) async {
         guard !running, !candidates.isEmpty else { return }
         let connection = ShopifyConnection.shared
-        guard !connection.busy else { message = "Wait for the other Shopify task to finish."; return }
+        guard !connection.busy else {
+            // Nothing was read, so no row is left saying "Checking…"; Check Again works once the other task ends.
+            message = "Wait for the other Shopify task to finish, then Check Again."
+            for candidate in candidates { states[candidate.id] = .notSent }
+            return
+        }
         stopRequested = false
         checking = true
         connection.busy = true
         defer { checking = false; connection.busy = false }
         message = nil
         do {
-            canFulfil = shopifyScopeSummary(try await client(for: shop).accessScopes()).canFulfil
+            let shopClient = try client(for: shop)
+            // Scopes remembered without a fulfilment scope are read again (and a Dev Dashboard app's token renewed),
+            // so adding the scope as the sheet says takes effect on Check Again, without quitting.
+            if shopifyScopesNeedReread(shopClient.grantedScopes) { shopClient.forgetScopes() }
+            canFulfil = shopifyScopeSummary(try await shopClient.accessScopes()).canFulfil
         } catch {
             message = shopifyRedacted(error.localizedDescription)
             for candidate in candidates { states[candidate.id] = .notSent }
@@ -435,11 +495,14 @@ enum ShopifyTrackingRowState: Equatable {
     }
 
     /// Sends one at a time: each order is read again first, and the run stops at the first unconfirmed outcome.
-    func send(_ candidates: [ShopifyTrackingCandidate], shop: String, notifyCustomer: Bool, store: StudioStore) async {
-        guard !running, !candidates.isEmpty else { return }
+    /// Returns false when the run couldn't start (another Shopify task, or the store changed), so nothing was read
+    /// or sent.
+    @discardableResult
+    func send(_ candidates: [ShopifyTrackingCandidate], shop: String, notifyCustomer: Bool, store: StudioStore) async -> Bool {
+        guard !running, !candidates.isEmpty else { return false }
         let connection = ShopifyConnection.shared
-        guard !connection.busy else { message = "Wait for the other Shopify task to finish."; return }
-        guard connection.shop == shop else { message = ShopifyError.shopChanged.errorDescription; return }
+        guard !connection.busy else { message = "Wait for the other Shopify task to finish."; return false }
+        guard connection.shop == shop else { message = ShopifyError.shopChanged.errorDescription; return false }
         stopRequested = false
         sending = true
         connection.busy = true
@@ -447,11 +510,16 @@ enum ShopifyTrackingRowState: Equatable {
         message = nil
         var sent = 0, refused = 0, unknown = 0, skipped = 0, refusedInRow = 0
         var shopChanged = false
+        var checkFailed = false
+        func shouldStop() -> Bool {
+            if connection.shop != shop { shopChanged = true }
+            return shopifyTrackingShouldStop(stopRequested: stopRequested, cancelled: Task.isCancelled, shopMatches: !shopChanged,
+                                             unknown: unknown, refusedInRow: refusedInRow)
+        }
         for (index, candidate) in candidates.enumerated() {
             // The pause comes first, so a Stop pressed during it still takes effect before the next order.
             if index > 0 { try? await Task.sleep(nanoseconds: UInt64(shopifyTrackingSpacing * 1_000_000_000)) }
-            if connection.shop != shop { shopChanged = true }
-            if stopRequested || shopChanged || Task.isCancelled || unknown > 0 || refusedInRow >= shopifyTrackingMaxConsecutiveRefusals {
+            if shouldStop() {
                 for rest in candidates[index...] { states[rest.id] = .notSent }
                 break
             }
@@ -461,7 +529,7 @@ enum ShopifyTrackingRowState: Equatable {
                 check = try await fulfilmentCheck(candidate, shop: shop)
             } catch {
                 // Nothing was sent for this order; a failed read still ends the run.
-                if case ShopifyError.shopChanged? = error as? ShopifyError { shopChanged = true }
+                if case ShopifyError.shopChanged? = error as? ShopifyError { shopChanged = true } else { checkFailed = true }
                 states[candidate.id] = .checkFailed(shopifyRedacted(error.localizedDescription))
                 for rest in candidates.dropFirst(index + 1) { states[rest.id] = .notSent }
                 break
@@ -471,15 +539,32 @@ enum ShopifyTrackingRowState: Equatable {
                 skipped += 1
                 continue
             }
+            // The re-check's two reads may each wait out Shopify's throttle, so Stop, closing the sheet or a store
+            // change may have come meanwhile: honoured here, before the write, and once more inside `mutate`, after its
+            // own wait and token fetch. Either way nothing is sent for this order or the rest.
+            if shouldStop() {
+                for rest in candidates[index...] { states[rest.id] = .notSent }
+                break
+            }
+            var stoppedBeforeSending = false
             let outcome: ShopifyTrackingOutcome
             do {
                 // Checked again right before the write: the store must still be the one the sheet opened with.
                 let shopClient = try client(for: shop)
                 let input = shopifyFulfillmentInput(plan, trackingNumbers: candidate.trackingNumbers,
                                                     company: candidate.company, notifyCustomer: notifyCustomer)
-                outcome = shopifyTrackingOutcome(response: try await shopClient.mutate(shopifyFulfillmentCreateMutation, variables: ["fulfillment": input]))
+                let reply = try await shopClient.mutate(shopifyFulfillmentCreateMutation, variables: ["fulfillment": input]) {
+                    stoppedBeforeSending = shouldStop()
+                    return !stoppedBeforeSending
+                }
+                outcome = shopifyTrackingOutcome(response: reply)
             } catch {
                 if case ShopifyError.shopChanged? = error as? ShopifyError { shopChanged = true }
+                if stoppedBeforeSending {
+                    // `mutate` stopped before sending (`.notSent`): not a refusal, just not sent.
+                    for rest in candidates[index...] { states[rest.id] = .notSent }
+                    break
+                }
                 outcome = shopifyTrackingOutcome(error: error)
             }
             switch outcome {
@@ -503,14 +588,18 @@ enum ShopifyTrackingRowState: Equatable {
             message = "Stopped: Shopify didn’t confirm one send. Check that order in Shopify before sending it again; Plinth checks it again first."
         } else if shopChanged {
             message = ShopifyError.shopChanged.errorDescription
+        } else if checkFailed {
+            message = "Stopped: Shopify couldn’t be read. Orders not sent are unchanged in Shopify; Check Again tries the rest."
         } else if refusedInRow >= shopifyTrackingMaxConsecutiveRefusals {
             message = "Stopped after \(shopifyTrackingMaxConsecutiveRefusals) refusals in a row."
         } else if stopRequested {
             message = "Stopped. Orders not sent are unchanged in Shopify."
         }
         store.activities.insert(Activity(title: "Send tracking to Shopify",
-                                         detail: shopifyTrackingActivityDetail(sent: sent, refused: refused, unknown: unknown, skipped: skipped),
-                                         success: unknown == 0 && refused == 0), at: 0)
+                                         detail: shopifyTrackingActivityDetail(sent: sent, refused: refused, unknown: unknown,
+                                                                               skipped: skipped, checkFailed: checkFailed),
+                                         success: shopifyTrackingRunSucceeded(refused: refused, unknown: unknown, checkFailed: checkFailed)), at: 0)
+        return true
     }
 
     private func fulfilmentCheck(_ candidate: ShopifyTrackingCandidate, shop: String) async throws -> ShopifyFulfilmentCheck {
@@ -527,8 +616,9 @@ enum ShopifyTrackingRowState: Equatable {
             ? ShopifyIdentityExpectation(recipientName: candidate.recipientName, postcode: candidate.postcode) : nil
         let detail: [String: Any]
         do {
+            // About 400 points with 5 fulfillment orders of 30 lines, well under Shopify's 1,000-point cap per query.
             detail = try await client(for: shop).query(shopifyFulfilmentCheckQuery(includeAddress: identity != nil),
-                                                            variables: ["id": id], estimatedCost: 250)
+                                                            variables: ["id": id], estimatedCost: 400)
         } catch ShopifyError.protectedCustomerData where identity != nil {
             // Only this order needs the address; the others can still be checked.
             return .unavailable("Shopify didn’t share this order’s address with the app you connected, so Plinth can’t confirm it’s the order this draft was imported from. Add its tracking in Shopify.")
@@ -585,7 +675,7 @@ struct ShopifyTrackingSheet: View {
                     .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
             if runner.canFulfil == false {
-                Label("The app can’t fulfil orders yet. Add the write_merchant_managed_fulfillment_orders scope in the Dev Dashboard, release a new version and approve it on the store.",
+                Label("The app can’t fulfil orders yet. Add the write_merchant_managed_fulfillment_orders scope in the Dev Dashboard, release a new version and approve it on the store (for an older custom app, add it to the app’s Admin API scopes in the store admin), then Check Again.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
             }
@@ -600,7 +690,7 @@ struct ShopifyTrackingSheet: View {
                     ProgressView().controlSize(.small)
                     Text(runner.checking ? "Checking orders in Shopify…" : "Sending…").font(.callout)
                     Button("Stop") { runner.requestStop() }
-                        .help("Stop before the next order. An order already being sent finishes first.")
+                        .help("Stops before the next request to Shopify. A send already on its way finishes first.")
                 }
                 Spacer()
                 if !runner.running, candidates.contains(where: { runner.states[$0.id] != .sent }) {
@@ -611,7 +701,7 @@ struct ShopifyTrackingSheet: View {
                 // No default-action shortcut: sending always takes a click and the confirmation.
                 Button(count == 1 ? "Send Tracking for 1 Order…" : "Send Tracking for \(count) Orders…") { confirmSend = true }
                     .buttonStyle(.borderedProminent)
-                    .disabled(count == 0 || runner.running || runner.canFulfil == false || !shopMatches)
+                    .disabled(count == 0 || runner.running || connection.busy || runner.canFulfil == false || !shopMatches)
             }
         }
         .padding(20)
@@ -637,7 +727,7 @@ struct ShopifyTrackingSheet: View {
             runner.connectionChanged()
         }
         .onDisappear {
-            // Closing stops the run before its next order; a send already on its way finishes.
+            // Closing stops the run before its next request to Shopify; a send already on its way finishes.
             runner.requestStop()
             if registered { registered = false; connection.trackingSheetClosed() }
         }
@@ -714,12 +804,14 @@ struct ShopifyTrackingSheet: View {
     }
 
     private func startSend() {
-        guard !runner.running, shopMatches else { return }
+        guard !runner.running, !connection.busy, shopMatches else { return }
         let ids = Set(readyIDs)
         let jobs = candidates.filter { ids.contains($0.id) }
         guard !jobs.isEmpty else { return }
-        // Sent rows are unticked, so pressing Send again never resends them without a fresh check and tick.
-        ticked.subtract(ids)
-        task = Task { @MainActor in await runner.send(jobs, shop: shop, notifyCustomer: notifyCustomer, store: store) }
+        task = Task { @MainActor in
+            // Rows in a run are unticked once it ends, so pressing Send again never resends them without a fresh check
+            // and tick. A run that couldn't start (another Shopify task) keeps the seller's ticks.
+            if await runner.send(jobs, shop: shop, notifyCustomer: notifyCustomer, store: store) { ticked.subtract(ids) }
+        }
     }
 }
