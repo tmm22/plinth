@@ -551,10 +551,20 @@ final class ImageTo3DTests: XCTestCase {
         XCTAssertNotNil(replicaCloseWarning(hasUnsavedModel: true, lastStop: ended, service: .meshy))
     }
 
+    func testAMissingModelLinkSaysWhereToGetTheModel() {
+        let stop = ImageTo3DStop(reason: .downloadFailed, stage: .downloading, service: .meshy, taskID: "t1",
+                                 detail: imageTo3DNoModelLinkMessage(.meshy),
+                                 resumePoint: ImageTo3DResumePoint(sourceTaskID: "t1", sourceKind: .generation, conversionTaskID: nil))
+        XCTAssertEqual(stop.userMessage,
+                       "Meshy made the model, but Plinth couldn’t download it. Meshy didn’t return an STL or 3MF link. If Try Download Again finds none either, download the model from Meshy’s dashboard and add it with Import Model….")
+        XCTAssertEqual(replicaResumeAction(for: stop), .tryDownloadAgain, "the button the message names is offered")
+        XCTAssertTrue(imageTo3DNoModelLinkMessage(.tripo).contains("Tripo’s dashboard"))
+    }
+
     func testTripoSiteLocksWhileAKeyIsSaved() {
         XCTAssertNil(imageTo3DTripoSiteChangeBlockedReason(hasKey: false))
         XCTAssertEqual(imageTo3DTripoSiteChangeBlockedReason(hasKey: true),
-                       "Remove the Tripo key to change the site: a key works only on the site it was made on.")
+                       "A Tripo key works only on the site it was made on. To change the site, remove the key first.")
         XCTAssertTrue(ImageTo3DService.tripo.settingsPlanNote.contains("US$0.01 on tripo3d.ai, or ¥0.07 on tripo3d.com"))
     }
 

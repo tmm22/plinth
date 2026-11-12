@@ -389,10 +389,10 @@ struct AccessoryCostForecast: Equatable, Sendable {
 let accessoryForecastOutputTokensPerReply = 8_000
 let accessoryForecastHistoryTokensPerReply = accessoryForecastOutputTokensPerReply
 
-/// Follows the "all N replies" figure in both forecasts: it isn't a ceiling. Replies can be far longer than the
-/// forecast assumes, and the conversation is cached for 5 minutes, so a reply after a longer wait (the seller
-/// measuring for ask_seller, say) writes the whole conversation to the cache again.
-let accessoryForecastCaveat = "long replies, or a wait of more than 5 minutes before you answer Claude, cost more"
+/// Its own sentence after the "all N replies" figure in both forecasts: that figure isn't a ceiling. Replies can be far
+/// longer than the forecast assumes, and the conversation is cached for 5 minutes, so a reply after a longer wait (the
+/// seller measuring for ask_seller, say) writes the whole conversation to the cache again.
+let accessoryForecastCaveat = "Long replies, or waiting more than 5 minutes to answer Claude, cost more."
 
 /// Image tokens for the forecasts, one per 750 pixels: about 4% more than Anthropic's ⌈width / 28⌉ × ⌈height / 28⌉
 /// visual tokens (`printReviewImageTokens` uses that rule), which errs on the high side.
@@ -483,24 +483,27 @@ func accessoryNextSendForecast(messages: [AnthropicMessageParam], repliesLeft: I
                                   typicalReplies: typicalReplies)
 }
 
-/// "Estimated cost of sending: about $0.40 if Claude needs 5 replies, about $1.20 if it uses all 10; long replies, …
+/// "Estimated cost of sending: about $0.40 if Claude needs 5 replies, about $1.20 if it uses all 10. Long replies, …
 /// cost more. …", shown beside the buttons that send again once a design has started.
 func accessoryNextSendForecastText(_ forecast: AccessoryCostForecast, newRound: Bool) -> String {
     let limit = newRound ? "all \(forecast.maximumReplies)" : "the \(forecast.maximumReplies) left in this round"
     let estimate = forecast.typicalReplies < forecast.maximumReplies
-        ? "\(anthropicCostText(forecast.typical)) if Claude needs \(forecast.typicalReplies) replies, \(anthropicCostText(forecast.maximum)) if it uses \(limit)"
+        ? "\(anthropicCostText(forecast.typical)) if Claude needs \(forecast.typicalReplies == 1 ? "1 reply" : "\(forecast.typicalReplies) replies"), "
+            + "\(anthropicCostText(forecast.maximum)) if it uses \(limit)"
         : "\(anthropicCostText(forecast.maximum)) if Claude uses \(limit)"
-    return "Estimated cost of sending: \(estimate); \(accessoryForecastCaveat). Anthropic bills your account."
+    return "Estimated cost of sending: \(estimate). \(accessoryForecastCaveat) Anthropic bills your account."
 }
 
 /// Said once in Design an Accessory (and its Ideas) when no Claude key is saved.
 let accessoryMissingClaudeKeyText = "Add your Anthropic API key in Settings › Design Tools › Claude (Anthropic)."
 
-/// "Estimated cost: about $1.10 for a typical design (5 replies), about $2.20 if Claude uses all 10; long replies, …
+/// "Estimated cost: about $1.10 for a typical design (5 replies), about $2.20 if Claude uses all 10. Long replies, …
 /// cost more. …"
 func accessoryCostForecastText(_ forecast: AccessoryCostForecast) -> String {
-    "Estimated cost: \(anthropicCostText(forecast.typical)) for a typical design (\(forecast.typicalReplies) replies), "
-        + "\(anthropicCostText(forecast.maximum)) if Claude uses all \(forecast.maximumReplies); \(accessoryForecastCaveat). "
+    let typicalReplies = forecast.typicalReplies == 1 ? "1 reply" : "\(forecast.typicalReplies) replies"
+    let limit = forecast.maximumReplies == 1 ? "its 1 reply" : "all \(forecast.maximumReplies)"
+    return "Estimated cost: \(anthropicCostText(forecast.typical)) for a typical design (\(typicalReplies)), "
+        + "\(anthropicCostText(forecast.maximum)) if Claude uses \(limit). \(accessoryForecastCaveat) "
         + "Anthropic bills your account; the real cost is shown as Claude works."
 }
 
@@ -1448,10 +1451,10 @@ let accessoryImageLimitText = "This conversation has too many pictures for Claud
 
 /// When the seller's answer or note would take the conversation over the picture limit: nothing changes, and a
 /// finished design keeps its Save buttons.
-let accessoryNoteImageLimitText = "Plinth didn’t send this to Claude: the conversation has too many pictures for Claude. Save what you have, or close this window and start a new design."
+let accessoryNoteImageLimitText = "Plinth didn’t send this: the conversation has too many pictures for Claude. Save what you have, or close this window and start a new design."
 
 /// The same refusal before the design is finished, when no Save buttons show: the round stops and Start Over shows.
-let accessoryNoteImageLimitUnfinishedText = "Plinth didn’t send this to Claude: the conversation has too many pictures for Claude. Start Over to begin a new design."
+let accessoryNoteImageLimitUnfinishedText = "Plinth didn’t send this: the conversation has too many pictures for Claude. Start Over to begin a new design."
 
 /// Pictures in the messages: image blocks, and images inside tool results.
 func accessoryImageCount(_ messages: [AnthropicMessageParam]) -> Int {

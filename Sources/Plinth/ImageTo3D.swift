@@ -317,7 +317,7 @@ enum ImageTo3DError: LocalizedError, Equatable, Sendable {
         case .http(let service, let status, _, let message):
             let detail = message.isEmpty ? "" : " \(message)"
             switch status {
-            case 401: return "\(service.title) rejected the API key. Check it in Settings › Design Tools › 3D generation."
+            case 401: return imageTo3DKeyRejectedMessage(service)
             case 403: return "\(service.title) refused this request.\(detail)"
             case 404: return "\(service.title) couldn’t find that task. It may have been deleted or expired."
             case 400, 422: return "\(service.title) couldn’t accept that request.\(detail)"
@@ -361,6 +361,11 @@ enum ImageTo3DError: LocalizedError, Equatable, Sendable {
         case .modelTooLarge: return "Model too large"
         }
     }
+}
+
+/// The service refused the key (HTTP 401). A stop carries it as its `detail` (`ImageTo3DStop.keyRejected`).
+func imageTo3DKeyRejectedMessage(_ service: ImageTo3DService) -> String {
+    "\(service.title) rejected the API key. Check it in Settings › Design Tools › 3D generation."
 }
 
 /// True when a create (or other credit-spending request) that failed this way may still have been carried out: no
@@ -898,9 +903,11 @@ extension ImageTo3DService {
     @Published private(set) var savedKeys: Set<ImageTo3DService>
     /// Generations, repairs or key tests running now. Keys can't be replaced or removed meanwhile.
     @Published private(set) var activeWork = 0
-    /// Open Generate a Replica sheets that hold a key: once a sheet has sent its first request it keeps that client for
-    /// Keep Waiting, Try Conversion Again (paid) and Check Printability, so the key can't change until the sheet closes,
-    /// even between requests. A sheet that hasn't sent anything holds none, so Settings can add a key meanwhile.
+    /// Open Generate a Replica sheets that hold a key: from a Generate, a sheet keeps that client for Keep Waiting, Try
+    /// Download Again, Try Conversion Again (paid) and Check Printability, so the key can't change meanwhile, even
+    /// between requests. A sheet lets go (and drops the client) once nothing in it would reuse the key
+    /// (`replicaSheetNeedsKeySession`), such as after a refused Generate, and its next Generate reads the key afresh.
+    /// A sheet that hasn't sent anything holds none, so Settings can add a key meanwhile.
     @Published private(set) var openSessions = 0
 
     private let defaults: UserDefaults
@@ -915,7 +922,7 @@ extension ImageTo3DService {
     var busy: Bool { activeWork > 0 }
     func beginWork() { activeWork += 1 }
     func endWork() { activeWork = max(0, activeWork - 1) }
-    /// A replica sheet took hold of the key (its first send); `endSession` when the sheet closes.
+    /// A replica sheet took hold of the key (a Generate); `endSession` when it lets go or closes.
     func beginSession() { openSessions += 1 }
     func endSession() { openSessions = max(0, openSessions - 1) }
 
@@ -1173,6 +1180,9 @@ struct ImageTo3DStop: Equatable, Sendable, Error {
     /// Whether the request asked for Higher detail, so advice to go without it is given only when it applies.
     var higherDetailRequested = false
 
+    /// The service rejected the key (HTTP 401) for the request that stopped the run.
+    var keyRejected: Bool { detail == imageTo3DKeyRejectedMessage(service) }
+
     /// Whether the seller may have been charged: anything once a create may have gone through.
     var creditsMayHaveBeenSpent: Bool { reason != .notSent && !(reason == .cancelled && taskID == nil) }
 
@@ -1246,6 +1256,11 @@ typealias ImageTo3DClock = @Sendable () -> Date
 
 let imageTo3DRealSleep: ImageTo3DSleep = { seconds in
     try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+}
+
+/// The finished task named no STL or 3MF file: Try Download Again reads it again, and the dashboard is the way out.
+func imageTo3DNoModelLinkMessage(_ service: ImageTo3DService) -> String {
+    "\(service.title) didn’t return an STL or 3MF link. If Try Download Again finds none either, download the model from \(service.title)’s dashboard and add it with Import Model…."
 }
 
 /// Reads a task until it finishes, the overall limit passes or the Swift task is cancelled. Transient failures are
@@ -1409,7 +1424,7 @@ func resumeImageTo3DGeneration(provider: ImageTo3DProvider, from point: ImageTo3
     let downloadPoint = ImageTo3DResumePoint(sourceTaskID: point.sourceTaskID, sourceKind: point.sourceKind, conversionTaskID: conversionID)
     guard let link = provider.modelLink(in: finished, kind: finishedKind, preferred: options.format) else {
         // The model is made (and paid for): reading the finished task again may return the link, and sends no create.
-        return stop(.downloadFailed, .downloading, lastID, "\(service.title) didn’t return an STL or 3MF link.", resume: downloadPoint)
+        return stop(.downloadFailed, .downloading, lastID, imageTo3DNoModelLinkMessage(service), resume: downloadPoint)
     }
     if Task.isCancelled { return stop(.cancelled, .downloading, lastID, "", resume: downloadPoint) }
     progress(ImageTo3DProgress(stage: .downloading, taskID: lastID, state: .succeeded, percent: nil))

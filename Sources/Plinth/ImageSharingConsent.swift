@@ -26,7 +26,7 @@ enum ImageSharingService: String, CaseIterable, Identifiable, Sendable {
             return "the photo you choose, the details you type (such as measurements and notes) and pictures Plinth renders of the models it makes"
         case .meshy, .tripo:
             return self == .meshy
-                ? "the photos you choose (and, if you use its free printability check, the size you typed)"
+                ? "the photos you choose (and, if you use its free printability check, the replica’s longest side, worked out from the size you typed)"
                 : "the photos you choose"
         }
     }

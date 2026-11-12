@@ -916,6 +916,8 @@ final class ReplicaGeneratorTests: XCTestCase {
         XCTAssertEqual(session.phase, .stopped)
         XCTAssertEqual(session.lastStop?.reason, .downloadFailed)
         XCTAssertEqual(session.lastStop.flatMap(replicaResumeAction(for:)), .tryDownloadAgain, "paid for, so it can be fetched again")
+        XCTAssertTrue(session.holdsKeySession, "Try Download Again reads the same account's task, so the key stays put")
+        XCTAssertEqual(connection.openSessions, 1)
         XCTAssertEqual(connection.unconfirmedRequests.count, 1)
         XCTAssertNil(session.generated)
         XCTAssertEqual(host.activities.last?.success, false)
@@ -928,28 +930,90 @@ final class ReplicaGeneratorTests: XCTestCase {
         XCTAssertEqual(imageTo3DKeyChangeBlockedReason(busy: true, openSessions: 1), "Wait for the current 3D generation task to finish.")
     }
 
-    @MainActor func testAnOpenSheetHoldsItsKeyUntilItCloses() async throws {
+    @MainActor func testAnOpenSheetHoldsItsKeyOnlyWhileSomethingWouldReuseIt() async throws {
         let connection = makeTestConnection()
         let fresh = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
         XCTAssertNil(connection.keyChangeBlockedReason, "a sheet that sent nothing holds no key, so Settings can add one")
         fresh.cancelAll()
         XCTAssertEqual(connection.openSessions, 0, "closing a sheet that held nothing releases nothing")
 
-        // A refused create: the sheet keeps its client for whatever the seller does next, so the key stays put.
-        let transport = ReplicaScriptedTransport([(402, #"{"message":"Not enough credits"}"#), (402, #"{"message":"Still not"}"#)])
+        // A refused create: nothing in the sheet would send with that client again (Generate reads the key afresh), so
+        // the sheet lets go of it and Settings can change the key without closing the sheet and losing the photos.
+        let transport = ReplicaScriptedTransport([(401, #"{"message":"Invalid API key"}"#), (402, #"{"message":"Still not"}"#)])
         let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
         let provider = MeshyClient(apiKey: "msy_secretkey1", transport: transport)
         session.start(provider: provider, image: jpeg, inputs: cat, host: ReplicaTestHost())
+        XCTAssertEqual(connection.openSessions, 1, "held while the Generate is out")
+        XCTAssertNotNil(connection.keyChangeBlockedReason)
         try await waitFor(session, [.stopped])
+        XCTAssertEqual(session.lastStop?.reason, .notSent)
+        XCTAssertEqual(session.lastStop?.keyRejected, true)
         XCTAssertFalse(connection.busy)
-        XCTAssertEqual(connection.keyChangeBlockedReason, "Close Generate a Replica first.")
+        XCTAssertFalse(session.holdsKeySession)
+        XCTAssertEqual(connection.openSessions, 0)
+        XCTAssertNil(connection.keyChangeBlockedReason, "Settings can now replace or remove the rejected key")
+        XCTAssertNil(session.service, "the captured client is dropped, so no later press can send with the old key")
+        XCTAssertNil(replicaKeyRejectedHeldNote(try XCTUnwrap(session.lastStop), holdsKeySession: session.holdsKeySession),
+                     "Settings isn't blocked, so the plain message's advice works")
+        // Keep Waiting and Check Printability have nothing to work with; the next Generate takes the hold again.
+        session.resume(inputs: cat, host: ReplicaTestHost())
+        session.analyzeWithMeshy(longestSideMM: 25, host: ReplicaTestHost())
+        XCTAssertEqual(session.phase, .stopped)
+        XCTAssertEqual(transport.requests.count, 1)
         session.start(provider: provider, image: jpeg, inputs: cat, host: ReplicaTestHost())
-        try await waitFor(session, [.stopped])
         XCTAssertEqual(connection.openSessions, 1, "one hold per sheet, however many sends")
+        try await waitFor(session, [.stopped])
+        XCTAssertEqual(connection.openSessions, 0)
         session.cancelAll()
-        XCTAssertNil(connection.keyChangeBlockedReason)
         session.cancelAll()
         XCTAssertEqual(connection.openSessions, 0)
+    }
+
+    @MainActor func testASheetThatCanCarryOnKeepsTheKeyAndSaysHowToChangeIt() async throws {
+        // The key is rejected while Plinth reads the task: Keep Waiting must reach the same account's task, so the
+        // sheet keeps its client, and says how to change the key anyway.
+        let connection = makeTestConnection()
+        let transport = ReplicaScriptedTransport([(202, #"{"result":"t1"}"#), (401, #"{"message":"Invalid API key"}"#)])
+        let session = ReplicaGeneratorSession(connection: connection, wallThicknessSamples: samples)
+        session.start(provider: MeshyClient(apiKey: "msy_secretkey1", transport: transport), image: jpeg, inputs: cat, host: ReplicaTestHost())
+        try await waitFor(session, [.stopped])
+        let stop = try XCTUnwrap(session.lastStop)
+        XCTAssertEqual(stop.reason, .statusUnreadable)
+        XCTAssertTrue(stop.keyRejected)
+        XCTAssertEqual(replicaResumeAction(for: stop), .keepWaiting)
+        XCTAssertTrue(session.holdsKeySession)
+        XCTAssertEqual(connection.keyChangeBlockedReason, "Close Generate a Replica first.")
+        XCTAssertEqual(replicaKeyRejectedHeldNote(stop, holdsKeySession: true),
+                       "Settings can’t change the Meshy key while this window can still Keep Waiting with it. To use another key, close this window (the task stays on Meshy’s dashboard), then change the key in Settings › Design Tools › 3D generation.")
+        session.cancelAll()
+        XCTAssertEqual(connection.openSessions, 0)
+    }
+
+    func testKeySessionRuleFollowsWhatCouldReuseTheClient() {
+        let refused = ImageTo3DStop(reason: .notSent, stage: .sending, service: .meshy, taskID: nil, detail: imageTo3DKeyRejectedMessage(.meshy))
+        let point = ImageTo3DResumePoint(sourceTaskID: "t1", sourceKind: .generation, conversionTaskID: nil)
+        let waiting = ImageTo3DStop(reason: .timedOut, stage: .generating, service: .tripo, taskID: "t1", detail: "", resumePoint: point)
+        let unknown = ImageTo3DStop(reason: .outcomeUnknown, stage: .sending, service: .meshy, taskID: nil, detail: "")
+        let ended = ImageTo3DStop(reason: .taskEnded(.failed), stage: .generating, service: .meshy, taskID: "t1", detail: "")
+        XCTAssertFalse(replicaSheetNeedsKeySession(running: false, analyzing: false, lastStop: nil, printabilityCheckable: false))
+        for stop in [refused, unknown, ended] {
+            XCTAssertFalse(replicaSheetNeedsKeySession(running: false, analyzing: false, lastStop: stop, printabilityCheckable: false),
+                           "\(stop.reason): nothing carries on with the client")
+        }
+        XCTAssertTrue(replicaSheetNeedsKeySession(running: false, analyzing: false, lastStop: waiting, printabilityCheckable: false))
+        XCTAssertTrue(replicaSheetNeedsKeySession(running: true, analyzing: false, lastStop: nil, printabilityCheckable: false))
+        XCTAssertTrue(replicaSheetNeedsKeySession(running: false, analyzing: true, lastStop: nil, printabilityCheckable: false))
+        XCTAssertTrue(replicaSheetNeedsKeySession(running: false, analyzing: false, lastStop: refused, printabilityCheckable: true),
+                      "a Meshy model made earlier can still be checked")
+
+        XCTAssertTrue(refused.keyRejected)
+        XCTAssertFalse(unknown.keyRejected)
+        XCTAssertEqual(ImageTo3DError.http(service: .tripo, status: 401, code: 2001, message: "bad").userMessage, imageTo3DKeyRejectedMessage(.tripo))
+        XCTAssertNil(replicaKeyRejectedHeldNote(refused, holdsKeySession: false))
+        XCTAssertNil(replicaKeyRejectedHeldNote(unknown, holdsKeySession: true), "only a rejected key")
+        let held = replicaKeyRejectedHeldNote(refused, holdsKeySession: true) ?? ""
+        XCTAssertTrue(held.contains("holds the model made earlier"), held)
+        XCTAssertTrue(held.contains("Save the model if you want it, close this window"), held)
     }
 
     @MainActor func testGenerateAgainDropsAnEarlierPrintabilityCheck() async throws {

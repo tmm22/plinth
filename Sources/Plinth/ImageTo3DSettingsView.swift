@@ -45,7 +45,7 @@ let imageTo3DSettingsResponsibilityNote = "Generate only objects you have the ri
 /// passed Save & Test on the site chosen then: changing the site would send that key, and the first photo, to the
 /// other site's API untested.
 func imageTo3DTripoSiteChangeBlockedReason(hasKey: Bool) -> String? {
-    hasKey ? "Remove the Tripo key to change the site: a key works only on the site it was made on." : nil
+    hasKey ? "A Tripo key works only on the site it was made on. To change the site, remove the key first." : nil
 }
 
 /// The status line after a successful Save & Test or Test Saved Key.

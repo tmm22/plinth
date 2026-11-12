@@ -575,7 +575,7 @@ enum AnthropicError: LocalizedError, Equatable {
 
     /// The failure is likely to pass (rate limit, overload, server or connection trouble), so offering Try Again is
     /// reasonable. The client itself never resends: every request is billed. A spend-cap 429 isn't: it fails until
-    /// the cap resets (the first of next month) or is raised.
+    /// the cap resets or is raised (Anthropic's own message, quoted in the alert, says when access returns).
     var isTemporary: Bool {
         switch self {
         case .http(let status, _, _, _, let code):
@@ -611,7 +611,8 @@ func anthropicHTTPErrorMessage(status: Int, type: String?, message: String, retr
         return "The request was too large for Anthropic. Use a smaller photo or fewer pictures."
     case 429:
         if code == anthropicSpendLimitErrorCode {
-            return "Anthropic has paused API use for this account until its spend limit resets.\(detail) Check Spend limits in the Claude Console (platform.claude.com)."
+            return "This Anthropic account has reached a spend limit, so Anthropic won’t take Claude requests until the limit resets or is raised.\(detail) "
+                + "The account’s limits are on the Limits page of the Claude Console (platform.claude.com)."
         }
         if let retryAfter, retryAfter > 0 {
             return "Anthropic is limiting requests right now. Try again in \(anthropicWaitDescription(retryAfter))."
@@ -689,8 +690,8 @@ func anthropicKeyProblem(_ raw: String) -> String? {
     guard key.unicodeScalars.allSatisfy({ $0.value > 0x20 && $0.value < 0x7F }) else {
         return "The API key has spaces or characters an Anthropic key never has. Copy it again."
     }
-    if key.hasPrefix("sk-ant-admin") { return "That’s an Admin API key. Create a regular API key in the Anthropic Console instead." }
-    guard key.hasPrefix("sk-ant-") else { return "Anthropic API keys start with sk-ant-. Copy the key again from the Anthropic Console." }
+    if key.hasPrefix("sk-ant-admin") { return "That’s an Admin API key. Create a regular API key in the Claude Console instead." }
+    guard key.hasPrefix("sk-ant-") else { return "Anthropic API keys start with sk-ant-. Copy the key again from the Claude Console." }
     return nil
 }
 

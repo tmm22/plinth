@@ -540,6 +540,16 @@ final class AnthropicSupportTests: XCTestCase {
         XCTAssertTrue(text.contains("You will regain access on 2026-12-01"), text)
         XCTAssertFalse(text.contains("Try again"), text)
         XCTAssertTrue(text.contains("platform.claude.com"), text)
+        XCTAssertTrue(text.contains("Limits page of the Claude Console"), text)
+        // One name for the console everywhere the seller reads it.
+        XCTAssertTrue(anthropicKeyProblem("sk-ant-admin01-x")?.contains("Claude Console") == true)
+        XCTAssertTrue(anthropicKeyProblem("abc")?.contains("Claude Console") == true)
+        // Without Anthropic's words, Plinth asserts no reset date of its own.
+        let bare = AnthropicError.http(status: 429, type: "rate_limit_error", message: "", retryAfter: nil, code: anthropicSpendLimitErrorCode)
+        let bareText = bare.errorDescription ?? ""
+        XCTAssertTrue(bareText.contains("until the limit resets or is raised"), bareText)
+        for word in ["next month", "the first", "midnight"] { XCTAssertFalse(bareText.contains(word), bareText) }
+        XCTAssertFalse(bareText.contains("Anthropic said"), bareText)
 
         // A plain rate limit with retry-after is unchanged, and stays temporary.
         let plain = AnthropicError.http(status: 429, type: "rate_limit_error", message: "Slow down", retryAfter: 30)

@@ -1033,10 +1033,33 @@ func scadTemplateIsClaudeWritten(_ source: String) -> Bool {
 }
 
 /// Why Plinth won't run a template designed with Claude (it fails `scadSafetyProblem`, like any of Claude's code), or
-/// nil: always nil for the seller's own templates.
+/// nil: always nil for the seller's own templates. Whether it runs is decided by `scadSafetyProblem` alone; the text
+/// gives the seller `scadClaudeTemplateRefusalReason`, because the gate's own message is written for Claude.
 func scadClaudeTemplateRunProblem(_ source: String, fileName: String) -> String? {
-    guard scadTemplateIsClaudeWritten(source), let problem = scadSafetyProblem(source) else { return nil }
-    return "\(fileName) was designed with Claude, so Plinth checks it like Claude’s own code before running it, and it doesn’t pass: \(problem)"
+    guard scadTemplateIsClaudeWritten(source), scadSafetyProblem(source) != nil else { return nil }
+    return "Plinth won’t run \(fileName): it was designed with Claude and doesn’t pass the check Plinth uses for Claude’s code "
+        + "(\(scadClaudeTemplateRefusalReason(source))). Templates saved before this check may need fixing. \(scadClaudeTemplateHelp)"
+}
+
+/// A short reason, in the seller's words, why `scadSafetyProblem` refuses `source`, following the gate's own order.
+/// Descriptive only: the gate decides, and a refusal this doesn't recognise gets a general reason.
+func scadClaudeTemplateRefusalReason(_ source: String) -> String {
+    if source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "the file is empty" }
+    if source.utf8.count > scadSafetyMaximumBytes { return "it’s larger than \(scadSafetyMaximumBytes / 1024) KB" }
+    if source.unicodeScalars.contains(where: { $0.value < 0x20 && $0 != "\n" && $0 != "\r" && $0 != "\t" }) {
+        return "it contains hidden control characters"
+    }
+    let scan = scadSafetyScan(source)
+    if scan.problem != nil {
+        return "it ends inside a comment or text, or has an unusual character, such as a no-break space, outside its text and comments"
+    }
+    if let word = scadSafetyFileReadingWords.first(where: { scan.identifiers.contains($0) }) {
+        return word == "include" || word == "use" ? "it uses other files" : "it reads another file"
+    }
+    if scan.usesFileArgument { return "it names a file to read" }
+    if scan.unnamedExtrudeArgument != nil { return "an extrude step has a setting without a name, which OpenSCAD could read as a file name" }
+    if scan.strings.contains(where: scadSafetyLooksLikePath) { return "it has text that looks like the location of a file" }
+    return "it has code Plinth doesn’t run from Claude"
 }
 
 /// The memory cap for a local template run: `openSCADMemoryLimitBytes` for a template designed with Claude, else none.
@@ -1045,9 +1068,13 @@ func scadTemplateMemoryLimit(claudeWritten: Bool) -> UInt64 { claudeWritten ? op
 /// Why a template designed with Claude can't go to Slant.
 let scadClaudeTemplateSlantRefusal = "Plinth doesn’t send templates designed with Claude to Slant. It runs them only with OpenSCAD on this Mac, with a memory limit."
 
-/// Shown in Personalise from Template for a template designed with Claude, with `scadClaudeTemplateHelp` as its help.
-let scadClaudeTemplateNote = "Designed with Claude. Plinth checks this template like Claude’s own code, runs it only with OpenSCAD on this Mac with a memory limit, and never sends it to Slant."
-let scadClaudeTemplateHelp = "To make it your own template, without these limits, delete the “Designed with Claude” line near the top of the file, then open it again."
+/// Shown in Personalise from Template for a template designed with Claude, followed by `scadClaudeTemplateHelp` as visible
+/// text (or by the refusal, which ends with it).
+let scadClaudeTemplateNote = "Designed with Claude, so Plinth checks it like Claude’s own code and generates it only with OpenSCAD on this Mac, never with Slant."
+/// Personalise from Template's fixed "Generate with" value for a template designed with Claude, in place of the picker.
+let personalisationClaudeTemplateEngineText = "OpenSCAD on this Mac"
+/// How the seller makes a template designed with Claude their own: the last sentence of every refusal too.
+let scadClaudeTemplateHelp = "To use it as your own template, delete its “Designed with Claude” line near the top, then choose it again."
 
 /// Reads a .scad file (UTF-8, at most 1 MB) and finds its values.
 func loadPersonalisationTemplate(_ url: URL) throws -> PersonalisationTemplateFile {

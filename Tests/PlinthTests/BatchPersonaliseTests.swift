@@ -239,6 +239,15 @@ final class BatchPersonaliseTests: XCTestCase {
             return XCTFail("a Claude-designed template that fails the check can't be used")
         }
         XCTAssertTrue(problems.contains { $0.contains("designed with Claude") && $0.contains("keychain.scad") }, "\(problems)")
+        // Saved Products and Import Orders' rows show the same refusal where the link is shown, before any import.
+        let url = URL(fileURLWithPath: "/tmp/keychain.scad")
+        let refusedFile = PersonalisationTemplateFile(url: url, source: refused, template: scadTemplateParameters(refused))
+        XCTAssertEqual(batchPersonaliseTemplateWarning(.loaded(refusedFile)), refusedFile.claudeRunProblem)
+        XCTAssertTrue(problems.contains(try XCTUnwrap(batchPersonaliseTemplateWarning(.loaded(refusedFile)))), "the same words as at import")
+        XCTAssertTrue(batchPersonaliseTemplateWarning(.loaded(refusedFile))?.contains("delete its “Designed with Claude” line") == true)
+        XCTAssertNil(batchPersonaliseTemplateWarning(.loaded(PersonalisationTemplateFile(url: url, source: claude, template: scadTemplateParameters(claude)))))
+        XCTAssertNil(batchPersonaliseTemplateWarning(nil))
+        XCTAssertEqual(batchPersonaliseTemplateWarning(.failed("Gone.")), "Gone.")
         // The same code without the line is the seller's own template.
         let own = templateSource + "\nimport_off(str(chr(47), \"x\"));\n"
         XCTAssertNotNil(plan(batchPersonaliseEligibility(order, check: check, products: products, inputs: inputs(for: products, source: own))))

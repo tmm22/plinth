@@ -366,7 +366,10 @@ final class PersonalisationTests: XCTestCase {
         let editedFile = PersonalisationTemplateFile(url: url, source: edited, template: scadTemplateParameters(edited))
         let problem = editedFile.claudeRunProblem
         XCTAssertTrue(problem?.contains("stand.scad") == true)
-        XCTAssertTrue(problem?.contains("import_stl") == true)
+        // Written for the seller: a short reason, no OpenSCAD names or backticks.
+        XCTAssertTrue(problem?.contains("(it reads another file)") == true, problem ?? "")
+        XCTAssertFalse(problem?.contains("import_stl") == true, problem ?? "")
+        XCTAssertFalse(problem?.contains("`") == true, problem ?? "")
         XCTAssertNil(scadClaudeTemplateRunProblem("include <BOSL2/std.scad>\ncube(1);", fileName: "own.scad"), "the seller's own template isn't checked")
 
         let own = "include <BOSL2/std.scad>\nname = \"A\";\ncube(1);"
@@ -393,7 +396,46 @@ final class PersonalisationTests: XCTestCase {
                                                          quota: OpenSCADQuota(), now: now, claudeWritten: true)
         XCTAssertTrue(missing?.contains("only on this Mac") == true)
         XCTAssertFalse(missing?.contains("Slant") == true, "doesn't suggest Slant instead")
-        XCTAssertTrue(scadClaudeTemplateHelp.contains("delete the “Designed with Claude” line"))
+        XCTAssertTrue(scadClaudeTemplateHelp.contains("delete its “Designed with Claude” line"))
+    }
+
+    func testClaudeTemplateRefusalIsWrittenForTheSeller() throws {
+        let base = "// \(scadClaudeTemplateLine)\nname = \"A\";\n"
+        let refusal = try XCTUnwrap(scadClaudeTemplateRunProblem(base + "linear_extrude(h) text(name);\n", fileName: "tag.scad"))
+        XCTAssertEqual(refusal, "Plinth won’t run tag.scad: it was designed with Claude and doesn’t pass the check Plinth uses for "
+                        + "Claude’s code (an extrude step has a setting without a name, which OpenSCAD could read as a file name). "
+                        + "Templates saved before this check may need fixing. To use it as your own template, delete its "
+                        + "“Designed with Claude” line near the top, then choose it again.")
+        // Each of the gate's refusals gets a reason in plain words, in the gate's own order.
+        let cases: [(String, String)] = [
+            ("include <lib.scad>\ncube(1);", "it uses other files"),
+            ("use <lib.scad>\ncube(1);", "it uses other files"),
+            ("surface(\"x\");", "it reads another file"),
+            ("dxf_dim(\"x\");", "it reads another file"),
+            ("module m(file = 1) {} m();", "it names a file to read"),
+            ("text(\"/etc/hosts\");", "it has text that looks like the location of a file"),
+            ("/* never closed\ncube(1);", "it ends inside a comment or text, or has an unusual character, such as a no-break space, outside its text and comments"),
+            ("cube(1);\u{00A0}", "it ends inside a comment or text, or has an unusual character, such as a no-break space, outside its text and comments"),
+            ("cube(1);\u{0007}", "it contains hidden control characters"),
+            (String(repeating: "cube(1);\n", count: scadSafetyMaximumBytes / 8), "it’s larger than 64 KB"),
+        ]
+        for (code, reason) in cases {
+            let source = base + code
+            XCTAssertNotNil(scadSafetyProblem(source), "the gate refuses \(code.prefix(40))")
+            XCTAssertEqual(scadClaudeTemplateRefusalReason(source), reason, String(code.prefix(40)))
+            let text = scadClaudeTemplateRunProblem(source, fileName: "tag.scad") ?? ""
+            XCTAssertTrue(text.contains("(\(reason))"), text)
+            XCTAssertFalse(text.contains("`"), text)
+        }
+        // The gate alone decides: a passing template gets no refusal, whatever the reason function would say.
+        XCTAssertNil(scadClaudeTemplateRunProblem(base + "linear_extrude(height = 2) text(name);\n", fileName: "tag.scad"))
+        // Nothing for Claude in the seller's words.
+        for text in [scadClaudeTemplateNote, scadClaudeTemplateHelp, scadClaudeTemplateRunProblem(base + "import(\"a\");", fileName: "t.scad") ?? ""] {
+            for word in ["Make it shorter", "primitives", "inline", "Remove it."] { XCTAssertFalse(text.contains(word), "\(text): \(word)") }
+        }
+        XCTAssertEqual(scadClaudeTemplateNote,
+                       "Designed with Claude, so Plinth checks it like Claude’s own code and generates it only with OpenSCAD on this Mac, never with Slant.")
+        XCTAssertEqual(personalisationClaudeTemplateEngineText, "OpenSCAD on this Mac")
     }
 
     func testOpenSCADAppCandidates() {

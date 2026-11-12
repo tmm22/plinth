@@ -112,6 +112,8 @@ private struct PersonalisationForm: View {
     init(file: PersonalisationTemplateFile) {
         self.file = file
         _values = State(initialValue: Dictionary(file.template.parameters.map { ($0.name, $0.defaultValue) }, uniquingKeysWith: { a, _ in a }))
+        // A template designed with Claude runs only on this Mac, so it never starts on Slant, even before OpenSCAD is looked for.
+        _engine = State(initialValue: personalisationDefaultEngine(localAvailable: false, claudeWritten: file.claudeWritten))
     }
 
     /// Looks for OpenSCAD in Applications. The first look also picks the default engine; Check Again keeps the choice.
@@ -180,10 +182,20 @@ private struct PersonalisationForm: View {
                     .foregroundStyle(.secondary)
             }
             if file.claudeWritten {
-                Label(scadClaudeTemplateNote, systemImage: "sparkles")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help(scadClaudeTemplateHelp)
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(scadClaudeTemplateNote, systemImage: "sparkles")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // The refusal ends with how to make the template the seller's own; otherwise that is said on its own.
+                    if let refusal = file.claudeRunProblem {
+                        Label(refusal, systemImage: "exclamationmark.triangle")
+                            .font(.callout).foregroundStyle(.studioWarning)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(scadClaudeTemplateHelp).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             } else if file.template.usesOtherFiles {
                 Label("This template uses other files (include or use). OpenSCAD on this Mac reads them from the template’s folder; Slant can’t.",
                       systemImage: "doc.on.doc")
@@ -228,14 +240,20 @@ private struct PersonalisationForm: View {
 
     private var engineSection: some View {
         Section {
-            Picker("Generate with", selection: $engine) {
-                ForEach(PersonalisationEngine.allCases) { option in Text(option.title).tag(option) }
+            if file.claudeWritten {
+                // Not a choice: Slant would always be refused (`scadClaudeTemplateSlantRefusal`).
+                LabeledContent("Generate with", value: personalisationClaudeTemplateEngineText)
+            } else {
+                Picker("Generate with", selection: $engine) {
+                    ForEach(PersonalisationEngine.allCases) { option in Text(option.title).tag(option) }
+                }
+                .pickerStyle(.segmented)
             }
-            .pickerStyle(.segmented)
             VStack(alignment: .leading, spacing: 4) {
                 Text(engineCaption(now: now)).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if let reason = blockedReason(now: now) {
+                // A Claude template's refusal is already shown with the template, above.
+                if let reason = blockedReason(now: now), reason != file.claudeRunProblem {
                     Label(reason, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.studioWarning)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -296,7 +314,8 @@ private struct PersonalisationForm: View {
         problem = nil
         let assignments = scadAssignments(parameters, values: values)
         let name = personalisedModelName(templateName: file.name, parameters: parameters, values: values)
-        let chosen = engine
+        // A template designed with Claude is only ever generated on this Mac (and `generateOpenSCADOnSlant` refuses it too).
+        let chosen = file.claudeWritten ? PersonalisationEngine.local : engine
         generating = true
         job = Task { @MainActor in
             defer { generating = false; job = nil }

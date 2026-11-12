@@ -15,6 +15,17 @@ func batchPersonaliseLoadTemplate(path: String) -> BatchPersonaliseTemplateState
     catch { return .failed("Plinth couldn’t read the template \(url.lastPathComponent). \(error.localizedDescription)") }
 }
 
+/// The warning shown where a saved product's template link is shown (Saved Products' editor and Import Orders' rows):
+/// why the template can't be read, or the refusal of a template designed with Claude that fails Claude's code check
+/// (`scadClaudeTemplateRunProblem`, the same text Import Orders gives for each order). Nil while it is fine or unread.
+func batchPersonaliseTemplateWarning(_ state: BatchPersonaliseTemplateState?) -> String? {
+    switch state {
+    case .failed(let reason)?: return reason
+    case .loaded(let file)?: return file.claudeRunProblem
+    case nil: return nil
+    }
+}
+
 /// Import Orders' personalisation state for the chosen file: whether OpenSCAD is installed, the linked templates as
 /// read, and the seller's choices. Memory only; reset with the file and when the sheet closes.
 @MainActor final class BatchPersonaliseSession: ObservableObject {
@@ -103,7 +114,7 @@ struct OrderImportPersonaliseSection: View {
                 if let link {
                     Text("\(link.templateName) · sets \(link.valueName) · \(entry.texts.count == 1 ? "1 item" : "\(entry.texts.count) items")")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    if case .failed(let reason)? = session.templates[link.templatePath] {
+                    if let reason = batchPersonaliseTemplateWarning(session.templates[link.templatePath]) {
                         Text(reason).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -163,6 +174,10 @@ struct SavedProductTemplateLinkEditor: View {
             Text(reason).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
         case .loaded(let file)?:
             let texts = file.template.parameters.filter { $0.kind == .string }
+            // A template designed with Claude that fails Claude's code check is never run: say so here, not first at import.
+            if let refusal = batchPersonaliseTemplateWarning(loaded) {
+                Text(refusal).font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)
+            }
             if texts.isEmpty {
                 Text("This template has no text values before its first module, so there’s nowhere for the buyer’s text to go.")
                     .font(.caption).foregroundStyle(.studioWarning).fixedSize(horizontal: false, vertical: true)

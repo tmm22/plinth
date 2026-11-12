@@ -46,7 +46,7 @@ struct AnthropicSettingsSection: View {
                     ProgressView().controlSize(.small)
                     Button("Stop") { testTask?.cancel() }
                 }
-                Link("Anthropic Console", destination: anthropicConsoleKeysURL)
+                Link("Claude Console", destination: anthropicConsoleKeysURL)
             }
             if let reason = connection.keyChangeBlockedReason {
                 Text(reason).font(.caption).foregroundStyle(.secondary)

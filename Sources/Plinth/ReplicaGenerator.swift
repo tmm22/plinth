@@ -419,6 +419,28 @@ func replicaResumeAction(for stop: ImageTo3DStop) -> ReplicaResumeAction? {
     }
 }
 
+/// Whether a replica sheet must go on holding its key session (`ImageTo3DConnection.openSessions`): only while
+/// something in it would send with the client it captured at its last Generate. That is a run in flight, Check
+/// Printability in flight, a stop it can carry on from (Keep Waiting, Try Download Again or Try Conversion Again, which
+/// must reach the same account's task), or a model made in the sheet that Check Printability with Meshy can still read
+/// (`printabilityCheckable`: a Meshy generation). Otherwise the sheet drops the client and lets Settings change the
+/// key; its next Generate reads the key afresh from the Keychain, so a replaced key is used and a removed one never is.
+func replicaSheetNeedsKeySession(running: Bool, analyzing: Bool, lastStop: ImageTo3DStop?, printabilityCheckable: Bool) -> Bool {
+    running || analyzing || printabilityCheckable || lastStop.flatMap(replicaResumeAction(for:)) != nil
+}
+
+/// Shown under a stop whose service rejected the key while the sheet still holds the key session (so Settings says
+/// “Close Generate a Replica first.”): how to change the key without being stuck. Nil otherwise.
+func replicaKeyRejectedHeldNote(_ stop: ImageTo3DStop, holdsKeySession: Bool) -> String? {
+    guard holdsKeySession, stop.keyRejected else { return nil }
+    let settings = "Settings › Design Tools › 3D generation"
+    if let action = replicaResumeAction(for: stop) {
+        return "Settings can’t change the \(stop.service.title) key while this window can still \(action.title) with it. To use another key, close this window (the task stays on \(stop.service.title)’s dashboard), then change the key in \(settings)."
+    }
+    // Otherwise the sheet holds the key only for a Meshy model made earlier (`replicaSheetNeedsKeySession`).
+    return "Settings can’t change the \(stop.service.title) key while this window holds the model made earlier, which Check Printability uses. Save the model if you want it, close this window, then change the key in \(settings)."
+}
+
 /// What carrying on after `stop` with `action` sends. Keep Waiting never makes the model again, but a Tripo model
 /// still needs its paid conversion to STL when that hasn't been sent yet.
 func replicaResumeNote(_ stop: ImageTo3DStop, action: ReplicaResumeAction) -> String {

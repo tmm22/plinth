@@ -203,8 +203,35 @@ final class AccessoryDesignerTests: XCTestCase {
         for text in [accessoryCostForecastText(forecast), accessoryNextSendForecastText(next, newRound: true),
                      accessoryNextSendForecastText(left, newRound: false)] {
             XCTAssertFalse(text.contains("at most"), text)
-            XCTAssertTrue(text.contains("long replies, or a wait of more than 5 minutes before you answer Claude, cost more"), text)
+            // The caveat is its own sentence after the figures.
+            XCTAssertTrue(text.contains(". Long replies, or waiting more than 5 minutes to answer Claude, cost more. Anthropic bills your account"), text)
+            XCTAssertFalse(text.contains(";"), text)
         }
+        XCTAssertEqual(accessoryCostForecastText(forecast),
+                       "Estimated cost: \(anthropicCostText(forecast.typical)) for a typical design (5 replies), "
+                        + "\(anthropicCostText(forecast.maximum)) if Claude uses all 10. Long replies, or waiting more than 5 minutes "
+                        + "to answer Claude, cost more. Anthropic bills your account; the real cost is shown as Claude works.")
+    }
+
+    func testPictureLimitTextsNameClaudeOnce() {
+        XCTAssertEqual(accessoryNoteImageLimitUnfinishedText,
+                       "Plinth didn’t send this: the conversation has too many pictures for Claude. Start Over to begin a new design.")
+        for text in [accessoryNoteImageLimitText, accessoryNoteImageLimitUnfinishedText] {
+            XCTAssertEqual(text.components(separatedBy: "Claude").count - 1, 1, text)
+        }
+    }
+
+    func testCostForecastTextsSayOneReplyInTheSingular() throws {
+        let one = accessoryCostForecast(photoSizes: [(1568, 1176)], textCharacters: 600,
+                                        limits: AccessoryDesignLimits(maxReplies: 1, maxRenders: 1), typicalReplies: 1)
+        let text = accessoryCostForecastText(one)
+        XCTAssertTrue(text.contains("(1 reply)"), text)
+        XCTAssertTrue(text.contains("if Claude uses its 1 reply."), text)
+        XCTAssertFalse(text.contains("1 replies"), text)
+        let next = try XCTUnwrap(accessoryNextSendForecast(messages: [.user(text: "Make a stand.")], repliesLeft: 4, typicalReplies: 1))
+        let nextText = accessoryNextSendForecastText(next, newRound: false)
+        XCTAssertTrue(nextText.contains("if Claude needs 1 reply,"), nextText)
+        XCTAssertFalse(nextText.contains("1 replies"), nextText)
     }
 
     // MARK: Render facts

@@ -162,6 +162,9 @@ final class ImagePreparationTests: XCTestCase {
             XCTAssertFalse(text.message.contains("details you type"))
             XCTAssertFalse(text.message.contains("renders"))
         }
+        // Meshy's free check receives the longest side Plinth works out from the typed size, not the typed size itself.
+        XCTAssertTrue(imageSharingConsentText(.meshy).message.contains("the replica’s longest side, worked out from the size you typed"))
+        XCTAssertFalse(imageSharingConsentText(.tripo).message.contains("size you typed"))
         XCTAssertEqual(ImageSharingService.allCases.map(\.rawValue), ["anthropic", "meshy", "tripo"])
     }
 

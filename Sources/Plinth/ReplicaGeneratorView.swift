@@ -92,9 +92,11 @@ struct GeneratedReplicaFile {
     private var analysisTask: Task<Void, Never>?
     /// The latest Check Printability run; a reply from an earlier one (or for an earlier model) is dropped.
     private var analysisID: UUID?
-    /// Whether this sheet holds `connection`'s key session: from its first send until it closes, `provider` keeps the
-    /// key for Keep Waiting, Try Conversion Again and Check Printability, so Settings can't replace or remove it.
-    private var holdsKeySession = false
+    /// Whether this sheet holds `connection`'s key session: from each Generate while `provider` may be used again (Keep
+    /// Waiting, Try Download Again, Try Conversion Again, Check Printability; `replicaSheetNeedsKeySession`), so Settings
+    /// can't replace or remove the key meanwhile. Released, with `provider` dropped, once nothing would reuse it, and
+    /// when the sheet closes; the next Generate reads the key afresh and takes the hold again.
+    @Published private(set) var holdsKeySession = false
     let connection: ImageTo3DConnection
     private let wallThicknessSamples: Int
 
@@ -249,6 +251,7 @@ struct GeneratedReplicaFile {
                     lastInputs = inputs
                     processingProblem = "Stopped. The model \(model.service.title) made is still here: Process Again uses it without sending anything."
                     phase = .processingFailed
+                    releaseKeySessionIfUnused()
                 } else {
                     beginProcessing(inputs: inputs, upAxis: .z)
                 }
@@ -261,6 +264,23 @@ struct GeneratedReplicaFile {
         lastStopRecordID = connection.rememberUnconfirmed(stop)
         phase = .stopped
         host.addReplicaActivity(Activity(title: "Generate Replica", detail: stop.activityDetail, success: false))
+        // A refused Generate (a rejected key, say) leaves nothing that reuses this client: Settings may change the key.
+        releaseKeySessionIfUnused()
+    }
+
+    /// Whether anything in the sheet would still send with `provider` (`replicaSheetNeedsKeySession`).
+    var needsKeySession: Bool {
+        replicaSheetNeedsKeySession(running: isRunning, analyzing: analyzing, lastStop: lastStop,
+                                    printabilityCheckable: generated.map { $0.service == .meshy && $0.sourceKind.isGeneration } ?? false)
+    }
+
+    /// Lets Settings change the key again once nothing would reuse the client this sheet captured, and drops that client
+    /// so no later press can send with a key that was since replaced or removed.
+    private func releaseKeySessionIfUnused() {
+        guard holdsKeySession, !needsKeySession else { return }
+        provider = nil
+        holdsKeySession = false
+        connection.endSession()
     }
 
     /// Stop: at the next safe point (never while a credit-spending request is in flight).
@@ -346,6 +366,8 @@ struct GeneratedReplicaFile {
 
     private func finishProcessing(_ outcome: Result<(ReplicaProcessed, NSImage?), Error>, stopped: Bool) {
         stopping = false
+        // Processing is local; once it ends, only a Meshy model's Check Printability would reuse the client.
+        defer { releaseKeySessionIfUnused() }
         switch outcome {
         case .success(let (processed, image)) where !stopped:
             self.processed = processed
@@ -776,6 +798,9 @@ struct ReplicaGeneratorSheet: View {
                 .foregroundStyle(stop.reason == .notSent ? Color.secondary : Color.studioWarning)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+            if let note = replicaKeyRejectedHeldNote(stop, holdsKeySession: session.holdsKeySession) {
+                Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let note = replicaCreditsNote(stop) {
                 Text(note).font(.caption).foregroundStyle(.secondary)
             }
@@ -891,7 +916,9 @@ struct ReplicaGeneratorSheet: View {
                 }
                 // Beside the reason, never squeezing the buttons: one line, truncated if it must be.
                 Text(replicaFooterCostLabel(estimate)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if !connection.hasKey(service) {
+                // Also after a rejected key once the sheet has let go of it, so the seller can fix it without closing.
+                if !connection.hasKey(service)
+                    || (session.phase == .stopped && session.lastStop?.keyRejected == true && !session.holdsKeySession) {
                     Button("Open Settings") { store.requestSettings(.designTools) }
                 }
             }
