@@ -394,7 +394,8 @@ let accessoryForecastHistoryTokensPerReply = accessoryForecastOutputTokensPerRep
 /// measuring for ask_seller, say) writes the whole conversation to the cache again.
 let accessoryForecastCaveat = "long replies, or a wait of more than 5 minutes before you answer Claude, cost more"
 
-/// Image tokens, roughly one per 750 pixels (Anthropic's vision guidance).
+/// Image tokens for the forecasts, one per 750 pixels: about 4% more than Anthropic's ⌈width / 28⌉ × ⌈height / 28⌉
+/// visual tokens (`printReviewImageTokens` uses that rule), which errs on the high side.
 func accessoryImageTokens(pixelWidth: Int, pixelHeight: Int) -> Int {
     max(1, (pixelWidth * pixelHeight + 749) / 750)
 }

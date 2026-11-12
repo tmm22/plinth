@@ -363,9 +363,11 @@ private struct AnthropicJSONParser {
 // MARK: Schema checks
 
 /// The first way `value` breaks `schema`, or nil when it fits. Covers the JSON Schema subset Studio's tools use:
-/// `type` (a name or a list), `properties`, `required`, `additionalProperties: false`, `items`, `enum`, `const`,
-/// `minimum`/`maximum`, `minItems`/`maxItems` and `minLength`/`maxLength`. Unknown keywords are ignored. Claude's
-/// `strict` tools normally guarantee a fit, but streamed (`eager_input_streaming`) inputs aren't checked by the API.
+/// `type` (a name or a list), `properties`, `required`, `additionalProperties: false`, `items`, `enum` and `const`
+/// (strings in any case), `minimum`/`maximum`, `minItems`/`maxItems` and `minLength`/`maxLength`. Unknown keywords
+/// are ignored, `anyOf` among them: a value under it passes unchecked. Claude's `strict` tools normally guarantee a fit, but streamed
+/// (`eager_input_streaming`) inputs aren't checked by the API. propose_plan, the only tool using `anyOf`, isn't
+/// streamed that way, so Anthropic's strict check covers it.
 func anthropicSchemaProblem(_ value: AnthropicJSON, schema: AnthropicJSON, path: String = "input") -> String? {
     guard case .object = schema else { return nil }
     if let allowed = schema["enum"]?.arrayValue, !allowed.contains(where: { anthropicJSONEqualForSchema($0, value) }) {

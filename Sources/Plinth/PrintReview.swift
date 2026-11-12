@@ -1222,7 +1222,7 @@ func printReviewUserText(viewTitles: [String], factLines: [String], contextLines
 }
 
 /// The first request: images before the text, effort high, the system prompt and tool cached (one breakpoint, on the
-/// tool).
+/// system block: the tools come first in the cached prefix, so it caches both).
 func printReviewAnthropicRequest(views: [PrintReviewRender], factLines: [String], contextLines: [String]) -> AnthropicRequest {
     var content: [AnthropicInputBlock] = views.map { .image($0.image.anthropicImage) }
     content.append(.text(printReviewUserText(viewTitles: views.map(\.title), factLines: factLines, contextLines: contextLines)))
@@ -1284,7 +1284,7 @@ func printReviewReplyOutcome(_ reply: AnthropicMessage, context: PrintReviewPlan
 
 // MARK: Cost
 
-/// Image tokens at roughly one per 28 × 28 pixel patch.
+/// Image tokens: Anthropic's ⌈width / 28⌉ × ⌈height / 28⌉ visual tokens, one per 28 × 28 pixel patch.
 func printReviewImageTokens(width: Int, height: Int) -> Int {
     guard width > 0, height > 0 else { return 0 }
     return ((width + 27) / 28) * ((height + 27) / 28)

@@ -15,11 +15,14 @@ import UniformTypeIdentifiers
 let imagePreparationMaxInputBytes = 30 * 1024 * 1024
 /// Largest photo, in pixels, Studio decodes (a 48-megapixel phone photo fits; a decompression bomb doesn't).
 let imagePreparationMaxInputPixels = 120_000_000
-/// Long edge Claude needs; larger images are scaled down by Anthropic anyway.
+/// Long edge of a photo sent to Claude: a cost choice. Opus 5.5 reads up to 2,576 px (Anthropic's high-resolution
+/// tier, up to about three times the visual tokens); 1,568 px, the standard tier's limit, shows a photo's shapes and
+/// labels well enough for Plinth's tools.
 let imagePreparationClaudeLongEdge = 1568
 /// The largest long edge Studio ever sends to any service.
 let imagePreparationMaxLongEdge = 2048
-/// Largest encoded image sent (Anthropic accepts 5 MB per image; base64 adds a third).
+/// Largest encoded image sent to Claude: about 5 MB once base64 adds its third, well within the Claude API's 10 MB per
+/// image (and within the 5 MB some other platforms allow).
 let imagePreparationMaxOutputBytes = 3_750_000
 /// Largest encoded photo sent to a 3D service: well within Meshy's and Tripo's 20 MB, and four as base64 in one Meshy
 /// request stay near 32 MB.

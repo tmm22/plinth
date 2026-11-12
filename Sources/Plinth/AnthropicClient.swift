@@ -18,7 +18,8 @@ let anthropicDefaultModel = "claude-opus-5-5"
 let anthropicFallbackBeta = "server-side-fallback-2026-07-01"
 /// `thinking.display: "updates"`: short progress notes while reasoning stays hidden.
 let anthropicThinkingUpdatesBeta = "thinking-display-updates-2026-08-18"
-/// Anthropic's limit for a Messages request body.
+/// Plinth's own limit for a Messages request body (the Claude API's is 128 MB): far more than any of Plinth's
+/// requests needs, so a body near it means something went wrong.
 let anthropicMaxRequestBytes = 32 * 1024 * 1024
 /// Largest streamed reply Studio reads. A 64,000-token reply with its event framing is a few megabytes.
 let anthropicMaxResponseBytes = 32 * 1024 * 1024
@@ -1146,7 +1147,9 @@ final class AnthropicClient: @unchecked Sendable {
 // MARK: Keychain
 
 /// A service's API key in its own Keychain item (service "Plinth"), kept apart from the Slant key ("api-key")
-/// and Shopify's details. Readable only on this Mac while it is unlocked. The packaged app brings each key over from
+/// and Shopify's details. In the login keychain, protected by its lock and the item's access list; macOS applies
+/// `kSecAttrAccessible` only to the data protection keychain, which ad-hoc and self-signed builds can't use, so
+/// "this device only" doesn't hold for these items. The packaged app brings each key over from
 /// Slant Studio's service on first read (LegacyMigration.swift).
 struct AIServiceKeychainItem: Equatable, Sendable {
     let account: String

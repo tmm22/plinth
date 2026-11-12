@@ -295,7 +295,8 @@ func accessorySuggestionTurnText(photoCount: Int, hint: String, avoidTitles: [St
 }
 
 /// One request: a fresh, single-turn conversation each time (earlier titles go in as text). The system prompt is marked
-/// for caching; it may be below the model's minimum cacheable length, in which case the marker is simply ignored.
+/// for caching. With the tool it is over Opus 5.5's 512-token minimum, so it is written to the cache (at 1.25 times the
+/// input price) and More Ideas within 5 minutes reads it from there.
 func accessorySuggestionRequest(photos: [PreparedImage], hint: String, avoidTitles: [String] = []) -> AnthropicRequest {
     let content: [AnthropicInputBlock] = photos.map { .image($0.anthropicImage) }
         + [.text(accessorySuggestionTurnText(photoCount: photos.count, hint: hint, avoidTitles: avoidTitles))]
@@ -985,10 +986,10 @@ struct AccessorySuggestionCostForecast: Equatable, Sendable {
     let high: AnthropicCostEstimate
 }
 
-/// A rough range before anything is sent, from the prompt, the tool and the photos' sizes (one image token per 750
-/// pixels), all at the plain input price: the system prompt and tool are probably below the minimum length Anthropic
-/// caches. The low end is a short reply; the high end the full `accessorySuggestionMaxTokens`. Anthropic's invoice is
-/// what counts.
+/// A rough range before anything is sent, from the prompt, the tool and the photos' sizes (`accessoryImageTokens`,
+/// which errs a little high), all at the plain input price. Writing the system prompt and tool to the cache costs a
+/// quarter more for them (a fraction of a cent), which the range leaves out. The low end is a short reply; the high end
+/// the full `accessorySuggestionMaxTokens`. Anthropic's invoice is what counts.
 func accessorySuggestionCostForecast(photoSizes: [(width: Int, height: Int)], textCharacters: Int) -> AccessorySuggestionCostForecast {
     let fixed = (accessorySuggestionSystemPrompt.count + accessorySuggestTool.json.encodedString.count) * 2 / 7
     let photos = photoSizes.reduce(0) { $0 + accessoryImageTokens(pixelWidth: $1.width, pixelHeight: $1.height) }
