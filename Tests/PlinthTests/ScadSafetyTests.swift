@@ -68,4 +68,140 @@ final class ScadSafetyTests: XCTestCase {
         }
         XCTAssertNil(scadSafetyProblem("text(\"use 1/2 inch\", font = \"Liberation Sans:style=Bold\"); cube(1);"))
     }
+
+    // MARK: Round 21: OpenSCAD 2021.01's other ways to read a file
+
+    func testOpenSCAD2021ImportModulesAreRefused() {
+        for code in [#"import_stl("a");"#,
+                     "import_off(p);",
+                     "import_dxf(file = p);",
+                     #"import_stl(str(chr(47), "etc", chr(47), "hosts"));"#,
+                     "import_stl /* c */ (p);",
+                     "2import_off(p);"] {
+            let problem = scadSafetyProblem(code)
+            XCTAssertNotNil(problem, code)
+            XCTAssertTrue(problem?.contains("reads files") == true, code)
+        }
+        // Only the whole word counts.
+        XCTAssertNil(scadSafetyProblem("my_import_stl = 2; cube(my_import_stl);"))
+        XCTAssertNil(scadSafetyProblem("import_stl_size = 2; cube(import_stl_size);"))
+    }
+
+    func testUnnamedExtrudeArgumentsAreRefused() {
+        let refused = [
+            "linear_extrude(p) square(1);",
+            #"linear_extrude(str(chr(47),"etc",chr(47),"hosts")) square(1);"#,
+            "linear_extrude(height = 2, p) square(1);",
+            "linear_extrude(h) square(1);",
+            "linear_extrude ( /* c */ p ) square(1);",
+            "linear_extrude // c\n(p) square(1);",
+            "linear_extrude(2 + h) square(1);",
+            "linear_extrude(height == 2) square(1);",
+            "linear_extrude(height <= 2) square(1);",
+            "linear_extrude(2, 3) square(1);",
+            "linear_extrude(2, p) square(1);",
+            "linear_extrude(-2) square(1);",
+            "linear_extrude(12abc) square(1);",
+            "linear_extrude(1e5x) square(1);",
+            "linear_extrude((p)) square(1);",
+            "linear_extrude([p][0]) square(1);",
+            "linear_extrude(height = max(1, 2), p) square(1);",
+            "linear_extrude(height = [1, 2][0], center = true, p) square(1);",
+            "linear_extrude(height = let(a = 1) a, p) square(1);",
+            "linear_extrude(,p) square(1);",
+            "#linear_extrude(p) square(1);",
+            "translate([0, 0, 1]) linear_extrude(p) square(1);",
+            "linear_extrude(height = 1) linear_extrude(p) square(1);",
+            "linear_extrude 1e999 (p) square(1);",
+            "linear_extrude(height 1e999 = 2, p) square(1);",
+            "module m(q) linear_extrude(q) square(1); m(\"x\");",
+            "rotate_extrude(360) square(1);",
+            "rotate_extrude(p) square(1);",
+            "rotate_extrude(angle = 90, p) square(1);",
+            "rotate_extrude(angle = 90, convexity = 2, 3) square(1);",
+        ]
+        for code in refused {
+            let problem = scadSafetyProblem(code)
+            XCTAssertNotNil(problem, code)
+            XCTAssertTrue(problem?.contains("unnamed argument") == true, "\(code): \(problem ?? "nil")")
+        }
+        XCTAssertEqual(scadSafetyScan("rotate_extrude(p) square(1);").unnamedExtrudeArgument, "rotate_extrude")
+        XCTAssertEqual(scadSafetyScan("cube(1); linear_extrude(p) square(1);").unnamedExtrudeArgument, "linear_extrude")
+
+        let allowed = [
+            "linear_extrude(1) text(label);",
+            "linear_extrude(2.5, center = true) square(1);",
+            "linear_extrude(.5) square(1);",
+            "linear_extrude(1e1) square(1);",
+            "linear_extrude(2 /* mm */, center = true) square(1);",
+            "linear_extrude(height = max(1, h), center = true, twist = 0) square(1);",
+            "linear_extrude(height = [1, 2][0]) square(1);",
+            "linear_extrude(height = h > 2 ? h : 2, $fn = 32) square(1);",
+            "linear_extrude(height = 2, scale = [1, 1.5], slices = 10, ) square(1);",
+            "linear_extrude() square(1);",
+            "linear_extrude ( height = 2 ) square(1);",
+            "linear_extrude(\n  height = 2, // the base\n  center = true\n) square(1);",
+            "rotate_extrude(angle = 360, convexity = 4, $fn = 64) square(1);",
+            "rotate_extrude() square(1);",
+            "rotate_extrude($fn = 96) translate([10, 0]) circle(r = 2);",
+            "translate([0, 0, 1]) rotate([0, 90, 0]) linear_extrude(height = 2) polygon([[0, 0], [1, 0], [0, 1]]);",
+            // Other modules may take unnamed arguments as before.
+            "cube([1, 2, 3], true); cylinder(5, 2, 1); text(\"Hi\", 5);",
+            // The names alone, and other calls named like them, are fine.
+            "my_linear_extrude = 2; cube(my_linear_extrude);",
+            "module my_rotate_extrude(r) rotate_extrude(angle = 360) circle(r); my_rotate_extrude(3);",
+        ]
+        for code in allowed {
+            XCTAssertNil(scadSafetyProblem(code), code)
+        }
+    }
+
+    func testNonASCIIOutsideStringsAndCommentsIsRefused() {
+        for code in ["linear_extrude(file\u{00A0}= p) square(1);",
+                     "cube(1);\u{FEFF}",
+                     "\u{FEFF}cube(1);",
+                     "cube\u{00A0}(1);",
+                     "x = 2;\u{2003}cube(x);",
+                     "caf\u{00E9} = 2; cube(1);",
+                     "cube(1)\u{037E}"] { // A Greek question mark looks like a semicolon.
+            let problem = scadSafetyProblem(code)
+            XCTAssertNotNil(problem, code)
+            XCTAssertTrue(problem?.contains("ASCII") == true, code)
+        }
+        XCTAssertNil(scadSafetyProblem(#"text("90°"); cube(1);"#))
+        XCTAssertNil(scadSafetyProblem("// café\ncube(1);"))
+        XCTAssertNil(scadSafetyProblem("/* größe: 5 mm\u{00A0}*/ cube(5);"))
+        XCTAssertNil(scadSafetyProblem("text(\"Zoë\u{00A0}& José\"); cube(1);"))
+    }
+
+    func testFileArgumentStaysRefusedAcrossDroppedNumbers() {
+        // OpenSCAD 2021.01 silently drops a number it can't convert, so a number between `file` and `=` mustn't hide it.
+        XCTAssertNotNil(scadSafetyProblem("file 1e999 = 3; cube(1);"))
+        XCTAssertTrue(scadSafetyScan("rotate_extrude(file 2 = n);").usesFileArgument)
+        XCTAssertFalse(scadSafetyScan("if (file != 3) cube(1);").usesFileArgument)
+        XCTAssertFalse(scadSafetyScan("if (file >= 3) cube(1);").usesFileArgument)
+    }
+
+    func testRawLineBreaksInAStringDontHideAPath() {
+        // OpenSCAD 2021.01 drops a line break typed straight into a string, so "⏎/etc/hosts" is "/etc/hosts" there.
+        XCTAssertTrue(scadSafetyLooksLikePath("\n/etc/hosts"))
+        XCTAssertTrue(scadSafetyLooksLikePath("\r\n~/x"))
+        XCTAssertTrue(scadSafetyLooksLikePath("part.s\ntl"))
+        XCTAssertNotNil(scadSafetyProblem("echo(\"\n/etc/hosts\"); cube(1);"))
+        XCTAssertFalse(scadSafetyLooksLikePath("Line one\nLine two"))
+        XCTAssertFalse(scadSafetyLooksLikePath("1/2\ninch"))
+    }
+
+    func testTokensSkipCommentsAndJoinOperators() {
+        let tokens: [ScadSafetyToken] = [.identifier("a"), .symbol("=="), .number, .symbol("&&"), .identifier("b"),
+                                         .symbol("<="), .number, .symbol(";")]
+        XCTAssertNil(scadSafetyUnnamedExtrudeArgument(tokens))
+        XCTAssertFalse(scadSafetyAssignsFile(tokens))
+        XCTAssertTrue(scadSafetyAssignsFile([.identifier("file"), .symbol("=")]))
+        XCTAssertEqual(scadSafetyUnnamedExtrudeArgument([.identifier("linear_extrude"), .symbol("("), .string, .symbol(")")]),
+                       "linear_extrude")
+        XCTAssertNil(scadSafetyUnnamedExtrudeArgument([.identifier("linear_extrude"), .symbol("("), .number, .symbol(")")]))
+        XCTAssertEqual(scadSafetyUnnamedExtrudeArgument([.identifier("rotate_extrude"), .symbol("("), .number, .symbol(")")]),
+                       "rotate_extrude")
+    }
 }

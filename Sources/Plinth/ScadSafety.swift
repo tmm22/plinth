@@ -3,18 +3,31 @@ import Foundation
 // MARK: - Checking OpenSCAD code Claude wrote before running it
 //
 // Design an Accessory from a Photo runs OpenSCAD code that Claude writes on the seller's Mac. OpenSCAD can't run
-// programs, but it can read files: `include <…>`, `use <…>`, `import("…")`, `surface("…")`, the old `dxf_…` modules
-// and functions, and the old `file =` argument of `linear_extrude` and `rotate_extrude`. Studio refuses code that uses
-// any of them, or carries a string that looks like a file path once its escapes are decoded, before OpenSCAD ever sees
-// it. The code is written to an empty temporary folder and run without a shell, with a time limit and bounded output
+// programs, but it can read files. In OpenSCAD 2021.01 (the stable release Plinth looks for first) a script reaches a
+// file only through `include <…>` and `use <…>`; the modules `import`, `import_stl`, `import_off`, `import_dxf` and
+// `surface`; the old `dxf_dim` and `dxf_cross` functions and `dxf_linear_extrude` / `dxf_rotate_extrude` modules; and
+// the `file` parameter of `linear_extrude` and `rotate_extrude`, which is also their FIRST UNNAMED argument wherever it
+// sits in the list (`linear_extrude(height = 2, p)` reads `p` as a file). OpenSCAD 2026.11 drops the `import_…`
+// modules and the extrude modules' `file`; the ways it keeps are all on the list. Plinth refuses code that uses any of
+// these words, a `file =` argument or variable, or an unnamed argument to either extrude module (a plain number as
+// linear_extrude's legacy height excepted), before OpenSCAD ever sees it. Because OpenSCAD's lexers treat a no-break space (and, in newer builds, a
+// byte-order mark) as whitespace, any character other than plain ASCII outside strings and comments is refused too, so
+// `file<no-break space>= p` can't look like something else here.
+//
+// The guarantee rests on refusing every file-reading word and argument shape: a string can be built at runtime
+// (`str(chr(47), "etc")`), so the check for strings that look like a file path is only a second layer. The code is
+// written to an empty temporary folder and run without a shell, with a time limit, a memory cap and bounded output
 // (`runOpenSCADProcess`), so what is left is ordinary geometry.
 
 /// Largest OpenSCAD source Studio runs from Claude.
 let scadSafetyMaximumBytes = 64 * 1024
 
 /// Words that make OpenSCAD read another file. Compared as whole identifiers outside comments and strings.
-let scadSafetyFileReadingWords = ["include", "use", "import", "surface", "dxf_linear_extrude", "dxf_rotate_extrude", "dxf_dim", "dxf_cross"]
+let scadSafetyFileReadingWords = ["include", "use", "import", "import_stl", "import_off", "import_dxf", "surface",
+                                   "dxf_linear_extrude", "dxf_rotate_extrude", "dxf_dim", "dxf_cross"]
 
+/// Modules whose first unnamed argument OpenSCAD 2021.01 binds to their `file` parameter and reads as a file.
+let scadSafetyExtrudeModules = ["linear_extrude", "rotate_extrude"]
 
 /// File extensions a string literal mustn't end with: things OpenSCAD (or a later version of it) could read.
 let scadSafetyFileExtensions = ["stl", "scad", "dxf", "svg", "png", "dat", "off", "obj", "3mf", "amf", "csg", "json", "txt", "csv", "ttf", "otf"]
@@ -45,6 +58,9 @@ func scadSafetyProblem(_ code: String) -> String? {
     if scan.usesFileArgument {
         return "Plinth doesn’t run code with a `file =` argument or variable, because OpenSCAD reads files through it. Build the shape from OpenSCAD primitives, and give variables other names."
     }
+    if scan.unnamedExtrudeArgument != nil {
+        return "Plinth doesn’t run `linear_extrude` or `rotate_extrude` with an unnamed argument (other than a plain number as linear_extrude’s height), because OpenSCAD 2021.01 reads the first unnamed argument as a file. Name each argument: height = …, angle = …, center = …."
+    }
     if let path = scan.strings.first(where: scadSafetyLooksLikePath) {
         let shown = path.count > 40 ? String(path.prefix(40)) + "…" : path
         return "Plinth doesn’t run code with text that looks like a file path (\"\(shown)\"). Remove it."
@@ -54,8 +70,15 @@ func scadSafetyProblem(_ code: String) -> String? {
 
 /// True for text that names a file or folder: an absolute, home or relative path, a Windows drive or backslash path,
 /// a `/` followed anywhere by a system or home folder, a `~` or a `..` segment, or a name ending in a model, image,
-/// data or font file extension.
+/// data or font file extension. OpenSCAD 2021.01 drops a line break typed straight into a string (`"⏎/etc"` reads as
+/// "/etc"), so the text is also checked with its line breaks removed.
 func scadSafetyLooksLikePath(_ text: String) -> Bool {
+    if scadSafetyTextLooksLikePath(text) { return true }
+    let joined = String(String.UnicodeScalarView(text.unicodeScalars.filter { $0 != "\n" && $0 != "\r" }))
+    return joined != text && scadSafetyTextLooksLikePath(joined)
+}
+
+private func scadSafetyTextLooksLikePath(_ text: String) -> Bool {
     let trimmed = text.trimmingCharacters(in: .whitespaces)
     if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") || trimmed.hasPrefix("./") || trimmed.hasPrefix("../") { return true }
     if trimmed.contains("\\") || trimmed.contains("../") || trimmed.contains("/./") { return true }
@@ -80,8 +103,22 @@ struct ScadSafetyScan: Equatable {
     var strings: [String] = []
     /// `file` is assigned or passed as a named argument (`file = …`, not `file == …`), even with comments in between.
     var usesFileArgument = false
-    /// Set when the code ends inside a comment or a string.
+    /// The extrude module (`scadSafetyExtrudeModules`) called with an argument that isn't `name = …`, other than a plain
+    /// number as linear_extrude's first argument: OpenSCAD 2021.01 reads the first unnamed one as a file.
+    var unnamedExtrudeArgument: String?
+    /// Set when the code ends inside a comment or a string, or has a character other than plain ASCII outside them.
     var problem: String?
+}
+
+/// One token of OpenSCAD code outside comments, as `scadSafetyScan` reads it for the argument rules.
+enum ScadSafetyToken: Equatable {
+    case identifier(String)
+    /// A plain number: `[0-9]*\.?[0-9]+([eE][+-]?[0-9]+)?`. Digits followed by letters (`12abc`, an identifier in
+    /// OpenSCAD) read as a number and then an identifier here, which only makes the rules stricter.
+    case number
+    case string
+    /// One punctuation character, or one of OpenSCAD's two-character operators (`==`, `!=`, `<=`, `>=`, `&&`, `||`).
+    case symbol(String)
 }
 
 /// The character an OpenSCAD `\x`, `\u` or `\U` escape stands for and how many hex digits it used, or nil when the
@@ -110,12 +147,13 @@ func scadSafetyHexEscape(_ kind: Unicode.Scalar, digits: ArraySlice<Unicode.Scal
 func scadSafetyScan(_ code: String) -> ScadSafetyScan {
     var scan = ScadSafetyScan()
     var seen = Set<String>()
-    /// The identifier just read, kept across whitespace and comments until the next token.
-    var previousIdentifier: String?
+    /// Every token outside comments, in order, for the argument rules once the walk is done.
+    var tokens: [ScadSafetyToken] = []
     let chars = Array(code.unicodeScalars)
     var index = 0
+    func isDigit(_ c: Unicode.Scalar) -> Bool { c >= "0" && c <= "9" }
     func isIdentifierStart(_ c: Unicode.Scalar) -> Bool { c == "_" || c == "$" || (c.isASCII && CharacterSet.letters.contains(c)) }
-    func isIdentifierPart(_ c: Unicode.Scalar) -> Bool { isIdentifierStart(c) || (c.isASCII && CharacterSet.decimalDigits.contains(c)) }
+    func isIdentifierPart(_ c: Unicode.Scalar) -> Bool { isIdentifierStart(c) || isDigit(c) }
     while index < chars.count {
         let c = chars[index]
         let next: Unicode.Scalar? = index + 1 < chars.count ? chars[index + 1] : nil
@@ -135,7 +173,6 @@ func scadSafetyScan(_ code: String) -> ScadSafetyScan {
             continue
         }
         if c == "\"" {
-            previousIdentifier = nil
             index += 1
             var text = String.UnicodeScalarView()
             var closed = false
@@ -174,20 +211,117 @@ func scadSafetyScan(_ code: String) -> ScadSafetyScan {
             }
             if !closed { scan.problem = "The code ends inside a text string. Close it with \"."; return scan }
             scan.strings.append(String(text))
+            tokens.append(.string)
             continue
+        }
+        // OpenSCAD reads a no-break space (and, in newer builds, a byte-order mark) between tokens as whitespace, and
+        // newer builds allow other letters in names, so outside strings and comments only plain ASCII is allowed.
+        if !c.isASCII {
+            scan.problem = "The code has a character that isn’t plain ASCII outside text strings and comments (such as a no-break space). Use plain ASCII there."
+            return scan
         }
         if isIdentifierStart(c) {
             var word = String.UnicodeScalarView()
             while index < chars.count, isIdentifierPart(chars[index]) { word.append(chars[index]); index += 1 }
             let name = String(word)
             if seen.insert(name).inserted { scan.identifiers.append(name) }
-            previousIdentifier = name
+            tokens.append(.identifier(name))
             continue
         }
-        if c == "=", previousIdentifier == "file", next != "=" { scan.usesFileArgument = true }
-        previousIdentifier = nil
+        if isDigit(c) || (c == "." && next.map(isDigit) == true) {
+            while index < chars.count, isDigit(chars[index]) { index += 1 }
+            if index + 1 < chars.count, chars[index] == ".", isDigit(chars[index + 1]) {
+                index += 1
+                while index < chars.count, isDigit(chars[index]) { index += 1 }
+            }
+            if index < chars.count, chars[index] == "e" || chars[index] == "E" {
+                var digits = index + 1
+                if digits < chars.count, chars[digits] == "+" || chars[digits] == "-" { digits += 1 }
+                if digits < chars.count, isDigit(chars[digits]) {
+                    index = digits
+                    while index < chars.count, isDigit(chars[index]) { index += 1 }
+                }
+            }
+            tokens.append(.number)
+            continue
+        }
+        if let next, ["==", "!=", "<=", ">=", "&&", "||"].contains(String(c) + String(next)) {
+            tokens.append(.symbol(String(c) + String(next)))
+            index += 2
+            continue
+        }
         // `<path>` after include/use is caught by the word itself; anything else is ordinary code.
+        tokens.append(.symbol(String(c)))
         index += 1
     }
+    scan.usesFileArgument = scadSafetyAssignsFile(tokens)
+    scan.unnamedExtrudeArgument = scadSafetyUnnamedExtrudeArgument(tokens)
     return scan
+}
+
+/// The identifier just before `tokens[index]`, passing over numbers: OpenSCAD 2021.01 silently drops a number it can't
+/// convert, so `linear_extrude 1e999 (p)` may be a call there.
+private func scadSafetyIdentifier(before index: Int, in tokens: [ScadSafetyToken]) -> String? {
+    var position = index - 1
+    while position >= 0, tokens[position] == .number { position -= 1 }
+    guard position >= 0, case .identifier(let name) = tokens[position] else { return nil }
+    return name
+}
+
+/// True when `file` is assigned or passed by name (`file = …`, not `file == …`), passing over numbers between the two
+/// for the same reason as `scadSafetyIdentifier(before:in:)`.
+func scadSafetyAssignsFile(_ tokens: [ScadSafetyToken]) -> Bool {
+    for (index, token) in tokens.enumerated() where token == .symbol("=") {
+        if scadSafetyIdentifier(before: index, in: tokens) == "file" { return true }
+    }
+    return false
+}
+
+/// The extrude module called with an argument OpenSCAD 2021.01 could read as a file, or nil. In every call of a
+/// `scadSafetyExtrudeModules` module, each argument must start with a name followed by `=` (not `==`); the one
+/// exception is a plain number as linear_extrude's first argument, followed by `,` or `)`, which is its legacy height
+/// and never read as a file. `()` and a trailing comma pass. Brackets are tracked across the whole token list
+/// (comments and whitespace are already gone), so a comma inside `max(1, h)` or `[1, 2]` doesn't start an argument.
+/// OpenSCAD parses the whole file before it runs any of it, so code with unbalanced brackets never runs.
+func scadSafetyUnnamedExtrudeArgument(_ tokens: [ScadSafetyToken]) -> String? {
+    struct Frame {
+        /// The extrude module this `(` called, or nil for any other bracket.
+        var module: String?
+        var argumentIndex = 0
+        var atArgumentStart = true
+    }
+    var frames: [Frame] = []
+    for (index, token) in tokens.enumerated() {
+        let following: ScadSafetyToken? = index + 1 < tokens.count ? tokens[index + 1] : nil
+        if let frame = frames.last, let module = frame.module, frame.atArgumentStart {
+            switch token {
+            case .symbol(")"):
+                break // No argument here: `()`, or a trailing comma.
+            case .identifier where following == .symbol("="):
+                frames[frames.count - 1].atArgumentStart = false
+            case .number where module == "linear_extrude" && frame.argumentIndex == 0
+                && (following == .symbol(",") || following == .symbol(")")):
+                frames[frames.count - 1].atArgumentStart = false
+            default:
+                return module
+            }
+        }
+        switch token {
+        case .symbol("("):
+            let name = scadSafetyIdentifier(before: index, in: tokens)
+            frames.append(Frame(module: name.flatMap { scadSafetyExtrudeModules.contains($0) ? $0 : nil }))
+        case .symbol("["), .symbol("{"):
+            frames.append(Frame(module: nil))
+        case .symbol(")"), .symbol("]"), .symbol("}"):
+            if !frames.isEmpty { frames.removeLast() }
+        case .symbol(","):
+            if let frame = frames.last, frame.module != nil {
+                frames[frames.count - 1].argumentIndex += 1
+                frames[frames.count - 1].atArgumentStart = true
+            }
+        default:
+            break
+        }
+    }
+    return nil
 }

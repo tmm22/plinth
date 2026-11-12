@@ -235,8 +235,10 @@ hull() chains and deep recursion.
 - Report every size that has to fit with echo and its name, such as `echo("slot_width", slot_width);`: slot and gap \
 widths, hole diameters, inner lengths and depths. The app shows them to the seller beside the typed measurements and \
 sends them back with the facts.
-- No include, use, import(), surface(), dxf_ modules or file = arguments; everything in one file. The app refuses \
-those, and any text that looks like a file path.
+- No include, use, import(), import_stl/off/dxf, surface(), dxf_ modules or file = arguments; everything in one \
+file. Name every argument of linear_extrude and rotate_extrude (height =, angle =, center =); a plain number is fine \
+as linear_extrude's height. Plain ASCII outside strings and comments. The app refuses code that breaks these rules, \
+and any text that looks like a file path.
 
 Designing for FDM printing (Slant's settings above, no supports)
 - With 1 mm walls and 25% infill, a region much thicker than 2 mm is mostly sparse infill inside a 1 mm skin. Make \
@@ -313,7 +315,7 @@ enum AccessoryToolName {
 let accessoryTools: [AnthropicTool] = [
     AnthropicTool(
         name: AccessoryToolName.render,
-        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. The app replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures; when the code declares fit_test, also the facts of the fit-test piece the app renders from it. Code using include, use, import(), surface(), dxf_ modules or a file = argument, or text that looks like a file path, is refused without rendering.",
+        description: "Render a complete OpenSCAD file with OpenSCAD on the seller's Mac. The app replies with the facts it measured (size in mm, triangles, mesh check, wall thickness, overhangs steeper than 45° and their heights, flat contact with the bed, build-volume fit, the fit sizes the code echoed, Customizer values found, OpenSCAD messages) and four pictures; when the code declares fit_test, also the facts of the fit-test piece the app renders from it. Code using include, use, import(), import_stl/off/dxf, surface(), dxf_ modules or a file = argument, an unnamed argument to linear_extrude or rotate_extrude (other than a plain number as linear_extrude's height), a character other than plain ASCII outside strings and comments, or text that looks like a file path, is refused without rendering.",
         inputSchema: [
             "type": "object",
             "properties": ["code": ["type": "string", "description": "The complete OpenSCAD file, at most 64 KB."]],
