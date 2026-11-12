@@ -823,7 +823,7 @@ func replicaChecksFoundNoProblems(_ processed: ReplicaProcessed) -> Bool {
 }
 
 /// What "no problems" covers, so it isn't read as more than was checked.
-let replicaNoProblemsLine = "Plinth’s checks found no problems: the mesh is closed, no walls are thinner than 2 mm, no small features were found, and under \(Int(replicaOverhangShareLimit * 100))% of the surface overhangs more than 45°. Strength and fit aren’t checked."
+let replicaNoProblemsLine = "Plinth’s checks found no problems: the mesh is closed, no walls are thinner than 2 mm, no small features were found, and under \(Int(replicaOverhangShareLimit * 100))% of the surface overhangs more than 45° (\(plinthOverhangMarginNote)). Strength and fit aren’t checked."
 
 /// Source details for the copy: where it came from, display-only. The date isn't recorded.
 func replicaSourceDetails(service: ImageTo3DService) -> ModelSourceDetails {

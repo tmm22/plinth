@@ -252,10 +252,14 @@ func printReviewMeshCheckLine(_ report: MeshHealthReport) -> String {
     return "Mesh check: needs repair — \(problems.joined(separator: ", ")); \(parts)."
 }
 
+/// Wherever the seller sees Plinth's 45° overhang figure, it says why it isn't Slant's 50° (as the print-ready copy's
+/// overhang line pairs the two): "steeper than 45° from vertical (Plinth’s margin under Slant’s 50° limit)".
+let plinthOverhangMarginNote = "Plinth’s margin under Slant’s 50° limit"
+
 /// "Overhangs: 12% of the surface…", for the facts and the comparison.
 func printReviewOverhangLine(_ share: OverhangShare) -> String {
-    if share.overhangAreaMM2 <= 0 { return "Overhangs: no downward faces steeper than 45° from vertical, as placed." }
-    return "Overhangs: \(percentLabel(share.fraction)) of the surface faces down more steeply than 45° from vertical, as placed (\(Int(share.overhangAreaMM2.rounded()).formatted()) mm²; likely to need supports or a different orientation)."
+    if share.overhangAreaMM2 <= 0 { return "Overhangs: no downward faces steeper than 45° from vertical (\(plinthOverhangMarginNote)), as placed." }
+    return "Overhangs: \(percentLabel(share.fraction)) of the surface faces down more steeply than 45° from vertical (\(plinthOverhangMarginNote)), as placed (\(Int(share.overhangAreaMM2.rounded()).formatted()) mm²; likely to need supports or a different orientation)."
 }
 
 /// Studio's facts, one per line: shown to the seller and sent to Claude word for word.

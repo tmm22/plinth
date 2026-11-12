@@ -27,9 +27,6 @@ enum MeshFitTool: String, Sendable {
 }
 
 /// A store-driven sheet, counted in `isPresentingSheet`.
-/// Under the Size and base buttons while another task runs: why they are off.
-let meshFitBusyCaption = "Available once the current task finishes."
-
 struct MeshFitRequest: Identifiable {
     let id = UUID()
     let tool: MeshFitTool
@@ -171,9 +168,8 @@ struct MeshFitCard: View {
             if let reason = [MeshFitTool.scale, .flatBase, .plinth].lazy.compactMap({ meshFitEditBlockedReason(model, tool: $0) }).first {
                 Text(reason).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if store.busy {
-                Text(meshFitBusyCaption).font(.caption).foregroundStyle(.secondary)
             } else {
+                // Shown while another task runs too: a momentary busy needs no caption of its own.
                 Text("Each saves a separate copy; this model is kept as it is.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -195,8 +191,6 @@ struct MeshFitCard: View {
             if let reason = meshFitEditBlockedReason(model, tool: .fitCoupon) {
                 Text(reason).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if store.busy {
-                Text(meshFitBusyCaption).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

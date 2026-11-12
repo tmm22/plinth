@@ -467,14 +467,16 @@ struct PrintReviewSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
-            HStack {
-                Text("Claude’s plan is advice. Plinth’s own measurements are shown beside it.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
+            // Sheet footers: this sheet sends billed requests to Claude, so Close sits at the leading edge.
+            HStack(spacing: 12) {
                 // Escape too. Closing would lose a plan Anthropic billed for (or stop a reply part-way), so it asks
                 // first then; Keep Reviewing is the default.
                 Button("Close") { requestClose() }
                     .keyboardShortcut(.cancelAction)
+                Spacer()
+                Text("Claude’s plan is advice. Plinth’s own measurements are shown beside it.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
             }
             .padding(20)
         }

@@ -378,14 +378,17 @@ struct TeardropHolesConfirmation: View {
 }
 
 /// Escape for a sheet whose Return default is already its safe Cancel/Keep button (a button can't carry both
-/// shortcuts): a zero-size, invisible button with the cancel-action shortcut. `.onExitCommand` alone fires only while
-/// a control in the sheet has keyboard focus. Never put a sending or saving action here.
+/// shortcuts): a zero-size, invisible button with the cancel-action shortcut. `.onExitCommand` and `.onKeyPress`
+/// fire only while a control in the sheet has keyboard focus, so they can't replace it. It never takes keyboard focus
+/// (Tab with Full Keyboard Access skips it), is hidden from VoiceOver and has no size to click, so the sheet's visible
+/// Cancel stays the only one anyone meets. Never put a sending or saving action here.
 struct EscapeKeyAction: ViewModifier {
     let action: () -> Void
     func body(content: Content) -> some View {
         content.background {
             Button("Cancel", action: action)
                 .keyboardShortcut(.cancelAction)
+                .focusable(false)
                 .frame(width: 0, height: 0)
                 .opacity(0)
                 .accessibilityHidden(true)

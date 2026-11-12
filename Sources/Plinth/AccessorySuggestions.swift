@@ -702,6 +702,12 @@ func accessoryAlternativeButtonTitle(_ alternative: String) -> String {
     accessorySuggestionLine(alternative, limit: accessoryAlternativeButtonMaximumLength)
 }
 
+/// An alternative's accessible name: the name first, as the button shows it (WCAG 2.5.3, Label in Name; a shortened
+/// title is the start of the full name), then what pressing it does: "Gaming headset, puts it in What is it?".
+func accessoryAlternativeAccessibilityLabel(_ alternative: String) -> String {
+    "\(accessorySuggestionLine(alternative, limit: 100)), puts it in What is it?"
+}
+
 func accessoryIdeaFitText(_ fit: AccessoryIdeaFit) -> String {
     switch fit {
     case .loose: return "Loose fit"

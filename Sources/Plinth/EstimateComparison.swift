@@ -702,8 +702,17 @@ struct EstimateComparisonSheet: View {
                 GridRow {
                     Text("Quantity").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(table.materials) { material in
-                        Text(material.name).font(.caption.weight(.semibold)).lineLimit(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // A material's lasting reason its Use buttons are off ("now out of stock"), said once in its
+                        // column's heading rather than under every quantity.
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(material.name).font(.caption.weight(.semibold)).lineLimit(2)
+                            if table.pricedCount > 0,
+                               let reason = comparisonUseMaterialBlockedReason(filamentID: material.id, filaments: store.filaments) {
+                                Text(reason).font(.caption).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 Divider().gridCellUnsizedAxes(.horizontal)
@@ -761,10 +770,6 @@ struct EstimateComparisonSheet: View {
                     .accessibilityLabel(comparisonUseAccessibilityLabel(
                         materialName: plan.materials.first { $0.id == cell.key.filamentID }?.name ?? "this material",
                         quantity: cell.key.quantity))
-                if let reason = comparisonUseMaterialBlockedReason(filamentID: cell.key.filamentID, filaments: store.filaments) {
-                    Text(reason).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
         }
     }
