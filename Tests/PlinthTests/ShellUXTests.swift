@@ -20,13 +20,14 @@ final class ShellUXTests: XCTestCase {
             APIError.http(status: 404, body: #"{"message":"missing"}"#, retryAfter: nil, rateLimitReset: nil).userMessage,
             "That item wasn’t found. Refresh and try again."
         )
+        // Round 22: a single action's 429 names the batches' wait, at least 60 s (`comparisonRateLimitedUntil`).
         XCTAssertEqual(
             APIError.http(status: 429, body: "", retryAfter: "12", rateLimitReset: nil).userMessage,
-            "Too many requests. Try again in about 12 seconds."
+            "Too many requests. Try again in about 60 seconds."
         )
         XCTAssertEqual(
             APIError.http(status: 429, body: "", retryAfter: nil, rateLimitReset: nil).userMessage,
-            "Too many requests. Wait a moment, then try again."
+            "Too many requests. Try again in about 60 seconds."
         )
         XCTAssertEqual(
             APIError.http(status: 500, body: #"{"message":"boom"}"#, retryAfter: nil, rateLimitReset: nil).userMessage,
@@ -54,7 +55,7 @@ final class ShellUXTests: XCTestCase {
     func testRateLimitUserMessagePrefersRetryAfterThenReset() {
         XCTAssertEqual(
             rateLimitUserMessage(retryAfter: "8", rateLimitReset: "9999999999"),
-            "Too many requests. Try again in about 8 seconds."
+            "Too many requests. Try again in about 60 seconds.", "never under the batches' 60 s floor"
         )
         let reset = String(Int(Date().timeIntervalSince1970) + 30)
         let message = rateLimitUserMessage(retryAfter: nil, rateLimitReset: reset)
@@ -651,7 +652,8 @@ final class ShellUXTests: XCTestCase {
 
     func testHealthServiceDisplayNames() {
         XCTAssertEqual(healthServiceDisplayName("ORDER-SERVICE"), "Order service")
-        XCTAssertEqual(healthServiceDisplayName("KRAKEN"), "Kraken")
+        XCTAssertEqual(healthServiceDisplayName("KRAKEN"), "Print farm (Kraken)")
+        XCTAssertEqual(healthServiceDisplayName("TELEPORT"), "Order intake (Teleport)")
         XCTAssertEqual(healthServiceDisplayName("files"), "Files")
         XCTAssertEqual(healthServiceDisplayName("API-GATEWAY"), "API gateway")
         XCTAssertEqual(healthServiceDisplayName(""), "")

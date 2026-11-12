@@ -46,10 +46,11 @@ final class LiveReviewFixesTests: XCTestCase {
     func testTooManyRequestsCopyUsesTheRealWait() {
         XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: liveReset, now: liveNow),
                        "Too many requests. Try again in about 61 seconds.")
+        // Round 22: a past or unreadable reset gives the batches' 60 s floor rather than no wait at all.
         XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: "1799999940873", now: liveNow),
-                       "Too many requests. Wait a moment, then try again.", "a past reset gives no countdown")
+                       "Too many requests. Try again in about 60 seconds.", "a past reset gives the 60 s floor")
         XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: "garbage", now: liveNow),
-                       "Too many requests. Wait a moment, then try again.")
+                       "Too many requests. Try again in about 60 seconds.")
         XCTAssertEqual(rateLimitResetWaitCopy(secondsFromNow: 0.4), "Try again in about 1 second.")
         XCTAssertEqual(rateLimitResetWaitCopy(secondsFromNow: 600), "Try again in about 10 minutes.")
     }

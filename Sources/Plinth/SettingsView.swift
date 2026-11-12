@@ -379,8 +379,15 @@ func healthServiceRows(_ health: [String: Any]) -> [(name: String, status: Strin
 }
 
 /// Slant's service keys ("ORDER-SERVICE") in sentence case for display ("Order service"); short capitalised words
-/// such as API stay as they are.
+/// such as API stay as they are. Slant's internal names say what the service does, from Slant's docs: KRAKEN is
+/// "Print farm operations - job assignment, filament data, and fulfillment", TELEPORT the "Order intake portal used
+/// alongside the API".
 func healthServiceDisplayName(_ key: String) -> String {
+    switch key.uppercased() {
+    case "KRAKEN": return "Print farm (Kraken)"
+    case "TELEPORT": return "Order intake (Teleport)"
+    default: break
+    }
     let words = key.replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
         .split(separator: " ").map { word -> String in
             word.count <= 3 && word == word.uppercased() && word.contains(where: \.isLetter) ? String(word) : word.lowercased()

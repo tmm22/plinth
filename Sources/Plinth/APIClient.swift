@@ -211,14 +211,14 @@ func conflictUserMessage(body: String) -> String {
     return "Slant reported a conflict: “\(sentence)” \(advice)"
 }
 
+/// A single action's 429 copy. It names the same wait the paced batches keep (`comparisonRateLimitedUntil`: at least
+/// 60 s, because Slant's reset can be only seconds ahead), and never less than Slant's own `Retry-After` or reset,
+/// even past the batches' one-hour cap. Copy only: nothing waits on it.
 func rateLimitUserMessage(retryAfter: String?, rateLimitReset: String?, now: Date = Date()) -> String {
-    if let seconds = retryAfterSeconds(retryAfter) {
-        return "Too many requests. \(rateLimitResetWaitCopy(secondsFromNow: seconds))"
-    }
-    if let reset = rateLimitResetDate(rateLimitReset, now: now), reset > now {
-        return "Too many requests. \(rateLimitResetWaitCopy(secondsFromNow: reset.timeIntervalSince(now)))"
-    }
-    return "Too many requests. Wait a moment, then try again."
+    var until = comparisonRateLimitedUntil(retryAfter: retryAfter, rateLimitReset: rateLimitReset, now: now)
+    if let seconds = retryAfterSeconds(retryAfter) { until = max(until, now.addingTimeInterval(seconds)) }
+    if let reset = rateLimitResetDate(rateLimitReset, now: now) { until = max(until, reset) }
+    return "Too many requests. \(rateLimitResetWaitCopy(secondsFromNow: until.timeIntervalSince(now)))"
 }
 
 /// `Retry-After` as a number of seconds. Slant documents no `Retry-After`; an HTTP date or anything else isn't read.
@@ -617,19 +617,31 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
     }
 }
 
+/// The Slant session's settings (API requests, storage PUTs and downloads): ephemeral, with no cookies, stored
+/// credentials or cache (an ephemeral session still keeps replies, order pages included, in memory unless `urlCache` is
+/// nil), and the 120 s idle and 30-minute resource limits. Redirects are refused by the session's delegate. Anything
+/// else on the passed configuration, such as tests' `protocolClasses`, is kept.
+func slantSessionConfiguration(_ configuration: URLSessionConfiguration) -> URLSessionConfiguration {
+    configuration.httpCookieStorage = nil
+    configuration.httpShouldSetCookies = false
+    configuration.httpCookieAcceptPolicy = .never
+    configuration.urlCredentialStorage = nil
+    configuration.urlCache = nil
+    configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+    configuration.waitsForConnectivity = false
+    configuration.timeoutIntervalForRequest = 120
+    configuration.timeoutIntervalForResource = 1800
+    return configuration
+}
+
 struct APIClient {
     let apiKey: String
     private let session: URLSession
 
     init(apiKey: String, configuration: URLSessionConfiguration = .ephemeral) {
         self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
-        configuration.urlCredentialStorage = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = 120
-        configuration.timeoutIntervalForResource = 1800
-        self.session = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+        self.session = URLSession(configuration: slantSessionConfiguration(configuration), delegate: NoRedirectDelegate(),
+                                  delegateQueue: nil)
     }
 
     /// Tear down the underlying session when the store rotates keys.
