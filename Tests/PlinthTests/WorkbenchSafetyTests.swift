@@ -55,7 +55,8 @@ final class WorkbenchSafetyTests: XCTestCase {
 
         let locked = workbenchMutationSendAllowed(attempted: true, succeeded: false)
         XCTAssertFalse(locked.0)
-        XCTAssertEqual(locked.1, "The result is unknown. Check Orders (or reload this order) before trying again.")
+        XCTAssertEqual(locked.1, "The result is unknown. Check what Slant now shows (for an order, use Refresh Order in Orders) before trying again.")
+        XCTAssertFalse(locked.1?.localizedCaseInsensitiveContains("reload") ?? true, "one action, one name: Refresh")
 
         XCTAssertFalse(workbenchMutationSendAllowed(attempted: true, succeeded: true).0)
         XCTAssertFalse(workbenchMutationSendAllowed(attempted: false, succeeded: true).0)

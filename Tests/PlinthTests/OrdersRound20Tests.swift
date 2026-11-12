@@ -83,7 +83,7 @@ final class OrdersRound20Tests: XCTestCase {
         XCTAssertTrue(orderListChangedWhileLoadingNote.hasSuffix("Refresh to see them all."))
         XCTAssertFalse(unknownOutcomeBlockMessage.contains("Reload"))
         XCTAssertFalse(orderReviewDifferentOrderMessage.contains("Reload"))
-        XCTAssertTrue(batchPayLockNotice(lockedOrderNumbers: ["SLANT_1"])?.contains("Press Refresh Order on it") == true)
+        XCTAssertTrue(batchPayLockNotice(lockedOrderNumbers: ["SLANT_1"])?.contains("use Refresh Order in its details") == true)
         XCTAssertFalse(batchPayLockedMessage(lockedOrderIDs: ["SLANT_1"]).contains("Reload"))
         for state: BatchPayRowState in [.unknown, .unclear, .reloaded("SUBMITTED")] {
             XCTAssertFalse(batchPayStateText(state).contains("Reload"))

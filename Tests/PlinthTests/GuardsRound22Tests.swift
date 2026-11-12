@@ -212,7 +212,7 @@ final class GuardsRound22Tests: XCTestCase {
         // Plinth's own fields are unchanged: the marker and reprintOf still give way to the seller's spelling.
         XCTAssertTrue(orderMetadataHasKey(["studio_draft_id": "mine"], studioDraftMarkerKey))
         XCTAssertNil(orderMetadataAddingReprintOf(["reprint_of": "x"], original: "SLANT_1")["reprintOf"])
-        XCTAssertTrue(orderReferenceFieldsCaption.hasSuffix("Don’t put passwords or keys here."))
+        XCTAssertTrue(orderReferenceFieldsCaption.hasSuffix("Don’t put passwords or API keys in them."))
     }
 
     // MARK: Catalogue captions
@@ -244,7 +244,8 @@ final class GuardsRound22Tests: XCTestCase {
         XCTAssertNil(try? productCostCatalogPrice(card, stationery: true).get(), "never counted as free")
         guard case .failure(let reason) = productCostCatalogPrice(card, stationery: true) else { return XCTFail() }
         XCTAssertEqual(reason.message, productCostStationeryNoPriceText)
-        XCTAssertTrue(productCostStationeryNoPriceText.contains("free of charge"))
+        XCTAssertTrue(productCostStationeryNoPriceText.contains("can be included free"))
+        XCTAssertTrue(productCostStationeryNoPriceText.hasSuffix("but Plinth doesn’t count a missing price as free."))
         func message(_ result: Result<Decimal, StudioError>) -> String? {
             if case .failure(let error) = result { return error.message }
             return nil

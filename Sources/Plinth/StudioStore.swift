@@ -444,9 +444,11 @@ func unknownOutcomeResolvedByReload(context: UnknownOutcomeContext?, reloadedSta
 }
 /// The locked IDs a fresh read of one order lifts: each of the order's IDs (`orderOutcomeLockIDs`: the ID it was read
 /// by, its `publicId` and `id`) that is locked and whose recorded attempt the reload shows the outcome of
-/// (`unknownOutcomeResolvedByReload`, on Slant's own `status`, never the display status). The one rule for every
-/// by-ID reload: the review's Refresh Order, the order detail's Refresh Order and selection, Pay Several Drafts and the
-/// Workbench. Callers pass only a reply already checked to be this order (`orderBelongs`).
+/// (`unknownOutcomeResolvedByReload`, on Slant's own `status`, never the display status). Used by the review's Refresh
+/// Order and the order detail's Refresh Order and selection (`liftOutcomeLocksResolvedByReload`). Pay Several Drafts
+/// (`reloadUnknown`, under the ID it read) and the Workbench (over `orderOutcomeLockIDs`) don't call it: they keep
+/// their own copies of the same rule (`unknownOutcomeResolvedByReload`), so a change here must be made there too.
+/// Callers pass only a reply already checked to be this order (`orderBelongs`).
 func orderOutcomeLockIDsResolvedByReload(requested: String, order: [String: Any],
                                          isLocked: (String) -> Bool,
                                          context: (String) -> UnknownOutcomeContext?) -> [String] {
@@ -508,7 +510,7 @@ func outcomeResolved(action: OutcomeAction, reviewedStatus: String, reloadedStat
 let unknownOutcomeBlockMessage = "This order’s last payment or cancel request didn’t confirm. Refresh the order; if its status hasn’t changed, check it in your Slant dashboard before trying again."
 /// A cancel lock kept although the order moved on: it was sent while the order was being made and the order has
 /// shipped since, which doesn't show whether the refund was made (`outcomeResolved`). Reloading can't lift it.
-let unknownOutcomeShippedSinceCancelMessage = "Slant didn’t confirm your cancel and refund request, and the order has shipped since, which doesn’t show whether the refund was made. Check this order in your Slant dashboard. Plinth won’t send another cancel, or pay drafts in a batch, until Slant shows the order cancelled or you quit and reopen Plinth."
+let unknownOutcomeShippedSinceCancelMessage = "Slant didn’t confirm your cancel and refund request, and the order has shipped since, which doesn’t show whether the refund was made. Check this order in your Slant dashboard. Until Slant shows the order cancelled or you quit and reopen Plinth, Plinth won’t send another cancel, duplicate this order or pay drafts in a batch."
 /// The lock note for an order's review: the shipped-since note when the reload can no longer lift the lock, else
 /// `unknownOutcomeBlockMessage`.
 func unknownOutcomeLockMessage(context: UnknownOutcomeContext?, currentStatus: String?) -> String {
@@ -829,6 +831,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// Slant files whose library links were cleared this session (replaced, deleted, or stored into by another upload):
     /// a carried entry linked to one loses its link at the next save, like a listed model.
     private var libraryUnlinkedFileIDs: Set<String> = []
+    /// Slant files stored into by a confirmed Models upload this session, each with the model whose upload it holds; any
+    /// later change of that file (`noteLibraryFilesChanged`) removes it. With `libraryUnlinkedFileIDs`, it decides which
+    /// links a model put back by Edit › Undo keeps (`restoredLibraryKeepsLink`).
+    private var libraryFileUploadedBy: [String: UUID] = [:]
     /// Saved products (SavedProducts.swift). References only; persisted to products.json.
     @Published var savedProducts: [SavedProduct] = []
     @Published var showSavedProducts = false
@@ -1206,6 +1212,23 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         }
         undoManager?.setActionName(libraryRemoveModelUndoName)
     }
+    /// The entry Edit › Undo puts back (`restoredLibraryEntry`): no link to a file deleted since, one a listed model links
+    /// now, or one whose contents changed since this session, unless it last took this model's own confirmed upload.
+    func libraryRestoredEntry(_ removed: RemovedLibraryModel) -> (model: LocalModel, index: Int) {
+        restoredLibraryEntry(removed, deletedCloudFileIDs: deletedCloudFileIDs, currentCount: localModels.count,
+                             linkedFileIDs: Set(localModels.compactMap(\.remoteID)),
+                             changedFileIDs: libraryUnlinkedFileIDs, uploadedBy: libraryFileUploadedBy)
+    }
+    /// Records that these Slant files' contents changed or are in doubt (replaced, deleted, stored into by another
+    /// upload, or left part-way): a carried entry loses its link to them at the next save, and a model put back by
+    /// Edit › Undo never keeps one (`restoredLibraryKeepsLink`).
+    private func noteLibraryFilesChanged(_ fileIDs: Set<String>) {
+        // Each ID as given and trimmed, so a link spelled either way matches.
+        let ids = Set(fileIDs.flatMap { [$0, $0.trimmingCharacters(in: .whitespacesAndNewlines)] })
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        libraryUnlinkedFileIDs.formUnion(ids)
+        for id in ids { libraryFileUploadedBy[id] = nil }
+    }
     /// Undo for `removeLocalModel`: moves the file back from the Trash and reinserts the same entry.
     func restoreRemovedModel(_ removed: RemovedLibraryModel, undoManager: UndoManager? = nil) {
         guard !localModels.contains(where: { $0.id == removed.model.id }) else { return }
@@ -1213,8 +1236,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             do { try restoreLibraryFile(file, to: removed.model.url, name: removed.model.name) }
             catch { showError(error.localizedDescription); return }
         }
-        let entry = restoredLibraryEntry(removed, deletedCloudFileIDs: deletedCloudFileIDs, currentCount: localModels.count,
-                                         linkedFileIDs: Set(localModels.compactMap(\.remoteID)))
+        let entry = libraryRestoredEntry(removed)
         localModels.insert(entry.model, at: entry.index)
         if removed.wasSelected, selectedLocalID == nil, fileID.isEmpty { select(entry.model) }
         saveModels()
@@ -1257,7 +1279,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         for index in localModels.indices where localModels[index].remoteID == id {
             localModels[index].remoteID = nil
         }
-        libraryUnlinkedFileIDs.insert(id)
+        noteLibraryFilesChanged([id])
         if fileID == id {
             fileID = ""
             estimate = nil
@@ -1400,7 +1422,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         } catch {
             if !handlesError(error) { self.error = friendlyAPIMessage(error) }
             activities.insert(Activity(title: title, detail: activityDetail(for: error), success: false), at: 0)
-            if retryable, let retry {
+            if runFailureOffersRetry(error, retryable: retryable), let retry {
                 pendingRetry.set(retry)
                 canRetry = true
             } else {
@@ -1871,6 +1893,11 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             if uploadOutcomeUnknown(stage: failedStage, error: error) {
                 unconfirmedUploadModelIDs.insert(capturedID)
             }
+            // Once the PUT may have started, the file Slant offered may hold some of this model: a model put back by
+            // Undo (or a carried entry) never keeps a link to it. The pre-PUT guard kept every listed model's file safe.
+            if failedStage == .uploading || failedStage == .confirming, let offered = target.value {
+                noteLibraryFilesChanged([offered])
+            }
             var message = uploadFailureMessage(stage: failedStage, error: error)
             // A Replace File that stopped before any bytes were sent: the links cleared before asking Slant stay cleared.
             if linksClearedBeforeSending,
@@ -1926,6 +1953,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 localModels[index].remoteID = remoteID
                 succeeded = true
             }
+            // That file now holds this model: a model put back by Undo keeps a link to it only if it is this one.
+            noteLibraryFilesChanged([remoteID])
+            libraryFileUploadedBy[remoteID] = capturedID
             // The same file ID may now hold different contents, so an estimate for it is no longer current.
             if fileID == remoteID { estimate = nil }
             if shouldUpdateFileIDAfterUpload(uploadedModelID: capturedID, selectedLocalID: selectedLocalID) {
@@ -1949,7 +1979,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// too. The names of the other models that lost a link, in library order. The caller saves the library.
     private func clearLinks(toFileIDs fileIDs: Set<String>, alsoUnlinking modelID: UUID?) -> [String] {
         let affected = modelsLinked(toFileIDs: fileIDs, in: localModels)
-        libraryUnlinkedFileIDs.formUnion(fileIDs)
+        noteLibraryFilesChanged(fileIDs)
         let others = localModels.filter { affected.contains($0.id) && $0.id != modelID }.map(\.name)
         for index in localModels.indices where affected.contains(localModels[index].id) || localModels[index].id == modelID {
             localModels[index].remoteID = nil
@@ -1967,13 +1997,14 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// changes the library between the snapshot and the restore. The names of the other models unlinked.
     private func clearLinksBeforeReplacing(fileID replacedID: String, alsoUnlinking modelID: UUID?) throws -> [String] {
         let models = localModels, selectedFile = fileID, selectedEstimate = estimate
-        let unlinkedIDs = libraryUnlinkedFileIDs, carried = libraryCarriedEntries
+        let unlinkedIDs = libraryUnlinkedFileIDs, uploadedBy = libraryFileUploadedBy, carried = libraryCarriedEntries
         let others = clearLinks(toFileIDs: [replacedID], alsoUnlinking: modelID)
         guard saveModels() else {
             localModels = models
             fileID = selectedFile
             estimate = selectedEstimate
             libraryUnlinkedFileIDs = unlinkedIDs
+            libraryFileUploadedBy = uploadedBy
             libraryCarriedEntries = carried
             throw LibraryNotSavedBeforeUpload()
         }
@@ -2217,7 +2248,8 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// returns no placeholder before it stores the file. `replacingFileID`/`replacingFileName` name the file the seller
     /// chose to replace (nil: not a Replace File; blank: its ID isn't known): when the outcome is unclear, every library
     /// model linked to it loses its link. `typeHintName` is the name the seller typed, which gives the `type` when the
-    /// link has no model extension (a Replace File sends the listed file's own name, which may have none); nil: `name`.
+    /// link has no model extension (a Replace File sends the listed file's own name, which may have none) and names the
+    /// upload in the notices afterwards; nil: `name`.
     @discardableResult
     func importModelFromURL(_ url: String, name: String, typeHintName: String? = nil, replacingFileID: String? = nil,
                             replacingFileName: String = "") async -> Bool {
@@ -2228,7 +2260,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         guard !platformID.isEmpty else { showError("Choose a default platform in Settings › Account."); return false }
         guard !librarySaveBlocked else { showError(libraryUploadBlockedMessage); return false }
         let hint = typeHintName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let type = importModelType(url: trimmedURL, name: hint.isEmpty ? trimmedName : hint)
+        // The name the seller typed: a Replace File sends the replaced file's own name instead.
+        let typedName = hint.isEmpty ? trimmedName : hint
+        let type = importModelType(url: trimmedURL, name: typedName)
         // Nil: not a Replace File. Blank: a Replace File whose file ID isn't known (no link can be cleared by it).
         let replaced = replacingFileID?.trimmingCharacters(in: .whitespacesAndNewlines)
         var ok = false
@@ -2278,12 +2312,18 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 // A Replace File that Slant confirmed under another file: the chosen file wasn't replaced, and the models
                 // unlinked from it before sending stay unlinked.
                 let savedElsewhere = !(replaced ?? "").isEmpty && returnedID != replaced
-                let moved = noteFileContentsReplaced(fileID: returnedID, uploadedName: trimmedName,
+                let moved = noteFileContentsReplaced(fileID: returnedID, uploadedName: typedName,
                                                      alreadyUnlinked: savedElsewhere ? [] : unlinkedBeforeSending)
                 if savedElsewhere {
-                    noteReplaceSavedElsewhere(uploadedName: trimmedName, fileName: replacingFileName,
+                    noteReplaceSavedElsewhere(uploadedName: typedName, fileName: replacingFileName,
                                               unlinkedNames: unlinkedBeforeSending, moved: moved)
                 }
+            } else if let notice = uploadFromURLReplaceNoFileIDNotice(uploadedName: typedName, fileName: replacingFileName,
+                                                                     unlinkedNames: unlinkedBeforeSending) {
+                // Slant took a Replace File without naming the file it used: the models unlinked before sending stay
+                // unlinked, and the seller is told which.
+                uploadLinkMovedTitle = uploadFromURLNoFileIDAlertTitle
+                uploadLinkMovedMessage = notice
             }
         }
         if ok { await refresh() }
@@ -2301,7 +2341,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         let unlinked = modelsLosingLinkAfterUpload(fileID: returnedID, uploadedModelID: nil, in: localModels)
         // A carried entry linked to that file loses its link too (at this save, or the next one).
         let carriedBefore = libraryCarriedEntries
-        libraryUnlinkedFileIDs.insert(returnedID)
+        noteLibraryFilesChanged([returnedID])
         libraryCarriedEntries = libraryCarriedEntriesDroppingLinks(libraryCarriedEntries, toFileIDs: [returnedID])
         guard !unlinked.isEmpty || !alreadyUnlinked.isEmpty || libraryCarriedEntries != carriedBefore else { return nil }
         let names = alreadyUnlinked + localModels.filter { unlinked.contains($0.id) }.map(\.name)
@@ -2478,6 +2518,14 @@ let slantKeySaveFailedMessage =
 func runFailureIsQuietCancellation(_ error: Error, taskCancelled: Bool, retryable: Bool) -> Bool {
     guard retryable, taskCancelled else { return false }
     return error is CancellationError || (error as? URLError)?.code == .cancelled
+}
+/// Whether a failed run offers Try Again: only a read-only run (`retryable`; writes never), and never after a 429. The
+/// alert then says how long to wait (`rateLimitUserMessage`), and Try Again, its Return default, would resend at once
+/// against that advice, possibly extending the block.
+func runFailureOffersRetry(_ error: Error, retryable: Bool) -> Bool {
+    guard retryable else { return false }
+    if case APIError.http(status: 429, _, _, _) = error { return false }
+    return true
 }
 /// Activity is hidden unless developer tools are on, so the alert says how to reach it.
 let slantRequestFailedSeeActivityMessage =
@@ -2777,6 +2825,14 @@ func uploadFromURLReplaceUnclearMessage(_ error: Error, fileName: String, modelN
             : " \(modelNames.count) models in your library were linked to that file and no longer are; upload them again before you use them in an order."
     }
     return text + " Refresh in the main window to see what Slant now lists."
+}
+/// The title of the notice after an Upload from URL Replace File that Slant accepted without naming a file.
+let uploadFromURLNoFileIDAlertTitle = "Slant didn’t say which file it used"
+/// The notice after an Upload from URL Replace File that Slant accepted without naming the file it used: the models
+/// unlinked before sending stay unlinked (`uploadReplacementUnlinkedNote`). Nil when none were.
+func uploadFromURLReplaceNoFileIDNotice(uploadedName: String, fileName: String, unlinkedNames: [String]) -> String? {
+    guard let note = uploadReplacementUnlinkedNote(fileName: fileName, modelNames: unlinkedNames) else { return nil }
+    return "Slant took “\(uploadedName)” but didn’t say which of your Slant files holds it. \(note)"
 }
 /// Create Platform's copy when Slant may have made the platform anyway, else nil.
 func platformCreateUnclearMessage(_ error: Error) -> String? {

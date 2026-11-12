@@ -1020,7 +1020,7 @@ extension StudioStore {
 // MARK: - Composer line controls
 
 /// The Slant composer's caption for reference fields (Advanced): one sentence for what they are and the limit.
-let orderReferenceFieldsCaption = "Your own notes saved with the order on Slant, such as your shop’s order number. Each has a name and a value; up to 10. Don’t put passwords or keys here."
+let orderReferenceFieldsCaption = "Your own notes saved with the order on Slant, such as your shop’s order number. Each has a name and a value; up to 10. Don’t put passwords or API keys in them."
 /// The hidden title of a composer line's quantity field and stepper (both composers). Inside a grouped Form VoiceOver
 /// reads the hidden title, so it carries the line's name itself and no accessibility label is added.
 func orderLineQuantityTitle(_ lineName: String) -> String { "Quantity for \(lineName)" }

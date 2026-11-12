@@ -477,8 +477,8 @@ final class APIClientTests: XCTestCase {
         do {
             _ = try await client().downloadModel(from: URL(string: "http://storage.example/model.stl")!)
             XCTFail("Expected insecure URL rejection")
-        } catch APIError.invalidResponse(let message) {
-            XCTAssertTrue(message.contains("HTTPS"))
+        } catch let refused as SlantDownloadLinkRefused {
+            XCTAssertEqual(refused.problem, "it isn’t a secure (https) link")
         }
     }
 
@@ -525,8 +525,8 @@ final class APIClientTests: XCTestCase {
                 let url = try await client().downloadModel(from: URL(string: raw)!)
                 try? FileManager.default.removeItem(at: url)
                 XCTFail("Expected the link to be refused: \(raw)")
-            } catch APIError.invalidResponse(let message) {
-                XCTAssertTrue(message.contains("HTTPS"), raw)
+            } catch let refused as SlantDownloadLinkRefused {
+                XCTAssertEqual(refused.problem, storageLinkProblem(URL(string: raw)!, apiKey: "sl_test"), raw)
             }
         }
         XCTAssertEqual(paths.all, [], "nothing is requested")

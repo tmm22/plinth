@@ -356,8 +356,7 @@ extension StudioStore {
                 do { try restoreLibraryFile(file, to: item.model.url, name: item.model.name) }
                 catch { failures.append(error.localizedDescription); continue }
             }
-            let entry = restoredLibraryEntry(item, deletedCloudFileIDs: deletedCloudFileIDs, currentCount: localModels.count,
-                                             linkedFileIDs: Set(localModels.compactMap(\.remoteID)))
+            let entry = libraryRestoredEntry(item)
             localModels.insert(entry.model, at: entry.index)
             restoredIDs.append(entry.model.id)
             if item.wasSelected { reselect = entry.model }

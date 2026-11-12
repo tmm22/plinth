@@ -508,7 +508,7 @@ struct EndpointView: View {
                         throw error
                     }
                     // The outcome is unknown: Activity says so, never "try again" (the sheet keeps Send locked).
-                    throw StudioError("\(slantUnclearReplyCause(error)), so the result is unknown")
+                    throw StudioError("\(slantUnclearReplyCause(error)), so the result is unknown.")
                 }
                 store.noteBackgroundRateLimit(from: response)
                 wrote = true
@@ -731,11 +731,15 @@ func workbenchOrderHasNumericTotal(_ order: [String: Any]) -> Bool {
     return decimalAmount(order["printingCost"]) != nil && decimalAmount(order["deliveryCost"]) != nil
 }
 
+/// The review's note while Send stays locked after a write whose result is unclear and no order lock shows its own
+/// Refresh Order here.
+let workbenchUnknownResultNote = "The result is unknown. Check what Slant now shows (for an order, use Refresh Order in Orders) before trying again."
 /// After a mutating send is attempted, keep Send locked for the life of the sheet if the outcome is uncertain.
 func workbenchMutationSendAllowed(attempted: Bool, succeeded: Bool) -> (Bool, String?) {
     if succeeded { return (false, nil) }
     if attempted {
-        return (false, "The result is unknown. Check Orders (or reload this order) before trying again.")
+        // Shown when this sheet offers no Refresh Order (no order lock applies), so it names where to look.
+        return (false, workbenchUnknownResultNote)
     }
     return (true, nil)
 }

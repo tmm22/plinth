@@ -745,6 +745,13 @@ func orderImportDuplicateCoverageNotice(ordersLoaded: Bool, ordersHasMore: Bool,
     return nil
 }
 
+/// Whether the loaded list shows only part of the seller's orders, for `orderImportDuplicateCoverageNotice`: a lookup's
+/// result is listed (`searchActive`), or a Status or date filter is. Both change only once a read succeeds
+/// (`applyOrderFilter`), so a clear or filter change that couldn't read keeps the list partial here.
+func orderImportListIsPartial(searchActive: Bool, filter: OrderFilter) -> Bool {
+    searchActive || filter.isActive
+}
+
 /// Whether the sheet reads recent orders of every status and platform when a list is shown: only while the loaded
 /// list can't show every earlier order (`orderImportDuplicateCoverageNotice`), with a key, and before any read.
 func orderImportShouldReadRecentOrders(coverageNotice: String?, hasKey: Bool, alreadyRead: Bool, reading: Bool) -> Bool {
@@ -2033,7 +2040,8 @@ struct OrderImportSheet: View {
     /// The loaded list's own coverage notice (`orderImportDuplicateCoverageNotice`).
     private var listCoverageNotice: String? {
         orderImportDuplicateCoverageNotice(ordersLoaded: store.ordersLoaded, ordersHasMore: store.ordersHasMore,
-                                           listIsPartial: store.orderSearchActive || store.orderFilter.isActive)
+                                           listIsPartial: orderImportListIsPartial(searchActive: store.orderSearchActive,
+                                                                                   filter: store.orderFilter))
     }
 
     private var emailSuggestions: [OrderImportEmailSuggestion] {

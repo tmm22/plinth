@@ -52,15 +52,20 @@ final class ShellUXTests: XCTestCase {
         XCTAssertEqual(info.role, "standard")
     }
 
-    func testRateLimitUserMessagePrefersRetryAfterThenReset() {
-        XCTAssertEqual(
-            rateLimitUserMessage(retryAfter: "8", rateLimitReset: "9999999999"),
-            "Too many requests. Try again in about 60 seconds.", "never under the batches' 60 s floor"
-        )
-        let reset = String(Int(Date().timeIntervalSince1970) + 30)
-        let message = rateLimitUserMessage(retryAfter: nil, rateLimitReset: reset)
-        XCTAssertTrue(message.contains("Try again in about"))
-        XCTAssertTrue(message.contains("seconds") || message.contains("minutes"))
+    func testRateLimitUserMessageTakesTheLatestOfTheFloorRetryAfterAndReset() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        // Slant's reset is epoch milliseconds.
+        func reset(in seconds: Int) -> String { String((1_800_000_000 + seconds) * 1000) }
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: "8", rateLimitReset: "9999999999", now: now),
+                       "Too many requests. Try again in about 60 seconds.", "never under the batches' 60 s floor")
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: reset(in: 30), now: now),
+                       "Too many requests. Try again in about 60 seconds.", "a reset 30 s ahead is under the floor")
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: nil, rateLimitReset: reset(in: 75), now: now),
+                       "Too many requests. Try again in about 75 seconds.", "a later reset is kept")
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: "120", rateLimitReset: reset(in: 30), now: now),
+                       "Too many requests. Try again in about 2 minutes.", "Retry-After later than the reset")
+        XCTAssertEqual(rateLimitUserMessage(retryAfter: "75", rateLimitReset: reset(in: 300), now: now),
+                       "Too many requests. Try again in about 5 minutes.", "the reset later than Retry-After")
     }
 
     func testUserMessageExtractsAPIMessageForClientErrors() {

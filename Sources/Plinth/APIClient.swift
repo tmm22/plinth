@@ -350,6 +350,15 @@ enum UploadStage: Equatable, Sendable {
     }
 }
 
+/// A download link that failed `storageLinkProblem`, refused before any request. Its own error type, because
+/// `APIError.invalidResponse` is shown as a generic "Try again", which would get the same refusal: this says why.
+struct SlantDownloadLinkRefused: LocalizedError, Equatable {
+    let problem: String
+    var errorDescription: String? {
+        "Nothing was downloaded: Slant’s download link for this model failed Plinth’s safety check because \(problem)."
+    }
+}
+
 let uploadLinkMissingMessage = "Slant didn’t return a usable upload link, so nothing was uploaded. Try again."
 
 /// After a confirm whose outcome is unknown. Slant doesn't let a standard key delete files, so a blind second upload
@@ -480,10 +489,13 @@ struct UploadReplaceWouldCreateNewFile: LocalizedError, Equatable {
     var errorDescription: String? { uploadReplaceWouldCreateNewFileMessage(fileName: fileName) }
 }
 
+/// Says the chosen file (and every draft using it) still holds the earlier model. Upload as “…” is offered only when
+/// the name check still finds the name, hence "if Plinth asks". Short enough for `friendlyAPIMessage`'s 180 characters
+/// (Activity) with a short file name.
 func uploadReplaceWouldCreateNewFileMessage(fileName: String) -> String {
     let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
     let file = trimmed.isEmpty ? "the file you chose" : "“\(trimmed)”"
-    return "Nothing was uploaded: Slant would have saved this as a new file instead of replacing \(file). Upload again and choose Upload as “…” to add it as a new file."
+    return "Nothing was uploaded, and \(file) wasn’t changed: Slant would have saved this as a new file. To add it as a new file, upload again (choose Upload as “…” if Plinth asks)."
 }
 
 /// A Replace File's unlinking couldn't be saved before sending, so nothing was sent and the links were put back as they
@@ -802,8 +814,8 @@ struct APIClient {
     /// `Content-Length` and while reading). No Authorization header is sent and redirects are refused. The link must
     /// pass `storageLinkProblem`, or nothing is requested.
     func downloadModel(from url: URL, maxBytes: Int64 = slantDownloadMaxBytes) async throws -> URL {
-        guard storageLinkProblem(url, apiKey: apiKey) == nil else {
-            throw APIError.invalidResponse("Slant didn’t return a secure HTTPS download link. Try again.")
+        if let problem = storageLinkProblem(url, apiKey: apiKey) {
+            throw SlantDownloadLinkRefused(problem: problem)
         }
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Plinth-Download-\(UUID().uuidString)")
         guard FileManager.default.createFile(atPath: destination.path, contents: nil),

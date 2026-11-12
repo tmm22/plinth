@@ -127,18 +127,33 @@ final class OrderLockRefreshRound22Tests: XCTestCase {
     // MARK: The review's note after its own Refresh Order
 
     func testTheReviewSaysWhatSlantShowsOnceItsReloadLiftedTheLock() {
-        XCTAssertEqual(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, rawStatus: "SUBMITTED"),
-                       "Refreshed: Slant now lists this order as “Submitted”.")
-        XCTAssertEqual(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, rawStatus: " CANCELLED "),
-                       workbenchReloadResolvedNote(status: "CANCELLED"))
-        // Still locked: the earlier "result is unknown" note stays.
-        XCTAssertNil(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: true, rawStatus: "SUBMITTED"))
-        // Nothing sent from this review: no note about a result.
-        XCTAssertNil(orderReviewNoteAfterReload(writeAttempted: false, lockHeld: false, rawStatus: "SUBMITTED"))
-        // No status to name.
-        for status in [nil, "", "  "] as [String?] {
-            XCTAssertNil(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, rawStatus: status))
+        func order(_ status: String?, shipping: String? = nil) -> [String: Any] {
+            var order: [String: Any] = ["publicId": "SLANT_9"]
+            if let status { order["status"] = status }
+            if let shipping { order["fulfillment"] = ["status": shipping] }
+            return order
         }
+        XCTAssertEqual(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, order: order("SUBMITTED")),
+                       "Refreshed: Slant now lists this order as “Submitted”.")
+        XCTAssertEqual(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, order: order(" CANCELLED ")),
+                       workbenchReloadResolvedNote(status: "CANCELLED"))
+        // Status lagging the shipping record: the same words as the review's Status row (Shipped), never “Printing” alone.
+        let lagging = order("PRINTING", shipping: "SHIPPED")
+        let lagNote = orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, order: lagging)
+        XCTAssertEqual(lagNote, "Refreshed: \(orderStatusLagNote(lagging) ?? "")")
+        XCTAssertTrue(lagNote?.contains("Shipped") == true)
+        XCTAssertEqual(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, order: order("PRINTING")),
+                       "Refreshed: Slant now lists this order as “Printing”.", "no shipping record: Slant's status")
+        // Still locked: the earlier "result is unknown" note stays.
+        XCTAssertNil(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: true, order: order("SUBMITTED")))
+        XCTAssertNil(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: true, order: lagging))
+        // Nothing sent from this review: no note about a result.
+        XCTAssertNil(orderReviewNoteAfterReload(writeAttempted: false, lockHeld: false, order: order("SUBMITTED")))
+        // No status to name, or no order.
+        for status in [nil, "", "  "] as [String?] {
+            XCTAssertNil(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, order: order(status, shipping: "SHIPPED")))
+        }
+        XCTAssertNil(orderReviewNoteAfterReload(writeAttempted: true, lockHeld: false, order: nil))
     }
 
     func testTheUnknownResultCaptionShowsOnlyWhileTheLockHolds() throws {
@@ -157,6 +172,10 @@ final class OrderLockRefreshRound22Tests: XCTestCase {
         }
         let view = try source("OrdersView.swift")
         XCTAssertTrue(view.contains("throw StudioError(slantUnclearReplyCause(error) + \", so the result is unknown.\")"))
+        // The Workbench's line ends the same way, full stop included.
+        let workbench = try source("APIWorkbenchView.swift")
+        XCTAssertTrue(workbench.contains("throw StudioError(\"\\(slantUnclearReplyCause(error)), so the result is unknown.\")"))
+        XCTAssertFalse(workbench.contains("so the result is unknown\")"))
     }
 
     // MARK: List state only after a read succeeds
@@ -172,23 +191,48 @@ final class OrderLockRefreshRound22Tests: XCTestCase {
         for assignment in ["orders = ", "orderSearchActive = ", "orderPage = ", "ordersHasMore = "] {
             XCTAssertFalse(clearBranch.contains(assignment), "clearing must not set \(assignment)before the reload")
         }
+        // The steps OrdersFixesRound20Tests' `SearchState.clear` models: skipped while busy, then the note goes, then the
+        // list is read again, and only that read's success ends the search (in `applyOrderFilter`).
+        let busyGuard = try XCTUnwrap(clearBranch.range(of: "guard !busy else { return }"))
+        let noteCleared = try XCTUnwrap(clearBranch.range(of: "orderSearchNotFound = nil"))
+        let reload = try XCTUnwrap(clearBranch.range(of: "await applyOrderFilter(orderFilter)"))
+        XCTAssertLessThan(busyGuard.lowerBound, noteCleared.lowerBound)
+        XCTAssertLessThan(noteCleared.lowerBound, reload.lowerBound)
         let applyBody = String(store[apply.lowerBound..<more.lowerBound])
         let request = try XCTUnwrap(applyBody.range(of: "try await client.request(\"GET\", path: \"/orders\""))
         let commit = try XCTUnwrap(applyBody.range(of: "orderFilter = filter"))
         XCTAssertLessThan(request.lowerBound, commit.lowerBound, "the filter changes only with its rows")
+        let searchEnds = try XCTUnwrap(applyBody.range(of: "orderSearchActive = false"))
+        XCTAssertLessThan(request.lowerBound, searchEnds.lowerBound, "the search ends only once the list is read")
         XCTAssertEqual(applyBody.components(separatedBy: "orderFilter = filter").count, 2, "assigned once")
     }
 
-    func testAClearOrFilterChangeThatCouldntReadKeepsImportsDuplicateCheckReading() {
+    func testAClearOrFilterChangeThatCouldntReadKeepsImportsDuplicateCheckReading() throws {
+        // Import Orders asks the store's own state through this seam (checked below), so these cases reach it.
+        func notice(searchActive: Bool, filter: OrderFilter) -> String? {
+            orderImportDuplicateCoverageNotice(ordersLoaded: true, ordersHasMore: false,
+                                               listIsPartial: orderImportListIsPartial(searchActive: searchActive, filter: filter))
+        }
         // A lookup's result is listed; the clear is skipped (busy) or its reload fails: the search stays active, so
         // Import Orders still treats the list as partial and reads recent orders.
-        XCTAssertNotNil(orderImportDuplicateCoverageNotice(ordersLoaded: true, ordersHasMore: false, listIsPartial: true))
+        XCTAssertNotNil(notice(searchActive: true, filter: OrderFilter()))
         // A Status change SHIPPED → All whose read failed keeps SHIPPED, whose rows it still shows.
         var shipped = OrderFilter()
         shipped.status = "SHIPPED"
-        XCTAssertTrue(shipped.isActive)
-        XCTAssertNotNil(orderImportDuplicateCoverageNotice(ordersLoaded: true, ordersHasMore: false,
-                                                           listIsPartial: false || shipped.isActive))
+        XCTAssertNotNil(notice(searchActive: false, filter: shipped))
+        // Dates alone narrow the list too.
+        var dated = OrderFilter()
+        dated.startDate = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertNotNil(notice(searchActive: false, filter: dated))
+        // The whole list, read: nothing hidden by search or filters.
+        XCTAssertNil(notice(searchActive: false, filter: OrderFilter()))
+        // The sheet's own notice passes the store's search and filter state through the seam, both of them, and is its
+        // only caller.
+        let importSource = try source("OrderImport.swift")
+        XCTAssertTrue(importSource.contains("listIsPartial: orderImportListIsPartial(searchActive: store.orderSearchActive,"))
+        XCTAssertTrue(importSource.contains("filter: store.orderFilter))"))
+        XCTAssertEqual(importSource.components(separatedBy: "orderImportDuplicateCoverageNotice(").count, 3,
+                       "the definition and one caller, the sheet's notice")
     }
 
     func testImportWaitsOutTheRecentOrdersReadsRateLimit() throws {

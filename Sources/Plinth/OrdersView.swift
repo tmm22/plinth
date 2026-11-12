@@ -165,6 +165,23 @@ enum OrderConfirmRecheckResult: Equatable {
     case priceChanged
 }
 
+/// A "something is loading" flag owned by the newest run: a cancelled older run that finishes after a newer one began
+/// never clears it under the newer one (the composer's catalogue loads, `loadNeededCatalogs`).
+struct LatestRunFlag: Equatable {
+    private(set) var isOn = false
+    private var latest = 0
+    /// Starts a run and returns its token for `end`.
+    mutating func begin() -> Int {
+        latest += 1
+        isOn = true
+        return latest
+    }
+    /// Ends a run: the flag clears only when no newer run has begun.
+    mutating func end(_ run: Int) {
+        if run == latest { isOn = false }
+    }
+}
+
 struct PendingOrderConfirm: Identifiable {
     var id: String { "\(method):\(orderID)" }
     let method: String
@@ -186,7 +203,9 @@ struct OrderComposerView: View {
     @FocusState private var postcodeFocused: Bool
     @State private var validation: String?
     @State private var showEmailError = false
-    @State private var catalogsLoading = false
+    /// Whether a catalogue load runs, owned by the newest one (`loadNeededCatalogs`).
+    @State private var catalogLoads = LatestRunFlag()
+    private var catalogsLoading: Bool { catalogLoads.isOn }
     @State private var draftPlatformID = ""
     @StateObject private var locationLookup = DeliveryLocationLookup()
     @State private var locationAddressApplied = false
@@ -931,8 +950,9 @@ struct OrderComposerView: View {
 
     func loadNeededCatalogs(force: Bool = false) async {
         guard store.hasKey else { return }
-        catalogsLoading = true
-        defer { catalogsLoading = false }
+        // A restarted task's older run may finish after the new one began: only the newest run clears the flag.
+        let run = catalogLoads.begin()
+        defer { catalogLoads.end(run) }
         // A load this task started before it restarted may still hold `busy` while it unwinds, and every load below
         // skips while busy: wait for it instead. The sheet closing cancels this task, so the wait ends with it.
         while store.busy {
@@ -941,12 +961,17 @@ struct OrderComposerView: View {
         }
         let types = Set(lines.map(\.type))
         if force { catalogLoadError = nil }
+        // A cancelled run (its task restarted, or the sheet closed) starts no further load.
         if types.contains("PRINT") {
             if store.filaments.isEmpty || force { await loadCatalogShowingFailure(.materials) }
+            if Task.isCancelled { return }
             if store.files.isEmpty || force { await store.refresh() }
+            if Task.isCancelled { return }
         }
         if types.contains("COMPONENT"), store.components.isEmpty || force { await loadCatalogShowingFailure(.components) }
+        if Task.isCancelled { return }
         if types.contains("STATIONERY"), store.stationery.isEmpty || force { await loadCatalogShowingFailure(.stationery) }
+        if Task.isCancelled { return }
         if store.platforms.isEmpty || force { await loadCatalogShowingFailure(.platforms) }
     }
 
@@ -2438,7 +2463,7 @@ struct OrderActionConfirmSheet: View {
                 // Once the reload has shown the outcome, say what Slant shows; otherwise keep the specific note (such
                 // as the cause of an unknown outcome) from before the reload.
                 if succeeded, let note = orderReviewNoteAfterReload(writeAttempted: writeAttempted, lockHeld: sharedOutcomeLock,
-                                                                    rawStatus: reloaded?["status"] as? String) {
+                                                                    order: reloaded) {
                     actionMessage = note
                 } else if keepUnknownMessage {
                     actionMessage = actionMessage ?? orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
@@ -2705,12 +2730,15 @@ func orderConfirmMutationSendAllowed(attempted: Bool, succeeded: Bool) -> (Bool,
     return (true, nil)
 }
 /// The review's note after its own Refresh Order, once a Pay or Cancel it sent had an unknown result: what Slant now
-/// shows (Slant's own status, as the Workbench says it, `workbenchReloadResolvedNote`) once the reload lifted the lock;
-/// nil keeps the earlier note (the lock still holds, nothing was sent, or the reload shows no status).
-func orderReviewNoteAfterReload(writeAttempted: Bool, lockHeld: Bool, rawStatus: String?) -> String? {
-    guard writeAttempted, !lockHeld else { return nil }
-    let status = (rawStatus ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+/// shows once the reload lifted the lock, in the words of the review's Status row: Slant's status
+/// (`workbenchReloadResolvedNote`), or, while the shipping record is ahead of it, `orderStatusLagNote`. Display only:
+/// the lock was decided on Slant's own status before this runs. Nil keeps the earlier note (the lock still holds,
+/// nothing was sent, or the reload shows no status).
+func orderReviewNoteAfterReload(writeAttempted: Bool, lockHeld: Bool, order: [String: Any]?) -> String? {
+    guard writeAttempted, !lockHeld, let order else { return nil }
+    let status = ((order["status"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !status.isEmpty else { return nil }
+    if let lag = orderStatusLagNote(order) { return "Refreshed: \(lag)" }
     return workbenchReloadResolvedNote(status: status)
 }
 func orderConfirmFinalActionEnabled(

@@ -46,9 +46,10 @@ final class UploadsRound22Tests: XCTestCase {
         XCTAssertFalse(uploadOutcomeUnknown(stage: .preparing, error: mismatch))
         XCTAssertFalse(uploadReplacementMayBePartial(stage: .preparing, replacingFileID: "file-f"))
         XCTAssertEqual(uploadFailureMessage(stage: .preparing, error: mismatch),
-                       "Nothing was uploaded: Slant would have saved this as a new file instead of replacing “Bracket”. Upload again and choose Upload as “…” to add it as a new file.")
-        XCTAssertTrue(uploadFailureMessage(stage: .preparing, error: UploadReplaceWouldCreateNewFile(fileName: " "))
-            .contains("instead of replacing the file you chose."))
+                       "Nothing was uploaded, and “Bracket” wasn’t changed: Slant would have saved this as a new file. To add it as a new file, upload again (choose Upload as “…” if Plinth asks).")
+        let unnamed = uploadFailureMessage(stage: .preparing, error: UploadReplaceWouldCreateNewFile(fileName: " "))
+        XCTAssertTrue(unnamed.hasPrefix("Nothing was uploaded, and the file you chose wasn’t changed:"))
+        XCTAssertLessThanOrEqual(unnamed.count, 180, "within friendlyAPIMessage's cut, so Activity shows it")
         XCTAssertEqual(friendlyAPIMessage(mismatch), uploadFailureMessage(stage: .preparing, error: mismatch))
 
         let notSaved = LibraryNotSavedBeforeUpload()

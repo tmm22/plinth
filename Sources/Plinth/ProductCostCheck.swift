@@ -58,7 +58,7 @@ func productCostCatalogPrice(_ record: Record, stationery: Bool = false) -> Resu
 }
 
 /// Why a stationery item whose price Slant lists as null isn't counted.
-let productCostStationeryNoPriceText = "Slant lists no price for it, though Slant’s docs say stationery can be included free of charge."
+let productCostStationeryNoPriceText = "Slant lists no price for it. Slant’s docs say stationery can be included free, but Plinth doesn’t count a missing price as free."
 
 /// The parts of `product` for an order of `units`, each with a catalog price, a print still to estimate, or the
 /// reason it can't be priced. Never guesses: a missing upload, material or catalog is explained instead.
@@ -164,6 +164,20 @@ func productCostSummary(_ parts: [ProductCostPart], units: Int) -> ProductCostSu
     let total = totals.reduce(Decimal(0), +)
     return ProductCostSummary(total: total, perUnit: roundedToCents(total / Decimal(max(units, 1))),
                               pricedCount: totals.count, partCount: parts.count)
+}
+
+/// The summary's line while some parts aren't priced; nil once every part is. When the only unpriced parts are
+/// stationery Slant lists without a price (`productCostStationeryNoPriceText`), the cost may be no higher, because
+/// Slant's docs say stationery can be included free, so the line says "may be higher".
+func productCostUnpricedText(_ parts: [ProductCostPart], summary: ProductCostSummary) -> String? {
+    guard !summary.complete, summary.partCount > 0 else { return nil }
+    let missing = summary.partCount - summary.pricedCount
+    let unpriced = parts.filter { $0.state.total == nil }
+    let onlyUnpricedStationery = !unpriced.isEmpty
+        && unpriced.allSatisfy { $0.state == .unavailable(productCostStationeryNoPriceText) }
+    return onlyUnpricedStationery
+        ? "\(missing) of \(summary.partCount) parts aren’t priced (stationery Slant’s docs list as free), so the real cost may be higher."
+        : "\(missing) of \(summary.partCount) parts aren’t priced, so the real cost is higher."
 }
 
 /// "$12.40 per unit", or "At least $9.93 per unit" while some parts aren't priced.
@@ -482,7 +496,7 @@ struct ProductCostCheckView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     unitsRow
                     partsGrid(parts)
-                    summaryBlock(summary, units: shownUnits)
+                    summaryBlock(summary, parts: parts, units: shownUnits)
                     let deliveryHint = productDeliveryHint(product, localModels: store.localModels, orders: store.orders)
                     Label(productDeliveryHintText(deliveryHint), systemImage: "shippingbox")
                         .font(.callout).foregroundStyle(.secondary)
@@ -694,15 +708,16 @@ struct ProductCostCheckView: View {
     }
 
     @ViewBuilder
-    private func summaryBlock(_ summary: ProductCostSummary, units: Int) -> some View {
+    private func summaryBlock(_ summary: ProductCostSummary, parts: [ProductCostPart], units: Int) -> some View {
         if summary.pricedCount > 0 {
             VStack(alignment: .leading, spacing: 4) {
                 Text(productCostPerUnitText(summary)).font(.title3.weight(.semibold)).monospacedDigit()
                 Text("\(money(NSDecimalNumber(decimal: summary.total))) for an order of \(units) \(units == 1 ? "unit" : "units"), before delivery")
                     .font(.callout).foregroundStyle(.secondary)
-                if !summary.complete {
-                    Text("\(summary.partCount - summary.pricedCount) of \(summary.partCount) parts aren’t priced, so the real cost is higher.")
+                if let unpriced = productCostUnpricedText(parts, summary: summary) {
+                    Text(unpriced)
                         .font(.caption).foregroundStyle(.studioWarning)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let checkedAt = runner.checkedAt, runner.units == units {
                     Text("\(productCostCheckedText(checkedAt)). Estimates can change; Slant prices the order itself when a draft is created.")

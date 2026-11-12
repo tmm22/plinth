@@ -30,7 +30,9 @@ final class OrdersFixesRound20Tests: XCTestCase {
         }
         /// Clearing the box (`searchOrders("")`): skipped while another request runs; otherwise the note goes and the
         /// list is read again, and only a read that succeeds ends the search (`applyOrderFilter`). A skipped or failed
-        /// clear leaves the lookup's result listed and the search active, never an empty list.
+        /// clear leaves the lookup's result listed and the search active, never an empty list. The clear has no pure
+        /// helper to call, so this models it; `OrderLockRefreshRound22Tests
+        /// .testClearingTheSearchAndChangingTheFilterCommitNothingBeforeTheRead` pins the store's code to these steps.
         mutating func clear(busy: Bool = false, reloads: Bool = true) {
             guard !busy else { return }
             notFound = nil
@@ -165,7 +167,7 @@ final class OrdersFixesRound20Tests: XCTestCase {
         XCTAssertEqual(orderLineRemoveAccessibilityLabel("Bracket"), "Remove Bracket")
         XCTAssertTrue(orderLineRemoveAccessibilityLabel("Bracket").hasPrefix(orderLineRemoveTitle))
         XCTAssertEqual(orderReferenceFieldsCaption,
-                       "Your own notes saved with the order on Slant, such as your shop’s order number. Each has a name and a value; up to 10. Don’t put passwords or keys here.")
+                       "Your own notes saved with the order on Slant, such as your shop’s order number. Each has a name and a value; up to 10. Don’t put passwords or API keys in them.")
     }
 
     func testTrackingRowsAreNotAnotherDoneButton() {

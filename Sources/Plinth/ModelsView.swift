@@ -2154,7 +2154,8 @@ func supportRequiredCaption(_ record: Record) -> String? {
 }
 
 /// A file's preview picture from Slant's reply, loaded automatically by `AsyncImage`: only a link that passes
-/// `storageLinkProblem` (https to a named, non-local host on the default port, no sign-in details or fragment).
+/// `storageLinkProblem` (https to a named, non-local host on the default port, no sign-in details or fragment). Only
+/// this link is checked: `AsyncImage` follows any redirect without the check.
 func httpsPreviewImageURL(_ record: Record) -> URL? {
     let nested = (record.metrics["imageURL"] as? String) ?? (record.metrics["imageUrl"] as? String) ?? ""
     let raw = nested.isEmpty ? record.string("imageURL", "imageUrl") : nested

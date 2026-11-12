@@ -98,7 +98,11 @@ func batchPayLockNotice(lockedOrderNumbers: [String]) -> String? {
     case 2, 3: named = "orders " + numbers.joined(separator: ", ")
     default: named = "orders " + numbers.prefix(3).joined(separator: ", ") + " and \(numbers.count - 3) more"
     }
-    return "A payment or cancel request for \(named) didn’t confirm this session, so Plinth won’t pay several drafts at once. Press Refresh Order on it (below, or in Orders); until its result is clear, pay drafts one at a time."
+    // Orders is the place that always works: selecting an order, or its Refresh Order, lifts a lock its reload settles.
+    let refresh = numbers.count == 1
+        ? "Refresh it in Orders (select the order, or use Refresh Order in its details)"
+        : "Refresh them in Orders (select each order, or use Refresh Order in its details)"
+    return "A payment or cancel request for \(named) didn’t confirm this session, so Plinth won’t pay several drafts at once. \(refresh); until the result is clear, pay drafts one at a time."
 }
 
 // MARK: Review

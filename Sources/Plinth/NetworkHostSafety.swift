@@ -4,9 +4,10 @@ import Foundation
 //
 // Shared by the image-to-3D download (model links, the download itself and every redirect, ImageTo3D.swift), the
 // storage links in replies (`storageLinkProblem`: 3DAPI's presigned upload link, Slant's `presignedUrl` and model
-// `fileURL`) and the model preview and catalogue pictures Models shows (`httpsPreviewImageURL`,
-// `catalogItemImageURL`). Each takes a link from a service's reply, so a tampered or compromised reply must never
-// point Plinth at the Mac itself or the seller's network.
+// `fileURL`, whose sessions refuse redirects) and the model preview and catalogue pictures Models shows
+// (`httpsPreviewImageURL`, `catalogItemImageURL`). Each takes a link from a service's reply, so a tampered or
+// compromised reply must not point Plinth at the Mac itself or the seller's network. For the pictures only the link
+// from the reply is checked: `AsyncImage` loads it through the shared session, which follows redirects unchecked.
 
 /// The last labels of names that only ever mean the Mac or the seller's own network: `localhost` (RFC 6761), `local`
 /// (mDNS, RFC 6762), `internal` (reserved for private use), `arpa` (`home.arpa`, RFC 8375, and reverse-lookup names),
@@ -39,7 +40,8 @@ func networkHostIsLocalOrLiteral(_ raw: String) -> Bool {
 
 /// Why Plinth won't send to or fetch from a storage link a service's reply named, or nil: 3DAPI's presigned
 /// `upload_url` (`dapiUploadURLProblem`), Slant's `presignedUrl` and `fileURL` (`APIClient.upload`,
-/// `APIClient.downloadModel`) and the pictures Models shows. It must be https to a named host (not an IP literal in any
+/// `APIClient.downloadModel`) and the pictures Models shows (the first link only: `AsyncImage` follows redirects
+/// unchecked). It must be https to a named host (not an IP literal in any
 /// spelling, a single-label name or a local one: `networkHostIsLocalOrLiteral`) on the default port, with no user name,
 /// password or fragment, and it must not contain `apiKey` (when one is given). No host allowlist: the services name
 /// their storage hosts in replies, and Slant's docs already show several.

@@ -94,12 +94,35 @@ func restoreLibraryFile(_ file: TrashedLibraryFile, to original: URL, name: Stri
     }
 }
 
-/// The entry to put back: same position (clamped), and no link to a Slant file deleted since it was removed, or to one
+/// The entry to put back: same position (clamped), and no link to a Slant file deleted since it was removed, to one
 /// another library model is linked to now (`linkedFileIDs`; such as after an upload Slant saved in that file), so two
-/// library models are never linked to one file.
+/// library models are never linked to one file, or to one whose contents changed this session (`restoredLibraryKeepsLink`).
 func restoredLibraryEntry(_ removed: RemovedLibraryModel, deletedCloudFileIDs: Set<String>, currentCount: Int,
-                          linkedFileIDs: Set<String> = []) -> (model: LocalModel, index: Int) {
+                          linkedFileIDs: Set<String> = [], changedFileIDs: Set<String> = [],
+                          uploadedBy: [String: UUID] = [:]) -> (model: LocalModel, index: Int) {
     var model = removed.model
-    if let remote = model.remoteID, deletedCloudFileIDs.contains(remote) || linkedFileIDs.contains(remote) { model.remoteID = nil }
+    if let remote = model.remoteID,
+       !restoredLibraryKeepsLink(fileID: remote, modelID: model.id, deletedCloudFileIDs: deletedCloudFileIDs,
+                                 linkedFileIDs: linkedFileIDs, changedFileIDs: changedFileIDs, uploadedBy: uploadedBy) {
+        model.remoteID = nil
+    }
     return (model, min(max(0, removed.index), currentCount))
+}
+
+/// Whether a model put back by Edit › Undo keeps its link to the Slant file `fileID`. Never to a file deleted since,
+/// one another library model links now, or one whose contents changed this session (`changedFileIDs`: unlinked after a
+/// Replace File, an upload that stopped part-way, Upload from URL or a Workbench upload, or stored into by a confirmed
+/// upload, the keys of `uploadedBy`), unless that file's last change was this model's own confirmed upload
+/// (`uploadedBy[fileID]`, which every later change removes). Errs towards dropping: the model is then uploaded again,
+/// never ordered from a file that may hold another model's bytes.
+func restoredLibraryKeepsLink(fileID: String, modelID: UUID, deletedCloudFileIDs: Set<String>, linkedFileIDs: Set<String>,
+                              changedFileIDs: Set<String>, uploadedBy: [String: UUID]) -> Bool {
+    // The sets may hold an ID as Slant returned it or trimmed: either spelling counts.
+    let trimmed = fileID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return true }
+    let forms: Set<String> = [fileID, trimmed]
+    guard forms.isDisjoint(with: deletedCloudFileIDs), forms.isDisjoint(with: linkedFileIDs) else { return false }
+    let uploaders = forms.compactMap { uploadedBy[$0] }
+    guard !forms.isDisjoint(with: changedFileIDs) || !uploaders.isEmpty else { return true }
+    return !uploaders.isEmpty && uploaders.allSatisfy { $0 == modelID }
 }
