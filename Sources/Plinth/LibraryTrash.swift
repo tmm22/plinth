@@ -110,8 +110,9 @@ func restoredLibraryEntry(_ removed: RemovedLibraryModel, deletedCloudFileIDs: S
 }
 
 /// Whether a model put back by Edit › Undo keeps its link to the Slant file `fileID`. Never to a file deleted since,
-/// one another library model links now, or one whose contents changed this session (`changedFileIDs`: unlinked after a
-/// Replace File, an upload that stopped part-way, Upload from URL or a Workbench upload, or stored into by a confirmed
+/// one another library model links now, or one whose contents changed this session (`changedFileIDs`: unlinked for a
+/// Replace File that may have sent bytes (a Models one that stopped before any were sent takes its unlinking back), an
+/// upload that stopped part-way, Upload from URL or a Workbench upload, or stored into by a confirmed
 /// upload, the keys of `uploadedBy`), unless that file's last change was this model's own confirmed upload
 /// (`uploadedBy[fileID]`, which every later change removes). Errs towards dropping: the model is then uploaded again,
 /// never ordered from a file that may hold another model's bytes.

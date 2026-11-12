@@ -828,8 +828,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     private(set) var libraryCarriedEntries: [Data] = []
     /// Set when the library file couldn't be read or kept at launch: saving is refused, so it is never replaced.
     private(set) var librarySaveBlocked = false
-    /// Slant files whose library links were cleared this session (replaced, deleted, or stored into by another upload):
-    /// a carried entry linked to one loses its link at the next save, like a listed model.
+    /// Slant files whose library links were cleared this session (replaced, deleted, or stored into by another upload),
+    /// unless a Models Replace File that sent nothing put them back (`restoreLinksAfterReplaceSentNothing`): a carried
+    /// entry linked to one loses its link at the next save, like a listed model.
     private var libraryUnlinkedFileIDs: Set<String> = []
     /// Slant files stored into by a confirmed Models upload this session, each with the model whose upload it holds; any
     /// later change of that file (`noteLibraryFilesChanged`) removes it. With `libraryUnlinkedFileIDs`, it decides which
@@ -1844,8 +1845,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// (every file the check read, less the one being replaced). If Slant returns a file another library model is
     /// linked to, that file now holds this model: only this model keeps the link, and `uploadLinkMovedMessage` says so.
     /// After a Replace File that failed once the PUT may have started, every model linked to the replaced file (this
-    /// one included) loses its link (`uploadReplacementMayBePartial`). True only when the upload was confirmed and this
-    /// model is linked to the file Slant returned.
+    /// one included) loses its link (`uploadReplacementMayBePartial`); one that stopped before any bytes could be sent
+    /// puts back the links it cleared before sending, where that is still safe (`restoreLinksAfterReplaceSentNothing`).
+    /// True only when the upload was confirmed and this model is linked to the file Slant returned.
     @discardableResult
     func uploadModel(id: UUID, as uploadName: String, replacing: UploadReplacement? = nil,
                      protectedFiles: [String: String] = [:]) async -> Bool {
@@ -1871,10 +1873,10 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         // seller chose to replace may be written over.
         let guarded = uploadProtectedFilesAddingLibraryLinks(protectedFiles, models: localModels, replacing: replacing?.fileID)
         let replacedFileID = replacing?.fileID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        // This model's own link, which a Replace File clears before sending too.
-        let modelWasLinked = !(model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        // What a Replace File's unlinking before sending changed (this model's own link included); nil when nothing
+        // was cleared.
+        var clearedBeforeSending: ReplaceFileClearedLinks?
         var unlinkedBeforeSending: [String] = []
-        var linksClearedBeforeSending = false
         let ran = await run("Upload \(capturedName)", handlesError: { error in
             // Worded by the step that failed; a confirm with an unknown outcome is remembered for this model.
             let failedStage = stage.value
@@ -1899,11 +1901,15 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 noteLibraryFilesChanged([offered])
             }
             var message = uploadFailureMessage(stage: failedStage, error: error)
-            // A Replace File that stopped before any bytes were sent: the links cleared before asking Slant stay cleared.
-            if linksClearedBeforeSending,
-               let note = uploadReplacementUnlinkedNote(fileName: replacing?.fileName ?? "",
-                                                        modelNames: unlinkedBeforeSending + (modelWasLinked ? [model.name] : [])) {
-                message += " \(note)"
+            // A Replace File that stopped before any bytes could be sent: the replaced file still holds what it held, so
+            // the links cleared before asking Slant come back where that is still safe. Only the models left unlinked
+            // are named; when every link came back, the message needs nothing more.
+            if let cleared = clearedBeforeSending, !uploadReplacementMayBePartial(stage: failedStage, replacingFileID: replacedID) {
+                let restored = self.restoreLinksAfterReplaceSentNothing(cleared)
+                if let note = uploadReplacementRestoreNote(fileName: replacing?.fileName ?? "", leftUnlinked: restored.leftUnlinked,
+                                                           restoreNotSaved: restored.notSaved) {
+                    message += " \(note)"
+                }
             }
             self.error = message
             return true
@@ -1913,10 +1919,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             defer { SlantWritesInFlight.shared.end(write) }
             // A Replace File unlinks every model from the replaced file before anything is sent, and saves that, so a
             // quit or crash mid-upload never leaves a model linked to a file that may hold another model's bytes. A
-            // confirmed upload links this model again. When that can't be saved, nothing is sent.
+            // confirmed upload links this model again; a stop before any bytes could be sent puts the links back. When
+            // the unlinking can't be saved, nothing is sent.
             if !replacedFileID.isEmpty {
-                unlinkedBeforeSending = try clearLinksBeforeReplacing(fileID: replacedFileID, alsoUnlinking: capturedID)
-                linksClearedBeforeSending = true
+                let cleared = try clearLinksBeforeReplacing(fileID: replacedFileID, alsoUnlinking: capturedID)
+                clearedBeforeSending = cleared
+                unlinkedBeforeSending = cleared.otherNames
             }
             let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID,
                                                    checkPlaceholder: { placeholder in
@@ -1944,7 +1952,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             let unlinked = modelsLosingLinkAfterUpload(fileID: remoteID, uploadedModelID: capturedID, in: localModels)
             // A Replace File that Slant confirmed under another file: the chosen file wasn't replaced, and the models
             // unlinked from it before sending stay unlinked (`noteReplaceSavedElsewhere`).
-            let savedElsewhere = linksClearedBeforeSending && remoteID != replacedFileID
+            let savedElsewhere = clearedBeforeSending != nil && remoteID != replacedFileID
             let movedNames = localModels.filter { unlinked.contains($0.id) }.map(\.name)
             for index in localModels.indices where unlinked.contains(localModels[index].id) {
                 localModels[index].remoteID = nil
@@ -1994,10 +2002,13 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     /// A Replace File's unlinking before anything is sent (`clearLinks`), saved. When the save fails, everything it
     /// changed (links, the selected file and estimate, the unlinked IDs and carried entries) is put back as it was and
     /// `LibraryNotSavedBeforeUpload` is thrown, so nothing is sent. Synchronous, while `busy` is held: nothing else
-    /// changes the library between the snapshot and the restore. The names of the other models unlinked.
-    private func clearLinksBeforeReplacing(fileID replacedID: String, alsoUnlinking modelID: UUID?) throws -> [String] {
+    /// changes the library between the snapshot and the restore. Returns what it changed (`ReplaceFileClearedLinks`:
+    /// the names of the other models unlinked, and what a Models Replace File that sent nothing puts back).
+    private func clearLinksBeforeReplacing(fileID replacedID: String, alsoUnlinking modelID: UUID?) throws -> ReplaceFileClearedLinks {
         let models = localModels, selectedFile = fileID, selectedEstimate = estimate
         let unlinkedIDs = libraryUnlinkedFileIDs, uploadedBy = libraryFileUploadedBy, carried = libraryCarriedEntries
+        let selectedModel = selectedLocalID
+        let links = replaceFileClearedLinks(models: models, replacedFileID: replacedID, uploadedModelID: modelID)
         let others = clearLinks(toFileIDs: [replacedID], alsoUnlinking: modelID)
         guard saveModels() else {
             localModels = models
@@ -2008,7 +2019,51 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             libraryCarriedEntries = carried
             throw LibraryNotSavedBeforeUpload()
         }
-        return others
+        return ReplaceFileClearedLinks(replacedFileID: replacedID, links: links, otherNames: others,
+                                       addedChangedFileIDs: libraryUnlinkedFileIDs.subtracting(unlinkedIDs),
+                                       removedUploaders: uploadedBy.filter { libraryFileUploadedBy[$0.key] == nil },
+                                       selectedLocalID: selectedModel, selectedFileID: selectedFile)
+    }
+    /// After a Models Replace File that stopped before any bytes could be sent (`uploadReplacementMayBePartial` false:
+    /// at `.preparing` or earlier), the replaced file still holds what it held, so the links `clearLinksBeforeReplacing`
+    /// cleared come back where that is still safe (`replaceFileLinksToRestore`), with the Undo bookkeeping that unlinking
+    /// added (`addedChangedFileIDs`, `removedUploaders`) and the selected file (`replaceFileSelectedFileAfterRestore`).
+    /// Targeted, never a whole snapshot from before the upload: models were imported, removed, renamed or selected
+    /// meanwhile. Carried entries keep their dropped links and the estimate stays cleared (the cautious direction). The
+    /// restore is saved; when that save fails, everything is put back as it was before the restore, so the library in
+    /// memory matches the file (links cleared). Synchronous, from the upload's `handlesError` while `busy` is held.
+    /// Returns the names of the models left unlinked and whether the restore couldn't be saved.
+    private func restoreLinksAfterReplaceSentNothing(_ cleared: ReplaceFileClearedLinks) -> (leftUnlinked: [String], notSaved: Bool) {
+        let restoring = replaceFileLinksToRestore(cleared.links, models: localModels)
+        let models = localModels, selectedFile = fileID
+        let unlinkedIDs = libraryUnlinkedFileIDs, uploadedBy = libraryFileUploadedBy, carried = libraryCarriedEntries
+        for index in localModels.indices {
+            if let link = restoring[localModels[index].id] { localModels[index].remoteID = link }
+        }
+        // Only what this unlinking added: an earlier change to the file stays on record.
+        libraryUnlinkedFileIDs.subtract(cleared.addedChangedFileIDs)
+        for (id, uploader) in cleared.removedUploaders where libraryFileUploadedBy[id] == nil {
+            libraryFileUploadedBy[id] = uploader
+        }
+        if let restoredFile = replaceFileSelectedFileAfterRestore(
+            selectedLocalID: selectedLocalID, fileID: fileID, restored: restoring,
+            clearedSelection: (localID: cleared.selectedLocalID, fileID: cleared.selectedFileID),
+            replacedFileID: cleared.replacedFileID) {
+            fileID = restoredFile
+        }
+        // No link came back: the file on disk already says what memory says.
+        guard !restoring.isEmpty else {
+            return (replaceFileModelsLeftUnlinked(cleared.links, restoring: restoring, models: localModels), false)
+        }
+        guard saveModels() else {
+            localModels = models
+            fileID = selectedFile
+            libraryUnlinkedFileIDs = unlinkedIDs
+            libraryFileUploadedBy = uploadedBy
+            libraryCarriedEntries = carried
+            return (replaceFileModelsLeftUnlinked(cleared.links, restoring: [:], models: localModels), true)
+        }
+        return (replaceFileModelsLeftUnlinked(cleared.links, restoring: restoring, models: localModels), false)
     }
     /// Shows the notice after an upload took over a file other library models were linked to (nil: nothing to say).
     private func showUploadLinkMoved(_ notice: String?) {
@@ -2301,7 +2356,7 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             // crash nor a reply without a file ID leaves a model linked to a file that may now hold this link's model.
             // When that can't be saved, nothing is sent.
             if let replaced, !replaced.isEmpty {
-                unlinkedBeforeSending = try clearLinksBeforeReplacing(fileID: replaced, alsoUnlinking: nil)
+                unlinkedBeforeSending = try clearLinksBeforeReplacing(fileID: replaced, alsoUnlinking: nil).otherNames
             }
             let response = try await client.request("POST", path: "/files", body: body)
             noteRateLimit(from: response)
@@ -2695,6 +2750,89 @@ func modelsLinked(toFileIDs fileIDs: Set<String>, in models: [LocalModel]) -> Se
         guard let id = model.remoteID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else { return false }
         return fileIDs.contains(id)
     }.map(\.id))
+}
+
+// MARK: Putting links back after a Replace File that sent nothing
+
+/// What a Replace File's unlinking before sending changed (`clearLinksBeforeReplacing`), so that a Models Replace File
+/// that stopped before any bytes could be sent can put it back (`restoreLinksAfterReplaceSentNothing`).
+struct ReplaceFileClearedLinks: Equatable {
+    /// The file the seller chose to replace, as passed to the unlinking (trimmed).
+    var replacedFileID: String
+    /// Each unlinked model's link exactly as it was stored, non-blank only (`replaceFileClearedLinks`).
+    var links: [UUID: String]
+    /// The names of the other models unlinked, in library order; the uploaded model is never among them.
+    var otherNames: [String]
+    /// The IDs the unlinking added to the library's changed files (none when the file was already recorded as changed).
+    var addedChangedFileIDs: Set<String>
+    /// The uploader records (file ID → model) the unlinking removed.
+    var removedUploaders: [String: UUID]
+    /// The selected library model and Slant file when the links were cleared.
+    var selectedLocalID: UUID?
+    var selectedFileID: String
+}
+
+/// The links a Replace File's unlinking clears (`clearLinks` with the replaced file and the uploaded model): every model
+/// linked (trimmed, through `modelsLinked`, as `clearLinks` matches) to `replacedFileID`, and the uploaded model
+/// whatever file it links (its own earlier upload may be under another name), each link as stored. Blank links are
+/// left out: there is nothing to put back.
+func replaceFileClearedLinks(models: [LocalModel], replacedFileID: String, uploadedModelID: UUID?) -> [UUID: String] {
+    let affected = modelsLinked(toFileIDs: [replacedFileID], in: models)
+    var links: [UUID: String] = [:]
+    for model in models where affected.contains(model.id) || model.id == uploadedModelID {
+        guard let link = model.remoteID, !link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+        links[model.id] = link
+    }
+    return links
+}
+
+/// The cleared links that come back after a Replace File that sent nothing: only for a model still in the library and
+/// still unlinked, and only when no library model links that file now (trimmed), so the restore never makes a new
+/// shared link. Models that shared the file before (a Download a Separate Copy pair) all come back together, as they were.
+func replaceFileLinksToRestore(_ cleared: [UUID: String], models: [LocalModel]) -> [UUID: String] {
+    let trim: (String?) -> String = { ($0 ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+    let linkedNow = Set(models.map { trim($0.remoteID) }.filter { !$0.isEmpty })
+    let unlinkedNow = Set(models.filter { trim($0.remoteID).isEmpty }.map(\.id))
+    return cleared.filter { id, link in
+        unlinkedNow.contains(id) && !linkedNow.contains(trim(link))
+    }
+}
+
+/// The names, in library order, of the models a Replace File unlinked that stay unlinked: still in the library and
+/// still unlinked, but not in `restoring`. A model removed meanwhile isn't named.
+func replaceFileModelsLeftUnlinked(_ cleared: [UUID: String], restoring: [UUID: String], models: [LocalModel]) -> [String] {
+    models.filter { model in
+        cleared[model.id] != nil && restoring[model.id] == nil
+            && (model.remoteID ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }.map(\.name)
+}
+
+/// The selected Slant file (`fileID`) after a Replace File that sent nothing put links back, or nil to leave it as it
+/// is. While `fileID` is blank: a selected library model whose link came back selects that link again (as selecting it
+/// would); with no library model selected, as when the links were cleared, the replaced file selected then (a Slant
+/// file chosen in the list) is selected again. A selection that moved meanwhile is left alone.
+func replaceFileSelectedFileAfterRestore(selectedLocalID: UUID?, fileID: String, restored: [UUID: String],
+                                         clearedSelection: (localID: UUID?, fileID: String),
+                                         replacedFileID: String) -> String? {
+    guard fileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    if let selected = selectedLocalID { return restored[selected] }
+    guard clearedSelection.localID == nil else { return nil }
+    let earlier = clearedSelection.fileID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !earlier.isEmpty, earlier == replacedFileID.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+    return clearedSelection.fileID
+}
+
+/// Leads the note when the links a Replace File cleared couldn't be put back because the library couldn't be saved
+/// (`saveModels`' own alert text is replaced by the upload's failure message).
+let uploadReplacementRestoreNotSavedNote = "Plinth couldn’t save your library to put back the links it cleared."
+
+/// Added to a Models Replace File's failure copy after a stop before any bytes could be sent: nil when every cleared
+/// link came back (the failure copy already says nothing was uploaded), else `uploadReplacementUnlinkedNote` naming the
+/// models left unlinked, led by `uploadReplacementRestoreNotSavedNote` when the restore couldn't be saved.
+func uploadReplacementRestoreNote(fileName: String, leftUnlinked: [String], restoreNotSaved: Bool) -> String? {
+    let note = uploadReplacementUnlinkedNote(fileName: fileName, modelNames: leftUnlinked)
+    guard restoreNotSaved else { return note }
+    return [uploadReplacementRestoreNotSavedNote, note].compactMap { $0 }.joined(separator: " ")
 }
 
 /// Whether a `GET /files` page can be used for the same-name check: a list (empty is fine), and when it has rows, at
