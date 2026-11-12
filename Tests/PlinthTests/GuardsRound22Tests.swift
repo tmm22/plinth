@@ -239,13 +239,16 @@ final class GuardsRound22Tests: XCTestCase {
         XCTAssertNotNil(listingColour(hex: "#a1a1a1"))
     }
 
+    /// Round 23 (owner decision, delegated, 13 Nov 2026): stationery whose price Slant lists as JSON null counts as $0,
+    /// as Slant's docs say it "can be included free of charge". Nothing else is ever counted as free.
     func testStationeryWithANullPriceSaysWhatSlantsDocsSay() {
         let card = Record(values: ["id": "card", "price": NSNull()])
-        XCTAssertNil(try? productCostCatalogPrice(card, stationery: true).get(), "never counted as free")
-        guard case .failure(let reason) = productCostCatalogPrice(card, stationery: true) else { return XCTFail() }
-        XCTAssertEqual(reason.message, productCostStationeryNoPriceText)
-        XCTAssertTrue(productCostStationeryNoPriceText.contains("can be included free"))
-        XCTAssertTrue(productCostStationeryNoPriceText.hasSuffix("but Plinth doesn’t count a missing price as free."))
+        XCTAssertEqual(try? productCostCatalogPrice(card, stationery: true).get(), Decimal(0))
+        XCTAssertTrue(productCostStationeryCountsAsFree(card))
+        // Slant's own word: "can be", never "is".
+        XCTAssertTrue(productCostStationeryFreeText.contains("can be included free"))
+        XCTAssertFalse(productCostStationeryFreeText.contains("is included"))
+        XCTAssertLessThanOrEqual(productCostStationeryFreeText.count, 90)
         func message(_ result: Result<Decimal, StudioError>) -> String? {
             if case .failure(let error) = result { return error.message }
             return nil
@@ -253,7 +256,23 @@ final class GuardsRound22Tests: XCTestCase {
         XCTAssertEqual(message(productCostCatalogPrice(card)), "Slant lists no price for it.", "a component with a null price")
         XCTAssertEqual(message(productCostCatalogPrice(Record(values: ["id": "card"]), stationery: true)), "Slant lists no price for it.",
                        "a missing price isn't Slant's documented null")
+        XCTAssertFalse(productCostStationeryCountsAsFree(Record(values: ["id": "card"])))
         XCTAssertEqual(message(productCostCatalogPrice(Record(values: ["price": "free"]), stationery: true)), "Slant lists no price for it.")
+        XCTAssertEqual(message(productCostCatalogPrice(Record(values: ["price": true]), stationery: true)), "Slant lists no price for it.")
+        XCTAssertEqual(message(productCostCatalogPrice(Record(values: ["price": -1]), stationery: true)), "Slant lists no price for it.")
+        XCTAssertEqual(message(productCostCatalogPrice(Record(values: ["price": "null"]), stationery: true)), "Slant lists no price for it.",
+                       "the word, not JSON null")
         XCTAssertEqual(try? productCostCatalogPrice(Record(values: ["price": 0]), stationery: true).get(), Decimal(0))
+        XCTAssertEqual(try? productCostCatalogPrice(Record(values: ["price": 0.35]), stationery: true).get(), Decimal(string: "0.35"),
+                       "a real number is always used")
+        // A null with a currency other than USD is unknown, so it stays unpriced; blank or USD in any case is $0.
+        XCTAssertEqual(message(productCostCatalogPrice(Record(values: ["price": NSNull(), "priceUnit": "EUR"]), stationery: true)),
+                       "Slant prices it in EUR, so it isn’t added.")
+        XCTAssertEqual(try? productCostCatalogPrice(Record(values: ["price": NSNull(), "priceUnit": "usd"]), stationery: true).get(), Decimal(0))
+        XCTAssertEqual(try? productCostCatalogPrice(Record(values: ["price": NSNull(), "priceUnit": NSNull()]), stationery: true).get(), Decimal(0))
+        // Earlier messages for priced records are unchanged.
+        XCTAssertEqual(message(productCostCatalogPrice(Record(values: ["price": 1, "priceUnit": "EUR"]), stationery: true)),
+                       "Slant prices it in EUR, so it isn’t added.")
+        XCTAssertEqual(message(productCostCatalogPrice(Record(values: ["priceUnit": "EUR"]), stationery: true)), "Slant lists no price for it.")
     }
 }

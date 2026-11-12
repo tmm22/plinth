@@ -1512,15 +1512,15 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                                                            recipient: recipient, date: date,
                                                            marker: marker, platformID: platformID)
     }
-    func connect(key: String) async {
-        // Before anything is cleared: `run` would refuse while busy, after the loaded data had already gone (Try Again
-        // can reach this while another task holds `busy`; Settings' Save & Test is disabled then).
-        guard !busy else { return }
+    /// Tests `key` with a read-only `GET /filaments` and, only once Slant accepts it and the Keychain holds it, makes it
+    /// the key in use. True when the key passed (and wasn't superseded); the refresh that follows doesn't change that.
+    @discardableResult
+    func connect(key: String) async -> Bool {
+        // `run` refuses while busy (Try Again can reach this while another task holds `busy`; Settings' Save & Test is
+        // disabled then).
+        guard !busy else { return false }
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let keyChanged = apiKey != trimmed
-        if keyChanged {
-            clearLoadedAccountDataKeepingCredentials()
-        }
         connectGeneration += 1
         let generation = connectGeneration
         var succeeded = false
@@ -1529,15 +1529,18 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
         _ = await run("Connect to Slant 3D", retryable: true, retry: .connect(key)) {
             let response = try await probe.request("GET", path: "/filaments")
             guard generation == connectGeneration else { throw ConnectSuperseded() }
-            noteRateLimit(from: response)
             do { try KeychainStore.save(trimmed) } catch { throw StudioError(slantKeySaveFailedMessage) }
             if keyChanged {
-                platformID = ""
-                fileID = ""; filamentID = ""
+                // Only now that Slant accepted the new key and the Keychain holds it: a test that fails or is
+                // superseded is no key change, so the loaded data (imported sale amounts included), the connection,
+                // Activity, hidden drafts and done ticks stay as they were under the key still in use. The lock,
+                // unconfirmed drafts and the import ledger are never cleared here (`resetAccountDataPreservingKey`).
+                resetAccountDataPreservingKey()
                 forgetHiddenDrafts()
                 forgetShopFollowUpDone()
-                cachedClient?.invalidate(); cachedClient = nil; cachedClientKey = ""
             }
+            // After the reset, which forgets the earlier key's allowance.
+            noteRateLimit(from: response)
             apiKey = trimmed
             setFilaments(responseRecords(response))
             connected = true
@@ -1545,8 +1548,9 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
             applyDefaultFilamentIfNeeded()
             succeeded = true
         }
-        guard generation == connectGeneration else { return }
+        guard generation == connectGeneration else { return false }
         if shouldRefreshAfterConnect(succeeded: succeeded) { await refresh() }
+        return succeeded
     }
     func clearAccountSession() {
         connectGeneration += 1

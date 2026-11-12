@@ -93,6 +93,9 @@ struct AccountSettingsTab: View {
     /// AppKit makes the first text field first responder (with the key selected) when the window opens; a stray
     /// keystroke would then replace the key. Focus is released on appear so the field is focused only by the user.
     @FocusState private var keyFieldFocused: Bool
+    /// Save & Test's test of a new key is running. The saved key stays connected meanwhile (`connect(key:)` changes
+    /// nothing until the new key passes), so the status line says the new key is being tested.
+    @State private var testingKey = false
 
     private var prominent: ConnectionProminentAction {
         connectionProminentAction(
@@ -119,9 +122,9 @@ struct AccountSettingsTab: View {
             PrintServiceSettingsSection() // PrintService.swift
 
             Section {
+                // No onSubmit: Return never sends the key anywhere.
                 SecureField("API key", text: $key, prompt: Text("sl-…"))
                     .focused($keyFieldFocused)
-                    .onSubmit { saveAndTest() }
                 HStack {
                     Button("Save & Test") { saveAndTest() }
                         .modifier(ProminentWhen(prominent == .saveTest))
@@ -136,7 +139,10 @@ struct AccountSettingsTab: View {
                     Spacer()
                     Link("Get an API Key", destination: URL(string: "https://slant3dapi.com")!)
                 }
-                if store.connected {
+                if testingKey && keyChanges {
+                    Label("Testing the key…", systemImage: "antenna.radiowaves.left.and.right")
+                        .foregroundStyle(.secondary)
+                } else if store.connected {
                     Label("Connection verified", systemImage: "checkmark.circle.fill").foregroundStyle(.studioSuccess)
                 } else if store.hasKey {
                     Label(connectionFooterStatus(hasKey: true, connected: false, accountLoaded: store.accountLoaded, busy: store.busy),
@@ -200,13 +206,30 @@ struct AccountSettingsTab: View {
             connectError = reason
             return
         }
+        let savedKey = store.apiKey
+        testingKey = true
         Task {
-            await store.connect(key: key)
-            // Show the failure here; the main window's alert would sit unseen behind this window.
-            if !store.connected { connectError = takeStoreErrorForSettings(store) ?? connectError }
+            let passed = await store.connect(key: key)
+            testingKey = false
+            // Show the failure here; the main window's alert would sit unseen behind this window. Judged by the test
+            // itself, not `connected`: a key that fails leaves the saved key connected as it was.
+            if !passed, let message = takeStoreErrorForSettings(store) {
+                connectError = slantKeyTestFailureText(
+                    message, savedKeyKept: !savedKey.isEmpty && savedKey != trimmed && store.apiKey == savedKey)
+            }
         }
     }
 }
+
+/// Save & Test's failure under the Slant key field. Slant's 401 copy speaks of the saved key and says to reconnect in
+/// Settings, but here the key Slant refused is the one just typed. A key that fails its test changes nothing
+/// (`StudioStore.connect(key:)`), so when another key is saved, the text says that key is still in use.
+func slantKeyTestFailureText(_ message: String, savedKeyKept: Bool) -> String {
+    let base = message == unauthorizedUserMessage(body: "") ? slantKeyTestRejectedText : message
+    return savedKeyKept ? "\(base) \(slantKeyTestSavedKeyKeptText)" : base
+}
+let slantKeyTestRejectedText = "Slant didn’t accept this key. Check it, then press Save & Test again."
+let slantKeyTestSavedKeyKeptText = "Your saved key is unchanged and still in use."
 
 // MARK: - Advanced
 

@@ -206,26 +206,68 @@ final class ReviewFixesRound22Tests: XCTestCase {
         XCTAssertFalse(workbenchUnknownResultNote.localizedCaseInsensitiveContains("reload"))
     }
 
-    func testCheckCostSaysStationeryMayBeFree() {
-        func part(_ id: Int, _ state: ProductCostPartState) -> ProductCostPart {
-            ProductCostPart(id: id, type: "STATIONERY", title: "Part \(id)", quantity: 1, perOrder: false, state: state)
+    /// Round 23: stationery Slant lists without a price counts as free, and that is said wherever the cost is used.
+    func testCheckCostCountsNullPricedStationeryAsFree() {
+        func line(_ type: String, _ reference: String, quantity: Int = 1, perOrder: Bool = false) -> SavedProductLine {
+            var line = SavedProductLine()
+            line.type = type
+            line.reference = reference
+            line.quantity = quantity
+            line.perOrder = perOrder
+            return line
+        }
+        let stationery = [
+            Record(values: ["id": "card", "name": "Card", "price": NSNull()]),
+            Record(values: ["id": "label", "name": "Label", "price": NSNull()]),
+            Record(values: ["id": "gone", "name": "Gone", "price": NSNull(), "available": false]),
+        ]
+        let components = [Record(values: ["id": "feet", "name": "Feet", "price": NSNull()])]
+        let product = SavedProduct(name: "Kit", lines: [
+            line("STATIONERY", "card", quantity: 2), line("STATIONERY", "label", perOrder: true),
+            line("STATIONERY", "gone"), line("COMPONENT", "feet"),
+        ])
+        let parts = productCostParts(product, units: 3, localModels: [], filaments: [], components: components,
+                                     stationery: stationery, loadedCatalogs: [.stationery, .components])
+        XCTAssertEqual(parts[0].state, .priced(total: 0, detail: productCostStationeryFreeText), "0 × 6 is 0")
+        XCTAssertEqual(parts[0].quantity, 6)
+        XCTAssertTrue(parts[0].countedAsFree)
+        XCTAssertTrue(parts[1].countedAsFree)
+        XCTAssertEqual(parts[2].state, .unavailable("Slant marks it as not available, so its price isn’t counted."),
+                       "availability is checked before the price")
+        XCTAssertFalse(parts[2].countedAsFree)
+        XCTAssertEqual(parts[3].state, .unavailable("Slant lists no price for it."), "a component's null is never free")
+        XCTAssertFalse(parts[3].countedAsFree)
+
+        // The note under the total and in the listing price check, singular and plural.
+        func part(_ id: Int, _ state: ProductCostPartState, free: Bool = false) -> ProductCostPart {
+            ProductCostPart(id: id, type: free ? "STATIONERY" : "PRINT", title: "Part \(id)", quantity: 1, perOrder: false,
+                            state: state, countedAsFree: free)
         }
         let print = part(0, .priced(total: 4, detail: "Estimate"))
-        let card = part(1, .unavailable(productCostStationeryNoPriceText))
-        let unloaded = part(2, .unavailable("Load stationery to price it."))
-        func text(_ parts: [ProductCostPart]) -> String? {
-            productCostUnpricedText(parts, summary: productCostSummary(parts, units: 1))
-        }
-        XCTAssertNil(text([print]), "everything priced")
-        XCTAssertEqual(text([print, card]),
-                       "1 of 2 parts aren’t priced (stationery Slant’s docs list as free), so the real cost may be higher.")
-        XCTAssertEqual(text([print, card, unloaded]), "2 of 3 parts aren’t priced, so the real cost is higher.")
-        XCTAssertEqual(text([print, unloaded]), "1 of 2 parts aren’t priced, so the real cost is higher.")
-        // The part note no longer reads as both free and unpriced without saying why.
-        XCTAssertEqual(productCostStationeryNoPriceText,
-                       "Slant lists no price for it. Slant’s docs say stationery can be included free, but Plinth doesn’t count a missing price as free.")
-        // The listing price check still needs every part priced (counting it as free is the owner's decision).
-        XCTAssertNil(listingPriceCheckCost(productCostSummary([print, card], units: 1)))
+        let card = part(1, .priced(total: 0, detail: productCostStationeryFreeText), free: true)
+        let label = part(2, .priced(total: 0, detail: productCostStationeryFreeText), free: true)
+        let unloaded = part(3, .unavailable("Load Stationery in Catalogue to include its price."))
+        XCTAssertNil(productCostFreeStationeryNote([print]))
+        XCTAssertEqual(productCostFreeStationeryNote([print, card]),
+                       "Includes 1 stationery part counted as free: Slant lists no price for it, and its docs say stationery can be included free of charge.")
+        XCTAssertEqual(productCostFreeStationeryNote([print, card, label]),
+                       "Includes 2 stationery parts counted as free: Slant lists no price for them, and its docs say stationery can be included free of charge.")
+
+        // The unpriced line never says "may be higher" any more: every unpriced part makes the real cost higher.
+        XCTAssertNil(productCostUnpricedText(productCostSummary([print, card], units: 1)), "everything priced")
+        XCTAssertEqual(productCostUnpricedText(productCostSummary([print, card, unloaded], units: 1)),
+                       "1 of 3 parts aren’t priced, so the real cost is higher.")
+        let source = try? String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/Plinth/ProductCostCheck.swift"), encoding: .utf8)
+        XCTAssertFalse(source?.contains("may be higher") ?? true, "no text contradicts the rule")
+        XCTAssertFalse(source?.contains("productCostStationeryNoPriceText") ?? true)
+
+        // The listing price check runs once the other parts are priced, and on free stationery alone ($0.00).
+        XCTAssertEqual(listingPriceCheckCost(productCostSummary([print, card], units: 1)), 4)
+        XCTAssertEqual(listingPriceCheckCost(productCostSummary([card], units: 1)), 0)
+        XCTAssertNil(listingPriceCheckCost(productCostSummary([print, card, unloaded], units: 1)))
+        // Free parts count as priced in Activity's "N of M parts priced".
+        XCTAssertEqual(productCostSummary([print, card, unloaded], units: 1).pricedCount, 2)
     }
 
     // MARK: Helpers

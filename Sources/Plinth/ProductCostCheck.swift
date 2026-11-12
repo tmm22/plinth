@@ -39,26 +39,48 @@ struct ProductCostPart: Equatable, Identifiable {
     var fileID: String?
     var filamentID: String?
     var state: ProductCostPartState
+    /// Stationery whose `price` Slant lists as JSON null, counted as $0 (`productCostStationeryCountsAsFree`) and said
+    /// so on its row, under the total and in the listing price check.
+    var countedAsFree = false
+}
+
+/// True for a stationery record whose `price` is exactly JSON null: Slant's docs say stationery "can be included free
+/// of charge" and their example shows a null price, so Check Cost counts it as $0 (owner decision, delegated,
+/// 13 Nov 2026). A missing key, any other value and every component are never counted as free.
+func productCostStationeryCountsAsFree(_ record: Record) -> Bool {
+    record.values["price"] is NSNull
 }
 
 /// Price of a component or stationery record in USD, or why it can't be used. Components document `priceUnit` as a
 /// currency (always USD); stationery has no unit field, so its `price` is read as Slant's USD price. Stationery whose
-/// price is null stays unpriced (Slant's docs say stationery can be included free of charge and show a null price,
-/// but counting it as free is the owner's decision), and its reason says what the docs say.
+/// price is JSON null is $0 (`productCostStationeryCountsAsFree`) unless a `priceUnit` other than USD comes with it.
+/// A missing, unreadable, boolean or negative price, a non-USD unit and a component's null stay unpriced; a real
+/// number is always used as it is.
 func productCostCatalogPrice(_ record: Record, stationery: Bool = false) -> Result<Decimal, StudioError> {
+    let unit = record.string("priceUnit").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    let unitProblem = unit.isEmpty || unit == "USD" ? nil : StudioError("Slant prices it in \(unit), so it isn’t added.")
+    if stationery, productCostStationeryCountsAsFree(record) {
+        if let unitProblem { return .failure(unitProblem) }
+        return .success(0)
+    }
     guard let price = estimateAmount(record.values["price"]), price >= 0 else {
-        if stationery, record.values["price"] is NSNull {
-            return .failure(StudioError(productCostStationeryNoPriceText))
-        }
         return .failure(StudioError("Slant lists no price for it."))
     }
-    let unit = record.string("priceUnit").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    guard unit.isEmpty || unit == "USD" else { return .failure(StudioError("Slant prices it in \(unit), so it isn’t added.")) }
+    if let unitProblem { return .failure(unitProblem) }
     return .success(price)
 }
 
-/// Why a stationery item whose price Slant lists as null isn't counted.
-let productCostStationeryNoPriceText = "Slant lists no price for it. Slant’s docs say stationery can be included free, but Plinth doesn’t count a missing price as free."
+/// The row's note for stationery counted as free: Slant's docs say "can be", not "is", so neither does Plinth.
+let productCostStationeryFreeText = "Counted as free: Slant lists no price, and its docs say stationery can be included free."
+
+/// The note under the total and in the listing price check while any part is counted as free; nil otherwise.
+func productCostFreeStationeryNote(_ parts: [ProductCostPart]) -> String? {
+    let count = parts.filter(\.countedAsFree).count
+    guard count > 0 else { return nil }
+    return count == 1
+        ? "Includes 1 stationery part counted as free: Slant lists no price for it, and its docs say stationery can be included free of charge."
+        : "Includes \(count) stationery parts counted as free: Slant lists no price for them, and its docs say stationery can be included free of charge."
+}
 
 /// The parts of `product` for an order of `units`, each with a catalog price, a print still to estimate, or the
 /// reason it can't be priced. Never guesses: a missing upload, material or catalog is explained instead.
@@ -72,9 +94,9 @@ func productCostParts(
         var title = savedProductLineTitle(line, localModels: localModels, components: components, stationery: stationery)
         let (multiplied, overflow) = line.quantity.multipliedReportingOverflow(by: max(units, 1))
         let quantity = line.perOrder ? line.quantity : (overflow ? Int.max : multiplied)
-        func part(_ state: ProductCostPartState, file: String? = nil, filament: String? = nil) -> ProductCostPart {
+        func part(_ state: ProductCostPartState, file: String? = nil, filament: String? = nil, free: Bool = false) -> ProductCostPart {
             ProductCostPart(id: index, type: line.type, title: title, quantity: max(quantity, 0), perOrder: line.perOrder,
-                            fileID: file, filamentID: filament, state: state)
+                            fileID: file, filamentID: filament, state: state, countedAsFree: free)
         }
         guard line.quantity > 0 else { parts.append(part(.unavailable("No quantity is set. Edit the product to set one."))); continue }
         guard quantity <= 10_000 else { parts.append(part(.unavailable("More than 10,000 of this item. Choose fewer units."))); continue }
@@ -136,6 +158,8 @@ func productCostParts(
                 continue
             }
             switch productCostCatalogPrice(record, stationery: kind == .stationery) {
+            case .success(let price) where kind == .stationery && productCostStationeryCountsAsFree(record):
+                parts.append(part(.priced(total: price * Decimal(quantity), detail: productCostStationeryFreeText), free: true))
             case .success(let price):
                 let each = money(NSDecimalNumber(decimal: price))
                 parts.append(part(.priced(total: price * Decimal(quantity), detail: "Catalogue price, \(each) each")))
@@ -166,18 +190,12 @@ func productCostSummary(_ parts: [ProductCostPart], units: Int) -> ProductCostSu
                               pricedCount: totals.count, partCount: parts.count)
 }
 
-/// The summary's line while some parts aren't priced; nil once every part is. When the only unpriced parts are
-/// stationery Slant lists without a price (`productCostStationeryNoPriceText`), the cost may be no higher, because
-/// Slant's docs say stationery can be included free, so the line says "may be higher".
-func productCostUnpricedText(_ parts: [ProductCostPart], summary: ProductCostSummary) -> String? {
+/// The summary's line while some parts aren't priced; nil once every part is. Stationery Slant lists without a price
+/// is priced at $0 (`productCostStationeryFreeText`), so every part left unpriced makes the real cost higher.
+func productCostUnpricedText(_ summary: ProductCostSummary) -> String? {
     guard !summary.complete, summary.partCount > 0 else { return nil }
     let missing = summary.partCount - summary.pricedCount
-    let unpriced = parts.filter { $0.state.total == nil }
-    let onlyUnpricedStationery = !unpriced.isEmpty
-        && unpriced.allSatisfy { $0.state == .unavailable(productCostStationeryNoPriceText) }
-    return onlyUnpricedStationery
-        ? "\(missing) of \(summary.partCount) parts aren’t priced (stationery Slant’s docs list as free), so the real cost may be higher."
-        : "\(missing) of \(summary.partCount) parts aren’t priced, so the real cost is higher."
+    return "\(missing) of \(summary.partCount) parts aren’t priced, so the real cost is higher."
 }
 
 /// "$12.40 per unit", or "At least $9.93 per unit" while some parts aren't priced.
@@ -502,7 +520,8 @@ struct ProductCostCheckView: View {
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Divider()
-                    listingPriceSection(summary, units: shownUnits, deliveryHint: deliveryHint)
+                    listingPriceSection(summary, units: shownUnits, deliveryHint: deliveryHint,
+                                        freeStationeryNote: productCostFreeStationeryNote(parts))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
@@ -579,6 +598,10 @@ struct ProductCostCheckView: View {
     @ViewBuilder
     private func partNote(_ part: ProductCostPart) -> some View {
         switch part.state {
+        case .priced(_, let detail) where part.countedAsFree:
+            // An assumption, not a problem: information styling, never a warning.
+            Label(detail, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         case .priced(_, let detail): Text(detail).font(.caption).foregroundStyle(.secondary)
         case .unavailable(let reason), .failed(let reason):
             Label(reason, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.studioWarning)
@@ -601,7 +624,8 @@ struct ProductCostCheckView: View {
     }
 
     @ViewBuilder
-    private func listingPriceSection(_ summary: ProductCostSummary, units: Int, deliveryHint: ProductDeliveryHint?) -> some View {
+    private func listingPriceSection(_ summary: ProductCostSummary, units: Int, deliveryHint: ProductDeliveryHint?,
+                                     freeStationeryNote: String?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Listing price check").font(.headline)
             if self.units == nil {
@@ -620,6 +644,11 @@ struct ProductCostCheckView: View {
                 Label(listingPriceDeliveryNote(deliveryHint), systemImage: "shippingbox")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let freeStationeryNote {
+                    Label(freeStationeryNote, systemImage: "info.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Divider()
                 listingPriceResult(cost: cost, units: units, delivery: deliveryHint?.average)
                 Divider()
@@ -714,9 +743,14 @@ struct ProductCostCheckView: View {
                 Text(productCostPerUnitText(summary)).font(.title3.weight(.semibold)).monospacedDigit()
                 Text("\(money(NSDecimalNumber(decimal: summary.total))) for an order of \(units) \(units == 1 ? "unit" : "units"), before delivery")
                     .font(.callout).foregroundStyle(.secondary)
-                if let unpriced = productCostUnpricedText(parts, summary: summary) {
+                if let unpriced = productCostUnpricedText(summary) {
                     Text(unpriced)
                         .font(.caption).foregroundStyle(.studioWarning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let free = productCostFreeStationeryNote(parts) {
+                    Text(free)
+                        .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let checkedAt = runner.checkedAt, runner.units == units {
