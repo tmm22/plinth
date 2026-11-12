@@ -1386,7 +1386,8 @@ enum OrderImportRowState: Equatable {
         var consecutiveRefusals = 0
         var lastStart: Date?
         var observedRateLimit = store.rateLimit
-        var rateLimitedUntil: Date?
+        // A 429 the sheet's recent-orders read received is waited out too, rather than spending a draft on it.
+        var rateLimitedUntil: Date? = recentOrdersRateLimitedUntil
         var stopMessage: String?
         let ownerID = store.ownerID
         let accountChanged = "Stopped because the account or platform changed. The rest weren’t sent."
