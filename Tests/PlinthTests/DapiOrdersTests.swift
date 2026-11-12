@@ -481,6 +481,44 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertTrue(dapiComposerLines(duplicating: DapiOrdersTests.order("ord_2", status: .paid, items: nil)).isEmpty)
     }
 
+    /// The composer says materials were copied only for lines 3DAPI listed them for; the others start with 3DAPI's
+    /// suggestions (`useSuggested`), and the note says to check them.
+    func testDuplicateNoteSaysWhichMaterialsWereCopied() {
+        func item(_ id: String, materials: [DapiMaterialSlot]) -> DapiOrderItem {
+            DapiOrderItem(id: id, quoteID: "qte_9", quoteName: nil, materials: materials, quantity: 1, unitPrice: nil,
+                          productionUnitPrice: nil, total: nil)
+        }
+        let listed = item("itm_1", materials: [DapiMaterialSlot(slot: 1, materialID: "mat_red", materialName: "PLA Red")])
+        let unlisted = item("itm_2", materials: [])
+
+        let all = DapiOrdersTests.order("ord_1", status: .shipped, items: [listed, listed])
+        XCTAssertEqual(dapiDuplicateCopiedText(all),
+                       "The same models, quantities and materials were copied. The address isn’t copied; enter it below.")
+
+        let none = DapiOrdersTests.order("ord_2", status: .shipped, items: [unlisted])
+        XCTAssertTrue(dapiComposerLines(duplicating: none).allSatisfy(\.useSuggested))
+        let noneText = dapiDuplicateCopiedText(none)
+        XCTAssertFalse(noneText.contains("materials were copied"), noneText)
+        XCTAssertTrue(noneText.contains("3DAPI’s suggested materials"), noneText)
+        XCTAssertTrue(noneText.contains("The address isn’t copied"), noneText)
+
+        let some = DapiOrdersTests.order("ord_3", status: .shipped, items: [listed, unlisted, unlisted])
+        XCTAssertEqual(dapiComposerLines(duplicating: some).map(\.useSuggested), [false, true, true])
+        XCTAssertEqual(dapiDuplicateCopiedText(some),
+                       "The same models, quantities and materials were copied, except for 2 lines whose materials 3DAPI’s copy of this order didn’t list: those start with 3DAPI’s suggested materials, so check them. The address isn’t copied; enter it below.")
+        XCTAssertTrue(dapiDuplicateCopiedText(DapiOrdersTests.order("ord_4", status: .shipped, items: [listed, unlisted]))
+            .contains("except for 1 line whose"))
+
+        // Only the lines the composer takes are counted.
+        let long = DapiOrdersTests.order("ord_5", status: .shipped, items: Array(repeating: listed, count: dapiOrderMaxLines) + [unlisted])
+        XCTAssertTrue(dapiDuplicateCopiedText(long).hasPrefix("The same models, quantities and materials were copied."))
+
+        // The buttons' help no longer promises copied materials.
+        XCTAssertFalse(dapiDuplicateButtonHelp.contains("quantities and materials"))
+        XCTAssertFalse(dapiReprintButtonHelp.contains("quantities and materials"))
+        XCTAssertTrue(dapiReprintButtonHelp.contains("the materials 3DAPI lists for it"))
+    }
+
     // MARK: Line names
 
     func testNeutralQuoteNamesResolveToTheLibraryModel() {
@@ -807,6 +845,90 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(stub.count("place"), 0, "Nothing is sent when the credit is gone at the press")
     }
 
+    /// A wallet that can't be read at the press isn't "no sample credit": nothing is sent, the tick stays, and Check
+    /// Again reads it again.
+    func testAFailedWalletReadAtThePressKeepsTheTick() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(sampleCreditWallet(1_500))
+        let harness = PlaceHarness()
+        var own = draft()
+        own.addressIsSellersOwn = true
+        let runner = await readyRunner(stub, harness, draft: own)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertTrue(runner.useSampleCredit)
+
+        for failure in [DapiError.readFailed("offline"), .rateLimited(code: nil, retryAt: nil), .refused(status: 403, code: "missing_scope", message: nil)] {
+            stub.walletResult = .failure(failure)
+            runner.placeOrder()
+            await settled(runner)
+            XCTAssertEqual(runner.phase, .blocked(dapiSampleCreditWalletUnreadable), "\(failure)")
+            XCTAssertNil(runner.figures, "The review offers Check Again, not Place Order")
+            XCTAssertFalse(runner.canPlace)
+            XCTAssertTrue(runner.useSampleCredit, "Never unticked")
+            XCTAssertEqual(stub.count("place"), 0, "Never sent, with or without the credit")
+            XCTAssertEqual(harness.begun, 0)
+            XCTAssertTrue(harness.unconfirmed.isEmpty)
+            // Pressing Place Order again does nothing while blocked.
+            runner.placeOrder()
+            XCTAssertEqual(stub.count("place"), 0)
+
+            // The wallet reads again: Check Again shows the review with the toggle still ticked.
+            stub.walletResult = .success(sampleCreditWallet(1_500))
+            runner.checkAgain()
+            await waitUntil { runner.phase != .checking }
+            XCTAssertEqual(runner.phase, .ready)
+            XCTAssertTrue(dapiWalletShowsSampleCredit(runner.figures?.wallet))
+            XCTAssertTrue(runner.useSampleCredit)
+        }
+        XCTAssertTrue(dapiSampleCreditWalletUnreadable.contains("nothing was sent"))
+        XCTAssertTrue(dapiSampleCreditWalletUnreadable.contains("Check Again"))
+
+        // Then it goes as ticked.
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(stub.count("place"), 1)
+        XCTAssertEqual(stub.placed.last?.0.useSampleCredit, true)
+    }
+
+    /// Without sample credit at the press, a wallet that can't be read doesn't matter: the order goes without it.
+    func testAFailedWalletReadDoesntBlockAnOrderThatDoesntUseSampleCredit() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(sampleCreditWallet(1_500))
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        XCTAssertFalse(runner.useSampleCredit, "A customer's address starts unticked")
+        stub.walletResult = .failure(.readFailed("offline"))
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(stub.count("place"), 1)
+        XCTAssertEqual(stub.placed.last?.0.useSampleCredit, false)
+
+        // A key without wallet:read never shows sample credit, and orders as before.
+        let noWallet = scriptedReady()
+        let plain = await readyRunner(noWallet, PlaceHarness())
+        plain.placeOrder()
+        await settled(plain)
+        XCTAssertEqual(noWallet.count("place"), 1)
+        XCTAssertEqual(noWallet.placed.last?.0.useSampleCredit, false)
+    }
+
+    func testSampleCreditChangeWordingNeverBlamesTheSellerForAHiddenTick() {
+        XCTAssertEqual(dapiSampleCreditChange(pressed: false, current: true, available: true),
+                       "Your 3DAPI wallet now shows sample credit, which wasn’t shown when you pressed Place Order. Choose whether to use it, then press Place Order again.")
+        XCTAssertEqual(dapiSampleCreditChange(pressed: false, current: true, available: false),
+                       "Sample credit wasn’t shown when you pressed Place Order, so it won’t be used. Press Place Order again to order without it.")
+        XCTAssertEqual(dapiSampleCreditChange(pressed: true, current: true, available: false),
+                       "Your 3DAPI wallet no longer shows sample credit, so it can’t be used.")
+        XCTAssertNil(dapiSampleCreditChange(pressed: false, current: false, available: true))
+        for pressed in [false, true] {
+            for current in [false, true] {
+                for available in [false, true] {
+                    XCTAssertFalse(dapiSampleCreditChange(pressed: pressed, current: current, available: available)?.contains("You changed") ?? false)
+                }
+            }
+        }
+    }
+
     func testAPreTickHiddenByAMissingWalletIsNeverSent() async {
         let stub = scriptedReady()
         stub.walletResult = .success(sampleCreditWallet(1_500))
@@ -830,6 +952,9 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(runner.phase, .ready)
         XCTAssertEqual(stub.count("place"), 0, "Never spent while the review hid it")
         XCTAssertNotNil(runner.figures?.wallet, "The review now shows the credit and the tick")
+        XCTAssertTrue(runner.useSampleCredit, "The tick is left for the seller to decide")
+        XCTAssertEqual(runner.changes, ["Your 3DAPI wallet now shows sample credit, which wasn’t shown when you pressed Place Order. Choose whether to use it, then press Place Order again."])
+        XCTAssertFalse(runner.changes.contains { $0.contains("You changed") }, "The seller didn't change it")
         // Pressed again with the credit shown, it goes as ticked.
         stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1"))])
         stub.scriptShipping([.success(DapiOrdersTests.shipping(699))])
@@ -858,10 +983,46 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(runner.figures?.shipping.total, DapiOrdersTests.usd(899))
         XCTAssertEqual(stub.count("place"), 0)
         XCTAssertEqual(harness.begun, 0)
-        // Pressed again with the new figures shown, it sends.
+        // Pressed again with the new figures shown, it sends, and the earlier "nothing was sent" list goes.
         runner.placeOrder()
+        XCTAssertTrue(runner.changes.isEmpty, "Cleared at the press")
         await settled(runner)
         XCTAssertEqual(stub.count("place"), 1)
+        XCTAssertTrue(runner.changes.isEmpty)
+    }
+
+    /// The earlier press's "nothing was sent" list never stays above a later press's unknown outcome.
+    func testChangesFromAnEarlierPressNeverSitBesideAnUnknownOutcome() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1"))])
+        stub.scriptShipping([.success(DapiOrdersTests.shipping(699)), .success(DapiOrdersTests.shipping(899))])
+        stub.placeResult = .failure(.outcomeUnknown("timed out"))
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.changes.count, 1)
+        XCTAssertEqual(stub.count("place"), 0)
+        runner.placeOrder()
+        await settled(runner)
+        guard case .unknown = runner.phase else { return XCTFail("\(runner.phase)") }
+        XCTAssertTrue(runner.changes.isEmpty)
+        XCTAssertEqual(stub.count("place"), 1)
+        XCTAssertEqual(harness.unconfirmed.count, 1, "The attempt stays unconfirmed")
+
+        // A re-check that finds changes again lists them again, and still sends nothing.
+        let second = ScriptedDapiOrders()
+        second.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1"))])
+        second.scriptShipping([.success(DapiOrdersTests.shipping(699)), .success(DapiOrdersTests.shipping(899)),
+                               .success(DapiOrdersTests.shipping(999))])
+        let again = await readyRunner(second, PlaceHarness())
+        again.placeOrder()
+        await settled(again)
+        again.placeOrder()
+        await settled(again)
+        XCTAssertEqual(again.phase, .ready)
+        XCTAssertEqual(again.changes, ["Shipping: $8.99 → $9.99."])
+        XCTAssertEqual(second.count("place"), 0)
     }
 
     func testQuoteRejectedBetweenReviewAndPlaceBlocks() async {
@@ -1019,6 +1180,24 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertFalse(sent.contains("Nothing was sent"))
         XCTAssertTrue(sent.contains("may have been placed and charged"))
         XCTAssertTrue(sent.contains("Look for Order on 3DAPI"))
+    }
+
+    /// An unedited composer (Order a Sample to Me, say) whose own Place Order ended unknown still asks before closing, so
+    /// the seller sees that the order may have been placed and charged.
+    func testClosingAsksWhileTheComposersOwnAttemptIsUnconfirmed() {
+        XCTAssertFalse(dapiComposerAsksBeforeClosing(hasInput: false, hasUnconfirmedOwnAttempt: false))
+        XCTAssertTrue(dapiComposerAsksBeforeClosing(hasInput: true, hasUnconfirmedOwnAttempt: false))
+        XCTAssertTrue(dapiComposerAsksBeforeClosing(hasInput: false, hasUnconfirmedOwnAttempt: true))
+        XCTAssertTrue(dapiComposerAsksBeforeClosing(hasInput: true, hasUnconfirmedOwnAttempt: true))
+
+        // The composer's own attempts are what it sent and 3DAPI didn't definitely refuse.
+        let state = DapiComposerState(environment: DapiComposerEnvironment(
+            client: { throw DapiError.missingKey }, readyQuoteID: { _ in nil }, rememberReadyQuote: { _, _ in },
+            hashFile: { _ in "" }, noteHash: { _, _ in }))
+        state.noteSending(reference: "plinth_aaaaaaaa")
+        XCTAssertFalse(state.sentReferences.isDisjoint(with: ["plinth_aaaaaaaa"]))
+        state.noteNotCharged(reference: "plinth_aaaaaaaa")
+        XCTAssertTrue(state.sentReferences.isEmpty)
     }
 
     func sampleCreditWallet(_ cents: Int) -> DapiWallet {
@@ -1199,6 +1378,53 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         runner.cancelOrder()
         await waitUntil { if case .blocked = runner.phase { true } else { false } }
         XCTAssertEqual(stub.count("cancel"), 0)
+    }
+
+    /// After a failed read the cancel review offers Check Again: the opening read and check once more, never a cancel.
+    func testCancelReviewCheckAgainReadsOnlyAndNeverCancels() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptOrderReads([.failure(.readFailed("offline")), .success(DapiOrdersTests.order("ord_1", status: .paid))])
+        let harness = CancelHarness()
+        let runner = cancelRunner(stub, harness)
+        runner.start()
+        await waitUntil { runner.phase != .loading }
+        guard case .blocked(let message) = runner.phase else { return XCTFail("\(runner.phase)") }
+        XCTAssertTrue(message.contains("Nothing was sent"), message)
+        XCTAssertFalse(runner.canCancel)
+        runner.cancelOrder()
+        XCTAssertEqual(stub.count("order"), 1, "Cancel Order does nothing while blocked")
+
+        runner.checkAgain()
+        runner.checkAgain() // A second press while the read runs is ignored.
+        await waitUntil { runner.phase != .loading }
+        XCTAssertEqual(runner.phase, .ready(DapiOrdersTests.order("ord_1", status: .paid)))
+        XCTAssertEqual(stub.count("order"), 2)
+        XCTAssertEqual(stub.count("cancel"), 0, "Check Again never cancels")
+        XCTAssertEqual(harness.begun, 0)
+        XCTAssertTrue(harness.unknown.isEmpty)
+        runner.checkAgain()
+        XCTAssertEqual(stub.count("order"), 2, "Only after a blocked read")
+
+        // A status that moved since the review opened stays blocked: Check Again never widens what can be cancelled.
+        let moved = ScriptedDapiOrders()
+        moved.scriptOrderReads([.failure(.readFailed("offline")), .success(DapiOrdersTests.order("ord_1", status: .assigned))])
+        let blocked = cancelRunner(moved, CancelHarness())
+        blocked.start()
+        await waitUntil { blocked.phase != .loading }
+        blocked.checkAgain()
+        await waitUntil { blocked.phase != .loading }
+        guard case .blocked = blocked.phase else { return XCTFail("\(blocked.phase)") }
+        XCTAssertEqual(moved.count("cancel"), 0)
+
+        // Closed: nothing more is read.
+        let closing = ScriptedDapiOrders()
+        closing.scriptOrderReads([.failure(.readFailed("offline"))])
+        let closed = cancelRunner(closing, CancelHarness())
+        closed.start()
+        await waitUntil { closed.phase != .loading }
+        closed.close()
+        closed.checkAgain()
+        XCTAssertEqual(closing.count("order"), 1)
     }
 
     func testCancelRunnerRecordsAnUnknownOutcome() async {
@@ -1636,6 +1862,44 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertTrue(dapiOrderMatchesFilter(order, DapiOrderListFilter(status: nil, search: "2apord")))
         XCTAssertFalse(dapiOrderMatchesFilter(order, DapiOrderListFilter(status: .shipped, search: "")))
         XCTAssertFalse(dapiOrderMatchesFilter(order, DapiOrderListFilter(status: nil, search: "shopify")))
+    }
+
+    /// A refreshed or cancelled copy that leaves the Status filter shown isn't kept under it: every order is shown
+    /// again, with it selected, as for an order shown on its own.
+    func testAnAppliedOrderOutsideTheFilterClearsTheFilter() async {
+        let stub = ScriptedDapiOrders()
+        let paid = DapiOrdersTests.order("ord_p", status: .paid, items: [item("itm_1", quantity: 2)])
+        stub.scriptPages([.success(DapiOrderPage(orders: [paid, DapiOrdersTests.order("ord_q", status: .paid)], hasMore: false, nextCursor: nil))])
+        let list = listState(stub)
+        list.applyStatus(.paid)
+        await list.lastLoadTask?.value
+        XCTAssertEqual(list.orders.map(\.id), ["ord_p", "ord_q"])
+        list.selection = "ord_p"
+
+        // Still Paid: replaced where it stands, the filter kept, nothing read.
+        let reads = stub.count("orders")
+        list.apply(DapiOrdersTests.order("ord_p", status: .paid, items: nil))
+        XCTAssertEqual(list.status, .paid)
+        XCTAssertEqual(list.orders.map(\.id), ["ord_p", "ord_q"])
+        XCTAssertEqual(list.orders.first?.items?.map(\.id), ["itm_1"], "Lines kept")
+        XCTAssertEqual(stub.count("orders"), reads)
+        XCTAssertTrue(list.canUseRowsForTools)
+
+        // The cancel review's reply: cancelled isn't Paid.
+        stub.scriptPages([.success(DapiOrderPage(orders: [DapiOrdersTests.order("ord_q", status: .paid)], hasMore: false, nextCursor: nil))])
+        list.apply(DapiOrdersTests.order("ord_p", status: .cancelled, items: nil))
+        XCTAssertNil(list.status, "The filter is cleared")
+        XCTAssertEqual(list.selection, "ord_p")
+        XCTAssertEqual(list.orders.first { $0.id == "ord_p" }?.status, .cancelled)
+        XCTAssertEqual(list.orders.first { $0.id == "ord_p" }?.items?.map(\.id), ["itm_1"], "Lines kept")
+        XCTAssertFalse(list.orders.contains { $0.id == "ord_q" }, "The Paid filter's rows go at once")
+        XCTAssertFalse(list.canUseRowsForTools, "No page for the cleared filter yet")
+        await list.lastLoadTask?.value
+        XCTAssertEqual(stub.queries.last?.statuses, [])
+        XCTAssertEqual(list.orders.map(\.id), ["ord_p", "ord_q"], "Kept by the fresh page, which doesn't list it")
+        XCTAssertEqual(list.orders.first?.status, .cancelled)
+        XCTAssertEqual(list.selection, "ord_p")
+        XCTAssertTrue(list.canUseRowsForTools)
     }
 
     func testTheSameKeyGenerationKeepsLoadedOrders() async {

@@ -346,7 +346,11 @@ struct DapiCancelOrderSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .disabled(runner.isWriting)
                 Spacer()
-                if !isDone {
+                if isBlocked {
+                    // Reads only, like the place review's Check Again; no shortcut and never the default.
+                    Button("Check Again") { runner.checkAgain() }
+                        .help("Read the order again. Nothing is sent.")
+                } else if !isDone {
                     // Never the default button and no shortcut.
                     Button("Cancel Order", role: .destructive) { runner.cancelOrder() }
                         .disabled(!runner.canCancel)
@@ -376,6 +380,7 @@ struct DapiCancelOrderSheet: View {
     }
 
     private var isDone: Bool { if case .done = runner.phase { true } else { false } }
+    private var isBlocked: Bool { if case .blocked = runner.phase { true } else { false } }
 
     @ViewBuilder
     private var status: some View {
