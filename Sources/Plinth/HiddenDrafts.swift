@@ -73,7 +73,7 @@ func orderRawStatusIsDraft(_ order: [String: Any]) -> Bool {
 }
 
 /// Whether the list leaves this order out: it is a draft by Slant's raw status, one of its IDs was hidden, and none of
-/// its IDs is under the pay/cancel lock (`keeping`), whose Reload Order must stay reachable.
+/// its IDs is under the pay/cancel lock (`keeping`), whose Refresh Order must stay reachable.
 func orderIsHiddenDraft(_ record: Record, hidden: Set<String>, keeping: Set<String> = []) -> Bool {
     guard !hidden.isEmpty, orderRawStatusIsDraft(orderObject(record.values)) else { return false }
     let ids = hiddenDraftOrderIDs(record)

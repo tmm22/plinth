@@ -98,7 +98,7 @@ func batchPayLockNotice(lockedOrderNumbers: [String]) -> String? {
     case 2, 3: named = "orders " + numbers.joined(separator: ", ")
     default: named = "orders " + numbers.prefix(3).joined(separator: ", ") + " and \(numbers.count - 3) more"
     }
-    return "A payment or cancel request for \(named) didn’t confirm this session, so Plinth won’t pay several drafts at once. Press Refresh Order on it (below, or in its own review in Orders); until its result is clear, pay drafts one at a time."
+    return "A payment or cancel request for \(named) didn’t confirm this session, so Plinth won’t pay several drafts at once. Press Refresh Order on it (below, or in Orders); until its result is clear, pay drafts one at a time."
 }
 
 // MARK: Review
@@ -979,7 +979,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
     // MARK: After the run
 
     /// Reloads an order whose payment wasn't confirmed (read-only). The lock lifts only when the reload shows the
-    /// payment's outcome (`unknownOutcomeResolvedByReload`), as the single review's Reload Order does.
+    /// payment's outcome (`unknownOutcomeResolvedByReload`), as the single review's Refresh Order does.
     func reloadUnknown(_ id: String, store: StudioStore, onCompleted: @escaping (_ orderID: String, _ order: [String: Any]) -> Void) {
         guard phase == .done, reloadingID == nil, !store.busy, store.isOutcomeUnknown(orderID: id) else { return }
         reloadingID = id

@@ -585,7 +585,7 @@ func orderPlatformMatch(_ order: [String: Any], platformID: String) -> Bool? {
 
 /// The loaded orders shown (or summed) for the default platform: those that name another platform are left out,
 /// except any order under an unknown-outcome lock (`keeping`, matched by any of its IDs), which must stay reachable so
-/// its Reload Order can lift the lock. Without a platform nothing is left out. Display only (see above).
+/// its Refresh Order can lift the lock. Without a platform nothing is left out. Display only (see above).
 func ordersShownOnPlatform(_ records: [Record], platformID: String, keeping: Set<String> = []) -> [Record] {
     guard !platformID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return records }
     return records.filter { record in
