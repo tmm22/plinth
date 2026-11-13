@@ -492,7 +492,11 @@ func dapiOrderUpToTotal(lines: [(unitPrice: DapiMoney, quantity: Int)], shipping
     return total
 }
 
-let dapiWalletNote = "If your 3DAPI wallet is short, 3DAPI charges the rest to your saved card, with VAT on that top-up for EU and UK businesses without a confirmed VAT number."
+/// What 3DAPI's docs say goes on the card when the wallet is short: the shortfall, or, with auto top-up on, the fixed
+/// amount set in 3DAPI's dashboard, which a key can't read (research, 13 Nov 2026). So a shortfall is never presented
+/// as the exact card charge.
+let dapiAutoTopUpClause = "(or your auto top-up amount, if that’s on in 3DAPI, which can be more)"
+let dapiWalletNote = "If your 3DAPI wallet is short, 3DAPI charges the rest \(dapiAutoTopUpClause) to your saved card, with VAT on that top-up for EU and UK businesses without a confirmed VAT number."
 /// Shown when any line uses chosen materials: 3DAPI's quote priced the file, not those materials.
 let dapiChosenMaterialsPriceNote = "3DAPI prices the file in its quote. Materials you chose yourself may change the price 3DAPI charges, which Plinth can’t check before ordering."
 
@@ -506,8 +510,66 @@ func dapiWalletShortfall(upTo: DapiMoney?, wallet: DapiWallet?) -> DapiMoney? {
 
 /// The review's line for a shortfall.
 func dapiWalletShortfallText(_ shortfall: DapiMoney) -> String {
-    "Your wallet may be up to \(dapiMoneyText(shortfall)) short for this order. 3DAPI charges any shortfall to your saved card, with VAT on that top-up for EU and UK businesses without a confirmed VAT number."
+    "Your wallet may be up to \(dapiMoneyText(shortfall)) short for this order. 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card, with VAT on that top-up for EU and UK businesses without a confirmed VAT number."
 }
+
+/// The review's "up to" total from its snapshot: every line's unit price × quantity, plus shipping (`dapiOrderUpToTotal`).
+/// The review's Total row, its shortfall line and the pre-send comparison all use this, so they can't disagree. Nil when
+/// a line has no price, the amounts are in different currencies, or the sum overflows.
+func dapiReviewUpToTotal(_ snapshot: DapiOrderReviewSnapshot) -> DapiMoney? {
+    var lines: [(unitPrice: DapiMoney, quantity: Int)] = []
+    for line in snapshot.lines {
+        guard let price = snapshot.unitPrices[line.quoteID] else { return nil }
+        lines.append((price, line.quantity))
+    }
+    return dapiOrderUpToTotal(lines: lines, shipping: snapshot.shippingTotal)
+}
+
+/// Whether the wallet, as read, covers the "up to" total. `.notKnown`: no wallet read, no total, or different
+/// currencies, so the review shows no judgement about the wallet.
+enum DapiWalletCover: Equatable {
+    case notKnown
+    case covered
+    /// The total may be more than the balance by up to this (`dapiWalletShortfall`, always more than zero).
+    case short(DapiMoney)
+}
+
+func dapiWalletCover(upTo: DapiMoney?, wallet: DapiWallet?) -> DapiWalletCover {
+    guard let upTo, let balance = wallet?.balance,
+          upTo.currency.lowercased() == balance.currency.lowercased() else { return .notKnown }
+    guard let shortfall = dapiWalletShortfall(upTo: upTo, wallet: wallet), shortfall.amountMinor > 0 else { return .covered }
+    return .short(shortfall)
+}
+
+/// The pre-send check's line when the card may now be charged more than the review showed, or nil (owner decision,
+/// delegated, 13 Nov 2026). A new or larger shortfall stops the order; a smaller or vanished one doesn't, and a review
+/// that showed no judgement about the wallet (`reviewed` is `.notKnown`) never stops for it. A wallet that can't be read
+/// at all at the press is stopped earlier, in `placeOrder` (`dapiWalletUnreadableBeforeSending`).
+func dapiWalletShortfallChange(reviewed: DapiWalletCover, current: DapiWalletCover) -> String? {
+    switch (reviewed, current) {
+    case (.notKnown, _), (.covered, .covered), (.short, .covered):
+        return nil
+    case (.covered, .short(let now)):
+        return "Your 3DAPI wallet no longer covers this order: it may be up to \(dapiMoneyText(now)) short. 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card."
+    case (.short(let before), .short(let now)):
+        guard before.currency.lowercased() == now.currency.lowercased() else { return dapiWalletNotComparableText }
+        guard now.amountMinor > before.amountMinor else { return nil }
+        return "Your 3DAPI wallet may now be up to \(dapiMoneyText(now)) short for this order, not \(dapiMoneyText(before)). 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card."
+    case (.covered, .notKnown), (.short, .notKnown):
+        return dapiWalletNotComparableText
+    }
+}
+
+/// The pre-send check's line when a review that judged the wallet can't judge it any more (a readable wallet in another
+/// currency, or a total that can't be added up).
+let dapiWalletNotComparableText = "Your 3DAPI wallet’s balance can no longer be compared with this order’s total, so Plinth can’t tell how much would go on your card."
+
+/// The pre-send check's stop when the review on screen showed the wallet but the fresh wallet couldn't be read (an error,
+/// a 429 or a missing `wallet:read`): Plinth can't tell how much would go on the card, so nothing is sent (owner
+/// decision, delegated, 13 Nov 2026). Check Again reads everything again; if the wallet still can't be read, the review
+/// shows no wallet lines, and the next Place Order compares nothing about the wallet, as for a key without
+/// `wallet:read`. A press that used sample credit stops with `dapiSampleCreditWalletUnreadable` instead.
+let dapiWalletUnreadableBeforeSending = "Plinth couldn’t read your 3DAPI wallet just before sending, so it can’t tell how much of this order would go on your card. Nothing was sent. Press Check Again to read it again. If it still can’t be read, the review won’t show your balance, and the order can go without that check."
 
 /// The review's sample-credit choice and its caption.
 let dapiSampleCreditToggleTitle = "Use My Sample Credit"
@@ -982,7 +1044,20 @@ enum DapiPlacePhase: Equatable {
                     self.phase = .blocked(dapiSampleCreditWalletUnreadable)
                     return
                 }
+                // The review showed the wallet, but it can't be read now: Plinth can't tell what would go on the card,
+                // so nothing is sent. Check Again reads everything again (a review without the wallet never stops here).
+                if reviewed.wallet != nil, fresh.wallet == nil {
+                    self.figures = nil
+                    self.phase = .blocked(dapiWalletUnreadableBeforeSending)
+                    return
+                }
                 var changed = dapiReviewChanges(reviewed: reviewed.snapshot, current: fresh.snapshot, names: self.draft.quoteNames)
+                // A new or larger shortfall than the review showed: the card may be charged more.
+                if let walletChange = dapiWalletShortfallChange(
+                    reviewed: dapiWalletCover(upTo: dapiReviewUpToTotal(reviewed.snapshot), wallet: reviewed.wallet),
+                    current: dapiWalletCover(upTo: dapiReviewUpToTotal(fresh.snapshot), wallet: fresh.wallet)) {
+                    changed.append(walletChange)
+                }
                 let creditAvailable = (fresh.wallet?.sampleCredit?.amountMinor ?? 0) > 0
                 if let credit = dapiSampleCreditChange(pressed: self.pressedSampleCredit, current: self.useSampleCredit,
                                                        available: creditAvailable) {
