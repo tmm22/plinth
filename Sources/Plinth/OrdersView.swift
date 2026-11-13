@@ -2478,86 +2478,32 @@ struct OrderActionConfirmSheet: View {
         // Wording only: "Refund requested." also when only the shipping record says the order shipped.
         let successRefundOnly = orderCancellationIsRefundOnly(orderDisplayStatus(shown))
         Task {
-            var outcome: OrderConfirmRecheckResult = .proceed
-            var latestOrder: [String: Any]?
-            var mutateOrder: [String: Any]?
-            var completedOrder: [String: Any]?
-            var didWrite = false
-            var attemptedWrite = false
-            var payAcceptedUnconfirmed = false
-            var payOutcome: BatchPayOutcome?
-            var rejected = false
-            var refusal: String?
+            // What the press did (`orderReviewWrite`, SlantOrderWrite.swift), read below once `store.run` returns.
+            let record = OrderReviewWriteRecord()
+            // `writeAttempted` and the refund wording follow the lock: set as it is recorded, cleared by a refusal.
+            record.onWriteAttempted = { attempted in
+                writeAttempted = attempted
+                if attempted { capturedRefundOnly = successRefundOnly }
+            }
             var failure: String?
-            // The write's own error when its outcome is unknown, for the cause shown in the sheet.
-            var unknownWriteError: Error?
             // Every failure is explained here in the review: a window alert would wait behind this sheet, and after a
             // write was sent its "try again" advice would be wrong.
             let ran = await store.run(isPay ? "Process order" : "Cancel order", handlesError: { error in
                 failure = friendlyAPIMessage(error)
                 return true
             }) {
-                let preview = try await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))")
-                let latest = mergeOrderDraftEnvelope(responseObject(preview))
-                // Only this order may be paid or cancelled (as Pay Several Drafts checks).
-                guard orderBelongs(latest, to: orderID) else { throw StudioError(orderReviewDifferentOrderMessage) }
-                latestOrder = latest
-                outcome = orderConfirmRecheck(method: method, shown: shown, latest: latest)
-                if let abort = orderConfirmRecheckAbortError(outcome) { throw abort }
-                if store.isOutcomeUnknown(orderID: orderID) { throw StudioError(unknownOutcomeBlockMessage) }
-                // Shared lock before the write: a timeout or 5xx leaves the charge/cancel outcome unknown.
-                store.markOutcomeUnknown(orderID: orderID, action: isPay ? .pay : .cancel, reviewedStatus: latest["status"] as? String)
-                attemptedWrite = true
-                writeAttempted = true
-                capturedRefundOnly = successRefundOnly
-                // Quit asks first until this write has its answer (PlinthApp.swift).
-                let write = SlantWritesInFlight.shared.begin(isPay ? .payment : .cancellation)
-                defer { SlantWritesInFlight.shared.end(write) }
-                let mutateResponse: APIResponse
-                do {
-                    mutateResponse = try await store.client.request(method, path: "/orders/\(encodedSegment(orderID))")
-                } catch {
-                    if orderMutationErrorProvesNoEffect(error, method: method) {
-                        // Slant refused it (or it was never sent), so nothing is pending: lift the lock and return to
-                        // the review.
-                        store.clearOutcomeUnknown(orderID: orderID)
-                        attemptedWrite = false
-                        writeAttempted = false
-                        rejected = true
-                        refusal = orderConfirmRefusalMessage(isPay: isPay, error: error)
-                        throw error
-                    }
-                    unknownWriteError = error
-                    // Activity records the cause without the error's own "try again" advice: the lock stops a
-                    // second send, and the sheet's note comes from `unknownWriteError`.
-                    throw StudioError(slantUnclearReplyCause(error) + ", so the result is unknown.")
-                }
-                mutateOrder = mergeOrderDraftEnvelope(responseObject(mutateResponse))
-                var refreshedOrder: [String: Any]?
-                if let refreshed = try? await store.client.request("GET", path: "/orders/\(encodedSegment(orderID))") {
-                    refreshedOrder = mergeOrderDraftEnvelope(responseObject(refreshed))
-                }
-                // Only an order that is this one counts: the refresh, else the reply.
-                completedOrder = orderPayAcceptedOrder(replied: mutateOrder, refreshed: refreshedOrder, orderID: orderID)
-                if isPay {
-                    // A 2xx to a pay whose order still shows DRAFT, or no readable status, isn't a confirmed charge:
-                    // the lock stays until a reload shows the outcome (as Pay Several Drafts does). Any other status
-                    // is past DRAFT, a definite outcome, so the lock lifts, but only a placed one is reported as placed.
-                    let result = batchPayOutcomeAfterSuccess(completedOrder)
-                    payOutcome = result
-                    if batchPayAcceptedOutcomeStaysLocked(completedOrder) {
-                        payAcceptedUnconfirmed = true
-                    } else {
-                        didWrite = true
-                        store.clearOutcomeUnknown(orderID: orderID)
-                    }
-                    // Activity records "Completed" only for a placed order.
-                    if result != .placed { throw StudioError(orderPayActivityDetail(result)) }
-                } else {
-                    didWrite = true
-                    store.clearOutcomeUnknown(orderID: orderID)
-                }
+                try await orderReviewWrite(orderID: orderID, method: method, shown: shown, env: .live(store), record: record)
             }
+            let outcome = record.outcome
+            let latestOrder = record.latestOrder
+            let completedOrder = record.completedOrder
+            let didWrite = record.didWrite
+            let attemptedWrite = record.attemptedWrite
+            let payAcceptedUnconfirmed = record.payAcceptedUnconfirmed
+            let payOutcome = record.payOutcome
+            let rejected = record.rejected
+            let refusal = record.refusal
+            let unknownWriteError = record.unknownWriteError
             writing = false
             if attemptedWrite { writeAttempted = true; capturedRefundOnly = successRefundOnly }
             if !ran { awaitingBusy = true; return }

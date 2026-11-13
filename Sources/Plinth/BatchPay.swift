@@ -805,37 +805,14 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             message = "Stopped loading. Nothing was paid."
             return
         }
-        reviewed = ids.map { id in
-            let order = loaded[id]
-            let reason = batchPayExclusionReason(orderID: id, order: order, loadFailure: failures[id],
-                                                 locked: store.isOutcomeUnknown(orderID: id))
-            let alreadyPaid = placedIDs.contains(id) ? "It was sent for payment in this batch." : nil
-            return BatchPayReviewedDraft(id: id, order: order, exclusion: alreadyPaid ?? reason)
-        }
-        // Every reviewed draft holds its marketplace order, whatever else left it out (a lock, a failed load, an unlisted
-        // cost), so a later draft for the same sale is never paid here while the earlier one waits to be paid on its own.
-        let duplicates = batchPayDuplicateExclusions(
-            reviewed.compactMap { draft in
-                batchPayDuplicateCheckOrder(id: draft.id, fresh: draft.order, listed: store.orders).map { (id: draft.id, order: $0) }
-            },
-            placedKeys: batchPayPlacedKeys(loaded: store.orders, recent: recent?.orders(forKey: reviewedKey) ?? []),
-            excludedIDs: Set(reviewed.filter { !$0.payable }.map(\.id)),
-            hiddenKeys: batchPayHiddenDraftMarketplaceKeys(store.orders, hidden: store.hiddenDraftIDSet,
-                                                           keeping: store.unknownOutcomeOrderIDs, reviewedIDs: Set(reviewed.map(\.id))))
-        reviewed = reviewed.map { draft in
-            guard draft.payable, let reason = duplicates[draft.id] else { return draft }
-            return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
-        }
-        // When the wider check couldn't be done, drafts for a marketplace order are left out too (never fewer).
-        if checkNeeded {
-            let unchecked = batchPayUncheckedExclusions(
-                reviewed.filter(\.payable).compactMap { draft in draft.order.map { (id: draft.id, order: $0) } }, recent: recent)
-            reviewed = reviewed.map { draft in
-                guard draft.payable, let reason = unchecked[draft.id] else { return draft }
-                return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
-            }
-            uncheckedLeftOut = unchecked.count
-        }
+        // Exclusions, marketplace duplicates and unchecked marketplace orders (`batchPayReviewedDrafts`,
+        // SlantOrderWrite.swift).
+        let review = batchPayReviewedDrafts(
+            ids: ids, loaded: loaded, failures: failures, lockedIDs: store.unknownOutcomeOrderIDs, placedIDs: placedIDs,
+            listed: store.orders, recentPlaced: recent?.orders(forKey: reviewedKey) ?? [],
+            hiddenDraftIDs: store.hiddenDraftIDSet, checkNeeded: checkNeeded, recent: recent)
+        reviewed = review.reviewed
+        if let unchecked = review.uncheckedLeftOut { uncheckedLeftOut = unchecked }
         placedCheckNeeded = checkNeeded
         recentRead = recent
         phase = .review
@@ -905,7 +882,8 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             states[draft.id] = .paying
             inFlight = true
             lastStart = Date()
-            let result = await payOne(draft.id, reviewed: reviewedOrder, store: store)
+            let result = await batchPayOne(draft.id, reviewed: reviewedOrder, env: .live(
+                store, noteRateLimit: { self.noteRateLimit($0, store: store) }, noteRateLimitError: { self.noteRateLimitError($0) }))
             inFlight = false
             states[draft.id] = batchPayRowState(for: result.outcome)
             switch result.outcome {
@@ -935,56 +913,6 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
                                          success: tally.placed == queue.count), at: 0)
         store.activities = Array(store.activities.prefix(100))
         phase = .done
-    }
-
-    /// One order, exactly as the single review's `confirmAction`: re-fetch, recheck against the reviewed copy, lock,
-    /// pay, then lift the lock only on success or a definite refusal.
-    private func payOne(_ id: String, reviewed: [String: Any], store: StudioStore)
-        async -> (outcome: BatchPayOutcome, completed: [String: Any]?, error: Error?) {
-        let path = "/orders/\(encodedSegment(id))"
-        let latest: [String: Any]
-        do {
-            let response = try await store.client.request("GET", path: path)
-            noteRateLimit(response, store: store)
-            latest = mergeOrderDraftEnvelope(responseObject(response))
-        } catch {
-            noteRateLimitError(error)
-            return (.notSent("Couldn’t refresh it before paying. \(friendlyAPIMessage(error))"), nil, error)
-        }
-        guard orderBelongs(latest, to: id) else { return (.changed("Slant returned a different order."), nil, nil) }
-        if let abort = orderConfirmRecheckAbortError(orderConfirmRecheck(method: "POST", shown: reviewed, latest: latest)) {
-            return (.changed(abort.message), nil, nil)
-        }
-        if store.isOutcomeUnknown(orderID: id) { return (.notSent(unknownOutcomeBlockMessage), nil, nil) }
-        // Shared lock before the write: a timeout or 5xx leaves the charge outcome unknown.
-        store.markOutcomeUnknown(orderID: id, action: .pay, reviewedStatus: latest["status"] as? String)
-        let payResponse: APIResponse
-        do {
-            payResponse = try await store.client.request("POST", path: path)
-        } catch {
-            noteRateLimitError(error)
-            let outcome = batchPayOutcome(forPayError: error)
-            // Slant refused it, so nothing is pending: lift the lock. Any other failure keeps it.
-            if case .refused = outcome { store.clearOutcomeUnknown(orderID: id) }
-            return (outcome, nil, error)
-        }
-        noteRateLimit(payResponse, store: store)
-        // The lock stays held while the order is re-read; it is decided once, from what Slant then shows.
-        let paid = mergeOrderDraftEnvelope(responseObject(payResponse))
-        var refreshedOrder: [String: Any]?
-        if let refreshed = try? await store.client.request("GET", path: path) {
-            noteRateLimit(refreshed, store: store)
-            refreshedOrder = mergeOrderDraftEnvelope(responseObject(refreshed))
-        }
-        let completed = orderPayAcceptedOrder(replied: paid, refreshed: refreshedOrder, orderID: id)
-        // The batch goes on only when the order Slant returned is actually placed. Accepted but still a draft (or no
-        // readable status) means the charge may still happen: the lock stays until a reload shows the outcome. Any
-        // other status is past DRAFT, a definite outcome, so the lock lifts (an unrecognised one still stops the batch).
-        let outcome = batchPayOutcomeAfterSuccess(completed)
-        if !batchPayAcceptedOutcomeStaysLocked(completed) {
-            store.clearOutcomeUnknown(orderID: id)
-        }
-        return (outcome, completed, nil)
     }
 
     // MARK: After the run

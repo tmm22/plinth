@@ -319,7 +319,8 @@ private enum DisplayStatusLeakScan {
     /// The display status, its helpers and the names Studio gives it.
     static let displayNames: Set<String> = ["orderDisplayStatus", "orderDisplayStatusTitle", "orderStatusLagsShippingRecord",
                                             "orderStatusLagNote", "copyStatus", "displayStatus"]
-    static let forbiddenFiles: Set<String> = ["BatchPay.swift", "SpendReport.swift", "StudioStore.swift", "APIWorkbenchView.swift"]
+    static let forbiddenFiles: Set<String> = ["BatchPay.swift", "SpendReport.swift", "StudioStore.swift", "APIWorkbenchView.swift",
+                                              "SlantOrderWrite.swift"]
     /// Calls, properties and definitions that decide pay, cancel, the lock, Pay Several Drafts or spend.
     static let writeNames: Set<String> = [
         "orderCanRequestCancellation", "orderConfirmRecheck", "markOutcomeUnknown", "reviewedStatus",

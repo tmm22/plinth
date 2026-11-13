@@ -170,7 +170,8 @@ final class OrderLockRefreshRound22Tests: XCTestCase {
             XCTAssertFalse(detail.localizedCaseInsensitiveContains("try again"), detail)
             XCTAssertTrue(detail.hasSuffix(", so the result is unknown."), detail)
         }
-        let view = try source("OrdersView.swift")
+        // The single review's write (`orderReviewWrite`) lives in SlantOrderWrite.swift.
+        let view = try source("SlantOrderWrite.swift")
         XCTAssertTrue(view.contains("throw StudioError(slantUnclearReplyCause(error) + \", so the result is unknown.\")"))
         // The Workbench's line ends the same way, full stop included.
         let workbench = try source("APIWorkbenchView.swift")
