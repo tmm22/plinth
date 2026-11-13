@@ -54,7 +54,7 @@ final class OrdersReviewFixesRound15Tests: XCTestCase {
     /// The pass only ever leaves more out: no reason is returned for an excluded draft, and drafts for other orders are
     /// untouched. A left-out draft holds its marketplace order wherever it is in the list, so a payable draft before it
     /// is left out too (paying that one now and the left-out one later on its own would also pay the sale twice).
-    func testThePassNeverIncludesAnything() {
+    func testThePassNeverIncludesAnything() throws {
         let a = draft("A")
         let b = draft("B")
         let c = draft("C", metadata: ["source": "etsy", "sourceOrderId": "2718"])
@@ -69,7 +69,7 @@ final class OrdersReviewFixesRound15Tests: XCTestCase {
         XCTAssertEqual(Set(both.keys), ["B"])
         XCTAssertEqual(both["B"], "Another draft in this review is also for Etsy order 3141. Only the first is included; check them in Orders.")
         // An already placed marketplace order still leaves every draft for it out, excluded ones get no reason.
-        let placed = batchPayDuplicateExclusions([(id: "A", order: a), (id: "B", order: b)], placedKeys: [batchPayMarketplaceKey(a)!],
+        let placed = batchPayDuplicateExclusions([(id: "A", order: a), (id: "B", order: b)], placedKeys: [try XCTUnwrap(batchPayMarketplaceKey(a))],
                                                  excludedIDs: ["A"])
         XCTAssertEqual(Set(placed.keys), ["B"])
         XCTAssertTrue(placed["B"]?.contains("already placed") == true)

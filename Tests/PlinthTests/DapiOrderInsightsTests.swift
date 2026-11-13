@@ -151,15 +151,15 @@ final class DapiOrderInsightsTests: XCTestCase {
         XCTAssertNotNil(reason(insightOrder(status: .cancelled, charges: insightCharges())))
         XCTAssertNotNil(reason(insightOrder(status: .awaitingPayment, charges: insightCharges())))
         XCTAssertNotNil(reason(insightOrder(status: .unknown("x"), charges: insightCharges())))
-        XCTAssertTrue(reason(insightOrder(status: .paid, charges: nil))!.contains("charges"))
-        XCTAssertTrue(reason(insightOrder(status: .paid, charges: insightCharges(paidBy: "buyer")))!.contains("wasn’t paid from your 3DAPI balance"))
-        XCTAssertTrue(reason(insightOrder(status: .paid, charges: insightCharges(currency: "eur")))!.contains("EUR"))
+        XCTAssertTrue(try XCTUnwrap(reason(insightOrder(status: .paid, charges: nil))).contains("charges"))
+        XCTAssertTrue(try XCTUnwrap(reason(insightOrder(status: .paid, charges: insightCharges(paidBy: "buyer")))).contains("wasn’t paid from your 3DAPI balance"))
+        XCTAssertTrue(try XCTUnwrap(reason(insightOrder(status: .paid, charges: insightCharges(currency: "eur")))).contains("EUR"))
         // A refund in another currency is never added.
-        XCTAssertTrue(reason(insightOrder(status: .paid, charges: insightCharges(),
-                                          refunds: [DapiRefund(id: "ref_1", amount: DapiMoney(amountMinor: 1, currency: "gbp"), createdAt: nil)]))!.contains("GBP"))
+        XCTAssertTrue(try XCTUnwrap(reason(insightOrder(status: .paid, charges: insightCharges(),
+                                          refunds: [DapiRefund(id: "ref_1", amount: DapiMoney(amountMinor: 1, currency: "gbp"), createdAt: nil)]))).contains("GBP"))
         // Refunds larger than the total.
-        XCTAssertTrue(reason(insightOrder(status: .returned, charges: insightCharges(),
-                                          refunds: [DapiRefund(id: "ref_1", amount: insightUSD(2000), createdAt: nil)]))!.contains("more than 3DAPI charged"))
+        XCTAssertTrue(try XCTUnwrap(reason(insightOrder(status: .returned, charges: insightCharges(),
+                                          refunds: [DapiRefund(id: "ref_1", amount: insightUSD(2000), createdAt: nil)]))).contains("more than 3DAPI charged"))
         // Negative amounts are unreadable.
         XCTAssertNotNil(reason(insightOrder(status: .paid, charges: insightCharges(credit: -5))))
     }
@@ -382,8 +382,8 @@ final class DapiOrderInsightsTests: XCTestCase {
         XCTAssertFalse(loader.running)
         XCTAssertEqual(requests, 0)
         XCTAssertEqual(loader.load?.orders.map(\.id), ["ord_1"])
-        XCTAssertTrue(loader.message!.contains("limiting requests"))
-        XCTAssertTrue(loader.message!.contains("2 minutes"))
+        XCTAssertTrue(try XCTUnwrap(loader.message).contains("limiting requests"))
+        XCTAssertTrue(try XCTUnwrap(loader.message).contains("2 minutes"))
         XCTAssertTrue(loader.canContinue)
         XCTAssertEqual(client.queries.count, 2)
         XCTAssertEqual(client.queries[1].cursor, "c2")

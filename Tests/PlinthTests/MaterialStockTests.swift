@@ -41,9 +41,9 @@ final class MaterialStockTests: XCTestCase {
         XCTAssertEqual(listed.blockers, ["PETG Red is out of stock."])
     }
 
-    func testAProductNeedingTwoMaterialsListsEachOnce() {
+    func testAProductNeedingTwoMaterialsListsEachOnce() throws {
         let two = product("Two-tone", materials: ["petg-red", "silk-gold", " petg-red "])
-        let issue = try! XCTUnwrap(savedProductStockCheck(products: [two], filaments: [pla, petgOut, silkOut]).issues.first)
+        let issue = try XCTUnwrap(savedProductStockCheck(products: [two], filaments: [pla, petgOut, silkOut]).issues.first)
         XCTAssertEqual(issue.problems.map(\.materialID), ["petg-red", "silk-gold"])
         XCTAssertEqual(savedProductStockNoticeHeadline([issue]),
                        "Saved product “Two-tone” can’t be ordered: PETG Red is out of stock. (+1 more)")
@@ -109,10 +109,10 @@ final class MaterialStockTests: XCTestCase {
         XCTAssertEqual(savedProductStockNoticeMaterialsLine(issues), "Out of stock: Colour 0, Colour 1, Colour 2, Colour 3 and 2 others.")
     }
 
-    func testLongNamesAreShortened() {
+    func testLongNamesAreShortened() throws {
         let long = String(repeating: "x", count: 200)
         let issues = savedProductStockCheck(products: [product(long, materials: ["petg-red"])], filaments: [petgOut]).issues
-        let headline = try! XCTUnwrap(savedProductStockNoticeHeadline(issues))
+        let headline = try XCTUnwrap(savedProductStockNoticeHeadline(issues))
         XCTAssertTrue(headline.contains("“" + String(repeating: "x", count: savedProductStockNameLimit - 1) + "…”"))
         XCTAssertLessThanOrEqual(headline.count, 130)
     }

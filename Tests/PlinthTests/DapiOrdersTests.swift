@@ -472,7 +472,7 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
                                  materials: [DapiMaterialSlot(slot: 1, materialID: "mat_red", materialName: "PLA Red")],
                                  quantity: 4, unitPrice: nil, productionUnitPrice: nil, total: nil)
         let lines = dapiComposerLines(duplicating: DapiOrdersTests.order("ord_1", status: .shipped, items: [item]))
-        XCTAssertEqual(lines.count, 1)
+        guard lines.count == 1 else { return XCTFail("Expected one line: \(lines)") }
         XCTAssertEqual(lines[0].quoteID, "qte_9")
         XCTAssertEqual(lines[0].quantity, 4)
         XCTAssertFalse(lines[0].useSuggested)
@@ -1471,7 +1471,7 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         runner.placeOrder()
         await settled(runner)
         XCTAssertEqual(runner.phase, .ready)
-        XCTAssertEqual(runner.changes, [dapiWalletShortfallChange(reviewed: .covered, current: .short(DapiOrdersTests.usd(1_599)))!])
+        XCTAssertEqual(runner.changes, [try XCTUnwrap(dapiWalletShortfallChange(reviewed: .covered, current: .short(DapiOrdersTests.usd(1_599))))])
         XCTAssertEqual(runner.changes.first, "Your 3DAPI wallet may now be up to \(dapiMoneyText(DapiOrdersTests.usd(1_599))) short for this order.")
         XCTAssertEqual(stub.count("place"), 0, "Nothing is sent")
         XCTAssertEqual(harness.begun, 0)
@@ -1502,8 +1502,8 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         runner.placeOrder()
         await settled(runner)
         XCTAssertEqual(runner.phase, .ready)
-        XCTAssertEqual(runner.changes, [dapiWalletShortfallChange(reviewed: .short(DapiOrdersTests.usd(500)),
-                                                                  current: .short(DapiOrdersTests.usd(900)))!])
+        XCTAssertEqual(runner.changes, [try XCTUnwrap(dapiWalletShortfallChange(reviewed: .short(DapiOrdersTests.usd(500)),
+                                                                                current: .short(DapiOrdersTests.usd(900))))])
         XCTAssertEqual(stub.count("place"), 0)
         XCTAssertTrue(harness.unconfirmed.isEmpty)
 
@@ -1565,10 +1565,10 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         runner.placeOrder()
         await settled(runner)
         XCTAssertEqual(runner.phase, .ready)
-        XCTAssertEqual(runner.changes.count, 2, "\(runner.changes)")
+        XCTAssertEqual(stub.count("place"), 0)
+        guard runner.changes.count == 2 else { return XCTFail("Expected two changes: \(runner.changes)") }
         XCTAssertTrue(runner.changes[0].contains("per unit"))
         XCTAssertEqual(runner.changes[1], dapiWalletShortfallChange(reviewed: .covered, current: .short(DapiOrdersTests.usd(1_800 + 699 - 2_000))))
-        XCTAssertEqual(stub.count("place"), 0)
     }
 
     // MARK: Look for Order on 3DAPI
@@ -1952,7 +1952,7 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         }
         XCTAssertNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .paid), cancelUnknown: false))
         XCTAssertNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .assigned), cancelUnknown: true))
-        XCTAssertTrue(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .assigned), cancelUnknown: false)!
+        XCTAssertTrue(try XCTUnwrap(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .assigned), cancelUnknown: false))
             .contains("only while an order is Paid"))
         XCTAssertNotNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .cancelled), cancelUnknown: false))
         XCTAssertNotNil(dapiCancelUnavailableNote(DapiOrdersTests.order("o", status: .shipped), cancelUnknown: false))

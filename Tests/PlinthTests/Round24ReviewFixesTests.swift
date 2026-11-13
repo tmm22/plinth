@@ -32,8 +32,12 @@ final class Round24ReviewFixesTests: XCTestCase {
         "[" + entries.map { "{\"quantity\":\($0.1),\"sku\":\"\($0.0)\"}" }.joined(separator: ",") + "]"
     }
 
-    private func match(_ a: [String: Any], _ b: [String: Any]) -> Bool {
-        batchPayMarketplaceKeysMatch(batchPayMarketplaceKey(a)!, batchPayMarketplaceKey(b)!)
+    private func match(_ a: [String: Any], _ b: [String: Any], file: StaticString = #filePath, line: UInt = #line) -> Bool {
+        guard let left = batchPayMarketplaceKey(a), let right = batchPayMarketplaceKey(b) else {
+            XCTFail("A draft without a marketplace key", file: file, line: line)
+            return false
+        }
+        return batchPayMarketplaceKeysMatch(left, right)
     }
 
     func testDraftsSharingALineItemAreOneSaleWhateverTheirUnits() {
@@ -259,7 +263,7 @@ final class Round24ReviewFixesTests: XCTestCase {
         let mixed = try shopifyImportParse([node(lines: [line(111, current: 0, unfulfilled: 0), line(222, sku: "MUG", current: -1)])],
                                            shop: shop, truncated: false)
         XCTAssertEqual(mixed.orders.count, 1)
-        XCTAssertFalse(orderImportCheck(mixed.orders[0], context: context).canTick)
+        XCTAssertFalse(try orderImportCheck(XCTUnwrap(mixed.orders.first), context: context).canTick)
     }
 
     func testAnUnreadableLineBesideReadableOnesStartsUnticked() throws {
@@ -278,7 +282,7 @@ final class Round24ReviewFixesTests: XCTestCase {
         let nothing = node(name: "#1002", lines: [line(111, current: 0, unfulfilled: 3), line(222, sku: "MUG", quantity: 1, current: 1, unfulfilled: 0)])
         let parse = try shopifyImportParse([node(), nothing], shop: shop, truncated: false)
         XCTAssertEqual(parse.orders.map(\.sourceOrderID), ["#1001"])
-        XCTAssertTrue(parse.notices.contains(shopifyImportNothingLeftNotice(["#1002"])!))
+        XCTAssertTrue(parse.notices.contains(try XCTUnwrap(shopifyImportNothingLeftNotice(["#1002"]))))
     }
 
     // MARK: 5. One name fetched twice
@@ -400,7 +404,7 @@ final class Round24ReviewFixesTests: XCTestCase {
         let nodes = [node(name: "#7")] + (1...3).map { node(name: "#\($0)", lines: [line(1, current: 0)]) }
         let parse = try shopifyImportParse(nodes, shop: shop, truncated: false)
         XCTAssertEqual(parse.notices.filter { $0.contains("nothing left to make") },
-                       [shopifyImportNothingLeftNotice(["#1", "#2", "#3"])!])
+                       [try XCTUnwrap(shopifyImportNothingLeftNotice(["#1", "#2", "#3"]))])
     }
 }
 
@@ -497,8 +501,8 @@ extension DapiOrdersTests {
         runner.placeOrder()
         await settled(runner)
         XCTAssertEqual(runner.phase, .ready)
-        XCTAssertEqual(runner.changes, [dapiWalletShortfallChange(reviewed: .short(DapiOrdersTests.usd(upTo + 500)),
-                                                                  current: .short(DapiOrdersTests.usd(upTo + 2_000)))!])
+        XCTAssertEqual(runner.changes, [try XCTUnwrap(dapiWalletShortfallChange(reviewed: .short(DapiOrdersTests.usd(upTo + 500)),
+                                                                                current: .short(DapiOrdersTests.usd(upTo + 2_000))))])
         XCTAssertEqual(stub.count("place"), 0)
         XCTAssertTrue(harness.unconfirmed.isEmpty)
     }

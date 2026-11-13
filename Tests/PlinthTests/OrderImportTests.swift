@@ -468,7 +468,7 @@ final class OrderImportTests: XCTestCase {
         let result = try parse(orderImportTemplateCSV())
         XCTAssertEqual(result.format, .template)
         XCTAssertEqual(result.orders.count, 1)
-        let order = result.orders[0]
+        let order = try XCTUnwrap(result.orders.first)
         XCTAssertEqual(order.email, "alex@example.com")
         XCTAssertEqual(order.countryCode, "US")
         XCTAssertEqual(order.items, [OrderImportItem(sku: "YOUR-SKU", quantityText: "1", itemName: "", row: 2)])

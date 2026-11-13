@@ -802,7 +802,7 @@ final class DapiHashProbe: @unchecked Sendable {
             let runner = harness.makeRunner(stub)
             await run(runner)
             XCTAssertEqual(stub.calls, ["list"], onboarding.status)
-            XCTAssertEqual(runner.phase, .problem(dapiAllowanceProblem(onboarding)!))
+            XCTAssertEqual(runner.phase, .problem(try XCTUnwrap(dapiAllowanceProblem(onboarding))))
             XCTAssertEqual(harness.allowanceReads, 1)
         }
         // A failed read (nil) doesn't block.

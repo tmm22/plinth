@@ -223,7 +223,7 @@ final class PrintPreparationReviewFixesTests: XCTestCase {
         XCTAssertFalse(autoImproveKeepsPlacement(LocalModel(name: "Owl", filePath: "/tmp/o.stl")))
     }
 
-    func testCopiesOfPrintReadyCopiesAreMarkedAndNeverPreparedAgain() {
+    func testCopiesOfPrintReadyCopiesAreMarkedAndNeverPreparedAgain() throws {
         let derived = LocalModel(name: "P (print-ready) (repaired)", filePath: "/tmp/d.stl", inheritsZUpLock: true, fromPrintReadyCopy: true)
         XCTAssertTrue(derived.derivesFromPrintReadyCopy)
         XCTAssertEqual(printPreparationManualBlockedReason(derived), printPreparationFromCopyBlocked)
@@ -235,8 +235,9 @@ final class PrintPreparationReviewFixesTests: XCTestCase {
         let kept = printPreparationRecordAfterFill(record, filled: 2)
         XCTAssertEqual(kept.sourceID, record.sourceID)
         XCTAssertEqual(kept.hiddenPockets?.count, 0)
-        XCTAssertNil(hiddenPocketsLine(try! XCTUnwrap(kept.hiddenPockets)))
-        XCTAssertEqual(printPreparationPocketsFilledLine(kept.hiddenPockets!), "Hidden pockets filled: 2, with Fill Hidden Pockets.")
+        let keptPockets = try XCTUnwrap(kept.hiddenPockets)
+        XCTAssertNil(hiddenPocketsLine(keptPockets))
+        XCTAssertEqual(printPreparationPocketsFilledLine(keptPockets), "Hidden pockets filled: 2, with Fill Hidden Pockets.")
         let filledCopy = LocalModel(name: "P (print-ready) (pockets filled)", filePath: "/tmp/f.stl", printPreparation: kept, filledPockets: true)
         XCTAssertNotNil(printPreparationManualBlockedReason(filledCopy))
         XCTAssertTrue(filledCopy.requiresZUp)

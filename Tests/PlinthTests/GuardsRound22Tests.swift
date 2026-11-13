@@ -81,8 +81,12 @@ final class GuardsRound22Tests: XCTestCase {
     }
 
     func testDifferentMarketplacesStoresAndSplitsStayApart() {
-        func match(_ a: [String: Any], _ b: [String: Any]) -> Bool {
-            batchPayMarketplaceKeysMatch(batchPayMarketplaceKey(a)!, batchPayMarketplaceKey(b)!)
+        func match(_ a: [String: Any], _ b: [String: Any], line: UInt = #line) -> Bool {
+            guard let left = batchPayMarketplaceKey(a), let right = batchPayMarketplaceKey(b) else {
+                XCTFail("A draft without a marketplace key", line: line)
+                return false
+            }
+            return batchPayMarketplaceKeysMatch(left, right)
         }
         XCTAssertFalse(match(order("DRAFT", source: "etsy", id: "3141"), order("DRAFT", source: "shopify", id: "3141")))
         XCTAssertFalse(match(order("DRAFT", id: "#1001"), order("DRAFT", id: "#1002")))
@@ -101,8 +105,12 @@ final class GuardsRound22Tests: XCTestCase {
     }
 
     func testWhatCantTellTwoSalesApartMatches() {
-        func match(_ a: [String: Any], _ b: [String: Any]) -> Bool {
-            batchPayMarketplaceKeysMatch(batchPayMarketplaceKey(a)!, batchPayMarketplaceKey(b)!)
+        func match(_ a: [String: Any], _ b: [String: Any], line: UInt = #line) -> Bool {
+            guard let left = batchPayMarketplaceKey(a), let right = batchPayMarketplaceKey(b) else {
+                XCTFail("A draft without a marketplace key", line: line)
+                return false
+            }
+            return batchPayMarketplaceKeysMatch(left, right)
         }
         XCTAssertTrue(match(order("DRAFT", source: nil), order("DRAFT", source: "shopify")), "a missing source matches")
         XCTAssertTrue(match(order("DRAFT", source: " Shopify "), order("DRAFT", source: "shopify")))
@@ -117,7 +125,7 @@ final class GuardsRound22Tests: XCTestCase {
                             order("DRAFT", items: "[{\"sku\":\"MUG-1\",\"quantity\":1}]")), "the same items written another way")
     }
 
-    func testEveryPairWithEqualKeysStillMatches() {
+    func testEveryPairWithEqualKeysStillMatches() throws {
         // ("a|b", "c") and ("a", "b|c") shared a key before round 22.
         let sources: [String?] = [nil, "shopify", "Etsy", "a", "a|b"]
         let ids = ["#1001", "c", "b|c", "x\\y"]
@@ -128,9 +136,9 @@ final class GuardsRound22Tests: XCTestCase {
         for source in sources { for id in ids { for shop in shops { for item in items {
             orders.append(order("DRAFT", source: source, id: id, shop: shop, items: item))
         } } } }
-        let keys = orders.map { batchPayMarketplaceKey($0)! }
+        let keys = try orders.map { try XCTUnwrap(batchPayMarketplaceKey($0)) }
         // The key before round 22: the parts joined without escaping.
-        let oldKeys = orders.map { BatchPayMarketplaceRef(order: $0)!.unescapedKey }
+        let oldKeys = try orders.map { try XCTUnwrap(BatchPayMarketplaceRef(order: $0)).unescapedKey }
         var pairs = 0
         for a in orders.indices {
             XCTAssertEqual(BatchPayMarketplaceRef(key: keys[a]), BatchPayMarketplaceRef(order: orders[a]), "the key reads back exactly")

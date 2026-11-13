@@ -501,7 +501,7 @@ final class OrdersUXTests: XCTestCase {
         ]])
         let result = orderLinesForReorder(order)
         XCTAssertEqual(result.skipped, [])
-        XCTAssertEqual(result.lines.count, 3)
+        guard result.lines.count == 3 else { return XCTFail("Expected three lines: \(result.lines)") }
         let print = result.lines[0]
         XCTAssertEqual(print.type, "PRINT")
         XCTAssertEqual(print.reference, "file-1")

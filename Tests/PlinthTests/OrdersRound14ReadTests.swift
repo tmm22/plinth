@@ -184,8 +184,9 @@ final class OrdersRound14ReadTests: XCTestCase {
                                          to: saved, now: later)
         // Re-labels are recorded but neither listed, badged nor notified.
         for id in ["A", "B", "C", "D"] {
-            XCTAssertFalse(applied.snapshot.orders[id]!.hasUnseenChange, id)
-            XCTAssertNil(applied.snapshot.orders[id]!.changedAt, id)
+            XCTAssertNotNil(applied.snapshot.orders[id], id)
+            XCTAssertEqual(applied.snapshot.orders[id]?.hasUnseenChange, false, id)
+            XCTAssertNil(applied.snapshot.orders[id]?.changedAt, id)
         }
         XCTAssertEqual(applied.snapshot.orders["A"]?.status, "PRINTING")
         XCTAssertEqual(applied.snapshot.orders["C"]?.seenStatus, "CANCELLED")
