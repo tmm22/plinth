@@ -3,6 +3,21 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
+# scripts/mutation-probe.py plants one deliberate bug at a time in Sources/ and keeps a marker folder in the git folder
+# until the file is back. Never build the app from a planted bug. Outside a git checkout there is no marker to check.
+PROBE_MARKER="$(git -C "$PROJECT_DIR" rev-parse --git-path plinth-mutation-probe 2>/dev/null)" || PROBE_MARKER=""
+if [ -n "$PROBE_MARKER" ]; then
+    case "$PROBE_MARKER" in /*) ;; *) PROBE_MARKER="$PROJECT_DIR/$PROBE_MARKER" ;; esac
+    if [ -e "$PROBE_MARKER" ] || [ -L "$PROBE_MARKER" ]; then
+        PROBE_FILE="$(head -n 1 "$PROBE_MARKER/path" 2>/dev/null)" || PROBE_FILE=""
+        if [ -n "$PROBE_FILE" ]; then
+            printf 'Not building: the mutation probe has a deliberate bug planted in %s. If no probe is running, run python3 -I scripts/mutation-probe.py --restore to put it back (or git checkout -- %s, then --restore to remove the marker %s).\n' "$PROBE_FILE" "$PROBE_FILE" "$PROBE_MARKER" >&2
+        else
+            printf 'Not building: the mutation probe'"'"'s marker %s is there (a probe is running, or one was killed). If no probe is running, run python3 -I scripts/mutation-probe.py --restore.\n' "$PROBE_MARKER" >&2
+        fi
+        exit 1
+    fi
+fi
 # The SwiftPM product, which names the executable and its resource bundle.
 PRODUCT="Plinth"
 APP_DIR="$PROJECT_DIR/dist/Plinth.app"
