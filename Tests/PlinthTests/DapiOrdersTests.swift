@@ -847,7 +847,8 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
     }
 
     /// A wallet that can't be read at the press isn't "no sample credit": nothing is sent, the tick stays, and Check
-    /// Again reads it again.
+    /// Again reads it again. The review here showed the wallet too, so `dapiWalletUnreadableBeforeSending` would also
+    /// apply: sample credit's own, more specific stop comes first.
     func testAFailedWalletReadAtThePressKeepsTheTick() async {
         let stub = scriptedReady()
         stub.walletResult = .success(sampleCreditWallet(1_500))
@@ -891,19 +892,72 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertEqual(stub.placed.last?.0.useSampleCredit, true)
     }
 
-    /// Without sample credit at the press, a wallet that can't be read doesn't matter: the order goes without it.
-    func testAFailedWalletReadDoesntBlockAnOrderThatDoesntUseSampleCredit() async {
+    /// When the review showed the wallet, a wallet that can't be read at the press stops the order even without sample
+    /// credit (owner decision, delegated, 13 Nov 2026, replacing 12 Nov's "a failed wallet read changes nothing"):
+    /// Plinth can't tell what would go on the card. Check Again with the wallet still unreadable shows the review
+    /// without it, and then the order can go.
+    func testAFailedWalletReadAtThePressStopsAnOrderWhoseReviewShowedTheWallet() async {
         let stub = scriptedReady()
-        stub.walletResult = .success(sampleCreditWallet(1_500))
         let harness = PlaceHarness()
+        for failure in [DapiError.readFailed("offline"), .rateLimited(code: nil, retryAt: nil), .refused(status: 403, code: "missing_scope", message: nil)] {
+            stub.walletResult = .success(sampleCreditWallet(1_500))
+            let runner = await readyRunner(stub, harness)
+            XCTAssertNotNil(runner.figures?.wallet, "The review shows the wallet")
+            XCTAssertFalse(runner.useSampleCredit, "A customer's address starts unticked")
+            stub.walletResult = .failure(failure)
+            runner.placeOrder()
+            await settled(runner)
+            XCTAssertEqual(runner.phase, .blocked(dapiWalletUnreadableBeforeSending), "\(failure)")
+            XCTAssertNil(runner.figures, "The review offers Check Again, not Place Order")
+            XCTAssertFalse(runner.canPlace)
+            XCTAssertEqual(stub.count("place"), 0, "Never sent while the wallet can't be read")
+            XCTAssertEqual(harness.begun, 0)
+            XCTAssertTrue(harness.unconfirmed.isEmpty, "No attempt is recorded")
+            runner.placeOrder()
+            XCTAssertEqual(stub.count("place"), 0, "Pressing again while blocked does nothing")
+
+            // Check Again with the wallet still unreadable: the review shows no wallet, so the next press can't stop
+            // for it.
+            runner.checkAgain()
+            await waitUntil { runner.phase != .checking }
+            XCTAssertEqual(runner.phase, .ready)
+            XCTAssertNil(runner.figures?.wallet)
+            XCTAssertTrue(runner.canPlace)
+        }
+        XCTAssertTrue(dapiWalletUnreadableBeforeSending.contains("Nothing was sent"))
+        XCTAssertTrue(dapiWalletUnreadableBeforeSending.contains("Check Again"))
+        XCTAssertNotEqual(dapiWalletUnreadableBeforeSending, dapiSampleCreditWalletUnreadable)
+
+        // The release valve: reviewed without a wallet, the order goes once, without sample credit.
         let runner = await readyRunner(stub, harness)
-        XCTAssertFalse(runner.useSampleCredit, "A customer's address starts unticked")
-        stub.walletResult = .failure(.readFailed("offline"))
+        XCTAssertNil(runner.figures?.wallet)
         runner.placeOrder()
         await settled(runner)
         XCTAssertEqual(stub.count("place"), 1)
         XCTAssertEqual(stub.placed.last?.0.useSampleCredit, false)
+        XCTAssertEqual(harness.begun, 1)
 
+        // Check Again that reads the wallet again shows it, and an order it covers goes.
+        let again = ScriptedDapiOrders()
+        again.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1"))])
+        again.scriptShipping([.success(DapiOrdersTests.shipping(699))])
+        again.walletResult = .success(sampleCreditWallet(1_500))
+        let second = await readyRunner(again, PlaceHarness())
+        again.walletResult = .failure(.readFailed("offline"))
+        second.placeOrder()
+        await settled(second)
+        XCTAssertEqual(second.phase, .blocked(dapiWalletUnreadableBeforeSending))
+        again.walletResult = .success(sampleCreditWallet(1_500))
+        second.checkAgain()
+        await waitUntil { second.phase != .checking }
+        XCTAssertNotNil(second.figures?.wallet)
+        second.placeOrder()
+        await settled(second)
+        XCTAssertEqual(again.count("place"), 1)
+    }
+
+    /// A key without wallet:read never shows the wallet, so the pre-send check never stops for it.
+    func testAFailedWalletReadDoesntBlockAnOrderWhoseReviewHadNoWallet() async {
         // A key without wallet:read never shows sample credit, and orders as before.
         let noWallet = scriptedReady()
         let plain = await readyRunner(noWallet, PlaceHarness())
@@ -911,6 +965,17 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         await settled(plain)
         XCTAssertEqual(noWallet.count("place"), 1)
         XCTAssertEqual(noWallet.placed.last?.0.useSampleCredit, false)
+
+        // Reviewed without a wallet, a wallet that reads at the press (even one far short) doesn't stop it either: the
+        // review showed no judgement about the wallet.
+        let later = scriptedReady()
+        let reviewed = await readyRunner(later, PlaceHarness())
+        XCTAssertNil(reviewed.figures?.wallet)
+        later.walletResult = .success(DapiWallet(balance: DapiOrdersTests.usd(100), sampleCredit: nil, sampleCreditExpiresAt: nil))
+        reviewed.placeOrder()
+        await settled(reviewed)
+        XCTAssertEqual(later.count("place"), 1)
+        XCTAssertTrue(reviewed.changes.isEmpty)
     }
 
     func testSampleCreditChangeWordingNeverBlamesTheSellerForAHiddenTick() {
@@ -1258,9 +1323,237 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         XCTAssertNil(dapiWalletShortfall(upTo: DapiMoney(amountMinor: 1_500, currency: "eur"), wallet: wallet))
         XCTAssertTrue(dapiWalletShortfallText(DapiOrdersTests.usd(500)).contains("without a confirmed VAT number"))
         XCTAssertTrue(dapiWalletNote.contains("without a confirmed VAT number"))
+        // With auto top-up on, 3DAPI charges its fixed amount, which a key can't read: never shown as the exact charge.
+        XCTAssertTrue(dapiWalletShortfallText(DapiOrdersTests.usd(500)).contains(dapiAutoTopUpClause))
+        XCTAssertTrue(dapiWalletNote.contains(dapiAutoTopUpClause))
+        XCTAssertTrue(dapiAutoTopUpClause.contains("auto top-up"))
+        XCTAssertTrue(dapiAutoTopUpClause.contains("can be more"))
         XCTAssertTrue(dapiLineUsesChosenMaterials(DapiOrderLineRequest(quoteID: "qte_1", quantity: 1,
                                                                       materials: .slots([DapiMaterialSlot(slot: 1, materialID: "mat_a")]))))
         XCTAssertFalse(dapiLineUsesChosenMaterials(DapiOrderLineRequest(quoteID: "qte_1", quantity: 1, materials: .suggested)))
+    }
+
+    // MARK: The wallet in the pre-send check (owner decision, delegated, 13 Nov 2026)
+
+    func wallet(_ cents: Int, currency: String = "usd") -> DapiWallet {
+        DapiWallet(balance: DapiMoney(amountMinor: cents, currency: currency), sampleCredit: nil, sampleCreditExpiresAt: nil)
+    }
+
+    func testWalletCoverTellsCoveredShortAndNotKnownApart() {
+        let usd = DapiOrdersTests.usd
+        XCTAssertEqual(dapiWalletCover(upTo: usd(1_500), wallet: nil), .notKnown, "No wallet read")
+        XCTAssertEqual(dapiWalletCover(upTo: nil, wallet: wallet(1_000)), .notKnown, "No total")
+        XCTAssertEqual(dapiWalletCover(upTo: DapiMoney(amountMinor: 1_500, currency: "eur"), wallet: wallet(1_000)), .notKnown)
+        XCTAssertEqual(dapiWalletCover(upTo: usd(1_000), wallet: wallet(1_000)), .covered, "Equal amounts are covered")
+        XCTAssertEqual(dapiWalletCover(upTo: usd(999), wallet: wallet(1_000)), .covered)
+        XCTAssertEqual(dapiWalletCover(upTo: usd(1_500), wallet: wallet(1_000)), .short(usd(500)))
+        XCTAssertEqual(dapiWalletCover(upTo: usd(1_001), wallet: wallet(1_000)), .short(usd(1)), "Exact to the cent")
+        // Currencies compare in any case, as `dapiWalletShortfall` does.
+        XCTAssertEqual(dapiWalletCover(upTo: usd(1_500), wallet: wallet(1_000, currency: "USD")), .short(usd(500)))
+        XCTAssertEqual(dapiWalletCover(upTo: DapiMoney(amountMinor: 900, currency: "USD"), wallet: wallet(1_000)), .covered)
+        // A negative balance counts as nothing in the wallet; a shortfall of nothing is covered.
+        XCTAssertEqual(dapiWalletCover(upTo: usd(1_500), wallet: wallet(-500)), .short(usd(1_500)))
+        XCTAssertEqual(dapiWalletCover(upTo: usd(0), wallet: wallet(-500)), .covered)
+        XCTAssertEqual(dapiWalletCover(upTo: usd(Int.max), wallet: wallet(Int.min)), .short(usd(Int.max)), "No overflow")
+    }
+
+    func testWalletShortfallChangeStopsOnlyForANewOrLargerShortfall() {
+        let usd = DapiOrdersTests.usd
+        let all: [DapiWalletCover] = [.notKnown, .covered, .short(usd(500)), .short(usd(900)),
+                                      .short(DapiMoney(amountMinor: 900, currency: "eur"))]
+        // A review that showed no judgement about the wallet never stops for it.
+        for current in all { XCTAssertNil(dapiWalletShortfallChange(reviewed: .notKnown, current: current), "\(current)") }
+        XCTAssertNil(dapiWalletShortfallChange(reviewed: .covered, current: .covered))
+        XCTAssertNil(dapiWalletShortfallChange(reviewed: .short(usd(500)), current: .covered), "Gone: no stop")
+        XCTAssertNil(dapiWalletShortfallChange(reviewed: .short(usd(500)), current: .short(usd(500))), "Unchanged")
+        XCTAssertNil(dapiWalletShortfallChange(reviewed: .short(usd(500)), current: .short(usd(200))), "Smaller: no stop")
+        XCTAssertNil(dapiWalletShortfallChange(reviewed: .short(usd(500)),
+                                               current: .short(DapiMoney(amountMinor: 500, currency: "USD"))),
+                     "USD and usd are one currency")
+
+        XCTAssertEqual(dapiWalletShortfallChange(reviewed: .covered, current: .short(usd(1_599))),
+                       "Your 3DAPI wallet no longer covers this order: it may be up to \(dapiMoneyText(usd(1_599))) short. 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card.")
+        XCTAssertEqual(dapiWalletShortfallChange(reviewed: .short(usd(500)), current: .short(usd(900))),
+                       "Your 3DAPI wallet may now be up to \(dapiMoneyText(usd(900))) short for this order, not \(dapiMoneyText(usd(500))). 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card.")
+        XCTAssertEqual(dapiWalletShortfallChange(reviewed: .short(usd(500)),
+                                                 current: .short(DapiMoney(amountMinor: 501, currency: "USD"))),
+                       "Your 3DAPI wallet may now be up to \(dapiMoneyText(DapiMoney(amountMinor: 501, currency: "USD"))) short for this order, not \(dapiMoneyText(usd(500))). 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card.")
+        // A judgement the fresh figures can't make, or one in another currency: Plinth can't tell, so it stops.
+        XCTAssertEqual(dapiWalletShortfallChange(reviewed: .covered, current: .notKnown), dapiWalletNotComparableText)
+        XCTAssertEqual(dapiWalletShortfallChange(reviewed: .short(usd(500)), current: .notKnown), dapiWalletNotComparableText)
+        XCTAssertEqual(dapiWalletShortfallChange(reviewed: .short(usd(500)),
+                                                 current: .short(DapiMoney(amountMinor: 100, currency: "eur"))),
+                       dapiWalletNotComparableText, "A switch of currency is never read as smaller")
+        // Never blames the seller, and never names the shortfall as the exact card charge.
+        for reviewed in all {
+            for current in all {
+                guard let text = dapiWalletShortfallChange(reviewed: reviewed, current: current) else { continue }
+                XCTAssertFalse(text.lowercased().contains("you changed"), text)
+                if text != dapiWalletNotComparableText { XCTAssertTrue(text.contains(dapiAutoTopUpClause), text) }
+            }
+        }
+    }
+
+    func testReviewUpToTotalAddsEveryLineAndShipping() {
+        let usd = DapiOrdersTests.usd
+        func snapshot(_ lines: [(String, Int)], prices: [String: DapiMoney], shipping: DapiMoney = usd(699)) -> DapiOrderReviewSnapshot {
+            DapiOrderReviewSnapshot(countryCode: "GB",
+                                    lines: lines.map { DapiOrderLineRequest(quoteID: $0.0, quantity: $0.1, materials: .suggested) },
+                                    unitPrices: prices, shippingTotal: shipping, orderingProblem: nil)
+        }
+        XCTAssertEqual(dapiReviewUpToTotal(snapshot([("qte_1", 2), ("qte_2", 3)], prices: ["qte_1": usd(500), "qte_2": usd(250)])),
+                       usd(1_000 + 750 + 699))
+        XCTAssertEqual(dapiReviewUpToTotal(snapshot([("qte_1", 2), ("qte_1", 1)], prices: ["qte_1": usd(500)])),
+                       usd(1_500 + 699), "Two lines of one quote each count")
+        XCTAssertNil(dapiReviewUpToTotal(snapshot([("qte_1", 2), ("qte_2", 1)], prices: ["qte_1": usd(500)])),
+                     "A line without a price")
+        XCTAssertNil(dapiReviewUpToTotal(snapshot([("qte_1", 2), ("qte_2", 1)],
+                                                  prices: ["qte_1": usd(500), "qte_2": DapiMoney(amountMinor: 250, currency: "eur")])),
+                     "Mixed currencies are never added")
+        XCTAssertNil(dapiReviewUpToTotal(snapshot([("qte_1", 2)], prices: ["qte_1": usd(500)],
+                                                  shipping: DapiMoney(amountMinor: 699, currency: "eur"))))
+        XCTAssertNil(dapiReviewUpToTotal(snapshot([("qte_1", 3)], prices: ["qte_1": usd(Int.max / 2)])), "Overflow")
+        XCTAssertEqual(dapiReviewUpToTotal(snapshot([("qte_1", 1)], prices: ["qte_1": DapiMoney(amountMinor: 500, currency: "USD")])),
+                       DapiMoney(amountMinor: 1_199, currency: "usd"), "USD and usd add up")
+        XCTAssertEqual(dapiReviewUpToTotal(snapshot([], prices: [:])), usd(699), "No lines: shipping alone")
+    }
+
+    /// The review's Total row used to add up `draft.lines` with the quotes read; the snapshot gives the same answer.
+    func testReviewUpToTotalMatchesTheReviewsLines() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1", cents: 500))])
+        stub.scriptQuote("qte_2", [.success(DapiOrdersTests.quote("qte_2", cents: 1_234))])
+        stub.scriptShipping([.success(DapiOrdersTests.shipping(699))])
+        let order = DapiOrderDraft(lines: [
+            .init(request: DapiOrderLineRequest(quoteID: "qte_1", quantity: 2, materials: .suggested), name: "Bracket"),
+            .init(request: DapiOrderLineRequest(quoteID: "qte_2", quantity: 7, materials: .suggested), name: "Hook"),
+            .init(request: DapiOrderLineRequest(quoteID: "qte_1", quantity: 1, materials: .suggested), name: "Bracket")
+        ], recipient: recipient(), sellerReference: "", notes: nil)
+        let runner = await readyRunner(stub, PlaceHarness(), draft: order)
+        guard let figures = runner.figures else { return XCTFail("No figures") }
+        var old: [(unitPrice: DapiMoney, quantity: Int)] = []
+        for line in order.lines {
+            guard let price = figures.quotes[line.request.quoteID]?.price else { return XCTFail("No price") }
+            old.append((price, line.request.quantity))
+        }
+        let expected = dapiOrderUpToTotal(lines: old, shipping: figures.shipping.total)
+        XCTAssertEqual(dapiReviewUpToTotal(figures.snapshot), expected)
+        XCTAssertEqual(expected, DapiOrdersTests.usd(1_000 + 8_638 + 500 + 699))
+    }
+
+    /// A wallet that covered the order at the review but not at the press: nothing is sent and the new figures are
+    /// shown; the next press compares against them and sends once.
+    func testAWalletThatNoLongerCoversTheOrderStopsBeforeSending() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(wallet(10_000))
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        let upTo = DapiOrdersTests.usd(500 * 2 + 699)
+        XCTAssertEqual(runner.figures.flatMap { dapiReviewUpToTotal($0.snapshot) }, upTo)
+        XCTAssertEqual(dapiWalletCover(upTo: upTo, wallet: runner.figures?.wallet), .covered)
+
+        stub.walletResult = .success(wallet(100))
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(runner.changes, [dapiWalletShortfallChange(reviewed: .covered, current: .short(DapiOrdersTests.usd(1_599)))!])
+        XCTAssertTrue(runner.changes.first?.contains("no longer covers") ?? false)
+        XCTAssertEqual(stub.count("place"), 0, "Nothing is sent")
+        XCTAssertEqual(harness.begun, 0)
+        XCTAssertEqual(harness.keys, 0, "No idempotency key was used")
+        XCTAssertTrue(harness.unconfirmed.isEmpty, "No attempt is recorded")
+        XCTAssertEqual(runner.figures?.wallet, wallet(100), "The review shows the new balance")
+        XCTAssertEqual(runner.figures.map { dapiWalletCover(upTo: dapiReviewUpToTotal($0.snapshot), wallet: $0.wallet) },
+                       .short(DapiOrdersTests.usd(1_599)), "…and the shortfall line it is now compared against")
+
+        // Pressed again with the same wallet: the shortfall is what the review shows, so it goes, once.
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertTrue(runner.changes.isEmpty)
+        XCTAssertEqual(stub.count("place"), 1)
+        XCTAssertEqual(harness.begun, 1)
+        guard case .placed = runner.phase else { return XCTFail("\(runner.phase)") }
+    }
+
+    func testAShortfallThatGrowsStopsAndOneThatShrinksOrGoesDoesnt() async {
+        // Up to $16.99: a balance of $11.99 is $5.00 short, $7.99 is $9.00 short and $14.99 is $2.00 short.
+        let stub = scriptedReady()
+        stub.walletResult = .success(wallet(1_199))
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        XCTAssertEqual(runner.figures.map { dapiWalletCover(upTo: dapiReviewUpToTotal($0.snapshot), wallet: $0.wallet) },
+                       .short(DapiOrdersTests.usd(500)))
+        stub.walletResult = .success(wallet(799))
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(runner.changes, [dapiWalletShortfallChange(reviewed: .short(DapiOrdersTests.usd(500)),
+                                                                  current: .short(DapiOrdersTests.usd(900)))!])
+        XCTAssertEqual(stub.count("place"), 0)
+        XCTAssertTrue(harness.unconfirmed.isEmpty)
+
+        // From $9.00 short to $2.00 short: smaller, so it goes.
+        stub.walletResult = .success(wallet(1_499))
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertTrue(runner.changes.isEmpty)
+        XCTAssertEqual(stub.count("place"), 1)
+
+        // From $5.00 short to covered: it goes.
+        let other = scriptedReady()
+        other.walletResult = .success(wallet(1_199))
+        let covered = await readyRunner(other, PlaceHarness())
+        other.walletResult = .success(wallet(2_000))
+        covered.placeOrder()
+        await settled(covered)
+        XCTAssertTrue(covered.changes.isEmpty)
+        XCTAssertEqual(other.count("place"), 1)
+
+        // From $5.00 short to the same in upper-case "USD": unchanged, so it goes.
+        let upper = scriptedReady()
+        upper.walletResult = .success(wallet(1_199))
+        let same = await readyRunner(upper, PlaceHarness())
+        upper.walletResult = .success(wallet(1_199, currency: "USD"))
+        same.placeOrder()
+        await settled(same)
+        XCTAssertTrue(same.changes.isEmpty)
+        XCTAssertEqual(upper.count("place"), 1)
+    }
+
+    /// A wallet now in another currency can't be compared with the total: nothing is sent; the review then shows no
+    /// judgement, so the next press doesn't stop for the wallet.
+    func testAWalletInAnotherCurrencyStopsOnceThenTheReviewShowsNoJudgement() async {
+        let stub = scriptedReady()
+        stub.walletResult = .success(wallet(10_000))
+        let harness = PlaceHarness()
+        let runner = await readyRunner(stub, harness)
+        stub.walletResult = .success(wallet(10_000, currency: "eur"))
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(runner.changes, [dapiWalletNotComparableText])
+        XCTAssertEqual(stub.count("place"), 0)
+        XCTAssertEqual(runner.figures.map { dapiWalletCover(upTo: dapiReviewUpToTotal($0.snapshot), wallet: $0.wallet) }, .notKnown)
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(stub.count("place"), 1)
+    }
+
+    /// A price rise that makes the wallet short is listed as both changes, and the order still stops only once.
+    func testAPriceRiseThatMakesTheWalletShortListsBoth() async {
+        let stub = ScriptedDapiOrders()
+        stub.scriptQuote("qte_1", [.success(DapiOrdersTests.quote("qte_1", cents: 500)),
+                                   .success(DapiOrdersTests.quote("qte_1", cents: 900))])
+        stub.scriptShipping([.success(DapiOrdersTests.shipping(699))])
+        stub.walletResult = .success(wallet(2_000))
+        let runner = await readyRunner(stub, PlaceHarness())
+        runner.placeOrder()
+        await settled(runner)
+        XCTAssertEqual(runner.phase, .ready)
+        XCTAssertEqual(runner.changes.count, 2, "\(runner.changes)")
+        XCTAssertTrue(runner.changes[0].contains("per unit"))
+        XCTAssertEqual(runner.changes[1], dapiWalletShortfallChange(reviewed: .covered, current: .short(DapiOrdersTests.usd(1_800 + 699 - 2_000))))
+        XCTAssertEqual(stub.count("place"), 0)
     }
 
     // MARK: Look for Order on 3DAPI

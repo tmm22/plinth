@@ -188,12 +188,13 @@ struct DapiPlaceOrderSheet: View {
                     GridRow {
                         Text("Total").fontWeight(.semibold)
                         Text(""); Text(""); Text("")
-                        Text(upToTotal(figures).map { "Up to " + dapiMoneyText($0) + " before VAT" } ?? "Not added (different currencies, or too large)")
+                        Text(dapiReviewUpToTotal(figures.snapshot).map { "Up to " + dapiMoneyText($0) + " before VAT" } ?? "Not added (different currencies, or too large)")
                             .fontWeight(.semibold).monospacedDigit()
                     }
                 }
                 .font(.callout)
-                if let shortfall = dapiWalletShortfall(upTo: upToTotal(figures), wallet: figures.wallet) {
+                // The same total and judgement the pre-send check compares (`dapiWalletShortfallChange`).
+                if case .short(let shortfall) = dapiWalletCover(upTo: dapiReviewUpToTotal(figures.snapshot), wallet: figures.wallet) {
                     Label(dapiWalletShortfallText(shortfall), systemImage: "creditcard")
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
@@ -230,15 +231,6 @@ struct DapiPlaceOrderSheet: View {
 
     private func hasSampleCredit(_ figures: DapiOrderReviewFigures) -> Bool {
         (figures.wallet?.sampleCredit?.amountMinor ?? 0) > 0
-    }
-
-    private func upToTotal(_ figures: DapiOrderReviewFigures) -> DapiMoney? {
-        var lines: [(unitPrice: DapiMoney, quantity: Int)] = []
-        for line in draft.lines {
-            guard let price = figures.quotes[line.request.quoteID]?.price else { return nil }
-            lines.append((price, line.request.quantity))
-        }
-        return dapiOrderUpToTotal(lines: lines, shipping: figures.shipping.total)
     }
 
     private var recipient: some View {
