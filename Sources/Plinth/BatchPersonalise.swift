@@ -522,8 +522,9 @@ struct BatchPersonaliseRunHooks {
     var isStopRequested: () -> Bool
     var uploadSent: (Result<APIResponse, Error>) -> Void
     /// File IDs (with names) an upload must never write over (`batchPersonaliseProtectedFiles`), read before each
-    /// upload. The pre-PUT guard stops an upload whose placeholder names one, before any bytes are sent.
-    var protectedFiles: () -> [String: String] = { [:] }
+    /// upload. The pre-PUT guard stops an upload whose placeholder names one, before any bytes are sent. No default:
+    /// every runner passes its list.
+    var protectedFiles: () -> [String: String]
 }
 
 /// The personalised uploads' pre-PUT guard list: the loaded Slant files' own IDs and every library model's link.
@@ -619,12 +620,10 @@ func batchPersonaliseMakeAndUpload(_ job: BatchPersonaliseJob, client: APIClient
         var protected = hooks.protectedFiles()
         for id in fileIDs where protected[id] == nil { protected[id] = "" }
         do {
+            // The pre-PUT guard runs inside `upload`: a placeholder naming one of `protected` stops it before any bytes
+            // are sent (`UploadWouldOverwriteExistingFile`, a refusal for this order). Never a Replace File.
             let response = try await client.upload(file: file, name: name, platformId: platformID, ownerId: ownerID,
-                                                   checkPlaceholder: { placeholder in
-                if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: protected) {
-                    throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
-                }
-            }) { _ in }
+                                                   protectedFiles: protected, replacing: nil) { _ in }
             hooks.uploadSent(.success(response))
             outcome = batchPersonaliseUploadOutcome(response: responseObject(response))
         } catch {

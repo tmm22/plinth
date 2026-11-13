@@ -498,6 +498,21 @@ func uploadReplaceWouldCreateNewFileMessage(fileName: String) -> String {
     return "Nothing was uploaded, and \(file) wasn’t changed: Slant would have saved this as a new file. To add it as a new file, upload again (choose Upload as “…” if Plinth asks)."
 }
 
+/// The pre-PUT guard `APIClient.upload` runs on direct-upload's `filePlaceholder`, before any bytes are sent: a
+/// placeholder naming one of `protectedFiles` throws `UploadWouldOverwriteExistingFile` (checked first), and for a
+/// Replace File one naming any other file than `replacing`'s throws `UploadReplaceWouldCreateNewFile`. A placeholder
+/// without a string `publicFileServiceId` can't be checked and passes, as each check lets it pass.
+func uploadPlaceholderGuard(_ placeholder: [String: Any], protectedFiles: [String: String], replacing: UploadReplacement?) throws {
+    if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: protectedFiles) {
+        throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
+    }
+    // A Replace File goes only into the file the seller chose: a placeholder naming another file (a new one, when
+    // Slant's name match differs from Plinth's) stops here.
+    if let replacing, uploadReplacePlaceholderMismatch(placeholder, replacingFileID: replacing.fileID) {
+        throw UploadReplaceWouldCreateNewFile(fileName: replacing.fileName)
+    }
+}
+
 /// A Replace File's unlinking couldn't be saved before sending, so nothing was sent and the links were put back as they
 /// were: a quit or crash must never leave the library on disk linking a model to a file that may hold another
 /// model's bytes.
@@ -767,12 +782,16 @@ struct APIClient {
     }
 
     /// The three requests of an upload. `stage` is called synchronously before each one is sent, so a caller can word a
-    /// failure by the step that failed (`uploadFailureMessage`); the errors thrown are unchanged. `checkPlaceholder`
-    /// runs on the `filePlaceholder` that direct-upload returned, before the PUT: an error it throws stops the upload
-    /// with no bytes sent (the stage is still `.preparing`). Slant returns an existing file's placeholder for a name it
-    /// already holds, so callers use it to refuse writing over files that must be kept (`uploadPlaceholderProtectedFile`).
+    /// failure by the step that failed (`uploadFailureMessage`); the errors thrown are unchanged. Slant returns an
+    /// existing file's placeholder for a name it already holds (30 Oct 2026), so the pre-PUT guard runs here, on the
+    /// `filePlaceholder` that direct-upload returned and before any bytes are sent (the stage is still `.preparing`):
+    /// `uploadPlaceholderGuard` refuses a placeholder naming one of `protectedFiles` (trimmed file IDs to names) and,
+    /// for a Replace File (`replacing`), one naming any other file than the chosen one. Every caller passes the files it
+    /// must never write over; there is no default. `onPlaceholder` only observes the placeholder, before the guard may
+    /// refuse it, so a caller can record the file Slant offered.
     func upload(file: URL, name: String, platformId: String, ownerId: String,
-                checkPlaceholder: (([String: Any]) throws -> Void)? = nil,
+                protectedFiles: [String: String], replacing: UploadReplacement?,
+                onPlaceholder: (([String: Any]) -> Void)? = nil,
                 stage: @escaping @Sendable (UploadStage) -> Void) async throws -> APIResponse {
         guard file.isFileURL, FileManager.default.isReadableFile(atPath: file.path) else {
             throw APIError.invalidRequest("Select a readable local model file.")
@@ -798,8 +817,10 @@ struct APIClient {
             throw APIError.invalidResponse(uploadLinkMissingMessage)
         }
         try Task.checkCancellation()
-        // Before any bytes are sent: the caller may refuse the file Slant chose to store this upload in.
-        try checkPlaceholder?(placeholder)
+        // Before any bytes are sent: the caller learns which file Slant chose to store this upload in, then the guard
+        // refuses it when it must be kept.
+        onPlaceholder?(placeholder)
+        try uploadPlaceholderGuard(placeholder, protectedFiles: protectedFiles, replacing: replacing)
         stage(.uploading)
         var put = URLRequest(url: url)
         put.httpMethod = "PUT"

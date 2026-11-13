@@ -212,7 +212,7 @@ final class APIClientTests: XCTestCase {
                 return (500, [:], Data())
             }
         }
-        _ = try await client().upload(file: stl, name: "cube", platformId: "platform", ownerId: "", stage: { _ in })
+        _ = try await client().upload(file: stl, name: "cube", platformId: "platform", ownerId: "", protectedFiles: [:], replacing: nil, stage: { _ in })
         XCTAssertNil(stlBodyType)
 
         var objBodyType: Any?
@@ -240,7 +240,7 @@ final class APIClientTests: XCTestCase {
                 return (500, [:], Data())
             }
         }
-        _ = try await client().upload(file: obj, name: "cube", platformId: "platform", ownerId: "", stage: { _ in })
+        _ = try await client().upload(file: obj, name: "cube", platformId: "platform", ownerId: "", protectedFiles: [:], replacing: nil, stage: { _ in })
         XCTAssertEqual(objBodyType as? String, "obj")
     }
 
@@ -283,7 +283,7 @@ final class APIClientTests: XCTestCase {
                 return (500, [:], Data())
             }
         }
-        let result = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", stage: { _ in })
+        let result = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", protectedFiles: [:], replacing: nil, stage: { _ in })
         XCTAssertEqual(result.statusCode, 200)
         XCTAssertEqual(paths, ["/v2/api/files/direct-upload", "/model.stl", "/v2/api/files/confirm-upload"])
     }
@@ -298,7 +298,7 @@ final class APIClientTests: XCTestCase {
             return (200, [:], Data("{\"data\":{\"presignedUrl\":\"http://storage.example/model\",\"filePlaceholder\":{\"id\":\"abc\"}}}".utf8))
         }
         do {
-            _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", stage: { _ in })
+            _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", protectedFiles: [:], replacing: nil, stage: { _ in })
             XCTFail("Expected insecure URL rejection")
         } catch APIError.invalidResponse(let message) {
             // Still an invalid response (unknown to Import Orders' personalised uploads); a local file isn't told to
@@ -336,7 +336,7 @@ final class APIClientTests: XCTestCase {
                 return (500, [:], Data())
             }
         }
-        _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", stage: { stages.append($0) })
+        _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", protectedFiles: [:], replacing: nil, stage: { stages.append($0) })
         XCTAssertEqual(stages.all, [.preparing, .uploading, .confirming])
         _ = try await client().request("GET", path: "/orders", query: ["endDate": "2026-10-29T00:00:00+10:00"])
     }
@@ -354,7 +354,7 @@ final class APIClientTests: XCTestCase {
         }
         let stage = UploadStageBox()
         do {
-            _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", stage: { stage.value = $0 })
+            _ = try await client().upload(file: file, name: "model.stl", platformId: "platform", ownerId: "", protectedFiles: [:], replacing: nil, stage: { stage.value = $0 })
             XCTFail("Expected the storage refusal")
         } catch {
             XCTAssertEqual(stage.value, .uploading)
@@ -363,8 +363,9 @@ final class APIClientTests: XCTestCase {
         }
     }
 
-    /// The pre-PUT guard: a placeholder naming a protected file stops the upload before any bytes are sent, with the
-    /// stage still `.preparing` (nothing stored, not unknown), and an unprotected one goes ahead. Invented IDs only.
+    /// The pre-PUT guard inside `APIClient.upload`: a placeholder naming a protected file stops the upload before any
+    /// bytes are sent, with the stage still `.preparing` (nothing stored, not unknown), after `onPlaceholder` saw it; an
+    /// unprotected one goes ahead. Invented IDs only.
     func testPlaceholderGuardStopsBeforeThePUT() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("model".utf8).write(to: file)
@@ -384,14 +385,13 @@ final class APIClientTests: XCTestCase {
                 return (500, [:], Data())
             }
         }
-        let protected = ["file-kept": "Bracket"]
         let stage = UploadStageBox()
+        let offered = PathRecorder()
         do {
-            _ = try await client().upload(file: file, name: "Bracket 2", platformId: "platform", ownerId: "", checkPlaceholder: { placeholder in
-                if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: protected) {
-                    throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
-                }
-            }, stage: { stage.value = $0 })
+            _ = try await client().upload(file: file, name: "Bracket 2", platformId: "platform", ownerId: "",
+                                          protectedFiles: ["file-kept": "Bracket"], replacing: nil,
+                                          onPlaceholder: { offered.append(uploadPlaceholderFileID($0) ?? "") },
+                                          stage: { stage.value = $0 })
             XCTFail("Expected the guard to stop the upload")
         } catch let error as UploadWouldOverwriteExistingFile {
             XCTAssertEqual(error, UploadWouldOverwriteExistingFile(fileID: "file-kept", fileName: "Bracket"))
@@ -403,14 +403,55 @@ final class APIClientTests: XCTestCase {
             XCTAssertEqual(batchPersonaliseUploadOutcome(error: error), .refused(batchPersonaliseWouldOverwriteMessage))
         }
         XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload"], "no PUT and no confirm after the guard stops")
+        XCTAssertEqual(offered.all, ["file-kept"], "the caller sees the offered file before the guard refuses it")
+
+        // A Replace File of a protected file is refused too: only the caller's list decides (Models leaves the replaced
+        // file out of it).
+        paths.reset()
+        do {
+            _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "",
+                                          protectedFiles: ["file-kept": "Bracket"],
+                                          replacing: UploadReplacement(fileID: "file-kept", fileName: "Bracket"), stage: { _ in })
+            XCTFail("Expected the guard to stop the upload")
+        } catch let error as UploadWouldOverwriteExistingFile {
+            XCTAssertEqual(error.fileID, "file-kept")
+        }
+        XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload"])
 
         // The file the seller chose to replace isn't protected, so the same reply goes ahead.
         paths.reset()
-        _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "", checkPlaceholder: { placeholder in
-            if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: [:]) {
-                throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
+        _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "",
+                                      protectedFiles: ["file-other": "Hook"],
+                                      replacing: UploadReplacement(fileID: "file-kept", fileName: "Bracket"), stage: { _ in })
+        XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload", "/model.stl", "/v2/api/files/confirm-upload"])
+        // Nor is a new name's file.
+        paths.reset()
+        _ = try await client().upload(file: file, name: "Bracket 2", platformId: "platform", ownerId: "",
+                                      protectedFiles: ["file-other": "Hook"], replacing: nil, stage: { _ in })
+        XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload", "/model.stl", "/v2/api/files/confirm-upload"])
+    }
+
+    /// A placeholder without a string `publicFileServiceId` can't be checked, so the guard lets it pass, as the pure
+    /// checks do.
+    func testAPlaceholderWithoutAFileIDPassesTheGuard() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("model".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let paths = PathRecorder()
+        StubProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            switch request.url?.path {
+            case "/v2/api/files/direct-upload":
+                return (200, [:], Data(#"{"data":{"presignedUrl":"https://storage.example/model.stl","filePlaceholder":{"id":"file-kept","publicFileServiceId":12}}}"#.utf8))
+            case "/model.stl":
+                return (200, [:], Data())
+            default:
+                return (200, [:], Data(#"{"data":{"publicFileServiceId":"file-new"}}"#.utf8))
             }
-        }, stage: { _ in })
+        }
+        _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "",
+                                      protectedFiles: ["file-kept": "Bracket", "12": "Number"],
+                                      replacing: UploadReplacement(fileID: "file-f", fileName: "Bracket"), stage: { _ in })
         XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload", "/model.stl", "/v2/api/files/confirm-upload"])
     }
 
@@ -485,7 +526,7 @@ final class APIClientTests: XCTestCase {
     // MARK: Round 22: storage links (I1-2, I4-8) and Replace File's target (I4-1)
 
     /// A presigned link to the Mac, the seller's network, an odd port or carrying the key is refused at `.preparing`,
-    /// before `checkPlaceholder` and any bytes: one request (direct-upload), no PUT and no confirm.
+    /// before `onPlaceholder`, the guard and any bytes: one request (direct-upload), no PUT and no confirm.
     func testUploadRefusesALocalOrNumericStorageLinkBeforeSendingFile() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("model".utf8).write(to: file)
@@ -502,7 +543,8 @@ final class APIClientTests: XCTestCase {
             var checked = false
             do {
                 _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "",
-                                              checkPlaceholder: { _ in checked = true }, stage: { stages.append($0) })
+                                              protectedFiles: [:], replacing: nil,
+                                              onPlaceholder: { _ in checked = true }, stage: { stages.append($0) })
                 XCTFail("Expected the link to be refused: \(link)")
             } catch APIError.invalidResponse(let message) {
                 XCTAssertEqual(message, uploadLinkMissingMessage, link)
@@ -556,18 +598,13 @@ final class APIClientTests: XCTestCase {
                 return (500, [:], Data())
             }
         }
-        let check: ([String: Any]) throws -> Void = { placeholder in
-            if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: ["file-k": "Kept"]) {
-                throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
-            }
-            if uploadReplacePlaceholderMismatch(placeholder, replacingFileID: "file-f") {
-                throw UploadReplaceWouldCreateNewFile(fileName: "Bracket")
-            }
-        }
+        // The real guard in `upload`: "file-k" is protected, and this is a Replace File of "file-f".
+        let protected = ["file-k": "Kept"]
+        let replacing = UploadReplacement(fileID: "file-f", fileName: "Bracket")
         let stage = UploadStageBox()
         do {
             _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "",
-                                          checkPlaceholder: check, stage: { stage.value = $0 })
+                                          protectedFiles: protected, replacing: replacing, stage: { stage.value = $0 })
             XCTFail("Expected the mismatch to stop the upload")
         } catch let error as UploadReplaceWouldCreateNewFile {
             XCTAssertEqual(error, UploadReplaceWouldCreateNewFile(fileName: "Bracket"))
@@ -580,7 +617,8 @@ final class APIClientTests: XCTestCase {
         // A protected file's placeholder is still the guard's refusal, before the mismatch.
         paths.reset(); offered.append("file-k")
         do {
-            _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "", checkPlaceholder: check, stage: { _ in })
+            _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "",
+                                          protectedFiles: protected, replacing: replacing, stage: { _ in })
             XCTFail("Expected the guard to stop the upload")
         } catch let error as UploadWouldOverwriteExistingFile {
             XCTAssertEqual(error.fileID, "file-k")
@@ -589,7 +627,15 @@ final class APIClientTests: XCTestCase {
 
         // The chosen file's own placeholder goes ahead.
         paths.reset(); offered.append("file-f")
-        _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "", checkPlaceholder: check, stage: { _ in })
+        _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "",
+                                      protectedFiles: protected, replacing: replacing, stage: { _ in })
+        XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload", "/model.stl", "/v2/api/files/confirm-upload"])
+
+        // A Replace File whose listed file had no ID can't be compared, so an unprotected placeholder goes ahead.
+        paths.reset(); offered.append("file-g")
+        _ = try await client().upload(file: file, name: "Bracket", platformId: "platform", ownerId: "",
+                                      protectedFiles: protected, replacing: UploadReplacement(fileID: nil, fileName: "Bracket"),
+                                      stage: { _ in })
         XCTAssertEqual(paths.all, ["/v2/api/files/direct-upload", "/model.stl", "/v2/api/files/confirm-upload"])
     }
 }

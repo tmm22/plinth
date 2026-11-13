@@ -121,7 +121,8 @@ final class ClientRedirectRefusalTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: file) }
         let log = StageLog()
         do {
-            _ = try await client().upload(file: file, name: "Part", platformId: "platform-1", ownerId: "") { log.append($0) }
+            _ = try await client().upload(file: file, name: "Part", platformId: "platform-1", ownerId: "",
+                                          protectedFiles: [:], replacing: nil) { log.append($0) }
             XCTFail("a redirected PUT must not succeed")
         } catch { assertRedirectStatus(error) }
         XCTAssertEqual(log.last, .uploading, "stops at the PUT; confirm-upload is never sent")

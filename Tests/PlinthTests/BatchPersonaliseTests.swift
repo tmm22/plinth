@@ -1,6 +1,51 @@
 import XCTest
 @testable import Plinth
 
+/// A scripted Slant for personalised uploads: each direct-upload offers the next placeholder file ID in `offers`, the
+/// storage PUT succeeds, and confirm-upload names the file last offered. Every request's path is recorded.
+private final class PersonaliseUploadStub: URLProtocol {
+    private static let lock = NSLock()
+    private static var offers: [String] = []
+    private static var lastOffer = ""
+    private static var recorded: [String] = []
+
+    static func script(_ offers: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        self.offers = offers; lastOffer = ""; recorded = []
+    }
+
+    static var paths: [String] { lock.lock(); defer { lock.unlock() }; return recorded }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let path = request.url?.path ?? ""
+        Self.lock.lock()
+        Self.recorded.append(path)
+        let status: Int
+        let body: String
+        switch path {
+        case "/v2/api/files/direct-upload":
+            let id = Self.offers.isEmpty ? "" : Self.offers.removeFirst()
+            Self.lastOffer = id
+            status = 200
+            body = #"{"data":{"presignedUrl":"https://storage.example/personalised.stl","filePlaceholder":{"id":"p","publicFileServiceId":"\#(id)"}}}"#
+        case "/personalised.stl":
+            status = 200; body = ""
+        case "/v2/api/files/confirm-upload":
+            status = 200; body = #"{"data":{"publicFileServiceId":"\#(Self.lastOffer)"}}"#
+        default:
+            status = 500; body = ""
+        }
+        Self.lock.unlock()
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: [:])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 final class BatchPersonaliseTests: XCTestCase {
     // MARK: Fixtures
 
@@ -459,7 +504,8 @@ final class BatchPersonaliseTests: XCTestCase {
             pace: { calls.paces += 1; return "Stopped before uploading." },
             accountProblem: { nil },
             isStopRequested: stop,
-            uploadSent: { _ in calls.uploads += 1 }), openSCAD: openSCAD)
+            uploadSent: { _ in calls.uploads += 1 },
+            protectedFiles: { [:] }), openSCAD: openSCAD)
     }
 
     private var closedSTL: Data {
@@ -530,5 +576,73 @@ final class BatchPersonaliseTests: XCTestCase {
         guard case .stopped = outcome else { return XCTFail("\(outcome)") }
         XCTAssertTrue(calls.statuses.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("args.txt").path), "OpenSCAD never ran")
+    }
+
+    // MARK: Uploading (a scripted Slant: nothing reaches the network)
+
+    private func stubbedClient() -> APIClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PersonaliseUploadStub.self]
+        return APIClient(apiKey: "sl_test", configuration: configuration)
+    }
+
+    private final class Sent { var results: [Result<APIResponse, Error>] = [] }
+
+    /// Makes the models with the fake OpenSCAD, then uploads them to the scripted Slant, which offers `offers` in turn.
+    @MainActor
+    private func makeAndUpload(_ values: [String], offers: [String], protected: [String: String],
+                               sent: Sent) async throws -> BatchPersonaliseStepOutcome {
+        let folder = try folder()
+        let template = folder.appendingPathComponent("keychain.scad")
+        try templateSource.write(to: template, atomically: true, encoding: .utf8)
+        let fake = try fakeOpenSCAD(in: folder, stl: closedSTL)
+        PersonaliseUploadStub.script(offers)
+        addTeardownBlock { PersonaliseUploadStub.script([]) }
+        return await batchPersonaliseMakeAndUpload(job(templateURL: template, source: templateSource, values: values),
+                                                   client: stubbedClient(), platformID: "platform-1", ownerID: "",
+                                                   hooks: BatchPersonaliseRunHooks(
+            status: { _ in }, pace: { nil }, accountProblem: { nil }, isStopRequested: { false },
+            uploadSent: { sent.results.append($0) }, protectedFiles: { protected }), openSCAD: fake)
+    }
+
+    private let direct = "/v2/api/files/direct-upload", put = "/personalised.stl", confirm = "/v2/api/files/confirm-upload"
+
+    /// The scripted Slant works: new files are uploaded, one PUT each, and their IDs come back in order.
+    @MainActor
+    func testNewFilesAreUploadedThroughTheScriptedSlant() async throws {
+        let sent = Sent()
+        let outcome = try await makeAndUpload(["Sam", "Alex"], offers: ["file-new-1", "file-new-2"],
+                                              protected: ["file-kept": "Desk Tidy"], sent: sent)
+        guard case .ready(let ids) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(ids, ["file-new-1", "file-new-2"])
+        XCTAssertEqual(PersonaliseUploadStub.paths, [direct, put, confirm, direct, put, confirm])
+        XCTAssertEqual(sent.results.count, 2)
+    }
+
+    /// The pre-PUT guard (inside `APIClient.upload`) stops a personalised upload whose placeholder names a file from
+    /// `hooks.protectedFiles`: a refusal for this order, with no bytes sent.
+    @MainActor
+    func testAPlaceholderNamingAProtectedFileIsRefusedBeforeThePUT() async throws {
+        let sent = Sent()
+        let outcome = try await makeAndUpload(["Sam"], offers: [" file-kept "], protected: ["file-kept": "Desk Tidy"], sent: sent)
+        guard case .refused(let reason, let error) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(reason, batchPersonaliseWouldOverwriteMessage)
+        XCTAssertEqual(error as? UploadWouldOverwriteExistingFile, UploadWouldOverwriteExistingFile(fileID: "file-kept", fileName: "Desk Tidy"))
+        XCTAssertEqual(PersonaliseUploadStub.paths, [direct], "no PUT and no confirm")
+        XCTAssertEqual(sent.results.count, 1)
+        guard case .failure? = sent.results.first else { return XCTFail("the refusal reaches the runner's hook") }
+    }
+
+    /// An order's second model never writes over the file its first model was just uploaded to, even when that file
+    /// isn't in the runner's list yet.
+    @MainActor
+    func testASecondModelNeverWritesOverTheFileTheFirstJustUploaded() async throws {
+        let sent = Sent()
+        let outcome = try await makeAndUpload(["Sam", "Alex"], offers: ["file-new-1", "file-new-1"], protected: [:], sent: sent)
+        guard case .refused(let reason, let error) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(reason, batchPersonaliseWouldOverwriteMessage + " Its other personalised models were uploaded to your Slant files.")
+        XCTAssertEqual(error as? UploadWouldOverwriteExistingFile, UploadWouldOverwriteExistingFile(fileID: "file-new-1", fileName: ""))
+        XCTAssertEqual(PersonaliseUploadStub.paths, [direct, put, confirm, direct], "one PUT: the second model sent no bytes")
+        XCTAssertEqual(sent.results.count, 2)
     }
 }

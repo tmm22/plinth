@@ -1024,54 +1024,26 @@ struct OrderComposerView: View {
             let marker = orderDraftMarkerSent(body, generated: generatedMarker)
             let sentPlatformID = draftPlatformID
             validation = nil
-            // Create Anyway only when this draft could be one of the unconfirmed attempts: judged by the name the body
-            // sends (`draftCreateNeedsCreateAnyway`). The notice above shows whatever the name.
-            let needsCreateAnyway = draftCreateNeedsCreateAnyway(
-                attempts: store.unconfirmedDraftCreates, overflowed: store.unconfirmedDraftCreatesOverflowed,
-                recipient: orderDraftBodyRecipient(body))
-            if draftCreateNeedsConfirmation(outcomeUnknown: needsCreateAnyway, confirmed: confirmedDespiteUnknownOutcome) {
-                confirmCreateAnyway = true
-                return
-            }
-            // Shown in the notice if this attempt's outcome isn't confirmed (kept in memory only); a confirmed creation
-            // clears only this recipient's earlier unconfirmed attempts. The same name the draft body sends.
-            let recipient = delivery.name
-            let attemptDate = Date()
-            Task {
-                var attempt = DraftCreateAttempt.notSent
-                var failure: String?
-                // Any failure is explained here in the form (a window alert would wait behind this sheet). An unknown
-                // outcome also gets the unconfirmed-draft notice below, as before.
-                let ran = await store.run("Create order draft", handlesError: { error in
-                    attempt = .failed(error)
-                    failure = orderComposerCreateFailureMessage(error)
-                    return true
-                }) {
-                    // Quit asks first until this create has its answer (PlinthApp.swift).
-                    let write = SlantWritesInFlight.shared.begin(.draft)
-                    defer { SlantWritesInFlight.shared.end(write) }
-                    let response = try await store.client.request("POST", path: "/orders", body: body)
-                    let data = responseObject(response)
-                    let order = mergeOrderDraftEnvelope(data)
-                    // The POST went through, so a draft may exist: a reply without the order's `publicId` or `id` (a
-                    // name alone isn't one) leaves the outcome unknown.
-                    guard orderCreatedID(order) != nil else { throw StudioError("Slant didn’t return an order number.") }
-                    attempt = .succeeded
+            // Create Anyway (asked at once, even while another request runs) or the one `POST /orders`, through
+            // `OrderDraftSender`. The attempt is shown in the notice if its outcome isn't confirmed (kept in memory
+            // only); a confirmed creation clears only this recipient's earlier unconfirmed attempts.
+            let started = OrderDraftSender.start(
+                body: body, recipient: delivery.name, marker: marker, platformID: sentPlatformID,
+                confirmedDespiteUnknownOutcome: confirmedDespiteUnknownOutcome, environment: .store(store),
+                created: { order in
                     store.draft = ["order": order]
                     // A duplicated order's address belongs to that order's customer; don't make it the next draft's default.
                     if sourceOrderNumber == nil { store.lastDelivery = delivery }
                     let record = Record(values: order)
                     store.orders.removeAll { $0.id == record.id }; store.orders.insert(record, at: 0)
                     store.destination = .orders; dismiss()
-                }
-                if ran {
-                    store.noteDraftCreateAttempt(attempt, recipient: recipient, date: attemptDate,
-                                                 marker: marker, platformID: sentPlatformID)
+                },
+                finished: { failure in
                     // An earlier Check Slant result no longer describes the notice.
                     draftCheckOutcome = nil
                     if let failure { validation = failure }
-                }
-            }
+                })
+            if case .needsCreateAnyway = started { confirmCreateAnyway = true }
         } catch { validation = error.localizedDescription }
     }
 }

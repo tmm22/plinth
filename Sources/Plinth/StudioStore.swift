@@ -1853,16 +1853,17 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
     }
     /// Uploads a library model under `uploadName`, which the caller has checked with `checkUploadName` (and, for a
     /// listed name, the seller chose to replace the file in `replacing`). Never retried. The
-    /// pre-PUT guard stops before any bytes are sent when Slant offers to store the upload in one of `protectedFiles`
-    /// (every file the check read, less the one being replaced). If Slant returns a file another library model is
+    /// pre-PUT guard (`APIClient.upload`) stops before any bytes are sent when Slant offers to store the upload in one of
+    /// `protectedFiles` (every file the check read, less the one being replaced; no default, so every caller passes them)
+    /// or every library model's link. If Slant returns a file another library model is
     /// linked to, that file now holds this model: only this model keeps the link, and `uploadLinkMovedMessage` says so.
     /// After a Replace File that failed once the PUT may have started, every model linked to the replaced file (this
     /// one included) loses its link (`uploadReplacementMayBePartial`); one that stopped before any bytes could be sent
     /// puts back the links it cleared before sending, where that is still safe (`restoreLinksAfterReplaceSentNothing`).
     /// True only when the upload was confirmed and this model is linked to the file Slant returned.
     @discardableResult
-    func uploadModel(id: UUID, as uploadName: String, replacing: UploadReplacement? = nil,
-                     protectedFiles: [String: String] = [:]) async -> Bool {
+    func uploadModel(id: UUID, as uploadName: String, replacing: UploadReplacement?,
+                     protectedFiles: [String: String]) async -> Bool {
         guard let model = localModels.first(where: { $0.id == id }), !platformID.isEmpty else {
             showError("Choose a local model and a platform before uploading.")
             return false
@@ -1938,17 +1939,12 @@ func plaBlackFilamentID(in filaments: [Record]) -> String? {
                 clearedBeforeSending = cleared
                 unlinkedBeforeSending = cleared.otherNames
             }
+            // The pre-PUT guard runs inside `upload`, before any bytes are sent: never into `guarded`, and a Replace File
+            // only into the file the seller chose. The file Slant offered is recorded first, for the failure handling.
             let response = try await client.upload(file: capturedURL, name: capturedName, platformId: platformID, ownerId: ownerID,
-                                                   checkPlaceholder: { placeholder in
+                                                   protectedFiles: guarded, replacing: replacing,
+                                                   onPlaceholder: { placeholder in
                 target.value = uploadPlaceholderFileID(placeholder)
-                if let hit = uploadPlaceholderProtectedFile(placeholder, protectedFiles: guarded) {
-                    throw UploadWouldOverwriteExistingFile(fileID: hit.id, fileName: hit.name)
-                }
-                // A Replace File goes only into the file the seller chose: a placeholder naming another file (a new
-                // one, when Slant's name match differs from Plinth's) stops here, before any bytes are sent.
-                if uploadReplacePlaceholderMismatch(placeholder, replacingFileID: replacing?.fileID) {
-                    throw UploadReplaceWouldCreateNewFile(fileName: replacing?.fileName ?? "")
-                }
             }) { [weak self] next in
                 stage.value = next
                 Task { @MainActor in self?.progress = next.progressText }
