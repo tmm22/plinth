@@ -124,10 +124,10 @@ final class ShopifyRound21Tests: XCTestCase {
             let message = (error as? StudioError)?.message ?? ""
             XCTAssertTrue(message.contains("#2001") && message.contains("#2002"), message)
             XCTAssertTrue(message.contains("CSV export"), message)
-            XCTAssertFalse(message.contains("no paid, unfulfilled orders"), message)
+            XCTAssertFalse(message.contains("no paid or partly refunded, unfulfilled orders"), message)
         }
         XCTAssertThrowsError(try shopifyImportParse([], shop: "p.myshopify.com", truncated: false)) { error in
-            XCTAssertTrue(((error as? StudioError)?.message ?? "").contains("no paid, unfulfilled orders"))
+            XCTAssertTrue(((error as? StudioError)?.message ?? "").contains("no paid or partly refunded, unfulfilled orders"))
         }
     }
 

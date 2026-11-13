@@ -369,6 +369,9 @@ struct OrderImportOrder: Identifiable, Equatable {
     var repeatedRows: [Int] = []
     /// Why the marketplace shows this order as already shipped, cancelled or refunded.
     var alreadyHandled: String?
+    /// Shopify shows a refund on this order (Financial Status `partially_refunded` or `refunded`, on any of its rows or
+    /// fetched). Its sale amounts aren't used (`importedSaleAmounts`): Shopify's refund total doesn't say what it covered.
+    var shopifyShowsRefund = false
     /// HTML character references (as Etsy exports them) were decoded in the name or address.
     var decodedEntities = false
     /// The sale columns of each row that has them (ImportedSaleAmounts.swift). Memory only.
@@ -449,6 +452,9 @@ func orderImportOrders(from csv: OrderImportCSV, layout: OrderImportLayout, maxO
             order.items.append(item)
         }
         if let sale = orderImportSaleRow(value) { order.saleRows.append(sale) }
+        if layout.format == .shopify, shopifyRefundStatuses.contains(orderImportStatusKey(value(.financialStatus))) {
+            order.shopifyShowsRefund = true
+        }
         if order.alreadyHandled == nil {
             order.alreadyHandled = orderImportAlreadyHandledReason(
                 format: layout.format, dateShipped: value(.dateShipped), fulfillmentStatus: value(.fulfillmentStatus),
@@ -486,12 +492,41 @@ private func orderImportComparable(_ value: String) -> String {
     value.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
 }
 
+/// A Shopify status as one key, whether it comes from GraphQL (`PARTIALLY_REFUNDED`) or a CSV export ("partially
+/// refunded", "Partially-Refunded"): lower case, with each run of spaces, hyphens and underscores read as one underscore.
+func orderImportStatusKey(_ raw: String) -> String {
+    raw.lowercased()
+        .split(whereSeparator: { $0.isWhitespace || $0 == "-" || $0 == "_" })
+        .joined(separator: "_")
+}
+
+/// Shopify financial statuses (`displayFinancialStatus`, or a CSV export's Financial Status, through
+/// `orderImportStatusKey`) for an order the buyer hasn't fully paid. Fetch from Shopify leaves such an order out (its
+/// query asks only for paid and partly refunded orders); a CSV row with one starts unticked.
+let shopifyImportUnpaidStatuses: Set<String> = ["pending", "authorized", "partially_paid", "expired"]
+/// Financial statuses that show a refund, so the order's sale amounts aren't used (`OrderImportOrder.shopifyShowsRefund`).
+let shopifyRefundStatuses: Set<String> = ["partially_refunded", "refunded"]
+
+/// A partly refunded order from Fetch from Shopify: its units are `currentQuantity` (less refunded and removed units),
+/// but a refund of money alone (shipping, a goodwill credit) leaves every item due, and a refund booked against an
+/// already sent unit can leave one too many.
+let orderImportPartlyRefundedFetchedReason = "Shopify shows part of this order as refunded. A refund doesn’t always take items off the order, so check which items still need making."
+/// A partly refunded order from a CSV export, whose quantities may include refunded items.
+let orderImportPartlyRefundedCSVReason = "Shopify shows part of this order as refunded, and the export may list every item, including refunded ones. Check which items still need making."
+/// A CSV row whose Financial Status is pending, authorised, partly paid or expired.
+let orderImportNotFullyPaidReason = "Shopify doesn’t show this order as fully paid."
+/// A fetched order whose financial status is missing or one Plinth doesn't expect (the query asks for paid and partly
+/// refunded orders only).
+let orderImportNotShownPaidReason = "Shopify doesn’t show this order as paid."
+
 /// Why the marketplace already shows this order as done, or partly done: Etsy's Date Shipped, or Shopify's
-/// fulfillment, cancellation and refund columns. These orders aren't ticked by default. Shopify's fulfilment status
-/// comes as a GraphQL `displayFulfillmentStatus` (Fetch from Shopify, `fetched`: `PARTIALLY_FULFILLED`, `IN_PROGRESS`,
-/// …) or as a CSV export's Fulfillment Status (`fulfilled`, `partial`, `unfulfilled`; the export's exact words are
-/// unverified), compared in lower case with spaces and hyphens read as underscores. A partly fulfilled order's wording
-/// follows where it came from: Fetch from Shopify lists only the units still to fulfil, a CSV export every item.
+/// fulfillment, cancellation and financial status. These orders aren't ticked by default. Shopify's statuses come as
+/// GraphQL `displayFulfillmentStatus` and `displayFinancialStatus` (Fetch from Shopify, `fetched`:
+/// `PARTIALLY_FULFILLED`, `PARTIALLY_REFUNDED`, …) or as a CSV export's Fulfillment Status and Financial Status
+/// (`fulfilled`, `partial`, `unfulfilled`, `paid`, `partially_refunded`; the export's exact words are unverified),
+/// both read through `orderImportStatusKey`. A partly fulfilled or partly refunded order's wording follows where it
+/// came from: Fetch from Shopify lists only the units still to fulfil and not refunded, a CSV export every item. A
+/// fulfilment reason and a payment reason are given together.
 func orderImportAlreadyHandledReason(format: OrderImportFormat, dateShipped: String, fulfillmentStatus: String,
                                      cancelledAt: String, financialStatus: String, fetched: Bool = false) -> String? {
     switch format {
@@ -499,29 +534,40 @@ func orderImportAlreadyHandledReason(format: OrderImportFormat, dateShipped: Str
         return dateShipped.isEmpty ? nil : "Etsy shows this order as shipped."
     case .shopify:
         if !cancelledAt.isEmpty { return "Shopify shows this order as cancelled." }
-        let financial = financialStatus.lowercased()
+        let financial = orderImportStatusKey(financialStatus)
         if financial == "refunded" { return "Shopify shows this order as refunded." }
         if financial == "voided" { return "Shopify shows this order’s payment as voided." }
-        let fulfilment = fulfillmentStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            .replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "-", with: "_")
-        switch fulfilment {
+        let fulfilment: String?
+        switch orderImportStatusKey(fulfillmentStatus) {
         case "fulfilled":
-            return "Shopify shows this order as fulfilled."
+            fulfilment = "Shopify shows this order as fulfilled."
         case "partial", "partially_fulfilled":
             // Fetch from Shopify drafts only the units still to fulfil (`shopifyImportLineUnits`); a CSV export's
             // quantities are the whole order's.
-            return fetched
+            fulfilment = fetched
                 ? "Shopify shows part of this order as fulfilled. Only the items still to fulfil are listed."
                 : "Shopify shows part of this order as fulfilled, but the export lists every item, including any already sent."
         case "in_progress", "pending_fulfillment":
             // IN_PROGRESS also covers an order the merchant marked as in progress, not only one with a fulfilment
             // service.
-            return "Shopify shows this order as in progress or with a fulfilment service."
+            fulfilment = "Shopify shows this order as in progress or with a fulfilment service."
         case "fulfillment_not_required":
-            return "Shopify shows nothing in this order to fulfil."
+            fulfilment = "Shopify shows nothing in this order to fulfil."
         default:
-            return nil
+            fulfilment = nil
         }
+        let payment: String?
+        if financial == "partially_refunded" {
+            payment = fetched ? orderImportPartlyRefundedFetchedReason : orderImportPartlyRefundedCSVReason
+        } else if fetched {
+            // The fetch asks only for paid and partly refunded orders; anything else (or nothing) is a surprise.
+            payment = financial == "paid" ? nil : orderImportNotShownPaidReason
+        } else {
+            // A CSV export may hold any order; an empty status (a follow-on item row) says nothing.
+            payment = shopifyImportUnpaidStatuses.contains(financial) ? orderImportNotFullyPaidReason : nil
+        }
+        let reasons = [fulfilment, payment].compactMap { $0 }
+        return reasons.isEmpty ? nil : reasons.joined(separator: " ")
     case .template:
         return nil
     }

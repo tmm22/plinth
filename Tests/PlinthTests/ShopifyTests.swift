@@ -281,7 +281,7 @@ final class ShopifyTests: XCTestCase {
     func testSearchQueryCoversTheLastSixtyDays() {
         let now = ISO8601DateFormatter().date(from: "2026-10-24T01:00:00Z")!
         XCTAssertEqual(shopifyImportSearchQuery(now: now),
-                       "financial_status:paid fulfillment_status:unfulfilled status:open created_at:>=2026-08-25")
+                       "(financial_status:paid OR financial_status:partially_refunded) fulfillment_status:unfulfilled status:open created_at:>=2026-08-25")
     }
 
     // MARK: Tracking

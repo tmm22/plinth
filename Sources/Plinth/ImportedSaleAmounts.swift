@@ -63,7 +63,8 @@ enum ImportedSaleParse: Equatable {
     case none
 }
 
-/// Reads an imported order's sale amounts. Only USD is kept, and only when the currency is stated.
+/// Reads an imported order's sale amounts. Only USD is kept, and only when the currency is stated. A Shopify order
+/// showing a refund keeps none (`importedSaleWithheldForRefund`).
 func importedSaleAmounts(for order: OrderImportOrder) -> ImportedSaleParse {
     let rows = order.saleRows
     guard !rows.isEmpty else { return .none }
@@ -73,7 +74,9 @@ func importedSaleAmounts(for order: OrderImportOrder) -> ImportedSaleParse {
     var amounts = ImportedSaleAmounts(source: order.source, sourceOrderID: order.sourceOrderID)
     switch order.source {
     case .etsy: importedEtsyAmounts(rows, itemCount: order.items.count, into: &amounts)
-    case .shopify: importedShopifyAmounts(rows, into: &amounts)
+    case .shopify:
+        guard !importedSaleWithheldForRefund(order) else { return .none }
+        importedShopifyAmounts(rows, into: &amounts)
     case .template: return .none
     }
     amounts.unitsSold = importedSaleUnits(order.items)
@@ -204,8 +207,27 @@ func importedShopifyOrderAmount(_ texts: [String]) -> ImportedShopifyAmount {
     return found.map(ImportedShopifyAmount.value) ?? .missing
 }
 
+/// True when a Shopify order's amounts aren't used because Shopify shows a refund on it: a Financial Status of partly
+/// refunded or refunded (`OrderImportOrder.shopifyShowsRefund`), or a refunded amount above zero or unreadable. The
+/// subtotal and total Plinth reads are the order's before refunds, and Shopify's refund total doesn't say whether it
+/// covered items, shipping or tax, so taking it off could understate and leaving it on would overstate what the buyer
+/// paid: the Profit check's fields are left for the seller instead, like any order without amounts.
+func importedSaleWithheldForRefund(_ order: OrderImportOrder) -> Bool {
+    guard order.source == .shopify, !order.saleRows.isEmpty else { return false }
+    if order.shopifyShowsRefund { return true }
+    switch importedShopifyOrderAmount(order.saleRows.map(\.refunded)) {
+    case .value(let refunded): return refunded > 0
+    case .missing: return false
+    case .invalid: return true
+    }
+}
+
+/// The import sheet's sentence when some orders' amounts were withheld for a refund (`importedSaleWithheldForRefund`).
+let importedSaleRefundWithheldNote = "What buyers paid isn’t used for orders Shopify shows a refund on, because Shopify’s refund total doesn’t say what it covered."
+
 /// Subtotal and Shipping, checked against Total: Total is subtotal + shipping (+ taxes, unless prices include them),
-/// with the discount already out of the subtotal or (when the Total says so) still to come off it.
+/// with the discount already out of the subtotal or (when the Total says so) still to come off it. Orders showing a
+/// refund never get here (`importedSaleWithheldForRefund`).
 private func importedShopifyAmounts(_ rows: [OrderImportSaleRow], into amounts: inout ImportedSaleAmounts) {
     func amount(_ keyPath: KeyPath<OrderImportSaleRow, String>) -> ImportedShopifyAmount {
         importedShopifyOrderAmount(rows.map { $0[keyPath: keyPath] })
@@ -248,9 +270,6 @@ private func importedShopifyAmounts(_ rows: [OrderImportSaleRow], into amounts: 
         } else {
             amounts.notes.append("Enter the shipping charged: Shopify’s file doesn’t show it clearly.")
         }
-    }
-    if case .value(let refunded) = amount(\.refunded), refunded > 0 {
-        amounts.notes.append("Shopify shows \(money(NSDecimalNumber(decimal: refunded))) refunded on this order; the amounts here don’t take it off.")
     }
 }
 
@@ -295,18 +314,20 @@ func importedSaleAmountsForDraft(_ amounts: ImportedSaleAmounts, leavesOutItems:
 /// The import sheet's note on what happens to the amounts buyers paid, or nil when the file has none.
 func orderImportSaleAmountsNotice(_ orders: [OrderImportOrder]) -> String? {
     var usd = 0
+    var refunded = false
     var other: [String] = []
     for order in orders {
         switch importedSaleAmounts(for: order) {
         case .amounts: usd += 1
         case .otherCurrency(let code): if !other.contains(code) { other.append(code) }
-        case .none: break
+        case .none: if importedSaleWithheldForRefund(order) { refunded = true }
         }
     }
     var parts: [String] = []
     if usd > 0 {
         parts.append("What buyers paid is kept in memory until you quit, disconnect or change your API key, to fill in each new draft’s Profit check. It isn’t saved or sent to Slant.")
     }
+    if refunded { parts.append(importedSaleRefundWithheldNote) }
     if !other.isEmpty {
         let codes = other.sorted().prefix(3).joined(separator: ", ")
         parts.append("Amounts in \(codes) aren’t used: the Profit check works in US dollars.")
