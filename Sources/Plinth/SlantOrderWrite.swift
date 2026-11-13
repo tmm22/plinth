@@ -139,6 +139,60 @@ func orderReviewWrite(orderID: String, method: String, shown: [String: Any],
     }
 }
 
+/// What the single review sheet shows once `store.run` returns (`OrderActionConfirmSheet.confirmAction`), from the
+/// record `orderReviewWrite` filled. Pure, so the order shown, the success line and every message are tested.
+struct OrderReviewSheetResult {
+    /// The run never started because another request was running: the sheet waits for it.
+    var awaitingBusy = false
+    /// The order to show now; nil leaves the one shown.
+    var shownOrder: [String: Any]?
+    /// Set only when the write is confirmed: the order for `onCompleted`, the success line (nil for an accepted pay that
+    /// wasn't placed) and whether that pay wasn't placed (the sheet then offers no next draft).
+    var succeeded: (order: [String: Any], successMessage: String?, payNotPlaced: Bool)?
+    /// The note under the actions; every finished run sets it (nil clears it).
+    var actionMessage: String?
+}
+
+/// The sheet's state after one Pay or Cancel press: `ran` is `store.run`'s result, `failure` the message its error
+/// handler kept, `refundOnly` the sheet's refund wording at that point and `shown` the order the review showed.
+@MainActor
+func orderReviewSheetResult(record: OrderReviewWriteRecord, ran: Bool, failure: String?, isPay: Bool, refundOnly: Bool,
+                            shown: [String: Any]) -> OrderReviewSheetResult {
+    var result = OrderReviewSheetResult()
+    guard ran else {
+        result.awaitingBusy = true
+        return result
+    }
+    result.shownOrder = record.latestOrder
+    if record.didWrite {
+        let best = record.completedOrder ?? record.latestOrder ?? shown
+        result.shownOrder = best
+        if isPay, let payOutcome = record.payOutcome, payOutcome != .placed {
+            // Accepted, but not placed: say why, and offer no next draft.
+            result.succeeded = (best, nil, true)
+            result.actionMessage = orderPayAcceptedMessage(payOutcome)
+        } else {
+            result.succeeded = (best, isPay ? "Order placed." : (refundOnly ? "Refund requested." : "Cancellation requested."), false)
+            result.actionMessage = nil
+        }
+    } else if record.payAcceptedUnconfirmed {
+        if let completed = record.completedOrder { result.shownOrder = completed }
+        result.actionMessage = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Press Refresh Order before doing anything else."
+    } else if record.attemptedWrite {
+        result.actionMessage = record.unknownWriteError.map { orderConfirmUnknownOutcomeMessage(isPay: isPay, error: $0) }
+            ?? orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
+    } else if record.rejected {
+        result.actionMessage = record.refusal ?? (isPay ? "Slant didn’t accept the payment request. Review the order before trying again." : "Slant didn’t accept the cancel request. Review the order before trying again.")
+    } else {
+        switch record.outcome {
+        case .priceChanged: result.actionMessage = "The price changed. Review the new total."
+        case .statusBlocked(let reason): result.actionMessage = reason
+        case .proceed: result.actionMessage = failure
+        }
+    }
+    return result
+}
+
 // MARK: - Pay Several Drafts: one order
 
 /// One order of Pay Several Drafts, as the single review's `orderReviewWrite` pays one: re-fetch, check it is this
@@ -193,52 +247,4 @@ func batchPayOne(_ id: String, reviewed: [String: Any], env: SlantOrderWriteEnvi
         env.clearOutcomeUnknown(id)
     }
     return (outcome, completed, nil)
-}
-
-// MARK: - Pay Several Drafts: the review
-
-/// The reviewed drafts, in the chosen order, with why each is left out (`batchPayExclusionReason`: the lock, a failed
-/// load, another order, not a draft, no total, an unlisted cost; or already sent in this batch), then the marketplace
-/// duplicates (`batchPayDuplicateExclusions`: a placed order for the sale among `listed` and `recentPlaced`, another
-/// draft left out, a hidden draft, or an earlier draft in this review) and, when the placed-order check was needed and
-/// `recent` didn't finish, every draft naming a marketplace order (`batchPayUncheckedExclusions`). Each step only leaves
-/// more out. `uncheckedLeftOut` is nil when the check wasn't needed (the runner's count is then left as it is).
-func batchPayReviewedDrafts(ids: [String], loaded: [String: [String: Any]], failures: [String: String],
-                            lockedIDs: Set<String>, placedIDs: Set<String>, listed: [Record],
-                            recentPlaced: [Record], hiddenDraftIDs: Set<String>,
-                            checkNeeded: Bool, recent: RecentOrdersRead?)
-    -> (reviewed: [BatchPayReviewedDraft], uncheckedLeftOut: Int?) {
-    var reviewed = ids.map { id in
-        let order = loaded[id]
-        let reason = batchPayExclusionReason(orderID: id, order: order, loadFailure: failures[id],
-                                             locked: lockedIDs.contains(id))
-        let alreadyPaid = placedIDs.contains(id) ? "It was sent for payment in this batch." : nil
-        return BatchPayReviewedDraft(id: id, order: order, exclusion: alreadyPaid ?? reason)
-    }
-    // Every reviewed draft holds its marketplace order, whatever else left it out (a lock, a failed load, an unlisted
-    // cost), so a later draft for the same sale is never paid here while the earlier one waits to be paid on its own.
-    let duplicates = batchPayDuplicateExclusions(
-        reviewed.compactMap { draft in
-            batchPayDuplicateCheckOrder(id: draft.id, fresh: draft.order, listed: listed).map { (id: draft.id, order: $0) }
-        },
-        placedKeys: batchPayPlacedKeys(loaded: listed, recent: recentPlaced),
-        excludedIDs: Set(reviewed.filter { !$0.payable }.map(\.id)),
-        hiddenKeys: batchPayHiddenDraftMarketplaceKeys(listed, hidden: hiddenDraftIDs,
-                                                       keeping: lockedIDs, reviewedIDs: Set(reviewed.map(\.id))))
-    reviewed = reviewed.map { draft in
-        guard draft.payable, let reason = duplicates[draft.id] else { return draft }
-        return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
-    }
-    // When the wider check couldn't be done, drafts for a marketplace order are left out too (never fewer).
-    var uncheckedLeftOut: Int?
-    if checkNeeded {
-        let unchecked = batchPayUncheckedExclusions(
-            reviewed.filter(\.payable).compactMap { draft in draft.order.map { (id: draft.id, order: $0) } }, recent: recent)
-        reviewed = reviewed.map { draft in
-            guard draft.payable, let reason = unchecked[draft.id] else { return draft }
-            return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
-        }
-        uncheckedLeftOut = unchecked.count
-    }
-    return (reviewed, uncheckedLeftOut)
 }

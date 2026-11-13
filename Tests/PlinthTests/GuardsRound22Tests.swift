@@ -81,9 +81,9 @@ final class GuardsRound22Tests: XCTestCase {
     }
 
     func testDifferentMarketplacesStoresAndSplitsStayApart() {
-        func match(_ a: [String: Any], _ b: [String: Any], line: UInt = #line) -> Bool {
+        func match(_ a: [String: Any], _ b: [String: Any], file: StaticString = #filePath, line: UInt = #line) -> Bool {
             guard let left = batchPayMarketplaceKey(a), let right = batchPayMarketplaceKey(b) else {
-                XCTFail("A draft without a marketplace key", line: line)
+                XCTFail("A draft without a marketplace key", file: file, line: line)
                 return false
             }
             return batchPayMarketplaceKeysMatch(left, right)
@@ -105,9 +105,9 @@ final class GuardsRound22Tests: XCTestCase {
     }
 
     func testWhatCantTellTwoSalesApartMatches() {
-        func match(_ a: [String: Any], _ b: [String: Any], line: UInt = #line) -> Bool {
+        func match(_ a: [String: Any], _ b: [String: Any], file: StaticString = #filePath, line: UInt = #line) -> Bool {
             guard let left = batchPayMarketplaceKey(a), let right = batchPayMarketplaceKey(b) else {
-                XCTFail("A draft without a marketplace key", line: line)
+                XCTFail("A draft without a marketplace key", file: file, line: line)
                 return false
             }
             return batchPayMarketplaceKeysMatch(left, right)

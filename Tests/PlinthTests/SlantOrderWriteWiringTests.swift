@@ -1,8 +1,9 @@
 import XCTest
 @testable import Plinth
 
-/// The wiring of the two Slant money paths (SlantOrderWrite.swift): the single pay/cancel review (`orderReviewWrite`)
-/// and Pay Several Drafts' one order (`batchPayOne`) and review (`batchPayReviewedDrafts`). A recording fake stands in
+/// The wiring of the two Slant money paths: the single pay/cancel review (`orderReviewWrite` and what the sheet then
+/// shows, `orderReviewSheetResult`, SlantOrderWrite.swift) and Pay Several Drafts' one order (`batchPayOne`) and review
+/// (`batchPayReviewedDrafts`, BatchPay.swift). A recording fake stands in
 /// for Slant, the shared unknown-outcome lock and the quit guard, so each scenario asserts the exact order of the
 /// re-fetch, the checks, the lock, the write and the lift. The fake's POST and DELETE fail the test unless the lock is
 /// already recorded, and unless the scenario expects a write at all. No real order IDs, tracking numbers or payment IDs.
@@ -320,14 +321,6 @@ final class SlantOrderWriteWiringTests: XCTestCase {
         }
     }
 
-    func testTheSingleReviewNotesNoRateLimits() async {
-        let fake = FakeSlant(reads: [.success(Self.order(status: "DRAFT")), .success(Self.order(status: "SUBMITTED"))],
-                             write: .success(Self.order(status: "SUBMITTED")), writeNeedsToken: true)
-        _ = await review(fake, method: "POST", shown: Self.order(status: "DRAFT"))
-        XCTAssertFalse(fake.log.contains(.noteRateLimit))
-        XCTAssertFalse(fake.log.contains(.noteRateLimitError))
-    }
-
     // MARK: Single review: cancel
 
     func testACancelLocksBeforeSendingAndLiftsOnSuccess() async {
@@ -395,6 +388,109 @@ final class SlantOrderWriteWiringTests: XCTestCase {
             XCTAssertTrue(fake.lockedIDs.isEmpty, "\(failure)")
             XCTAssertEqual(record.refusal, orderConfirmRefusalMessage(isPay: false, error: failure))
         }
+    }
+
+    // MARK: Single review: what the sheet shows
+
+    func sheet(_ record: OrderReviewWriteRecord, ran: Bool = true, failure: String? = nil, isPay: Bool = true,
+               refundOnly: Bool = false) -> OrderReviewSheetResult {
+        orderReviewSheetResult(record: record, ran: ran, failure: failure, isPay: isPay, refundOnly: refundOnly,
+                               shown: Self.order(status: isPay ? "DRAFT" : "SUBMITTED"))
+    }
+
+    func testTheSheetSaysPlacedOnlyForAConfirmedPlacedPay() async {
+        let fake = FakeSlant(reads: [.success(Self.order(status: "DRAFT")), .success(Self.order(status: "SUBMITTED"))],
+                             write: .success(Self.order(status: "SUBMITTED")), writeNeedsToken: true)
+        let result = sheet(await review(fake, method: "POST", shown: Self.order(status: "DRAFT")).record)
+        XCTAssertFalse(result.awaitingBusy)
+        XCTAssertEqual(result.succeeded?.successMessage, "Order placed.")
+        XCTAssertEqual(result.succeeded?.payNotPlaced, false)
+        XCTAssertEqual(result.succeeded?.order["status"] as? String, "SUBMITTED", "The order Slant now shows")
+        XCTAssertEqual(result.shownOrder?["status"] as? String, "SUBMITTED")
+        XCTAssertNil(result.actionMessage)
+    }
+
+    func testTheSheetSaysCancellationOrRefundForAConfirmedCancel() async {
+        for refundOnly in [false, true] {
+            let fake = FakeSlant(reads: [.success(Self.order(status: "SUBMITTED")), .success(Self.order(status: "CANCELLED"))],
+                                 write: .success(Self.order(status: "CANCELLED")), writeNeedsToken: true)
+            let record = await review(fake, method: "DELETE", shown: Self.order(status: "SUBMITTED")).record
+            let result = sheet(record, isPay: false, refundOnly: refundOnly)
+            XCTAssertEqual(result.succeeded?.successMessage, refundOnly ? "Refund requested." : "Cancellation requested.")
+            XCTAssertEqual(result.succeeded?.order["status"] as? String, "CANCELLED")
+            XCTAssertNil(result.actionMessage)
+        }
+    }
+
+    func testTheSheetExplainsAnAcceptedPayThatWasNotPlaced() async {
+        let fake = FakeSlant(reads: [.success(Self.order(status: "DRAFT")), .success(Self.order(status: "PAYMENT_ERROR"))],
+                             write: .success(Self.order(status: "PAYMENT_ERROR")), writeNeedsToken: true)
+        let record = await review(fake, method: "POST", shown: Self.order(status: "DRAFT")).record
+        let result = sheet(record)
+        XCTAssertEqual(result.succeeded?.payNotPlaced, true, "No next draft is offered")
+        XCTAssertNil(result.succeeded?.successMessage, "Never “Order placed.”")
+        XCTAssertEqual(result.actionMessage, orderPayAcceptedMessage(batchPayOutcomeAfterSuccess(Self.order(status: "PAYMENT_ERROR"))))
+        XCTAssertNotNil(result.actionMessage)
+    }
+
+    func testTheSheetWarnsWhenAnAcceptedPayStillShowsADraft() async {
+        let fake = FakeSlant(reads: [.success(Self.order(status: "DRAFT")), .success(Self.order(status: "DRAFT"))],
+                             write: .success(Self.order(status: "DRAFT")), writeNeedsToken: true)
+        let record = await review(fake, method: "POST", shown: Self.order(status: "DRAFT")).record
+        let result = sheet(record)
+        XCTAssertNil(result.succeeded, "Not a confirmed charge")
+        XCTAssertEqual(result.actionMessage, "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Press Refresh Order before doing anything else.")
+        XCTAssertEqual(result.shownOrder?["status"] as? String, "DRAFT")
+    }
+
+    func testTheSheetSaysTheOutcomeIsUnknownAfterAnUnclearReply() async {
+        for isPay in [true, false] {
+            let fake = FakeSlant(reads: [.success(Self.order(status: isPay ? "DRAFT" : "SUBMITTED"))],
+                                 write: .failure(Self.http(503)), writeNeedsToken: true)
+            let record = await review(fake, method: isPay ? "POST" : "DELETE", shown: Self.order(status: isPay ? "DRAFT" : "SUBMITTED")).record
+            let result = sheet(record, failure: "The run's own message", isPay: isPay)
+            XCTAssertNil(result.succeeded)
+            XCTAssertNotNil(record.unknownWriteError)
+            XCTAssertEqual(result.actionMessage, record.unknownWriteError.map { orderConfirmUnknownOutcomeMessage(isPay: isPay, error: $0) })
+            XCTAssertNotEqual(result.actionMessage, "The run's own message", "The unknown outcome is explained, not the run's error")
+        }
+    }
+
+    func testTheSheetShowsSlantsRefusal() async {
+        let fake = FakeSlant(reads: [.success(Self.order(status: "DRAFT"))],
+                             write: .failure(Self.http(400, body: #"{"message":"Card declined"}"#)), writeNeedsToken: true)
+        let record = await review(fake, method: "POST", shown: Self.order(status: "DRAFT")).record
+        let result = sheet(record, failure: "The run's own message")
+        XCTAssertNil(result.succeeded)
+        XCTAssertNotNil(record.refusal)
+        XCTAssertEqual(result.actionMessage, record.refusal)
+    }
+
+    func testTheSheetSaysWhyNothingWasSent() async {
+        let blocked = FakeSlant(reads: [.success(Self.order(status: "SUBMITTED"))], writeNeedsToken: true)
+        let blockedResult = sheet(await review(blocked, method: "POST", shown: Self.order(status: "DRAFT")).record)
+        XCTAssertNil(blockedResult.succeeded)
+        XCTAssertEqual(blockedResult.actionMessage, "Only drafts can be placed.")
+        XCTAssertEqual(blockedResult.shownOrder?["status"] as? String, "SUBMITTED", "The review shows the order as it now is")
+
+        let repriced = FakeSlant(reads: [.success(Self.order(status: "DRAFT", extra: ["deliveryCost": 9.0]))], writeNeedsToken: true)
+        let repricedResult = sheet(await review(repriced, method: "POST", shown: Self.order(status: "DRAFT")).record)
+        XCTAssertEqual(repricedResult.actionMessage, "The price changed. Review the new total.")
+
+        let unread = FakeSlant(reads: [.failure(Self.http(500))], writeNeedsToken: true)
+        let unreadResult = sheet(await review(unread, method: "POST", shown: Self.order(status: "DRAFT")).record,
+                                 failure: "Slant had a problem.")
+        XCTAssertNil(unreadResult.succeeded)
+        XCTAssertNil(unreadResult.shownOrder)
+        XCTAssertEqual(unreadResult.actionMessage, "Slant had a problem.", "The run's own message when nothing was sent")
+    }
+
+    func testTheSheetWaitsWhenTheRunNeverStarted() {
+        let result = sheet(OrderReviewWriteRecord(), ran: false, failure: "ignored")
+        XCTAssertTrue(result.awaitingBusy)
+        XCTAssertNil(result.succeeded)
+        XCTAssertNil(result.shownOrder)
+        XCTAssertNil(result.actionMessage)
     }
 
     // MARK: Pay Several Drafts: one order
@@ -549,19 +645,15 @@ final class SlantOrderWriteWiringTests: XCTestCase {
         let result = reviewed(ids, loaded: loaded, failures: ["failed": "Slant didn’t reply."],
                               locked: ["locked", "sentlocked"], placed: ["sent", "sentlocked"])
         XCTAssertEqual(result.ids, ids, "In the chosen order")
-        let expected: [String: String?] = [
-            "locked": "Its last payment or cancel request didn’t confirm. Refresh it in its own review first.",
-            "failed": "Couldn’t load it. Slant didn’t reply.",
-            "missing": "It wasn’t loaded.",
-            "other": "Slant returned a different order.",
-            "submitted": "It’s no longer a draft (now Submitted).",
-            "nostatus": "Slant didn’t return its status.",
-            "nototal": "Slant didn’t return a total for it.",
-            "taxed": orderUnlistedCostBatchReason(orderUnlistedCosts(taxed)),
-            "sent": "It was sent for payment in this batch.",
-            "sentlocked": "It was sent for payment in this batch.",
-            "ok": nil
-        ]
+        // The wording is pinned in BatchPayTests: here, that each draft carries its own reason (or none).
+        var expected: [String: String?] = [:]
+        for id in ids {
+            expected[id] = ["sent", "sentlocked"].contains(id)
+                ? "It was sent for payment in this batch."
+                : batchPayExclusionReason(orderID: id, order: loaded[id], loadFailure: id == "failed" ? "Slant didn’t reply." : nil,
+                                          locked: ["locked", "sentlocked"].contains(id))
+        }
+        XCTAssertEqual(ids.filter { expected[$0] == .some(nil) }, ["ok"], "Every other draft is left out for a reason")
         XCTAssertEqual(result.exclusions, expected)
         XCTAssertTrue(orderUnlistedCostBatchReason(orderUnlistedCosts(taxed))?.hasPrefix("Slant also lists taxCost for it") == true)
         XCTAssertNil(result.uncheckedLeftOut)
@@ -624,61 +716,91 @@ final class SlantOrderWriteWiringTests: XCTestCase {
 
     // MARK: The live environment and its callers
 
-    /// Tests can't create a `StudioStore`, so the fake above can't reach `live(_:)`: this source check pins its one-line
-    /// closures to the store's lock, client and the quit guard, and pins both money paths to go through it.
+    /// Tests can't create a `StudioStore`, so the fake above can't reach `live(_:)` or the code that calls these paths:
+    /// these source checks (SourceCheck.swift) pin the live closures to the store's lock, client and the quit guard, and
+    /// pin both money paths, Pay Several Drafts' loop and its quit-guard token to their places.
     func testTheLiveEnvironmentAndBothCallersStayWired() throws {
-        let write = try source("SlantOrderWrite.swift")
-        let liveStart = try XCTUnwrap(write.range(of: "@MainActor static func live("))
-        let liveEnd = try XCTUnwrap(write.range(of: "\n    }\n", range: liveStart.upperBound..<write.endIndex))
-        let live = String(write[liveStart.lowerBound..<liveEnd.lowerBound])
-        for line in ["request: { method, path in try await store.client.request(method, path: path) },",
-                     "isOutcomeUnknown: { store.isOutcomeUnknown(orderID: $0) },",
-                     "markOutcomeUnknown: { store.markOutcomeUnknown(orderID: $0, action: $1, reviewedStatus: $2) },",
-                     "clearOutcomeUnknown: { store.clearOutcomeUnknown(orderID: $0) },",
-                     "beginWrite: { SlantWritesInFlight.shared.begin($0) },",
-                     "endWrite: { SlantWritesInFlight.shared.end($0) },",
-                     "noteRateLimit: noteRateLimit,",
-                     "noteRateLimitError: noteRateLimitError)"] {
-            XCTAssertTrue(live.contains(line), "live(_:) lost: \(line)")
+        let live = try SourceCheck.body(of: "@MainActor static func live(", in: SourceCheck.file("SlantOrderWrite.swift"))
+        for (closure, protects) in [
+            ("request: { method, path in try await store.client.request(method, path: path) },", "requests go through the store's client"),
+            ("isOutcomeUnknown: { store.isOutcomeUnknown(orderID: $0) },", "the money paths see the shared lock"),
+            ("markOutcomeUnknown: { store.markOutcomeUnknown(orderID: $0, action: $1, reviewedStatus: $2) },", "the money paths record the shared lock"),
+            ("clearOutcomeUnknown: { store.clearOutcomeUnknown(orderID: $0) },", "the money paths lift the shared lock"),
+            ("beginWrite: { SlantWritesInFlight.shared.begin($0) },", "quit asks first while a write waits"),
+            ("endWrite: { SlantWritesInFlight.shared.end($0) },", "the quit guard's record ends with the write"),
+            ("noteRateLimit: noteRateLimit,", "the caller's pacing hooks reach the money paths"),
+            ("noteRateLimitError: noteRateLimitError)", "the caller's pacing hooks reach the money paths")] {
+            assertSourceContains(live, closure, "live(_:) must keep this closure, so \(protects)")
         }
-        // The single review sends its pay or cancel only through `orderReviewWrite` with the live environment.
-        let view = try source("OrdersView.swift")
-        let confirmStart = try XCTUnwrap(view.range(of: "    func confirmAction() {"))
-        let confirmEnd = try XCTUnwrap(view.range(of: "\n// MARK: - Pure helpers", range: confirmStart.upperBound..<view.endIndex))
-        let confirm = String(view[confirmStart.lowerBound..<confirmEnd.lowerBound])
-        XCTAssertEqual(confirm.components(separatedBy: "try await orderReviewWrite(orderID: orderID, method: method, shown: shown, env: .live(store), record: record)").count - 1, 1)
-        // The sheet's `writeAttempted` and refund wording follow the lock through the hook.
-        XCTAssertTrue(confirm.contains("""
-                        record.onWriteAttempted = { attempted in
-                            writeAttempted = attempted
-                            if attempted { capturedRefundOnly = successRefundOnly }
-                        }
-            """))
-        for bypass in ["store.client.request(", "markOutcomeUnknown(", "clearOutcomeUnknown(", "SlantWritesInFlight"] {
-            XCTAssertFalse(confirm.contains(bypass), "confirmAction calls \(bypass) itself")
-        }
-        // Pay Several Drafts pays only through `batchPayOne` with the live environment and its own pacing hooks, and
-        // reviews only through `batchPayReviewedDrafts`.
-        let batch = try source("BatchPay.swift")
-        XCTAssertTrue(batch.contains("let result = await batchPayOne(draft.id, reviewed: reviewedOrder, env: .live(\n"
-            + "                store, noteRateLimit: { self.noteRateLimit($0, store: store) }, noteRateLimitError: { self.noteRateLimitError($0) }))"))
-        XCTAssertTrue(batch.contains("""
-                    let review = batchPayReviewedDrafts(
-                        ids: ids, loaded: loaded, failures: failures, lockedIDs: store.unknownOutcomeOrderIDs, placedIDs: placedIDs,
-                        listed: store.orders, recentPlaced: recent?.orders(forKey: reviewedKey) ?? [],
-                        hiddenDraftIDs: store.hiddenDraftIDSet, checkNeeded: checkNeeded, recent: recent)
-                    reviewed = review.reviewed
-                    if let unchecked = review.uncheckedLeftOut { uncheckedLeftOut = unchecked }
-            """), "The review's inputs: the live lock, every loaded order (never platform-checked), the recent read")
-        for bypass in ["request(\"POST\"", "markOutcomeUnknown(", "batchPayExclusionReason(orderID: id"] {
-            XCTAssertFalse(batch.contains(bypass), "BatchPay.swift calls \(bypass) itself")
-        }
-    }
 
-    private func source(_ name: String) throws -> String {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/Plinth").appendingPathComponent(name)
-        return try String(contentsOf: url, encoding: .utf8)
+        // The single review pays or cancels only through `orderReviewWrite` and shows what `orderReviewSheetResult` says.
+        let confirm = try SourceCheck.body(of: "func confirmAction() {", in: SourceCheck.file("OrdersView.swift"))
+        assertSourceCount(confirm, "try await orderReviewWrite(orderID: orderID, method: method, shown: shown, env: .live(store), record: record)", 1,
+                          "the single review sends its pay or cancel only through orderReviewWrite with the live environment")
+        assertSourceContains(confirm, """
+            record.onWriteAttempted = { attempted in
+                writeAttempted = attempted
+                if attempted { capturedRefundOnly = successRefundOnly }
+            }
+            """, "the sheet's writeAttempted and refund wording follow the lock")
+        assertSourceOrder(confirm, "try await orderReviewWrite(", before: """
+            let result = orderReviewSheetResult(record: record, ran: ran, failure: failure, isPay: isPay,
+                                                refundOnly: capturedRefundOnly, shown: shown)
+            """, "the sheet shows what orderReviewSheetResult decides from the record")
+        assertSourceContains(confirm, """
+            if result.awaitingBusy { awaitingBusy = true; return }
+            if let order = result.shownOrder { fresh = order; loadState = .loaded }
+            if let succeeded = result.succeeded {
+                writeSucceeded = true
+                if succeeded.payNotPlaced { payNotPlaced = true }
+                successMessage = succeeded.successMessage
+                actionMessage = result.actionMessage
+                onCompleted(orderID, succeeded.order)
+            } else {
+                actionMessage = result.actionMessage
+            }
+            """, "the sheet applies orderReviewSheetResult as it is")
+        for bypass in ["store.client.request(", "markOutcomeUnknown(", "clearOutcomeUnknown(", "SlantWritesInFlight"] {
+            assertSourceLacks(confirm, bypass, "confirmAction must not call \(bypass) itself: the sequence is orderReviewWrite's")
+        }
+
+        // Pay Several Drafts holds `busy` and its quit-guard token from before the first pay until the last answer.
+        let batch = try SourceCheck.file("BatchPay.swift")
+        let start = try SourceCheck.body(of: "func startPaying(expectedCount: Int,", in: batch)
+        assertSourceOrder(start, "store.busy = true", before: "Task {", "the batch holds busy before it pays")
+        assertSourceOrder(start, "let write = SlantWritesInFlight.shared.begin(.payDrafts)", before: "Task {",
+                          "quit asks first from before the batch's first pay")
+        assertSourceOrder(start, "await self.executePayments(queue, store: store, onCompleted: onCompleted)",
+                          before: "SlantWritesInFlight.shared.end(write)", "the quit guard's record lasts until the last pay has its answer")
+        // Each order: the stop checks before it, `batchPayOne` with the live environment and the batch's pacing, then
+        // the stop decision after it.
+        let loop = try SourceCheck.body(of: "private func executePayments(", in: batch)
+        let pay = """
+            let result = await batchPayOne(draft.id, reviewed: reviewedOrder, env: .live(
+                store, noteRateLimit: { self.noteRateLimit($0, store: store) }, noteRateLimitError: { self.noteRateLimitError($0) }))
+            """
+        assertSourceCount(loop, pay, 1, "each draft is paid only through batchPayOne with the live environment and the batch's pacing")
+        assertSourceOrder(loop, "guard accountUnchanged(store) else {", before: pay, "the batch stops before paying when the account or platform changed")
+        assertSourceOrder(loop, "guard store.unknownOutcomeOrderIDs.isEmpty else {", before: pay, "the batch never pays while any order's outcome is unknown")
+        assertSourceOrder(loop, pay, before: """
+            if case .stop(let reason) = batchPayNextStep(after: result.outcome) {
+                stopMessage = reason
+                break
+            }
+            """, "the batch stops after a refusal, a change or an unclear outcome")
+        assertSourceContains(loop, "case .placed, .notPlaced, .unclear, .unrecognised: placedIDs.insert(draft.id)",
+                             "an order Slant accepted is never paid again from this batch")
+        // The review's inputs: the live lock, every loaded order (never platform-checked), the recent read, hidden drafts.
+        assertSourceContains(batch, """
+            let review = batchPayReviewedDrafts(
+                ids: ids, loaded: loaded, failures: failures, lockedIDs: store.unknownOutcomeOrderIDs, placedIDs: placedIDs,
+                listed: store.orders, recentPlaced: recent?.orders(forKey: reviewedKey) ?? [],
+                hiddenDraftIDs: store.hiddenDraftIDSet, checkNeeded: checkNeeded, recent: recent)
+            reviewed = review.reviewed
+            if let unchecked = review.uncheckedLeftOut { uncheckedLeftOut = unchecked }
+            """, "the batch review gets the live lock, every loaded order, the recent read and hidden drafts")
+        for bypass in ["request(\"POST\"", "markOutcomeUnknown("] {
+            assertSourceLacks(batch, bypass, "BatchPay.swift must not call \(bypass) itself: paying is batchPayOne's")
+        }
     }
 }

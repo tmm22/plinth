@@ -805,8 +805,7 @@ enum BatchPayPhase: Equatable { case choose, loading, review, paying, done }
             message = "Stopped loading. Nothing was paid."
             return
         }
-        // Exclusions, marketplace duplicates and unchecked marketplace orders (`batchPayReviewedDrafts`,
-        // SlantOrderWrite.swift).
+        // Exclusions, marketplace duplicates and unchecked marketplace orders (`batchPayReviewedDrafts`, below).
         let review = batchPayReviewedDrafts(
             ids: ids, loaded: loaded, failures: failures, lockedIDs: store.unknownOutcomeOrderIDs, placedIDs: placedIDs,
             listed: store.orders, recentPlaced: recent?.orders(forKey: reviewedKey) ?? [],
@@ -1448,4 +1447,52 @@ func batchPayStopActivityDetail(for error: Error) -> String {
     case is URLError: return "stopped at a connection problem"
     default: return "stopped"
     }
+}
+
+// MARK: - Pay Several Drafts: the review
+
+/// The reviewed drafts, in the chosen order, with why each is left out (`batchPayExclusionReason`: the lock, a failed
+/// load, another order, not a draft, no total, an unlisted cost; or already sent in this batch), then the marketplace
+/// duplicates (`batchPayDuplicateExclusions`: a placed order for the sale among `listed` and `recentPlaced`, another
+/// draft left out, a hidden draft, or an earlier draft in this review) and, when the placed-order check was needed and
+/// `recent` didn't finish, every draft naming a marketplace order (`batchPayUncheckedExclusions`). Each step only leaves
+/// more out. `uncheckedLeftOut` is nil when the check wasn't needed (the runner's count is then left as it is).
+func batchPayReviewedDrafts(ids: [String], loaded: [String: [String: Any]], failures: [String: String],
+                            lockedIDs: Set<String>, placedIDs: Set<String>, listed: [Record],
+                            recentPlaced: [Record], hiddenDraftIDs: Set<String>,
+                            checkNeeded: Bool, recent: RecentOrdersRead?)
+    -> (reviewed: [BatchPayReviewedDraft], uncheckedLeftOut: Int?) {
+    var reviewed = ids.map { id in
+        let order = loaded[id]
+        let reason = batchPayExclusionReason(orderID: id, order: order, loadFailure: failures[id],
+                                             locked: lockedIDs.contains(id))
+        let alreadyPaid = placedIDs.contains(id) ? "It was sent for payment in this batch." : nil
+        return BatchPayReviewedDraft(id: id, order: order, exclusion: alreadyPaid ?? reason)
+    }
+    // Every reviewed draft holds its marketplace order, whatever else left it out (a lock, a failed load, an unlisted
+    // cost), so a later draft for the same sale is never paid here while the earlier one waits to be paid on its own.
+    let duplicates = batchPayDuplicateExclusions(
+        reviewed.compactMap { draft in
+            batchPayDuplicateCheckOrder(id: draft.id, fresh: draft.order, listed: listed).map { (id: draft.id, order: $0) }
+        },
+        placedKeys: batchPayPlacedKeys(loaded: listed, recent: recentPlaced),
+        excludedIDs: Set(reviewed.filter { !$0.payable }.map(\.id)),
+        hiddenKeys: batchPayHiddenDraftMarketplaceKeys(listed, hidden: hiddenDraftIDs,
+                                                       keeping: lockedIDs, reviewedIDs: Set(reviewed.map(\.id))))
+    reviewed = reviewed.map { draft in
+        guard draft.payable, let reason = duplicates[draft.id] else { return draft }
+        return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
+    }
+    // When the wider check couldn't be done, drafts for a marketplace order are left out too (never fewer).
+    var uncheckedLeftOut: Int?
+    if checkNeeded {
+        let unchecked = batchPayUncheckedExclusions(
+            reviewed.filter(\.payable).compactMap { draft in draft.order.map { (id: draft.id, order: $0) } }, recent: recent)
+        reviewed = reviewed.map { draft in
+            guard draft.payable, let reason = unchecked[draft.id] else { return draft }
+            return BatchPayReviewedDraft(id: draft.id, order: draft.order, exclusion: reason)
+        }
+        uncheckedLeftOut = unchecked.count
+    }
+    return (reviewed, uncheckedLeftOut)
 }

@@ -2466,49 +2466,21 @@ struct OrderActionConfirmSheet: View {
             }) {
                 try await orderReviewWrite(orderID: orderID, method: method, shown: shown, env: .live(store), record: record)
             }
-            let outcome = record.outcome
-            let latestOrder = record.latestOrder
-            let completedOrder = record.completedOrder
-            let didWrite = record.didWrite
-            let attemptedWrite = record.attemptedWrite
-            let payAcceptedUnconfirmed = record.payAcceptedUnconfirmed
-            let payOutcome = record.payOutcome
-            let rejected = record.rejected
-            let refusal = record.refusal
-            let unknownWriteError = record.unknownWriteError
             writing = false
-            if attemptedWrite { writeAttempted = true; capturedRefundOnly = successRefundOnly }
-            if !ran { awaitingBusy = true; return }
-            if let latest = latestOrder { fresh = latest; loadState = .loaded }
-            if didWrite {
-                let best = completedOrder ?? latestOrder ?? shown
-                fresh = best
-                loadState = .loaded
+            if record.attemptedWrite { writeAttempted = true; capturedRefundOnly = successRefundOnly }
+            // What the sheet shows now (`orderReviewSheetResult`, SlantOrderWrite.swift).
+            let result = orderReviewSheetResult(record: record, ran: ran, failure: failure, isPay: isPay,
+                                                refundOnly: capturedRefundOnly, shown: shown)
+            if result.awaitingBusy { awaitingBusy = true; return }
+            if let order = result.shownOrder { fresh = order; loadState = .loaded }
+            if let succeeded = result.succeeded {
                 writeSucceeded = true
-                if isPay, let payOutcome, payOutcome != .placed {
-                    // Accepted, but not placed: say why, and offer no next draft.
-                    payNotPlaced = true
-                    successMessage = nil
-                    actionMessage = orderPayAcceptedMessage(payOutcome)
-                } else {
-                    successMessage = isPay ? "Order placed." : (capturedRefundOnly ? "Refund requested." : "Cancellation requested.")
-                    actionMessage = nil
-                }
-                onCompleted(orderID, best)
-            } else if payAcceptedUnconfirmed {
-                if let shownOrder = completedOrder { fresh = shownOrder; loadState = .loaded }
-                actionMessage = "Slant accepted the payment request but doesn’t show the order as placed yet, so it may still be charged. Press Refresh Order before doing anything else."
-            } else if attemptedWrite {
-                actionMessage = unknownWriteError.map { orderConfirmUnknownOutcomeMessage(isPay: isPay, error: $0) }
-                    ?? orderConfirmMutationSendAllowed(attempted: true, succeeded: false).1
-            } else if rejected {
-                actionMessage = refusal ?? (isPay ? "Slant didn’t accept the payment request. Review the order before trying again." : "Slant didn’t accept the cancel request. Review the order before trying again.")
+                if succeeded.payNotPlaced { payNotPlaced = true }
+                successMessage = succeeded.successMessage
+                actionMessage = result.actionMessage
+                onCompleted(orderID, succeeded.order)
             } else {
-                switch outcome {
-                case .priceChanged: actionMessage = "The price changed. Review the new total."
-                case .statusBlocked(let reason): actionMessage = reason
-                case .proceed: actionMessage = failure
-                }
+                actionMessage = result.actionMessage
             }
         }
     }
