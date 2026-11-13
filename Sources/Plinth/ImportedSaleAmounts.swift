@@ -64,7 +64,10 @@ enum ImportedSaleParse: Equatable {
 }
 
 /// Reads an imported order's sale amounts. Only USD is kept, and only when the currency is stated. A Shopify order
-/// showing a refund keeps none (`importedSaleWithheldForRefund`).
+/// showing a refund keeps none (`importedSaleWithheldForRefund`); one whose amounts also cover items the draft won't
+/// make for this sale (partly fulfilled, or fetched with fewer units listed than ordered:
+/// `OrderImportOrder.saleCoversItemsNotListed`) keeps only the shipping charged, as when Match products leaves items
+/// out, so the Profit check never counts the whole order's item total against fewer units.
 func importedSaleAmounts(for order: OrderImportOrder) -> ImportedSaleParse {
     let rows = order.saleRows
     guard !rows.isEmpty else { return .none }
@@ -80,9 +83,17 @@ func importedSaleAmounts(for order: OrderImportOrder) -> ImportedSaleParse {
     case .template: return .none
     }
     amounts.unitsSold = importedSaleUnits(order.items)
+    if order.source == .shopify, order.saleCoversItemsNotListed {
+        guard let kept = importedSaleKeepingShippingOnly(amounts, note: importedSalePartlyListedNote) else { return .none }
+        amounts = kept
+    }
     guard amounts.itemTotal != nil || amounts.shipping != nil else { return .none }
     return .amounts(amounts)
 }
+
+/// The Profit check's note for an order whose amounts also cover items already sent, removed or not listed
+/// (`OrderImportOrder.saleCoversItemsNotListed`): only the shipping charged is filled in.
+let importedSalePartlyListedNote = "Shopify’s amounts for this order also cover items already sent, removed or not listed, so enter what the buyer paid for the items in this draft."
 
 /// A money cell: blank is nil, otherwise strictly parsed (Margin.swift), with CSV exports' "." decimal mark.
 enum ImportedSaleCell: Equatable {
@@ -223,7 +234,8 @@ func importedSaleWithheldForRefund(_ order: OrderImportOrder) -> Bool {
 }
 
 /// The import sheet's sentence when some orders' amounts were withheld for a refund (`importedSaleWithheldForRefund`).
-let importedSaleRefundWithheldNote = "What buyers paid isn’t used for orders Shopify shows a refund on, because Shopify’s refund total doesn’t say what it covered."
+/// It reads on its own: the sheet may show it without the sentence about what the amounts are kept for.
+let importedSaleRefundWithheldNote = "The Profit check isn’t filled in for orders Shopify shows a refund on, because Shopify’s refund total doesn’t say what it covered."
 
 /// Subtotal and Shipping, checked against Total: Total is subtotal + shipping (+ taxes, unless prices include them),
 /// with the discount already out of the subtotal or (when the Total says so) still to come off it. Orders showing a
@@ -303,11 +315,17 @@ let importedSaleLeftOutNote = "Some items weren’t in this draft, so enter what
 /// and only the shipping charged is kept. Nil when nothing is left to keep.
 func importedSaleAmountsForDraft(_ amounts: ImportedSaleAmounts, leavesOutItems: Bool) -> ImportedSaleAmounts? {
     guard leavesOutItems else { return amounts }
+    return importedSaleKeepingShippingOnly(amounts, note: importedSaleLeftOutNote)
+}
+
+/// Only the shipping charged, with `note` first: the item total and units cover items the draft won't make. Notes about
+/// the item total, and an earlier note of this kind, no longer apply. Nil when there's no shipping to keep.
+private func importedSaleKeepingShippingOnly(_ amounts: ImportedSaleAmounts, note: String) -> ImportedSaleAmounts? {
     var kept = amounts
     kept.itemTotal = nil
     kept.unitsSold = nil
-    // Notes about the item total no longer apply; the left-out note says what to enter instead.
-    kept.notes = [importedSaleLeftOutNote] + amounts.notes.filter { !$0.hasPrefix("Enter the item total") }
+    let replaced: Set<String> = [importedSaleLeftOutNote, importedSalePartlyListedNote]
+    kept.notes = [note] + amounts.notes.filter { !$0.hasPrefix("Enter the item total") && !replaced.contains($0) }
     return kept.shipping == nil ? nil : kept
 }
 

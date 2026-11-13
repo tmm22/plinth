@@ -500,12 +500,15 @@ let dapiWalletNote = "If your 3DAPI wallet is short, 3DAPI charges the rest \(da
 /// Shown when any line uses chosen materials: 3DAPI's quote priced the file, not those materials.
 let dapiChosenMaterialsPriceNote = "3DAPI prices the file in its quote. Materials you chose yourself may change the price 3DAPI charges, which Plinth can’t check before ordering."
 
-/// What the "up to" total exceeds the wallet balance by (same currency only), or nil when the wallet covers it or the
-/// balance isn't known. Sample credit isn't counted: 3DAPI applies it only to orders to the seller's own country.
+/// What the "up to" total exceeds the wallet balance by (same currency only), or nil when the wallet covers it, the
+/// balance isn't known, or the difference doesn't fit. The balance is taken as it is: a negative one (3DAPI's docs
+/// don't say a wallet can go below zero) makes the shortfall larger, so a growing debt counts as a larger shortfall.
+/// Sample credit isn't counted: 3DAPI applies it only to orders to the seller's own country.
 func dapiWalletShortfall(upTo: DapiMoney?, wallet: DapiWallet?) -> DapiMoney? {
     guard let upTo, let balance = wallet?.balance,
           upTo.currency.lowercased() == balance.currency.lowercased(), upTo.amountMinor > balance.amountMinor else { return nil }
-    return DapiMoney(amountMinor: upTo.amountMinor - max(0, balance.amountMinor), currency: upTo.currency)
+    let (difference, overflow) = upTo.amountMinor.subtractingReportingOverflow(balance.amountMinor)
+    return overflow ? nil : DapiMoney(amountMinor: difference, currency: upTo.currency)
 }
 
 /// The review's line for a shortfall.
@@ -525,8 +528,8 @@ func dapiReviewUpToTotal(_ snapshot: DapiOrderReviewSnapshot) -> DapiMoney? {
     return dapiOrderUpToTotal(lines: lines, shipping: snapshot.shippingTotal)
 }
 
-/// Whether the wallet, as read, covers the "up to" total. `.notKnown`: no wallet read, no total, or different
-/// currencies, so the review shows no judgement about the wallet.
+/// Whether the wallet, as read, covers the "up to" total. `.notKnown`: no wallet read, no total, different currencies,
+/// or a shortfall too large to work out, so the review shows no judgement about the wallet.
 enum DapiWalletCover: Equatable {
     case notKnown
     case covered
@@ -537,24 +540,36 @@ enum DapiWalletCover: Equatable {
 func dapiWalletCover(upTo: DapiMoney?, wallet: DapiWallet?) -> DapiWalletCover {
     guard let upTo, let balance = wallet?.balance,
           upTo.currency.lowercased() == balance.currency.lowercased() else { return .notKnown }
-    guard let shortfall = dapiWalletShortfall(upTo: upTo, wallet: wallet), shortfall.amountMinor > 0 else { return .covered }
+    guard upTo.amountMinor > balance.amountMinor else { return .covered }
+    // Short, but by more than can be worked out: no judgement, so a review that made one stops (`dapiWalletShortfallChange`).
+    guard let shortfall = dapiWalletShortfall(upTo: upTo, wallet: wallet), shortfall.amountMinor > 0 else { return .notKnown }
     return .short(shortfall)
+}
+
+/// Whether the review shows `dapiWalletNote`: only when it shows no shortfall line (`dapiWalletShortfallText`), which
+/// says the same about the card, so the auto top-up sentence appears once.
+func dapiWalletNoteShown(_ cover: DapiWalletCover) -> Bool {
+    if case .short = cover { return false }
+    return true
 }
 
 /// The pre-send check's line when the card may now be charged more than the review showed, or nil (owner decision,
 /// delegated, 13 Nov 2026). A new or larger shortfall stops the order; a smaller or vanished one doesn't, and a review
 /// that showed no judgement about the wallet (`reviewed` is `.notKnown`) never stops for it. A wallet that can't be read
-/// at all at the press is stopped earlier, in `placeOrder` (`dapiWalletUnreadableBeforeSending`).
+/// at all at the press is stopped earlier, in `placeOrder` (`dapiWalletUnreadableBeforeSending`). The lines end at the
+/// amounts: the review's shortfall line below them (`dapiWalletShortfallText`, from the same figures) says what goes on
+/// the card, so neither names the shortfall as the card charge.
 func dapiWalletShortfallChange(reviewed: DapiWalletCover, current: DapiWalletCover) -> String? {
     switch (reviewed, current) {
     case (.notKnown, _), (.covered, .covered), (.short, .covered):
         return nil
     case (.covered, .short(let now)):
-        return "Your 3DAPI wallet no longer covers this order: it may be up to \(dapiMoneyText(now)) short. 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card."
+        // The review showed no shortfall, which isn't the same as saying the wallet covered it ("up to", before VAT).
+        return "Your 3DAPI wallet may now be up to \(dapiMoneyText(now)) short for this order."
     case (.short(let before), .short(let now)):
         guard before.currency.lowercased() == now.currency.lowercased() else { return dapiWalletNotComparableText }
         guard now.amountMinor > before.amountMinor else { return nil }
-        return "Your 3DAPI wallet may now be up to \(dapiMoneyText(now)) short for this order, not \(dapiMoneyText(before)). 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card."
+        return "Your 3DAPI wallet may now be up to \(dapiMoneyText(now)) short for this order, not \(dapiMoneyText(before))."
     case (.covered, .notKnown), (.short, .notKnown):
         return dapiWalletNotComparableText
     }
@@ -844,7 +859,9 @@ enum DapiPlacePhase: Equatable {
 @MainActor final class DapiPlaceOrderRunner: ObservableObject {
     @Published private(set) var phase: DapiPlacePhase = .checking
     @Published private(set) var figures: DapiOrderReviewFigures?
-    /// What changed when the pre-send check found different figures (shown above the new ones).
+    /// What changed when the pre-send check found different figures (shown above the new ones), or, with a stop for a
+    /// wallet that couldn't be read (`.blocked`, no figures), what else that read found changed. Cleared by the next
+    /// read (Check Again) or press.
     @Published private(set) var changes: [String] = []
     /// Place Order was pressed while an unconfirmed attempt may be this order (`dapiPlaceNeedsPlaceAnyway`): the view
     /// asks Place Anyway / Don't Place.
@@ -1037,10 +1054,14 @@ enum DapiPlacePhase: Equatable {
                 self.figures = nil
                 self.phase = .blocked(message)
             case .success(let fresh):
+                // Prices, lines, country, shipping, ordering status and suggestions, compared before the wallet stops
+                // below, so a stop never hides them: Check Again would show the new figures as if nothing had changed.
+                var changed = dapiReviewChanges(reviewed: reviewed.snapshot, current: fresh.snapshot, names: self.draft.quoteNames)
                 // Sample credit was used at the press, but the wallet couldn't be read now: never send (with or without
                 // the credit) and never untick. Check Again reads everything again.
                 if self.pressedSampleCredit, fresh.wallet == nil {
                     self.figures = nil
+                    self.changes = changed
                     self.phase = .blocked(dapiSampleCreditWalletUnreadable)
                     return
                 }
@@ -1048,10 +1069,10 @@ enum DapiPlacePhase: Equatable {
                 // so nothing is sent. Check Again reads everything again (a review without the wallet never stops here).
                 if reviewed.wallet != nil, fresh.wallet == nil {
                     self.figures = nil
+                    self.changes = changed
                     self.phase = .blocked(dapiWalletUnreadableBeforeSending)
                     return
                 }
-                var changed = dapiReviewChanges(reviewed: reviewed.snapshot, current: fresh.snapshot, names: self.draft.quoteNames)
                 // A new or larger shortfall than the review showed: the card may be charged more.
                 if let walletChange = dapiWalletShortfallChange(
                     reviewed: dapiWalletCover(upTo: dapiReviewUpToTotal(reviewed.snapshot), wallet: reviewed.wallet),

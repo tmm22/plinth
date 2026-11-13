@@ -218,9 +218,12 @@ func batchPayMarketplaceKey(_ order: [String: Any]) -> String? {
 /// are equal in any case and nothing tells the sales apart: the sources, the stores and the items are each equal or
 /// missing on one side. A Shopify order drafted from a CSV (no store, items by SKU) and again by Fetch from Shopify
 /// (the store, items by line item) is one sale. Items tell two drafts apart (a deliberate split) only when both lists
-/// can be read (`shopifySourceItems(fromMetadata:)`), differ, and are recorded the same way: both by line item, or both
-/// by SKU or name. Missing or unreadable items, or items recorded differently, count as the same sale. Another
-/// store's order with the same name, or another marketplace's, is a different sale.
+/// can be read (`shopifySourceItems(fromMetadata:)`), are recorded the same way (both by line item, or both by SKU or
+/// name) and have no entry in common: Match products puts a whole line item (or SKU) in one draft, so a split never
+/// shares one. Two drafts sharing an entry (the same line item, or the same SKU or name, `shopifySourceKeysMatch`),
+/// whatever the quantities, are the same sale: one Shopify order fetched again after a partial refund or fulfilment
+/// drafts the same line item with fewer units (round 24). Missing or unreadable items, or items recorded differently,
+/// count as the same sale. Another store's order with the same name, or another marketplace's, is a different sale.
 ///
 /// It matches everything exact keys matched and more, so the duplicate check only ever leaves more drafts out.
 func batchPayMarketplaceRefsMatch(_ lhs: BatchPayMarketplaceRef, _ rhs: BatchPayMarketplaceRef) -> Bool {
@@ -231,7 +234,11 @@ func batchPayMarketplaceRefsMatch(_ lhs: BatchPayMarketplaceRef, _ rhs: BatchPay
     if compatible(lhs.items, rhs.items) { return true }
     guard let left = shopifySourceItems(fromMetadata: lhs.items), let right = shopifySourceItems(fromMetadata: rhs.items),
           left != right else { return true }
-    return batchPaySourceItemsRecording(left) == nil || batchPaySourceItemsRecording(left) != batchPaySourceItemsRecording(right)
+    let recording = batchPaySourceItemsRecording(left)
+    guard recording != nil, recording == batchPaySourceItemsRecording(right) else { return true }
+    // Recorded the same way: any shared entry, whatever its units, is the same sale; only lists with nothing in common
+    // are a deliberate split.
+    return left.contains { entry in right.contains { shopifySourceKeysMatch(entry.key, $0.key) } }
 }
 
 /// `batchPayMarketplaceRefsMatch` for two keys from `batchPayMarketplaceKey`. A key that can't be read back matches

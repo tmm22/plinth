@@ -1351,10 +1351,17 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         // Currencies compare in any case, as `dapiWalletShortfall` does.
         XCTAssertEqual(dapiWalletCover(upTo: usd(1_500), wallet: wallet(1_000, currency: "USD")), .short(usd(500)))
         XCTAssertEqual(dapiWalletCover(upTo: DapiMoney(amountMinor: 900, currency: "USD"), wallet: wallet(1_000)), .covered)
-        // A negative balance counts as nothing in the wallet; a shortfall of nothing is covered.
-        XCTAssertEqual(dapiWalletCover(upTo: usd(1_500), wallet: wallet(-500)), .short(usd(1_500)))
-        XCTAssertEqual(dapiWalletCover(upTo: usd(0), wallet: wallet(-500)), .covered)
-        XCTAssertEqual(dapiWalletCover(upTo: usd(Int.max), wallet: wallet(Int.min)), .short(usd(Int.max)), "No overflow")
+        // A negative balance is taken as it is (round 24): the debt adds to the shortfall, so a growing debt is a
+        // larger shortfall, and even a total of nothing is short by the debt.
+        XCTAssertEqual(dapiWalletCover(upTo: usd(1_500), wallet: wallet(-500)), .short(usd(2_000)))
+        XCTAssertEqual(dapiWalletCover(upTo: usd(1_500), wallet: wallet(-2_000)), .short(usd(3_500)))
+        XCTAssertEqual(dapiWalletCover(upTo: usd(0), wallet: wallet(-500)), .short(usd(500)))
+        XCTAssertEqual(dapiWalletShortfall(upTo: usd(1_500), wallet: wallet(-500)), usd(2_000))
+        // A shortfall too large to work out is no judgement (never a wrapped-around amount, never "covered").
+        XCTAssertEqual(dapiWalletCover(upTo: usd(Int.max), wallet: wallet(Int.min)), .notKnown, "Overflow")
+        XCTAssertNil(dapiWalletShortfall(upTo: usd(Int.max), wallet: wallet(Int.min)))
+        XCTAssertEqual(dapiWalletCover(upTo: usd(Int.max), wallet: wallet(-1)), .notKnown, "Overflow by one")
+        XCTAssertEqual(dapiWalletCover(upTo: usd(Int.max), wallet: wallet(0)), .short(usd(Int.max)))
     }
 
     func testWalletShortfallChangeStopsOnlyForANewOrLargerShortfall() {
@@ -1371,27 +1378,35 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
                                                current: .short(DapiMoney(amountMinor: 500, currency: "USD"))),
                      "USD and usd are one currency")
 
+        // The lines end at the amounts: the review's shortfall line below them says what goes on the card.
         XCTAssertEqual(dapiWalletShortfallChange(reviewed: .covered, current: .short(usd(1_599))),
-                       "Your 3DAPI wallet no longer covers this order: it may be up to \(dapiMoneyText(usd(1_599))) short. 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card.")
+                       "Your 3DAPI wallet may now be up to \(dapiMoneyText(usd(1_599))) short for this order.")
         XCTAssertEqual(dapiWalletShortfallChange(reviewed: .short(usd(500)), current: .short(usd(900))),
-                       "Your 3DAPI wallet may now be up to \(dapiMoneyText(usd(900))) short for this order, not \(dapiMoneyText(usd(500))). 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card.")
+                       "Your 3DAPI wallet may now be up to \(dapiMoneyText(usd(900))) short for this order, not \(dapiMoneyText(usd(500))).")
         XCTAssertEqual(dapiWalletShortfallChange(reviewed: .short(usd(500)),
                                                  current: .short(DapiMoney(amountMinor: 501, currency: "USD"))),
-                       "Your 3DAPI wallet may now be up to \(dapiMoneyText(DapiMoney(amountMinor: 501, currency: "USD"))) short for this order, not \(dapiMoneyText(usd(500))). 3DAPI charges any shortfall \(dapiAutoTopUpClause) to your saved card.")
+                       "Your 3DAPI wallet may now be up to \(dapiMoneyText(DapiMoney(amountMinor: 501, currency: "USD"))) short for this order, not \(dapiMoneyText(usd(500))).")
         // A judgement the fresh figures can't make, or one in another currency: Plinth can't tell, so it stops.
         XCTAssertEqual(dapiWalletShortfallChange(reviewed: .covered, current: .notKnown), dapiWalletNotComparableText)
         XCTAssertEqual(dapiWalletShortfallChange(reviewed: .short(usd(500)), current: .notKnown), dapiWalletNotComparableText)
         XCTAssertEqual(dapiWalletShortfallChange(reviewed: .short(usd(500)),
                                                  current: .short(DapiMoney(amountMinor: 100, currency: "eur"))),
                        dapiWalletNotComparableText, "A switch of currency is never read as smaller")
-        // Never blames the seller, and never names the shortfall as the exact card charge.
+        // Never blames the seller, never claims the wallet covered the order or no longer does, and never names the
+        // shortfall as the card charge: the change lines say "may now be up to" and leave the card to the shortfall
+        // line, which carries the auto top-up clause.
         for reviewed in all {
             for current in all {
                 guard let text = dapiWalletShortfallChange(reviewed: reviewed, current: current) else { continue }
                 XCTAssertFalse(text.lowercased().contains("you changed"), text)
-                if text != dapiWalletNotComparableText { XCTAssertTrue(text.contains(dapiAutoTopUpClause), text) }
+                XCTAssertFalse(text.contains("covers"), text)
+                if text != dapiWalletNotComparableText {
+                    XCTAssertTrue(text.contains("may now be up to"), text)
+                    XCTAssertFalse(text.contains("card"), text)
+                }
             }
         }
+        XCTAssertTrue(dapiWalletShortfallText(usd(900)).contains(dapiAutoTopUpClause))
     }
 
     func testReviewUpToTotalAddsEveryLineAndShipping() {
@@ -1457,7 +1472,7 @@ final class ScriptedDapiOrders: DapiQuoting, DapiOrdering, @unchecked Sendable {
         await settled(runner)
         XCTAssertEqual(runner.phase, .ready)
         XCTAssertEqual(runner.changes, [dapiWalletShortfallChange(reviewed: .covered, current: .short(DapiOrdersTests.usd(1_599)))!])
-        XCTAssertTrue(runner.changes.first?.contains("no longer covers") ?? false)
+        XCTAssertEqual(runner.changes.first, "Your 3DAPI wallet may now be up to \(dapiMoneyText(DapiOrdersTests.usd(1_599))) short for this order.")
         XCTAssertEqual(stub.count("place"), 0, "Nothing is sent")
         XCTAssertEqual(harness.begun, 0)
         XCTAssertEqual(harness.keys, 0, "No idempotency key was used")

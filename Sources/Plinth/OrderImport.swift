@@ -367,11 +367,18 @@ struct OrderImportOrder: Identifiable, Equatable {
     /// Rows with delivery details that repeat an earlier row of this order cell for cell, as when two exports are
     /// combined. Rows without delivery details (Shopify's extra item rows) never count.
     var repeatedRows: [Int] = []
-    /// Why the marketplace shows this order as already shipped, cancelled or refunded.
+    /// Why the marketplace shows this order as already shipped, cancelled or refunded: every row's reasons, each once.
     var alreadyHandled: String?
     /// Shopify shows a refund on this order (Financial Status `partially_refunded` or `refunded`, on any of its rows or
     /// fetched). Its sale amounts aren't used (`importedSaleAmounts`): Shopify's refund total doesn't say what it covered.
     var shopifyShowsRefund = false
+    /// Shopify's sale amounts for this order also cover items the draft wouldn't make for this sale: partly fulfilled
+    /// (on any row of a CSV, or fetched), or a fetched line listing fewer units than were ordered (fulfilled, removed or
+    /// unreadable). Only the shipping charged is kept (`importedSaleAmounts`), as when Match products leaves items out.
+    var saleCoversItemsNotListed = false
+    /// Fetch from Shopify: lines whose counts couldn't be read (`shopifyImportLineUnits` nil), so they aren't listed.
+    /// The order can't be ticked when no line is left, and starts unticked otherwise (`orderImportCheck`).
+    var unreadableItemCount = 0
     /// HTML character references (as Etsy exports them) were decoded in the name or address.
     var decodedEntities = false
     /// The sale columns of each row that has them (ImportedSaleAmounts.swift). Memory only.
@@ -400,6 +407,7 @@ func orderImportOrders(from csv: OrderImportCSV, layout: OrderImportLayout, maxO
     var orders: [OrderImportOrder] = []
     var positions: [String: Int] = [:]
     var seenRows: [String: Set<String>] = [:]
+    var handledReasons: [Int: [String]] = [:]
     var rowsWithoutID = 0
     for (rowIndex, row) in csv.rows.enumerated() {
         func value(_ field: OrderImportField) -> String {
@@ -455,16 +463,22 @@ func orderImportOrders(from csv: OrderImportCSV, layout: OrderImportLayout, maxO
         if layout.format == .shopify, shopifyRefundStatuses.contains(orderImportStatusKey(value(.financialStatus))) {
             order.shopifyShowsRefund = true
         }
-        if order.alreadyHandled == nil {
-            order.alreadyHandled = orderImportAlreadyHandledReason(
-                format: layout.format, dateShipped: value(.dateShipped), fulfillmentStatus: value(.fulfillmentStatus),
-                cancelledAt: value(.cancelledAt), financialStatus: value(.financialStatus))
+        if layout.format == .shopify, shopifyPartlyFulfilledStatuses.contains(orderImportStatusKey(value(.fulfillmentStatus))) {
+            order.saleCoversItemsNotListed = true
+        }
+        // Every row's reasons, each once: a file combined from two exports can say different things on each row.
+        for reason in orderImportAlreadyHandledReasons(
+            format: layout.format, dateShipped: value(.dateShipped), fulfillmentStatus: value(.fulfillmentStatus),
+            cancelledAt: value(.cancelledAt), financialStatus: value(.financialStatus))
+        where !handledReasons[position, default: []].contains(reason) {
+            handledReasons[position, default: []].append(reason)
         }
         orders[position] = order
     }
     guard !orders.isEmpty else { throw StudioError("This file has no orders.") }
     for index in orders.indices {
         var order = orders[index]
+        if let reasons = handledReasons[index], !reasons.isEmpty { order.alreadyHandled = reasons.joined(separator: " ") }
         for keyPath in [\OrderImportOrder.name, \.line1, \.line2, \.city] {
             let decoded = orderImportDecodingHTMLEntities(order[keyPath: keyPath])
             if decoded != order[keyPath: keyPath] { order[keyPath: keyPath] = decoded; order.decodedEntities = true }
@@ -515,9 +529,24 @@ let orderImportPartlyRefundedFetchedReason = "Shopify shows part of this order a
 let orderImportPartlyRefundedCSVReason = "Shopify shows part of this order as refunded, and the export may list every item, including refunded ones. Check which items still need making."
 /// A CSV row whose Financial Status is pending, authorised, partly paid or expired.
 let orderImportNotFullyPaidReason = "Shopify doesn’t show this order as fully paid."
-/// A fetched order whose financial status is missing or one Plinth doesn't expect (the query asks for paid and partly
-/// refunded orders only).
+/// A financial status Plinth doesn't know (fetched or in a CSV), or a fetched order without one: the fetch's query asks
+/// for paid and partly refunded orders only, and an unknown status is never read as paid.
 let orderImportNotShownPaidReason = "Shopify doesn’t show this order as paid."
+
+/// Shopify fulfilment statuses (`displayFulfillmentStatus`, or a CSV export's Fulfillment Status, through
+/// `orderImportStatusKey`) for an order with some items already fulfilled.
+let shopifyPartlyFulfilledStatuses: Set<String> = ["partial", "partially_fulfilled"]
+
+/// A fetched order none of whose lines' counts could be read (`OrderImportOrder.unreadableItemCount`): it can't be
+/// ticked. Shopify types these counts as whole numbers, so this needs a reply Plinth doesn't expect.
+let orderImportUnreadableItemsBlocker = "Plinth couldn’t read how many of this order’s items are still to make from Shopify’s reply. Create this draft by hand."
+
+/// A fetched order with some lines Plinth couldn't read: those aren't in the draft, so it starts unticked.
+func orderImportUnreadableItemsWarning(_ count: Int) -> String {
+    count == 1
+        ? "Plinth couldn’t read how many units of 1 item in this order are still to make, so the draft leaves it out."
+        : "Plinth couldn’t read how many units of \(count) items in this order are still to make, so the draft leaves them out."
+}
 
 /// Why the marketplace already shows this order as done, or partly done: Etsy's Date Shipped, or Shopify's
 /// fulfillment, cancellation and financial status. These orders aren't ticked by default. Shopify's statuses come as
@@ -526,17 +555,27 @@ let orderImportNotShownPaidReason = "Shopify doesn’t show this order as paid."
 /// (`fulfilled`, `partial`, `unfulfilled`, `paid`, `partially_refunded`; the export's exact words are unverified),
 /// both read through `orderImportStatusKey`. A partly fulfilled or partly refunded order's wording follows where it
 /// came from: Fetch from Shopify lists only the units still to fulfil and not refunded, a CSV export every item. A
-/// fulfilment reason and a payment reason are given together.
+/// fulfilment reason and a payment reason are given together. A financial status that isn't paid, partly refunded or
+/// one of the known unpaid ones (or, fetched, a missing one) is a reason too: the order isn't shown as paid.
 func orderImportAlreadyHandledReason(format: OrderImportFormat, dateShipped: String, fulfillmentStatus: String,
                                      cancelledAt: String, financialStatus: String, fetched: Bool = false) -> String? {
+    let reasons = orderImportAlreadyHandledReasons(format: format, dateShipped: dateShipped, fulfillmentStatus: fulfillmentStatus,
+                                                   cancelledAt: cancelledAt, financialStatus: financialStatus, fetched: fetched)
+    return reasons.isEmpty ? nil : reasons.joined(separator: " ")
+}
+
+/// `orderImportAlreadyHandledReason`'s reasons one by one, so an order spread over several CSV rows can give each
+/// once (`orderImportOrders`).
+func orderImportAlreadyHandledReasons(format: OrderImportFormat, dateShipped: String, fulfillmentStatus: String,
+                                      cancelledAt: String, financialStatus: String, fetched: Bool = false) -> [String] {
     switch format {
     case .etsy:
-        return dateShipped.isEmpty ? nil : "Etsy shows this order as shipped."
+        return dateShipped.isEmpty ? [] : ["Etsy shows this order as shipped."]
     case .shopify:
-        if !cancelledAt.isEmpty { return "Shopify shows this order as cancelled." }
+        if !cancelledAt.isEmpty { return ["Shopify shows this order as cancelled."] }
         let financial = orderImportStatusKey(financialStatus)
-        if financial == "refunded" { return "Shopify shows this order as refunded." }
-        if financial == "voided" { return "Shopify shows this order’s payment as voided." }
+        if financial == "refunded" { return ["Shopify shows this order as refunded."] }
+        if financial == "voided" { return ["Shopify shows this order’s payment as voided."] }
         let fulfilment: String?
         switch orderImportStatusKey(fulfillmentStatus) {
         case "fulfilled":
@@ -553,23 +592,38 @@ func orderImportAlreadyHandledReason(format: OrderImportFormat, dateShipped: Str
             fulfilment = "Shopify shows this order as in progress or with a fulfilment service."
         case "fulfillment_not_required":
             fulfilment = "Shopify shows nothing in this order to fulfil."
+        case "on_hold":
+            // Held by the merchant, an app or a fraud check: it may not be due at all.
+            fulfilment = "Shopify shows this order as on hold."
+        case "scheduled":
+            // Prepaid or subscription orders whose fulfilment is due later.
+            fulfilment = "Shopify shows this order as scheduled for later."
+        case "request_declined":
+            fulfilment = "Shopify shows a declined fulfilment request on this order."
+        case "restocked":
+            fulfilment = "Shopify shows this order’s items as restocked."
         default:
             fulfilment = nil
         }
         let payment: String?
-        if financial == "partially_refunded" {
+        switch financial {
+        case "paid":
+            payment = nil
+        case "partially_refunded":
             payment = fetched ? orderImportPartlyRefundedFetchedReason : orderImportPartlyRefundedCSVReason
-        } else if fetched {
-            // The fetch asks only for paid and partly refunded orders; anything else (or nothing) is a surprise.
-            payment = financial == "paid" ? nil : orderImportNotShownPaidReason
-        } else {
-            // A CSV export may hold any order; an empty status (a follow-on item row) says nothing.
-            payment = shopifyImportUnpaidStatuses.contains(financial) ? orderImportNotFullyPaidReason : nil
+        case "":
+            // The fetch always sends a status, so a missing one is a surprise; a CSV's follow-on item rows leave it
+            // blank, which says nothing.
+            payment = fetched ? orderImportNotShownPaidReason : nil
+        default:
+            // The fetch asks only for paid and partly refunded orders, and leaves out the unpaid ones
+            // (`shopifyImportOrder`); a CSV export may hold any order. A status Plinth doesn't know is never read as paid.
+            payment = !fetched && shopifyImportUnpaidStatuses.contains(financial)
+                ? orderImportNotFullyPaidReason : orderImportNotShownPaidReason
         }
-        let reasons = [fulfilment, payment].compactMap { $0 }
-        return reasons.isEmpty ? nil : reasons.joined(separator: " ")
+        return [fulfilment, payment].compactMap { $0 }
     case .template:
-        return nil
+        return []
     }
 }
 
@@ -1017,7 +1071,12 @@ func orderImportCheck(_ order: OrderImportOrder, context: OrderImportContext, pa
     var groupOrder: [UUID] = []
     var leftOut = 0
     var personalisedItemIncluded = false
-    if order.items.isEmpty { block("This order has no items.") }
+    if order.items.isEmpty {
+        block(order.unreadableItemCount > 0 ? orderImportUnreadableItemsBlocker : "This order has no items.")
+    } else if order.unreadableItemCount > 0 {
+        // Never drafted without a line the seller wasn't told about: unticked, with the reason.
+        warn(orderImportUnreadableItemsWarning(order.unreadableItemCount))
+    }
     check.itemProductIDs = Array(repeating: nil, count: order.items.count)
     for (itemIndex, item) in order.items.enumerated() {
         let sku = item.sku.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1786,7 +1845,8 @@ struct OrderImportSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("\(parse.format.title) · \(parse.orders.count == 1 ? "1 order" : "\(parse.orders.count) orders")\(blocked > 0 ? " · \(blocked) can’t be imported" : "")")
                 .font(.headline)
-            ForEach(parse.notices, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            // By position: two notices with the same text would otherwise share an ID.
+            ForEach(Array(parse.notices.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundStyle(.secondary) }
             if let coverage = orderImportDuplicateCoverageText(listNotice: listCoverageNotice, reading: recentReading,
                                                                recent: recentRead) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {

@@ -75,7 +75,10 @@ func shopifySourceItems(_ items: [OrderImportItem]) -> [ShopifySourceItem]? {
     return result.isEmpty ? nil : result
 }
 
-private func shopifySourceKeysMatch(_ lhs: ShopifySourceItem.Key, _ rhs: ShopifySourceItem.Key) -> Bool {
+/// Whether two recorded items are the same Shopify item: the same line item ID, the same SKU (`normalizedSKU`) or the
+/// same name (spacing collapsed, any case). A line item never matches a SKU or a name. Also Pay Several Drafts' test
+/// for two drafts sharing an item (`batchPayMarketplaceRefsMatch`).
+func shopifySourceKeysMatch(_ lhs: ShopifySourceItem.Key, _ rhs: ShopifySourceItem.Key) -> Bool {
     switch (lhs, rhs) {
     case (.lineItem(let a), .lineItem(let b)): return a == b
     case (.sku(let a), .sku(let b)): return normalizedSKU(a) == normalizedSKU(b)

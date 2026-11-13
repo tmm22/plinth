@@ -148,18 +148,38 @@ func shopifyImportSaleRow(_ node: [String: Any]) -> OrderImportSaleRow? {
 /// The units of a line item still to make: `currentQuantity` (units ordered, less those refunded or removed), capped
 /// by `unfulfilledQuantity` (units not yet fulfilled), so a partially fulfilled order's draft holds only what is left,
 /// as Send Tracking's `remainingQuantity` does. Either missing falls back to the other, then to `quantity`. Taking the
-/// smaller is safe whether or not Shopify's unfulfilled count leaves out removed units, which its docs don't say.
+/// smaller is safe whether or not Shopify's unfulfilled count leaves out removed units, which its docs don't say. Nil
+/// (unreadable) when none of the three is given, or any given one isn't a whole number from 0 up.
 func shopifyImportLineUnits(_ item: [String: Any]) -> Int? {
-    func count(_ key: String) -> Int? {
-        guard let number = item[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-        return number.intValue
-    }
-    switch (count("currentQuantity"), count("unfulfilledQuantity")) {
+    let current = shopifyImportLineCount(item, "currentQuantity")
+    let unfulfilled = shopifyImportLineCount(item, "unfulfilledQuantity")
+    let ordered = shopifyImportLineCount(item, "quantity")
+    for count in [current, unfulfilled, ordered] { if case .invalid = count { return nil } }
+    switch (current.value, unfulfilled.value) {
     case (let current?, let unfulfilled?): return min(current, unfulfilled)
     case (let current?, nil): return current
-    case (nil, let unfulfilled?): return min(unfulfilled, count("quantity") ?? unfulfilled)
-    case (nil, nil): return count("quantity")
+    case (nil, let unfulfilled?): return min(unfulfilled, ordered.value ?? unfulfilled)
+    case (nil, nil): return ordered.value
     }
+}
+
+/// One of a line item's counts: absent (missing or null), a whole number from 0 up, or anything else.
+enum ShopifyImportLineCount: Equatable {
+    case missing
+    case value(Int)
+    case invalid
+
+    var value: Int? {
+        if case .value(let count) = self { return count }
+        return nil
+    }
+}
+
+func shopifyImportLineCount(_ item: [String: Any], _ key: String) -> ShopifyImportLineCount {
+    guard let raw = item[key], !(raw is NSNull) else { return .missing }
+    guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+          number.doubleValue == Double(number.intValue), number.intValue >= 0 else { return .invalid }
+    return .value(number.intValue)
 }
 
 /// One order as Import Orders sees it, or the reason it was left out. `nextRow` numbers its items (the sheet's
@@ -197,7 +217,21 @@ func shopifyImportOrder(_ node: [String: Any], nextRow: inout Int) -> (order: Or
     }
     let nodes = ((node["lineItems"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
     for item in nodes {
-        guard let units = shopifyImportLineUnits(item), units > 0 else { continue }
+        // A line that can't be read is counted, never dropped silently (`orderImportCheck`), and its amounts can't be
+        // told apart from the rest's.
+        guard let units = shopifyImportLineUnits(item) else {
+            order.unreadableItemCount += 1
+            order.saleCoversItemsNotListed = true
+            continue
+        }
+        // Fewer units listed than ordered (fulfilled, removed or refunded), or an ordered count Plinth can't compare
+        // with: the order's amounts cover units this draft won't hold.
+        if let ordered = shopifyImportLineCount(item, "quantity").value {
+            if units < ordered { order.saleCoversItemsNotListed = true }
+        } else {
+            order.saleCoversItemsNotListed = true
+        }
+        guard units > 0 else { continue }
         let row = nextRow
         nextRow += 1
         order.rows.append(row)
@@ -209,49 +243,91 @@ func shopifyImportOrder(_ node: [String: Any], nextRow: inout Int) -> (order: Or
     }
     if let sale = shopifyImportSaleRow(node) { order.saleRows = [sale] }
     order.shopifyShowsRefund = shopifyRefundStatuses.contains(financial)
+    if shopifyPartlyFulfilledStatuses.contains(orderImportStatusKey(shopifyText(node["displayFulfillmentStatus"]))) {
+        order.saleCoversItemsNotListed = true
+    }
     order.alreadyHandled = orderImportAlreadyHandledReason(
         format: .shopify, dateShipped: "", fulfillmentStatus: shopifyText(node["displayFulfillmentStatus"]),
         cancelledAt: shopifyText(node["cancelledAt"]), financialStatus: financialStatus, fetched: true)
     return (order, nil)
 }
 
-/// A fetched order whose every listed line comes to no units (`shopifyImportLineUnits`): refunded, removed or fulfilled.
-/// A partly refunded order whose items were all refunded but whose shipping was kept is still `PARTIALLY_REFUNDED`. An
-/// order Shopify sent without any lines is kept, and its check says it has no items.
-func shopifyImportNothingLeftNotice(_ name: String) -> String {
-    "Order \(name) has nothing left to make in Shopify (its items were refunded, removed or fulfilled), so it was left out."
+/// The fetch's one line for orders whose every listed line was read and came to no units (`shopifyImportLineUnits`):
+/// refunded, removed or fulfilled. A partly refunded order whose items were all refunded but whose shipping was kept
+/// is still `PARTIALLY_REFUNDED`. At most `shopifyImportNoticeNameLimit` names, then how many more. Nil for none. An
+/// order Shopify sent without any lines is kept, and its check says it has no items; one whose counts couldn't be read
+/// is kept too, and its check says so (`orderImportUnreadableItemsBlocker`).
+func shopifyImportNothingLeftNotice(_ names: [String]) -> String? {
+    guard !names.isEmpty else { return nil }
+    var shown = Array(names.prefix(shopifyImportNoticeNameLimit))
+    if names.count > shown.count { shown.append("\(names.count - shown.count) more") }
+    return names.count == 1
+        ? "Shopify shows nothing left to make in order \(names[0]) (its items were refunded, removed or fulfilled), so it was left out."
+        : "Shopify shows nothing left to make in orders \(dapiJoinedList(shown)) (their items were refunded, removed or fulfilled), so they were left out."
+}
+
+/// Most order names one fetch notice lists.
+let shopifyImportNoticeNameLimit = 10
+
+/// The fetch's line for orders Shopify sent without a name, or nil for none.
+func shopifyImportNamelessNotice(_ count: Int) -> String? {
+    guard count > 0 else { return nil }
+    return count == 1 ? "An order without a name was left out." : "\(count) orders without a name were left out."
 }
 
 /// The fetched orders as an import parse, oldest first as fetched. An order name seen twice (the list shifting while
-/// pages are read) is kept once, and an order whose lines leave no units to make is left out.
+/// pages are read) is decided by its first copy: kept or left out once, with at most one notice. An order whose lines
+/// were all read and leave no units to make is left out. Notices are never repeated.
 func shopifyImportParse(_ nodes: [[String: Any]], shop: String, truncated: Bool) throws -> OrderImportParse {
     var orders: [OrderImportOrder] = []
     var seen = Set<String>()
     var notices: [String] = []
+    var nothingLeft: [String] = []
+    var nameless = 0
+    var partlyRefunded = false
     var nextRow = 1
     for node in nodes {
+        let name = shopifyText(node["name"])
+        guard !name.isEmpty else { nameless += 1; continue }
+        // A later copy of a name already kept or left out adds no row and no notice.
+        guard seen.insert(OrderImportLedger.key(source: .shopify, sourceOrderID: name)).inserted else { continue }
         let result = shopifyImportOrder(node, nextRow: &nextRow)
         if let reason = result.leftOut { notices.append(reason) }
-        guard var order = result.order, seen.insert(order.sourceOrderID).inserted else { continue }
+        guard var order = result.order else { continue }
         let lines = ((node["lineItems"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
-        guard !order.items.isEmpty || lines.isEmpty else {
-            notices.append(shopifyImportNothingLeftNotice(order.sourceOrderID))
+        guard !order.items.isEmpty || lines.isEmpty || order.unreadableItemCount > 0 else {
+            nothingLeft.append(order.sourceOrderID)
             continue
         }
+        if orderImportStatusKey(shopifyText(node["displayFinancialStatus"])) == "partially_refunded" { partlyRefunded = true }
         order.sourceShop = shop
         orders.append(order)
     }
+    if let notice = shopifyImportNothingLeftNotice(nothingLeft) { notices.append(notice) }
+    if let notice = shopifyImportNamelessNotice(nameless) { notices.append(notice) }
     guard !orders.isEmpty else {
         // Every order was left out (more than 30 items, say): say why, rather than that there were none.
-        if !notices.isEmpty { throw StudioError(notices.joined(separator: " ")) }
+        if !notices.isEmpty { throw StudioError(orderImportUniqueNotices(notices).joined(separator: " ")) }
         throw StudioError("Shopify has no paid or partly refunded, unfulfilled orders from the last \(shopifyImportDays) days for \(shop).")
     }
-    notices.insert("Fetched from \(shop): paid and partly refunded, unfulfilled orders from the last \(shopifyImportDays) days, oldest first. Partly refunded orders start unticked: check which items still need making.", at: 0)
+    notices.insert(shopifyImportFetchedNotice(shop: shop, partlyRefunded: partlyRefunded), at: 0)
     if let missing = shopifyMissingCustomerDataNotice(orders) { notices.insert(missing, at: 1) }
     if truncated {
         notices.append("Shopify has more matching orders than the \(shopifyImportMaxOrders) Plinth fetches at once. Import these, or use a CSV export for the rest.")
     }
-    return OrderImportParse(format: .shopify, orders: orders, notices: notices)
+    return OrderImportParse(format: .shopify, orders: orders, notices: orderImportUniqueNotices(notices))
+}
+
+/// The fetch's first line. The advice about partly refunded orders only when the fetch listed one.
+func shopifyImportFetchedNotice(shop: String, partlyRefunded: Bool) -> String {
+    let lead = "Fetched from \(shop): paid and partly refunded, unfulfilled orders from the last \(shopifyImportDays) days, oldest first."
+    return partlyRefunded ? lead + " Partly refunded orders start unticked: check which items still need making." : lead
+}
+
+/// Notices in order, each once.
+func orderImportUniqueNotices(_ notices: [String]) -> [String] {
+    var seen = Set<String>()
+    return notices.filter { seen.insert($0).inserted }
 }
 
 extension ShopifyConnection {

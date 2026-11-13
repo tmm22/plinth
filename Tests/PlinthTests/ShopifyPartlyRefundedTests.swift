@@ -172,7 +172,7 @@ final class ShopifyPartlyRefundedTests: XCTestCase {
         ])
         let parse = try shopifyImportParse([node(), nothingLeft], shop: shop, truncated: false)
         XCTAssertEqual(parse.orders.map(\.sourceOrderID), ["#1001"])
-        XCTAssertTrue(parse.notices.contains(shopifyImportNothingLeftNotice("#1002")))
+        XCTAssertTrue(parse.notices.contains(shopifyImportNothingLeftNotice(["#1002"])!))
         // Alone, the fetch says why it found nothing to import.
         XCTAssertThrowsError(try shopifyImportParse([nothingLeft], shop: shop, truncated: false)) { error in
             let message = (error as? StudioError)?.message ?? ""
@@ -181,7 +181,7 @@ final class ShopifyPartlyRefundedTests: XCTestCase {
         // A later copy of an order already listed (the list shifting between pages) adds no notice.
         let shifted = try shopifyImportParse([node(name: "#1002"), nothingLeft], shop: shop, truncated: false)
         XCTAssertEqual(shifted.orders.map(\.items.count), [2])
-        XCTAssertFalse(shifted.notices.contains(shopifyImportNothingLeftNotice("#1002")))
+        XCTAssertFalse(shifted.notices.contains(shopifyImportNothingLeftNotice(["#1002"])!))
         // An order Shopify sent without any lines isn't blamed on a refund: it stays, and its check says it has no items.
         let bare = try shopifyImportParse([node(name: "#1003", lines: [])], shop: shop, truncated: false)
         XCTAssertEqual(bare.orders.map(\.sourceOrderID), ["#1003"])

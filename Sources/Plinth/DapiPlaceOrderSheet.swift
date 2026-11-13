@@ -47,7 +47,7 @@ struct DapiPlaceOrderSheet: View {
                     status
                     if !runner.changes.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Label("The figures changed since you reviewed them, so nothing was sent. Check the new figures and press Place Order again.",
+                            Label(dapiPlaceChangesHeading(blocked: runner.phase.isBlocked),
                                   systemImage: "exclamationmark.triangle.fill")
                                 .font(.callout).foregroundStyle(.studioWarning)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -194,7 +194,8 @@ struct DapiPlaceOrderSheet: View {
                 }
                 .font(.callout)
                 // The same total and judgement the pre-send check compares (`dapiWalletShortfallChange`).
-                if case .short(let shortfall) = dapiWalletCover(upTo: dapiReviewUpToTotal(figures.snapshot), wallet: figures.wallet) {
+                let cover = dapiWalletCover(upTo: dapiReviewUpToTotal(figures.snapshot), wallet: figures.wallet)
+                if case .short(let shortfall) = cover {
                     Label(dapiWalletShortfallText(shortfall), systemImage: "creditcard")
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
@@ -217,7 +218,8 @@ struct DapiPlaceOrderSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(dapiOrderUpToNote)
                     Text(dapiVATNote)
-                    Text(dapiWalletNote)
+                    // The shortfall line above says the same about the card: the auto top-up sentence appears once.
+                    if dapiWalletNoteShown(cover) { Text(dapiWalletNote) }
                     if let wallet = figures.wallet {
                         Text("Wallet balance now: \(dapiMoneyText(wallet.balance))"
                              + (wallet.sampleCredit.map { $0.amountMinor > 0 ? " · sample credit \(dapiMoneyText($0))" : "" } ?? ""))
@@ -278,7 +280,7 @@ struct DapiPlaceOrderSheet: View {
             switch runner.phase {
             case .blocked:
                 Button("Check Again") { runner.checkAgain() }
-                    .help("Read the account, quotes and shipping again. Nothing is ordered.")
+                    .help("Read the account, quotes, shipping and wallet again. Nothing is ordered.")
             case .ready, .checking, .rechecking, .placing:
                 // Never the default button and no shortcut: it charges your 3DAPI wallet at once.
                 Button("Place Order") { runner.placeOrder() }
@@ -292,7 +294,21 @@ struct DapiPlaceOrderSheet: View {
     }
 }
 
+/// The heading over the pre-send check's list of changes: with new figures to press Place Order on, or, under a stop
+/// for a wallet that couldn't be read (no figures, Check Again), what else that read found changed.
+func dapiPlaceChangesHeading(blocked: Bool) -> String {
+    blocked
+        ? "These figures changed too since you reviewed them:"
+        : "The figures changed since you reviewed them, so nothing was sent. Check the new figures and press Place Order again."
+}
+
 extension DapiPlacePhase {
+    /// A check failed or the account can't order (`.blocked`): Check Again rather than Place Order.
+    var isBlocked: Bool {
+        if case .blocked = self { return true }
+        return false
+    }
+
     /// Nothing more to do here: Close rather than Go Back.
     var isPlacedOrUnknown: Bool {
         switch self {

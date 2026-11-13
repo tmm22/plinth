@@ -79,9 +79,14 @@ final class ShopifyRound21Tests: XCTestCase {
         }
         let nothing = try shopifyImportParse([fetchedNode(fulfilment: "FULFILLMENT_NOT_REQUIRED")], shop: "p.myshopify.com", truncated: false).orders[0]
         XCTAssertEqual(nothing.alreadyHandled, "Shopify shows nothing in this order to fulfil.")
-        for status in ["UNFULFILLED", "OPEN", "SCHEDULED", "ON_HOLD", ""] {
+        for status in ["UNFULFILLED", "OPEN", ""] {
             XCTAssertNil(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: status,
                                                          cancelledAt: "", financialStatus: "paid"), status)
+        }
+        // Round 24: on hold, scheduled, a declined request and restocked start unticked too (Round24ReviewFixesTests).
+        for status in ["SCHEDULED", "ON_HOLD"] {
+            XCTAssertNotNil(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: status,
+                                                            cancelledAt: "", financialStatus: "paid", fetched: true), status)
         }
         XCTAssertNil(orderImportAlreadyHandledReason(format: .template, dateShipped: "", fulfillmentStatus: "partial",
                                                      cancelledAt: "", financialStatus: ""))
