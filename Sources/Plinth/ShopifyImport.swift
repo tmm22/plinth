@@ -2,17 +2,19 @@ import SwiftUI
 
 // MARK: - Import Orders › Fetch from Shopify
 //
-// Fetches the store's paid, unfulfilled orders (read-only, bounded, throttle-aware) and turns them into the same
-// `OrderImportParse` a Shopify CSV export gives, so the Import Orders sheet's checks, Match products, confirmation and
-// paced draft runner apply unchanged. Shopify's `fulfillment_status:unfulfilled` also matches partially fulfilled
-// orders: those list only the units still to fulfil and start unticked (`orderImportAlreadyHandledReason`). Orders
-// with a partial refund (`financial_status:partially_refunded`) aren't fetched at all (checked 12 Nov 2026); a CSV
-// export brings them in. `sourceOrderID` is the order's name ("#1001"), as the CSV's Name column, so the
-// session ledger and the loaded-orders metadata check catch an order imported either way; the store itself
-// (`sourceShop`) and each line item's ID go into the draft's metadata too (ShopifyOrderMatching.swift). The order's
-// subtotal, shipping, taxes and total (shop money) fill the same sale rows the CSV's columns do, for the Profit check.
-// Like the CSV path, the names, emails, addresses and amounts stay in the sheet's memory: never on disk, in
-// preferences, logs or Activity.
+// Fetches the store's paid and partly refunded, unfulfilled orders (read-only, bounded, throttle-aware) and turns them
+// into the same `OrderImportParse` a Shopify CSV export gives, so the Import Orders sheet's checks, Match products,
+// confirmation and paced draft runner apply unchanged. Shopify's `fulfillment_status:unfulfilled` also matches
+// partially fulfilled orders: those list only the units still to fulfil and start unticked
+// (`orderImportAlreadyHandledReason`). Partly refunded orders (`financial_status:partially_refunded`; owner decision,
+// delegated, 13 Nov 2026) list only units not refunded (`currentQuantity`), but start unticked too, because a refund of
+// money alone leaves every item on the order; their amounts aren't used for the Profit check. An order Shopify shows
+// as unpaid is left out, and an order with nothing left to make is left out with a notice. `sourceOrderID` is the
+// order's name ("#1001"), as the CSV's Name column, so the session ledger and the loaded-orders metadata check catch
+// an order imported either way; the store itself (`sourceShop`) and each line item's ID go into the draft's metadata
+// too (ShopifyOrderMatching.swift). The order's subtotal, shipping, taxes and total (shop money) fill the same sale
+// rows the CSV's columns do, for the Profit check. Like the CSV path, the names, emails, addresses and amounts stay in
+// the sheet's memory: never on disk, in preferences, logs or Activity.
 
 let shopifyImportMaxOrders = 250
 let shopifyImportDays = 60
@@ -22,16 +24,18 @@ let shopifyImportLineItemsPerOrder = 30
 /// The estimated cost of one page, for waiting out the throttle before asking.
 let shopifyImportPageCost: Double = 620
 
-/// Shopify search syntax for the import: paid, unfulfilled (or partially fulfilled: Shopify's `unfulfilled` matches
-/// both), open orders created on or after `since` (UTC day). The `read_orders` scope only reaches the last 60 days
-/// anyway. `paid` leaves out partially refunded orders, the cautious direction.
+/// Shopify search syntax for the import: paid or partly refunded, unfulfilled (or partially fulfilled: Shopify's
+/// `unfulfilled` matches both), open orders created on or after `since` (UTC day). The `read_orders` scope only reaches
+/// the last 60 days anyway. Shopify's search syntax gives OR a higher precedence than the implied AND; the parentheses
+/// only make that plain. Never `partially_paid`, `pending`, `authorized`, `expired`, `refunded` or `voided`, and
+/// `shopifyImportOrder` leaves out a fetched order Shopify shows as unpaid whatever the query matched.
 func shopifyImportSearchQuery(now: Date = Date(), days: Int = shopifyImportDays) -> String {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "UTC") ?? .gmt
     let since = calendar.date(byAdding: .day, value: -days, to: now) ?? now
     let parts = calendar.dateComponents([.year, .month, .day], from: since)
     let day = String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
-    return "financial_status:paid fulfillment_status:unfulfilled status:open created_at:>=\(day)"
+    return "(financial_status:paid OR financial_status:partially_refunded) fulfillment_status:unfulfilled status:open created_at:>=\(day)"
 }
 
 let shopifyImportOrdersQuery = """
@@ -159,10 +163,16 @@ func shopifyImportLineUnits(_ item: [String: Any]) -> Int? {
 }
 
 /// One order as Import Orders sees it, or the reason it was left out. `nextRow` numbers its items (the sheet's
-/// "item on row N" label for an item with neither SKU nor name).
+/// "item on row N" label for an item with neither SKU nor name). An order Shopify shows as unpaid is left out, whatever
+/// the search matched; any other financial status but paid starts unticked (`orderImportAlreadyHandledReason`).
 func shopifyImportOrder(_ node: [String: Any], nextRow: inout Int) -> (order: OrderImportOrder?, leftOut: String?) {
     let name = shopifyText(node["name"])
     guard !name.isEmpty else { return (nil, "An order without a name was left out.") }
+    let financialStatus = shopifyText(node["displayFinancialStatus"])
+    let financial = orderImportStatusKey(financialStatus)
+    if shopifyImportUnpaidStatuses.contains(financial) {
+        return (nil, "Order \(name) isn’t fully paid in Shopify, so it was left out.")
+    }
     if let lineItems = node["lineItems"] as? [String: Any], let info = lineItems["pageInfo"] as? [String: Any],
        (info["hasNextPage"] as? Bool) == true {
         return (nil, "Order \(name) has more than \(shopifyImportLineItemsPerOrder) items, so it was left out. Import it from a CSV export.")
@@ -198,14 +208,22 @@ func shopifyImportOrder(_ node: [String: Any], nextRow: inout Int) -> (order: Or
         order.items.append(entry)
     }
     if let sale = shopifyImportSaleRow(node) { order.saleRows = [sale] }
+    order.shopifyShowsRefund = shopifyRefundStatuses.contains(financial)
     order.alreadyHandled = orderImportAlreadyHandledReason(
         format: .shopify, dateShipped: "", fulfillmentStatus: shopifyText(node["displayFulfillmentStatus"]),
-        cancelledAt: shopifyText(node["cancelledAt"]), financialStatus: shopifyText(node["displayFinancialStatus"]), fetched: true)
+        cancelledAt: shopifyText(node["cancelledAt"]), financialStatus: financialStatus, fetched: true)
     return (order, nil)
 }
 
+/// A fetched order whose every listed line comes to no units (`shopifyImportLineUnits`): refunded, removed or fulfilled.
+/// A partly refunded order whose items were all refunded but whose shipping was kept is still `PARTIALLY_REFUNDED`. An
+/// order Shopify sent without any lines is kept, and its check says it has no items.
+func shopifyImportNothingLeftNotice(_ name: String) -> String {
+    "Order \(name) has nothing left to make in Shopify (its items were refunded, removed or fulfilled), so it was left out."
+}
+
 /// The fetched orders as an import parse, oldest first as fetched. An order name seen twice (the list shifting while
-/// pages are read) is kept once.
+/// pages are read) is kept once, and an order whose lines leave no units to make is left out.
 func shopifyImportParse(_ nodes: [[String: Any]], shop: String, truncated: Bool) throws -> OrderImportParse {
     var orders: [OrderImportOrder] = []
     var seen = Set<String>()
@@ -215,15 +233,20 @@ func shopifyImportParse(_ nodes: [[String: Any]], shop: String, truncated: Bool)
         let result = shopifyImportOrder(node, nextRow: &nextRow)
         if let reason = result.leftOut { notices.append(reason) }
         guard var order = result.order, seen.insert(order.sourceOrderID).inserted else { continue }
+        let lines = ((node["lineItems"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
+        guard !order.items.isEmpty || lines.isEmpty else {
+            notices.append(shopifyImportNothingLeftNotice(order.sourceOrderID))
+            continue
+        }
         order.sourceShop = shop
         orders.append(order)
     }
     guard !orders.isEmpty else {
         // Every order was left out (more than 30 items, say): say why, rather than that there were none.
         if !notices.isEmpty { throw StudioError(notices.joined(separator: " ")) }
-        throw StudioError("Shopify has no paid, unfulfilled orders from the last \(shopifyImportDays) days for \(shop).")
+        throw StudioError("Shopify has no paid or partly refunded, unfulfilled orders from the last \(shopifyImportDays) days for \(shop).")
     }
-    notices.insert("Fetched from \(shop): paid, unfulfilled orders from the last \(shopifyImportDays) days, oldest first. Orders with a partial refund aren’t fetched: use a CSV export for those.", at: 0)
+    notices.insert("Fetched from \(shop): paid and partly refunded, unfulfilled orders from the last \(shopifyImportDays) days, oldest first. Partly refunded orders start unticked: check which items still need making.", at: 0)
     if let missing = shopifyMissingCustomerDataNotice(orders) { notices.insert(missing, at: 1) }
     if truncated {
         notices.append("Shopify has more matching orders than the \(shopifyImportMaxOrders) Plinth fetches at once. Import these, or use a CSV export for the rest.")
@@ -232,8 +255,8 @@ func shopifyImportParse(_ nodes: [[String: Any]], shop: String, truncated: Bool)
 }
 
 extension ShopifyConnection {
-    /// Fetches up to 250 paid, unfulfilled orders, a page at a time. Read-only. Stops at the first failure, so a
-    /// partial list is never shown as complete.
+    /// Fetches up to 250 paid and partly refunded, unfulfilled orders, a page at a time. Read-only. Stops at the first
+    /// failure, so a partial list is never shown as complete.
     func fetchImportOrders(progress: @escaping (Int) -> Void) async throws -> OrderImportParse {
         let client = try currentClient()
         busy = true
@@ -272,7 +295,7 @@ extension ShopifyConnection {
 /// The Import Orders intro's extra line once Shopify is connected, or nil.
 func shopifyImportIntroHint(shop: String?) -> String? {
     guard let shop else { return nil }
-    return "Or use Fetch from Shopify to read paid, unfulfilled orders straight from \(shop)."
+    return "Or use Fetch from Shopify to read paid and partly refunded, unfulfilled orders straight from \(shop)."
 }
 
 /// The empty state's hint, naming Fetch from Shopify once Shopify is connected.
@@ -320,7 +343,7 @@ struct ShopifyImportFetchButton: View {
             } else {
                 Button("Fetch from Shopify") { fetch() }
                     .disabled(disabled || connection.busy)
-                    .help("Fetch paid, unfulfilled orders from \(connection.shop ?? "your store") (last \(shopifyImportDays) days, up to \(shopifyImportMaxOrders)). Partly fulfilled orders list only the items still to fulfil; orders with a partial refund aren’t fetched. Nothing is sent to Slant until you confirm.")
+                    .help("Fetch paid and partly refunded, unfulfilled orders from \(connection.shop ?? "your store") (last \(shopifyImportDays) days, up to \(shopifyImportMaxOrders)). Partly fulfilled orders list only the items still to fulfil; partly refunded orders start unticked. Nothing is sent to Slant until you confirm.")
             }
         }
     }

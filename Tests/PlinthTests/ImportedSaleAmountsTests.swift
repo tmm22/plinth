@@ -163,9 +163,12 @@ final class ImportedSaleAmountsTests: XCTestCase {
         XCTAssertTrue(result.notes.contains { $0.contains("isn’t its subtotal, shipping and taxes") })
     }
 
-    func testShopifyRefundIsNoted() throws {
-        let result = try usd(amounts([shopifyHeader, shopifyFirst(refunded: "10.00")]))
-        XCTAssertTrue(result.notes.contains { $0.contains("$10.00 refunded") })
+    func testShopifyRefundLeavesTheAmountsBlank() throws {
+        // Shopify's refund total doesn't say what it covered, so neither the whole subtotal nor a guess is used.
+        XCTAssertEqual(try amounts([shopifyHeader, shopifyFirst(refunded: "10.00")]), .none)
+        XCTAssertEqual(try amounts([shopifyHeader, shopifyFirst(refunded: "ten")]), .none, "an unreadable refund may be one")
+        XCTAssertNotNil(try usd(amounts([shopifyHeader, shopifyFirst(refunded: "0.00")])).itemTotal, "the control: no refund")
+        XCTAssertNotNil(try usd(amounts([shopifyHeader, shopifyFirst(refunded: "")])).itemTotal)
     }
 
     func testShopifyConflictingSubtotalsAreNotGuessed() throws {

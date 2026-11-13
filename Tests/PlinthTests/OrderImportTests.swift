@@ -209,7 +209,10 @@ final class OrderImportTests: XCTestCase {
         XCTAssertEqual(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: "", cancelledAt: "", financialStatus: "Refunded"),
                        "Shopify shows this order as refunded.")
         XCTAssertNotNil(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: "", cancelledAt: "", financialStatus: "voided"))
-        XCTAssertNil(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: "unfulfilled", cancelledAt: "", financialStatus: "partially_refunded"))
+        // A partly refunded CSV row starts unticked: the export may list refunded items too.
+        XCTAssertEqual(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: "unfulfilled", cancelledAt: "", financialStatus: "partially_refunded"),
+                       orderImportPartlyRefundedCSVReason)
+        XCTAssertNil(orderImportAlreadyHandledReason(format: .shopify, dateShipped: "", fulfillmentStatus: "unfulfilled", cancelledAt: "", financialStatus: "paid"))
         XCTAssertNil(orderImportAlreadyHandledReason(format: .template, dateShipped: "x", fulfillmentStatus: "fulfilled", cancelledAt: "x", financialStatus: "refunded"))
     }
 
